@@ -122,27 +122,6 @@ Deno.test("cargo deny: baseRef runs a path-filtered workflow when the branch tou
   }
 });
 
-Deno.test("cargo deny: repairChecksOnly mode checks Cargo.lock", async () => {
-  const { root, clone, stdin } = await makeRepo(CI_WITH_DENY, {
-    "Cargo.lock": "version = 4\n",
-  });
-  try {
-    const seen: Seen[] = [];
-    const result = await runPrePushGate({
-      cwd: clone,
-      stdin,
-      baseRef: "origin/main",
-      repairChecksOnly: true,
-      preFlightCommands: [],
-      runner: recordingRunner(seen, () => PASS),
-    });
-    assert(result.ok);
-    assertEquals(denyCommands(seen), [{ command: DENY_ARGV, cwd: clone }]);
-  } finally {
-    await Deno.remove(root, { recursive: true });
-  }
-});
-
 Deno.test("cargo deny: repairChecksWithCiCargo mode checks Cargo.lock", async () => {
   const { root, clone, stdin } = await makeRepo(CI_WITH_DENY, {
     "Cargo.lock": "version = 4\n",
@@ -164,7 +143,7 @@ Deno.test("cargo deny: repairChecksWithCiCargo mode checks Cargo.lock", async ()
   }
 });
 
-Deno.test("cargo deny: repairChecksOnly mode skips a source-only repair even with a baseRef", async () => {
+Deno.test("cargo deny: repairChecksWithCiCargo mode skips a source-only repair even with a baseRef", async () => {
   const { root, clone, stdin } = await makeRepo(CI_WITH_DENY, {
     "src/main.rs": "fn main() { }\n",
   });
@@ -174,7 +153,7 @@ Deno.test("cargo deny: repairChecksOnly mode skips a source-only repair even wit
       cwd: clone,
       stdin,
       baseRef: "origin/main",
-      repairChecksOnly: true,
+      repairChecksWithCiCargo: true,
       preFlightCommands: [],
       runner: recordingRunner(seen, () => PASS),
     });

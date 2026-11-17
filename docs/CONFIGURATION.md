@@ -3076,9 +3076,13 @@ gate before the worker push. Configured pre-flight commands also enable
 the full set of changed-file checks. PR-review feedback runs its independent fix verifier even
 without pre-flight configuration; persistent findings can block the push.
 A fleet babysitter repair is gated inside its container before it reports
-ready: the unit tests selected for its uncommitted changes, markdownlint when
-configured, the ShellCheck policy, the cargo-deny gate and the gitleaks secret
-scan (Issue #5121) run there, but not the formatters or linters (Issue #4930; see
+ready (`repairChecksWithCiCargo`): the unit tests selected for its uncommitted
+changes, markdownlint when configured, the ShellCheck policy, the cargo-deny
+gate, the repo CI's cargo clippy and test-target compile when a Rust-relevant
+file changed (Issue #5169) and the gitleaks secret scan (Issue #5121) run
+there, but not the formatters or linters (Issue #4930). Its `.git` is read-only,
+so its cargo checks have no PR-base comparison and a failing CI cargo check
+always blocks the repair (see
 [babysitter container repairs](workflows/fleet-pr-babysitter.md#container-repairs)).
 Custom PR prompts use the agent's pre-push hook, which runs changed-file checks
 and configured pre-flight commands when the agent pushes; the worker verifies
@@ -5470,9 +5474,10 @@ gates do (see that bullet):
      push added, a base run that passes, a base the gate cannot check out (for
      example a deepen that failed, so no merge-base is found), or an output that
      names no failed test stays a block. The CI-fix, PR-feedback, spelling
-     and merge-conflict repairs' spec (`repairChecksWithCiCargo`, Issue #5169)
-     and the babysitter repair container's tree gate (`repairChecksOnly`) also run these unit tests and configured markdownlint from the pushed
-     paths, while retaining their existing formatter policy;
+     and merge-conflict repairs' spec (`repairChecksWithCiCargo`, Issue #5169),
+     which the babysitter repair container's tree gate also uses, run these
+     unit tests and configured markdownlint from the pushed paths, while
+     retaining their existing formatter policy;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
    - **CI's cargo clippy and test-target compile** (Issue #4630), when the push
@@ -5606,8 +5611,9 @@ gates do (see that bullet):
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
    - **`cargo deny`** (Issue #4626), for the whole-branch completion check.
-     Intermediate push hooks and both repair specs (`repairChecksOnly`, used only by the babysitter's tree gate, and
-     `repairChecksWithCiCargo`) run it when pushed changes include a `Cargo.toml`,
+     Intermediate push hooks and the repair spec (`repairChecksWithCiCargo`,
+     used by the CI-fix, PR-feedback, spelling and merge-conflict repairs and
+     the babysitter's tree gate) run it when pushed changes include a `Cargo.toml`,
      `Cargo.lock`, `deny.toml`, `.deny.toml`, `.cargo/config.toml` or
      `.cargo/deny.toml`. It reads the repo's own `.github/workflows/*.yml` and
      `*.yaml` files for each `run:` step whose command is `cargo deny` with a

@@ -4,7 +4,8 @@
  * The repair agent leaves its edits uncommitted in a clone whose `.git` is
  * mounted read-only, so nothing here may write to `.git`. The gate runs the
  * checks the host's push would otherwise skip: deno test, markdownlint, the
- * ShellCheck policy and cargo-deny. The gate's git calls that would write
+ * ShellCheck policy, cargo-deny and, when a Rust-relevant file changed, the
+ * repo CI's cargo clippy and test-target compile (Issue #5169). The gate's git calls that would write
  * (`worktree add`, `worktree remove`, `worktree prune`) are emulated through the
  * `git` seam: the fork commit is checked out into a fresh repository under a
  * temp root that borrows the clone's objects (`objects/info/alternates`), so
@@ -30,6 +31,7 @@
 
 import { createHash } from "node:crypto";
 
+import type { CiCargoScan } from "./ci_cargo_checks.ts";
 import type { PreFlightRunner } from "./pre_flight_gate.ts";
 import {
   defaultPrePushGit,
@@ -114,6 +116,15 @@ export interface BabysitterTreeGateDeps {
   /** Command runner and markdownlint lookup handed to the real gate. */
   runner?: PreFlightRunner;
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
+  /**
+   * Reads the repo's CI cargo checks; defaults to `repoCiCargoChecks`, loaded
+   * on demand so the workflow scanner stays out of this module's static graph
+   * (Issue #5169).
+   */
+  findCiCargo?: (
+    repoRoot: string,
+    tracked: readonly string[],
+  ) => Promise<CiCargoScan>;
   /** The secret scan; defaults to {@link runGitleaksTreeCheck} (Issue #5121). */
   gitleaks?: typeof runGitleaksTreeCheck;
   makeTempDir?: () => Promise<string>;
@@ -642,6 +653,15 @@ async function settleAfterChecks(
  * tree is read again and compared with the set read before the checks: a
  * change the checks left behind turns a pass into `blocked`, and a failed
  * re-read is `infrastructure` (Issue #4930). The temp root is always removed.
+ *
+ * When a Rust-relevant file changed, the gate also runs the repo CI's cargo
+ * clippy and test-target compile (Issue #5169): a failing one is `blocked`, and
+ * one that cannot be reproduced here (toolchain, disk or network fault) is
+ * `infrastructure`, as `runPrePushGate` reports it through
+ * `PrePushGateInfrastructureError`. Cargo may write its target directory in the
+ * clone: an ignored `target/` is not listed by the status read (it excludes
+ * ignored files), while an unignored one turns a pass into `blocked` through the
+ * settle step above.
  */
 export async function runBabysitterTreeGate(
   dir: string,
@@ -653,6 +673,13 @@ export async function runBabysitterTreeGate(
   const makeTempDir = deps.makeTempDir ?? defaultMakeTempDir;
   const removeTree = deps.removeTree ?? defaultRemoveTree;
   const gitleaks = deps.gitleaks ?? runGitleaksTreeCheck;
+  const findCiCargo = deps.findCiCargo ??
+    (async (repoRoot: string, tracked: readonly string[]) => {
+      // Loaded on demand: a static import would put the YAML parser into this
+      // module's graph.
+      const { repoCiCargoChecks } = await import("./ci_cargo_checks.ts");
+      return repoCiCargoChecks(repoRoot, tracked);
+    });
   const checkoutTree = deps.checkoutTree ??
     ((dir: string, sha: string, dest: string) =>
       defaultCheckoutTree(dir, sha, dest, git));
@@ -705,7 +732,12 @@ export async function runBabysitterTreeGate(
           ? ""
           : `${MERGE_REF} ${mergeHead} ${TREE_REF} ${sha}\n`),
       preFlightCommands: [],
-      repairChecksOnly: true,
+      repairChecksWithCiCargo: true,
+      findCiCargo,
+      // No `compareRef` or `baseRef`: the base comparison fetches into the clone
+      // and makes a worktree outside the temp root, and both fail here (`.git`
+      // is read-only). CI runs on the PR's own tree, so a failing CI cargo check
+      // fails CI whatever the base does.
       git: adapter,
       ...(deps.runner ? { runner: deps.runner } : {}),
       ...(deps.findMarkdownlint

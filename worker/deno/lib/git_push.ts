@@ -54,15 +54,11 @@ import { runGhOrThrow } from "./gh_spawn.ts";
  * Step 1b's changed-file checks (Issue #3689: deno/cargo fmt, markdownlint,
  * cspell, the Floci deploy test and the repository's ShellCheck policy), then
  * cargo deny when applicable (Issue #4626), even when `commands` is empty; an
- * empty list only means no repo pre-flight commands run. A spec with
- * `repairChecksOnly` (the fleet babysitter's tree gate) runs just the shared
- * repair checks: the ShellCheck policy, cargo deny for changed cargo inputs
- * (Issues #4631 and #4626), and the dependency-selected unit tests and
- * markdownlint for the pushed paths (Issue #4930). It runs no deno/cargo
- * formatter, deno lint, cspell, Floci or CI cargo check.
+ * empty list only means no repo pre-flight commands run.
  *
  * `repairChecksWithCiCargo` (Issues #4630 and #5169; CI-fix, PR-feedback,
- * spelling and merge-conflict repairs of a repo with no pre-flight commands)
+ * spelling and merge-conflict repairs of a repo with no pre-flight commands,
+ * and the fleet babysitter's tree gate)
  * runs those same repair checks and also the repo CI's own cargo clippy and
  * test-target compile: no fmt, lint, cspell or Floci checks, and no
  * pre-flight commands. See {@link REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT}.
@@ -82,16 +78,6 @@ export interface PreFlightGateSpec {
    * #4930). Omit for the full changed-file gate.
    */
   repairChecksWithCiCargo?: boolean;
-  /**
-   * Repair gate that runs only the shared repair checks in Step 1b: the
-   * repository's ShellCheck policy for the pushed scripts, the CI cargo-deny
-   * check when the pushed paths include a cargo input, and the
-   * dependency-selected unit tests and configured markdownlint for the pushed
-   * paths (Issues #4631, #4626 and #4930). No formatter, lint, cspell, Floci
-   * or CI cargo check runs. Used only by the fleet babysitter's tree gate
-   * (`babysitter_tree_gate.ts`).
-   */
-  repairChecksOnly?: boolean;
 }
 
 /**
@@ -889,7 +875,6 @@ export async function gateUnpushedCommits(
     cwd: options.cwd ?? Deno.cwd(),
     stdin: `${ref} ${head.value.stdout.trim()} ${ref} ${remoteSha}\n`,
     preFlightCommands: preFlightAlreadyRan ? [] : preFlight.commands,
-    repairChecksOnly: preFlight.repairChecksOnly,
     timeoutSeconds: preFlight.timeoutSeconds,
     runner: preFlight.runner,
     repairChecksWithCiCargo: preFlight.repairChecksWithCiCargo,
@@ -981,13 +966,12 @@ export async function gateUnpushedCommits(
  *   blocks BOTH the commit and the push. There is no override flag. Supplying
  *   a spec, even one with an empty `commands` list, also turns on Step 1b's
  *   changed-file checks (Issue #3689). Omit to leave the repo unaffected
- *   (zero added latency, no gate); a `repairChecksOnly` spec (the babysitter tree gate) runs just the
- *   repository ShellCheck policy, the CI cargo-deny check when the pushed
- *   paths include a cargo input, and the dependency-selected unit tests and
- *   configured markdownlint for the pushed paths (Issues #4631, #4626 and
- *   #4930). A spec with `repairChecksWithCiCargo` (the CI-fix, PR-feedback,
- *   spelling and merge-conflict repairs) runs those same checks plus the repo
- *   CI's cargo checks (Issues #4630 and #5169).
+ *   (zero added latency, no gate); a spec with `repairChecksWithCiCargo` (the CI-fix, PR-feedback,
+ *   spelling and merge-conflict repairs, and the babysitter tree gate) runs
+ *   just the repository ShellCheck policy, the CI cargo-deny check when the
+ *   pushed paths include a cargo input, the dependency-selected unit tests and
+ *   configured markdownlint for the pushed paths, plus the repo CI's cargo
+ *   checks (Issues #4631, #4626, #4930, #4630 and #5169).
  * @param runId - Run id stamped into the `Vibe-Coder-Run-Id` commit trailer
  *   (Issue #963). Omit in production: it then falls back to {@link getRunId},
  *   which reads `VIBE_RUN_ID` and generates-and-caches one when unset, exactly

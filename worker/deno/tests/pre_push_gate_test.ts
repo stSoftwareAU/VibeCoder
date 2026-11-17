@@ -1416,7 +1416,7 @@ async function denoCommandsRun(
 }
 
 for (
-  const mode of [{}, { repairChecksOnly: true }, {
+  const mode of [{}, {
     repairChecksWithCiCargo: true,
   }]
 ) {
@@ -5237,9 +5237,9 @@ Deno.test("runPrePushGate: repair pushes enforce unit tests and markdownlint (PR
     await git(clone, "commit", "-qm", "repair source and docs");
     const stdin = prePushInput(await git(clone, "rev-parse", "HEAD"));
     const unit = "deno task test:unit 'tests/foo_test.ts'";
-    // Both repair specs: repairChecksOnly, and the CI-fix and PR-feedback
-    // repairs' repairChecksWithCiCargo (PR #5034, merged with Issue #4630).
-    const modes = [{ repairChecksOnly: true }, {
+    // The repair spec: repairChecksWithCiCargo (PR #5034, merged with Issue
+    // #4630; the babysitter tree gate joined it in Issue #5169).
+    const modes = [{
       repairChecksWithCiCargo: true,
     }];
     for (const mode of modes) {

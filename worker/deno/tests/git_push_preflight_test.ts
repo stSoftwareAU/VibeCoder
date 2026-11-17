@@ -1489,7 +1489,7 @@ Deno.test("commitAndPushPending - a repair push compares a failing unit test at 
           ...(baseOption ? { [baseOption]: "main" } : {}),
         },
         false,
-        { commands: [], repairChecksOnly: true, runner },
+        { ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner },
       );
 
     // The repair leaves the test red. Told the PR's base, the gate blocks it.

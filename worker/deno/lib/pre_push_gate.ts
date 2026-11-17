@@ -16,7 +16,9 @@
  *   content the execute phase's WIP checkpoints already pushed is checked
  *   before `gh pr create`.
  * - the babysitter's in-container repair command, via `runBabysitterTreeGate`,
- *   over its uncommitted tree before its READY response reaches the host.
+ *   over its uncommitted tree before its READY response reaches the host (the
+ *   same `repairChecksWithCiCargo` repair mode as the CI-fix repairs, Issue
+ *   #5169).
  *
  * It does four things, in order:
  *
@@ -57,10 +59,10 @@
  *    `repoCiCargoChecks` directly: `git_push.ts` `gateUnpushedCommits`
  *    (`commitAndPushPending` Step 1b and the completion phase).
  * 3. Then runs the repo's `cargo deny check` (Issue #4626) for eligible
- *    workflows when intermediate pushes, `repairChecksOnly` repairs or
- *    `repairChecksWithCiCargo` repairs change a cargo input (a Cargo manifest, lock file,
+ *    workflows when intermediate pushes or `repairChecksWithCiCargo` repairs
+ *    change a cargo input (a Cargo manifest, lock file,
  *    deny config or `.cargo/config.toml`). The whole-branch completion check
- *    (with a baseRef, and neither `repairChecksOnly` nor `repairChecksWithCiCargo`) runs it on
+ *    (with a baseRef, and not `repairChecksWithCiCargo`) runs it on
  *    every branch for eligible workflows, regardless of changed cargo inputs.
  *    Missing tools or an unreachable advisory database are infrastructure
  *    failures, except for an invocation CI allows to fail, whose failures of
@@ -2872,15 +2874,16 @@ async function failsOnBaseToo(args: {
  * and the repo's pre-flight commands are skipped. Only the Rust-relevant changed
  * files are planned for those, so no other checker's planning error can block
  * the push. With no
- * `findCiCargo`, `repairChecksWithCiCargo` plans and runs no cargo check. `repairChecksOnly`
- * plans no formatter, lint, cspell, Floci or CI cargo check (its unit tests and
- * markdownlint come from the pushed paths), so it reads no CI cargo scan.
+ * `findCiCargo`, `repairChecksWithCiCargo` plans and runs no cargo check. It is
+ * the only repair mode: the babysitter's tree gate (Issue #5169), like the
+ * CI-fix, PR-feedback, spelling and merge-conflict repairs, passes it with
+ * `findCiCargo` and no `compareRef`, so a failing CI cargo check always blocks.
  *
  * The cargo-deny gate runs for eligible workflows when the pushed paths include
  * a cargo input (a Cargo manifest, lock file, deny config or
- * `.cargo/config.toml`); intermediate pushes, `repairChecksOnly` repairs and
- * `repairChecksWithCiCargo` repairs all work this way. The whole-branch completion check
- * (with a baseRef, and neither `repairChecksOnly` nor `repairChecksWithCiCargo`) runs it on
+ * `.cargo/config.toml`); intermediate pushes and
+ * `repairChecksWithCiCargo` repairs work this way. The whole-branch completion check
+ * (with a baseRef, and not `repairChecksWithCiCargo`) runs it on
  * every branch for eligible workflows, regardless of changed cargo inputs. A
  * cargo-deny failure that shows the tool or advisory database could not be
  * reached is a {@link PrePushGateInfrastructureError}.
@@ -2889,13 +2892,6 @@ export async function runPrePushGate(opts: {
   cwd: string;
   stdin: string;
   preFlightCommands: readonly string[];
-  /**
-   * Repair gate for the fleet babysitter's tree gate: runs only the shared repair checks (ShellCheck
-   * policy, cargo deny for pushed cargo inputs, and the pushed paths' unit
-   * tests and markdownlint) and no formatter, lint, cspell, Floci or CI cargo
-   * check.
-   */
-  repairChecksOnly?: boolean;
   timeoutSeconds?: number;
   runner?: PreFlightRunner;
   git?: PrePushGit;
@@ -2975,17 +2971,8 @@ export async function runPrePushGate(opts: {
     false,
   );
   if (!uncontained.ok) return infrastructureFail(uncontained.error);
-  // A `repairChecksOnly` gate offers the formatter, lint, cspell and Floci
-  // planner no candidate files (its unit tests and markdownlint come from the
-  // pushed paths); the CI cargo checks need the changed files, so
-  // `repairChecksWithCiCargo` keeps them.
-  const formatterCandidates =
-    opts.repairChecksOnly && !opts.repairChecksWithCiCargo
-      ? []
-      : contained.value;
-  const ciCargoPaths = opts.repairChecksOnly && !opts.repairChecksWithCiCargo
-    ? []
-    : uncontained.value;
+  const formatterCandidates = contained.value;
+  const ciCargoPaths = uncontained.value;
 
   const lsFiles = await git(["ls-files", "-z"], opts.cwd);
   if (lsFiles.code !== 0) {
@@ -3240,7 +3227,7 @@ export async function runPrePushGate(opts: {
   const cargoDeny = await runCargoDenyGate({
     cwd: opts.cwd,
     changed: contained.value,
-    always: !opts.repairChecksOnly && !opts.repairChecksWithCiCargo &&
+    always: !opts.repairChecksWithCiCargo &&
       opts.baseRef !== undefined,
     // The touched paths decide a workflow's `paths` filter only over the whole
     // branch; a push of the newest commits alone would miss earlier ones.
