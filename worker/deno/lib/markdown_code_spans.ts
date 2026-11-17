@@ -517,10 +517,12 @@ export function splitMarkdownCode(
       opener = null;
     }
     if (!inFence && line.trim()) {
+      let leftContainer = false;
       while (
         listIndents.length && indent < listIndents[listIndents.length - 1]!
       ) {
         listIndents.pop();
+        leftContainer = true;
       }
       const marker = line.slice(indentText.length).match(
         /^(?:[-+*]|[0-9]{1,9}[.)])([ \t]+)/,
@@ -532,9 +534,12 @@ export function splitMarkdownCode(
           line.trim(),
         );
       // Only a nonempty item may interrupt a paragraph; ordered items must
-      // start at 1. A bare dash after prose is a setext underline.
+      // start at 1. A bare dash after prose is a setext underline. The rule
+      // also holds inside an open list item: a line at or beyond the item's
+      // content indent is paragraph text there, so only a sibling item
+      // (one that left the innermost container) is exempt.
       const interruptsParagraph = paragraph.trim().length > 0 &&
-        listIndents.length === 0;
+        (listIndents.length === 0 || !leftContainer);
       const validInterruption = !interruptsParagraph ||
         (line.slice(indentText.length + (marker?.[0].length ?? 0)).trim()
                   .length > 0 &&

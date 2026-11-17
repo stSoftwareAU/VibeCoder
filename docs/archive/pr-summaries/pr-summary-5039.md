@@ -47,7 +47,7 @@ existing withholding tests cover that requirement.
 Run the guard, issue-5039 regressions, Markdown-code and PR-body suites:
 `deno task test tests/babysitter_pr_body_guard_5039_test.ts
 tests/babysitter_pr_body_guard_test.ts tests/markdown_code_spans_test.ts
-tests/pr_body_test.ts` from `worker/deno`. At the pushed head all 155 tests in
+tests/pr_body_test.ts` from `worker/deno`. At the pushed head all 156 tests in
 those four files pass. The independent CommonMark 0.31.2 renderer (a test-only
 dependency) reproduced each reported failure before its correction. Full hosted
 CI remains required.
@@ -81,8 +81,14 @@ exposes fenced closing references or a quoted assignment marker. It also
 follows CommonMark's paragraph-interruption rule: inside a paragraph, only a
 nonempty list item may open a list, and an ordered item must start at 1, so
 `paragraph` followed by `2. item` or a bare `- ` (a setext underline) creates
-no list container. The production-guard regression in
-`worker/deno/tests/babysitter_pr_body_guard_5039_test.ts` covers the thematic
-forms and both paragraph-interruption forms; it failed before each fix and
-passes afterwards. At the pushed head all 155 tests in the guard, issue-5039,
-Markdown-code and PR-body suites pass (Deno 2.9.6). Hosted CI remains required.
+no list container. The rule applies inside an open list item as well: a line at
+or beyond the item's content indent is paragraph text there, so
+`- outer`, `  paragraph`, `  2. item` (or `  - `) creates no nested container;
+only a sibling item that leaves the innermost container is exempt. The
+production-guard regressions in
+`worker/deno/tests/babysitter_pr_body_guard_5039_test.ts` cover the thematic
+forms, both top-level paragraph-interruption forms and the nested forms,
+checking governing and additional closes and rejection of a quoted live marker
+with the CommonMark renderer; each failed before its fix and passes afterwards.
+At the pushed head all 156 tests in the guard, issue-5039, Markdown-code and
+PR-body suites pass (Deno 2.9.6). Hosted CI remains required.

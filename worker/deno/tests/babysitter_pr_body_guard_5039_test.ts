@@ -259,3 +259,32 @@ Deno.test("thematic breaks do not create list containers that expose fenced clos
     assertFalse(guardMet("Rewritten.", live).includes("quoted-example"));
   }
 });
+
+Deno.test("paragraph text inside a list item does not create a nested list that exposes fenced closes or markers", async () => {
+  const { Parser, HtmlRenderer } = await import("commonmark") as unknown as {
+    Parser: new () => { parse(text: string): unknown };
+    HtmlRenderer: new () => { render(node: unknown): string };
+  };
+  for (
+    const prefix of [
+      "- outer\n  paragraph\n  2. item",
+      "- outer\n  paragraph\n  - ",
+      "- outer\n  2. item",
+    ]
+  ) {
+    for (const number of [4637, 99]) {
+      const body = guardMet(
+        prefix + "\n     ```\n  Closes #" + number,
+        liveBodyFor(4637, "Closes #4637\nCloses #99"),
+      );
+      const html = new HtmlRenderer().render(new Parser().parse(body));
+      const prose = html.replace(/<pre><code>[\s\S]*?<\/code><\/pre>/g, "");
+      assert(prose.includes("Closes #4637"), html);
+      assert(prose.includes("Closes #99"), html);
+      assert(prose.includes("<!-- vibe-worker-issue-4637 -->"), html);
+    }
+    const live = liveBodyFor(4637, "Closes #4637") + "\n\n" + prefix +
+      '\n     ```\n  <!-- vibe-assignment-id id="quoted-example" -->';
+    assertFalse(guardMet("Rewritten.", live).includes("quoted-example"));
+  }
+});
