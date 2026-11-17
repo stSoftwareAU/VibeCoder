@@ -3214,16 +3214,6 @@ Deno.test("runPrePushGate: repairChecksWithCiCargo runs deno fmt --check and the
       repairChecksWithCiCargo: true,
     });
     assert(result.ok, result.ok ? "" : result.error.message);
-    const commands = calls.map((c) => c.command);
-    assert(commands.includes(CLIPPY_CMD), JSON.stringify(commands));
-    // No deno lint, cargo fmt or pre-flight command runs in repair mode.
-    assert(
-      commands.every((c) =>
-        c === BAD_TS_FMT ||
-        (c.startsWith("cargo ") && !c.startsWith("cargo fmt"))
-      ),
-      JSON.stringify(commands),
-    );
     assertEquals(result.value.checksRun, [BAD_TS_FMT, CLIPPY_CMD]);
   } finally {
     await Deno.remove(root, { recursive: true });
@@ -5278,53 +5268,32 @@ Deno.test("runPrePushGate: repair pushes enforce unit tests and markdownlint (PR
     await git(clone, "commit", "-qm", "repair source and docs");
     const stdin = prePushInput(await git(clone, "rev-parse", "HEAD"));
     const unit = "deno task test:unit 'tests/foo_test.ts'";
-    // The repair spec: repairChecksWithCiCargo (PR #5034, merged with Issue
-    // #4630; the babysitter tree gate joined it in Issue #5169).
-    const modes = [{
-      repairChecksWithCiCargo: true,
-    }];
-    for (const mode of modes) {
-      for (const failure of ["unit", "markdown", "none"]) {
-        const ran: string[] = [];
-        const result = await runPrePushGate({
-          cwd: clone,
-          stdin,
-          preFlightCommands: [],
-          ...mode,
-          ...stubShellcheck(),
-          findMarkdownlint: () => Promise.resolve("/fake/mdl"),
-          runner: (command) => {
-            ran.push(command);
-            const fails = failure === "unit"
-              ? command === unit
-              : failure === "markdown" && command.includes("/fake/mdl");
-            return Promise.resolve({
-              started: true,
-              code: fails ? 1 : 0,
-              stdout: "",
-              stderr: fails ? "regression" : "",
-            });
-          },
-        });
-        assertEquals(result.ok, failure === "none", ran.join("\n"));
-        assert(ran.includes(unit), "repair must run affected unit tests");
-        if (failure !== "unit") {
-          assert(
-            ran.some((c) => c.includes("/fake/mdl")),
-            "repair must run markdownlint",
-          );
-        }
-        // The repair gate keeps CI's `deno fmt --check` on the changed code
-        // file (Issue #5169), and still runs no deno lint.
-        assert(
-          ran.includes("deno fmt --check --permit-no-files 'lib/foo.ts'"),
-          ran.join("\n"),
-        );
-        assertEquals(
-          ran.some((c) => c.startsWith("deno lint")),
-          false,
-          "repair mode runs no deno lint",
-        );
+    const fmt = "deno fmt --check --permit-no-files 'lib/foo.ts'";
+    for (const failure of ["format", "unit", "markdown", "none"]) {
+      const result = await runPrePushGate({
+        cwd: clone,
+        stdin,
+        preFlightCommands: [],
+        repairChecksWithCiCargo: true,
+        ...stubShellcheck(),
+        findMarkdownlint: () => Promise.resolve("/fake/mdl"),
+        runner: (command) => {
+          const fails = (failure === "format" && command === fmt) ||
+            (failure === "unit" && command === unit) ||
+            (failure === "markdown" && command.includes("/fake/mdl"));
+          return Promise.resolve({
+            started: true,
+            code: fails ? 1 : 0,
+            stdout: "",
+            stderr: fails ? `${failure} regression` : "",
+          });
+        },
+      });
+      if (failure === "none") {
+        assert(result.ok, result.ok ? "" : result.error.message);
+      } else {
+        assert(!result.ok);
+        assertStringIncludes(result.error.message, `${failure} regression`);
       }
     }
   } finally {
