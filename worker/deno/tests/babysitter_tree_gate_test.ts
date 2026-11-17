@@ -453,7 +453,7 @@ Deno.test("a repair changing only a non-Rust file runs no cargo command (Issue #
   );
 });
 
-Deno.test("an uncommitted new test file that fails blocks, naming the failing command, with no formatter or linter run (#4930)", async () => {
+Deno.test("an uncommitted new test file that fails blocks, naming the failing command, with only deno fmt --check and no linter run (#4930, #5169)", async () => {
   await agentClone(
     (clone) =>
       Deno.writeTextFile(
@@ -477,7 +477,7 @@ Deno.test("an uncommitted new test file that fails blocks, naming the failing co
       );
       assertEquals(
         commands.filter((c) => /deno (fmt|lint)/.test(c)),
-        [],
+        ["deno fmt --check --permit-no-files 'tests/new_test.ts'"],
       );
     },
   );
@@ -1111,6 +1111,10 @@ for (const config of ["deno.json", "deno.jsonc"]) {
       assertEquals(allowed, {
         kind: "passed",
         checksRun: [
+          // The changed-file `deno fmt --check` the repair gate keeps (#5169).
+          config === "deno.json"
+            ? "deno fmt --check --permit-no-files 'lib/foo.ts'"
+            : "deno fmt --check --permit-no-files 'deno.jsonc' 'lib/foo.ts'",
           config === "deno.json"
             ? "deno task test:unit 'tests/foo_test.ts'"
             : "deno task test:unit",
@@ -1152,7 +1156,11 @@ Deno.test("an unreadable primary Deno config cannot fall through to a secondary 
     };
     assertEquals(await runBabysitterTreeGate(clone, "main", deps), {
       kind: "passed",
-      checksRun: ["deno task test:unit", "gitleaks"],
+      checksRun: [
+        "deno fmt --check --permit-no-files 'deno.jsonc' 'lib/foo.ts'",
+        "deno task test:unit",
+        "gitleaks",
+      ],
     });
 
     await Deno.remove(path);
@@ -1167,7 +1175,11 @@ Deno.test("an unreadable primary Deno config cannot fall through to a secondary 
     await Deno.writeTextFile(path, valid);
     assertEquals(await runBabysitterTreeGate(clone, "main", deps), {
       kind: "passed",
-      checksRun: ["deno task test:unit", "gitleaks"],
+      checksRun: [
+        "deno fmt --check --permit-no-files 'deno.jsonc' 'lib/foo.ts'",
+        "deno task test:unit",
+        "gitleaks",
+      ],
     });
   });
 });

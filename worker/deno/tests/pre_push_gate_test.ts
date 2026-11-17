@@ -3196,7 +3196,9 @@ Deno.test("runPrePushGate: the real workflow scan drives the CI clippy run end t
 
 const BAD_TS = "const x   =1\n";
 
-Deno.test("runPrePushGate: repairChecksWithCiCargo runs only the CI cargo commands for a .rs and badly formatted .ts push", async () => {
+const BAD_TS_FMT = "deno fmt --check --permit-no-files 'src/bad.ts'";
+
+Deno.test("runPrePushGate: repairChecksWithCiCargo runs deno fmt --check and the CI cargo commands for a .rs and .ts push, and nothing else (Issue #5169)", async () => {
   const { root, clone, stdin } = await makeRepoWithFiles({
     ...RUST_FILES,
     "src/bad.ts": BAD_TS,
@@ -3214,13 +3216,48 @@ Deno.test("runPrePushGate: repairChecksWithCiCargo runs only the CI cargo comman
     assert(result.ok, result.ok ? "" : result.error.message);
     const commands = calls.map((c) => c.command);
     assert(commands.includes(CLIPPY_CMD), JSON.stringify(commands));
+    // No deno lint, cargo fmt or pre-flight command runs in repair mode.
     assert(
       commands.every((c) =>
-        c.startsWith("cargo ") && !c.startsWith("cargo fmt")
+        c === BAD_TS_FMT ||
+        (c.startsWith("cargo ") && !c.startsWith("cargo fmt"))
       ),
       JSON.stringify(commands),
     );
-    assertEquals(result.value.checksRun, [CLIPPY_CMD]);
+    assertEquals(result.value.checksRun, [BAD_TS_FMT, CLIPPY_CMD]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: repairChecksWithCiCargo blocks a repair whose changed .ts file fails deno fmt --check, as CI's deno fmt step would (Issue #5169)", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles({
+    "src/bad.ts": BAD_TS,
+  });
+  try {
+    const run = (fmtCode: number) => {
+      const calls: RanCall[] = [];
+      return runPrePushGate({
+        cwd: clone,
+        stdin,
+        preFlightCommands: [],
+        runner: scriptedRunner(
+          (c) =>
+            c.startsWith("deno fmt")
+              ? { code: fmtCode, stderr: "Found 1 not formatted file" }
+              : {},
+          calls,
+        ),
+        repairChecksWithCiCargo: true,
+      });
+    };
+    const blocked = await run(1);
+    assert(!blocked.ok, "a misformatted repair must not pass the gate");
+    assertStringIncludes(blocked.error.message, "not formatted");
+    // Valid-path control: a formatted file passes, with deno fmt counted as run.
+    const passed = await run(0);
+    assert(passed.ok, passed.ok ? "" : passed.error.message);
+    assertEquals(passed.value.checksRun, [BAD_TS_FMT]);
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -3291,16 +3328,20 @@ Deno.test("runPrePushGate: repairChecksWithCiCargo on a docs-only push runs only
       "markdownlint must gate a repairChecksWithCiCargo push",
     );
     assertStringIncludes(blocked.result.error.message, "MD018");
-    // Control: clean Markdown passes, and nothing but markdownlint ran (no
-    // deno fmt, no pre-flight command).
+    // Control: clean Markdown passes, and nothing but markdownlint and the
+    // changed-file `deno fmt --check` ran (Issue #5169), no pre-flight command.
     const passed = await run(0);
     assert(
       passed.result.ok,
       passed.result.ok ? "" : passed.result.error.message,
     );
-    assertEquals(passed.result.value.checksRun.length, 1);
+    assertEquals(passed.result.value.checksRun.length, 2);
+    assertEquals(
+      passed.result.value.checksRun[0],
+      "deno fmt --check --permit-no-files 'README.md'",
+    );
     assertStringIncludes(
-      passed.result.value.checksRun[0]!,
+      passed.result.value.checksRun[1]!,
       "markdownlint-cli2",
     );
   } finally {
@@ -4596,7 +4637,7 @@ Deno.test("loadDenoUnitTestRoots: a root counts only when its config defines tes
     await write(
       "runs",
       "deno.json",
-      JSON.stringify({ tasks: { "test:unit": "x" } }),
+      `${JSON.stringify({ tasks: { "test:unit": "x" } }, null, 2)}\n`,
     );
     await write(
       "no-task",
@@ -4649,7 +4690,7 @@ Deno.test("loadDenoUnitTestRoots: a root counts only when its config defines tes
       const invalid = await Deno.readTextFile(path);
       await Deno.writeTextFile(
         path,
-        JSON.stringify({ tasks: { "test:unit": "x" } }),
+        `${JSON.stringify({ tasks: { "test:unit": "x" } }, null, 2)}\n`,
       );
       assertEquals(await loadDenoUnitTestRoots(root, [`${dir}/deno.json`]), [
         dir,
@@ -5215,7 +5256,7 @@ Deno.test("runPrePushGate: repair pushes enforce unit tests and markdownlint (PR
     await Deno.mkdir(`${clone}/worker/deno/tests`, { recursive: true });
     await Deno.writeTextFile(
       `${clone}/worker/deno/deno.json`,
-      JSON.stringify({ tasks: { "test:unit": "x" } }),
+      `${JSON.stringify({ tasks: { "test:unit": "x" } }, null, 2)}\n`,
     );
     await Deno.writeTextFile(
       `${clone}/worker/deno/lib/foo.ts`,
@@ -5273,12 +5314,16 @@ Deno.test("runPrePushGate: repair pushes enforce unit tests and markdownlint (PR
             "repair must run markdownlint",
           );
         }
+        // The repair gate keeps CI's `deno fmt --check` on the changed code
+        // file (Issue #5169), and still runs no deno lint.
+        assert(
+          ran.includes("deno fmt --check --permit-no-files 'lib/foo.ts'"),
+          ran.join("\n"),
+        );
         assertEquals(
-          ran.some((c) =>
-            c.startsWith("deno fmt") || c.startsWith("deno lint")
-          ),
+          ran.some((c) => c.startsWith("deno lint")),
           false,
-          "retain the repair formatter policy",
+          "repair mode runs no deno lint",
         );
       }
     }
@@ -5305,7 +5350,8 @@ async function makeUnitTestRepo(
   await Deno.mkdir(`${clone}/worker/deno/tests`, { recursive: true });
   await Deno.writeTextFile(
     `${clone}/worker/deno/deno.json`,
-    JSON.stringify(denoJson),
+    // Formatted, so a host pre-push hook's deno fmt passes the fixture push.
+    `${JSON.stringify(denoJson, null, 2)}\n`,
   );
   await Deno.writeTextFile(
     `${clone}/worker/deno/lib/foo.ts`,

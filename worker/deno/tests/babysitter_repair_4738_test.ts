@@ -715,10 +715,11 @@ Deno.test("a test failing the same way at the PR base keeps READY only when --ba
             // The secret scan has its own tests; CI has no scanner installed.
             gitleaks: () =>
               Promise.resolve({ kind: "passed", summary: "gitleaks: stubbed" }),
-            runner: () =>
+            // Only the unit tests fail; the repair's deno fmt --check passes.
+            runner: (command) =>
               Promise.resolve({
                 started: true,
-                code: 1,
+                code: command.startsWith("deno task test:unit") ? 1 : 0,
                 stdout: "",
                 stderr: FOO_FAILURE,
               }),

@@ -447,7 +447,8 @@ next. The repair does not go through `./quality.sh`, whose gitleaks stage scans
 commits only. A finding blocks and spends a repair attempt, with the rule, path
 and line and the secret redacted. A missing `gitleaks`, a diff base that cannot
 be resolved, a scanner error or a scan past its 300s deadline is an
-infrastructure fault and spends none. The gate does not run the formatters, and runs
+infrastructure fault and spends none. The gate runs `deno fmt --check` on the
+changed files it covers (Issue #5169), but no other formatter check, and runs
 no linter other than CI's cargo clippy. When the repair has merged the PR's base without committing, the gate
 checks only the paths whose working-tree content differs from the merged base
 commit, or that are untracked, so a file the merge merely brings in is the
@@ -843,7 +844,8 @@ READY line unless the pre-push gate over the uncommitted changes passes (see
 [Container repairs](#container-repairs)); that gate runs the unit tests,
 markdownlint, ShellCheck, cargo-deny and gitleaks checks and, when a
 Rust-relevant file changed, the repo CI's cargo clippy and test-target compile,
-but no formatters and no linters other than CI's cargo clippy.
+plus `deno fmt --check` on the changed files it covers, but no other formatter
+check and no linters other than CI's cargo clippy.
 
 This MVP uses the configured GitHub App and the worker's agent providers; it
 does not handle Dependabot, use per-repository quality commands, or review PRs.

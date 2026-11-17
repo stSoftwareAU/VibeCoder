@@ -2868,12 +2868,12 @@ async function failsOnBaseToo(args: {
  * pre-flight configuration, where only the CI cargo checks should gate) runs nothing but those CI cargo checks,
  * the repository's ShellCheck policy (Issue #4631), the cargo-deny gate
  * (Issue #4626), which every gate run applies, and, as every repair push does,
- * the `deno test` check and markdownlint for the pushed paths (Issue #4930):
- * the changed files are still listed and the CI cargo scan still read, but the
- * other changed-file checks (fmt, lint, cspell, Floci), their binary lookups
- * and the repo's pre-flight commands are skipped. Only the Rust-relevant changed
- * files are planned for those, so no other checker's planning error can block
- * the push. With no
+ * the `deno test` check and markdownlint for the pushed paths (Issue #4930),
+ * and the changed-file `deno fmt --check` (Issue #5169): the changed files are
+ * still listed and the CI cargo scan still read, but the other changed-file
+ * checks (deno lint, cargo fmt, cspell, Floci), the cspell lookup and the repo's
+ * pre-flight commands are skipped. Only the Rust-relevant changed files and the
+ * files `deno fmt` covers are planned for those. With no
  * `findCiCargo`, `repairChecksWithCiCargo` plans and runs no cargo check. It is
  * the only repair mode: the CI-fix, PR-feedback, spelling and merge-conflict
  * repairs and the babysitter's tree gate (Issue #5169) all pass it with
@@ -2983,12 +2983,16 @@ export async function runPrePushGate(opts: {
   }
   const tracked = lsFiles.stdout.split("\0").filter((p) => p !== "");
   // The selection the formatter, lint, cspell and Floci planner sees. In
-  // `repairChecksWithCiCargo` mode just the Rust-relevant files are selected,
-  // so no other checker is looked up or planned. An empty selection is not an
+  // `repairChecksWithCiCargo` mode just the Rust-relevant files and the files
+  // `deno fmt --check` covers are selected (Issue #5169: CI's `deno fmt
+  // --check` failed fleet repairs), and cspell is never looked up, so no
+  // checker the mode skips can block the push. An empty selection is not an
   // empty change set: the pushed paths are still read for the unit tests,
   // markdownlint and cargo deny.
   const formatterSelection = opts.repairChecksWithCiCargo
-    ? formatterCandidates.filter(isRustRelevant)
+    ? formatterCandidates.filter((p) =>
+      isRustRelevant(p) || hasExtension(p, DENO_FORMAT_EXTENSIONS)
+    )
     : formatterCandidates;
 
   const needsMarkdownlint = contained.value.some((p) =>
@@ -3002,7 +3006,8 @@ export async function runPrePushGate(opts: {
     markdownlintBinary = await find(opts.cwd);
   }
 
-  const cspellInCi = await repoCiRunsCspell(opts.cwd, tracked);
+  const cspellInCi = !opts.repairChecksWithCiCargo &&
+    await repoCiRunsCspell(opts.cwd, tracked);
   const needsCspell = cspellInCi &&
     formatterSelection.some((p) => hasExtension(p, CSPELL_EXTENSIONS)) &&
     [...CSPELL_ROOT_CONFIGS, ...CSPELL_NESTED_CONFIGS].some((n) =>
@@ -3074,12 +3079,13 @@ export async function runPrePushGate(opts: {
   });
   if (!plan.ok) return fail(plan.error);
 
-  // `repairChecksWithCiCargo` mode keeps the CI cargo checks and, as every repair push
-  // does, the pushed paths' unit tests and markdownlint (Issue #4930).
+  // `repairChecksWithCiCargo` mode keeps the CI cargo checks, `deno fmt
+  // --check` (Issue #5169) and, as every repair push does, the pushed paths'
+  // unit tests and markdownlint (Issue #4930).
   const checks = opts.repairChecksWithCiCargo
     ? plan.value.filter((c) =>
       c.cargo !== undefined || c.denoTestRoot !== undefined ||
-      c.label === "markdownlint"
+      c.label === "markdownlint" || c.label.startsWith("deno fmt (")
     )
     : plan.value;
   const cargoChecks = checks.filter((c) => c.cargo !== undefined);

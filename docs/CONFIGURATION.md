@@ -3079,9 +3079,9 @@ A fleet babysitter repair is gated inside its container before it reports
 ready (`repairChecksWithCiCargo`): the unit tests selected for its uncommitted
 changes, markdownlint when configured, the ShellCheck policy, the cargo-deny
 gate, the repo CI's cargo clippy and test-target compile when a Rust-relevant
-file changed (Issue #5169) and the gitleaks secret scan (Issue #5121) run
-there, but not the formatters, and no linter other than CI's cargo clippy
-(Issue #4930). Its `.git` is read-only,
+file changed, `deno fmt --check` on the changed files it covers (Issue #5169)
+and the gitleaks secret scan (Issue #5121) run there, but no other formatter
+check, and no linter other than CI's cargo clippy (Issue #4930). Its `.git` is read-only,
 so its cargo checks have no PR-base comparison and a failing CI cargo check
 always blocks the repair (see
 [babysitter container repairs](workflows/fleet-pr-babysitter.md#container-repairs)).
@@ -5477,8 +5477,8 @@ gates do (see that bullet):
      names no failed test stays a block. The CI-fix, PR-feedback, spelling
      and merge-conflict repairs' spec (`repairChecksWithCiCargo`, Issue #5169),
      which the babysitter repair container's tree gate also uses, run these
-     unit tests and configured markdownlint from the pushed paths, while
-     retaining their existing formatter policy;
+     unit tests, configured markdownlint and the `deno fmt --check` above from
+     the pushed paths, but no other formatter or linter check;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
    - **CI's cargo clippy and test-target compile** (Issue #4630), when the push

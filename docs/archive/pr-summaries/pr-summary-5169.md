@@ -22,6 +22,14 @@ test-target compile (the build step behind `cargo llvm-cov`). The issue's
 - `worker/deno/lib/pre_push_gate.ts` and `worker/deno/lib/git_push.ts`: the
   `repairChecksOnly` option and spec field had no production caller left, so
   they are removed. `repairChecksWithCiCargo` is now the only repair mode.
+- `worker/deno/lib/pre_push_gate.ts`: the `repairChecksWithCiCargo` repair
+  mode now also keeps the changed-file `deno fmt --check` the full gate runs.
+  Before, a repair push ran no `deno fmt` at all, the issue's `deno fmt
+  --check` step. Its file selection now also takes the files `deno fmt`
+  covers, and the cspell lookup is skipped in that mode, so no check the mode
+  skips (deno lint, cargo fmt, cspell, Floci) can block the push. This covers
+  the CI-fix, PR-feedback, spelling and merge-conflict repairs and the
+  babysitter's tree gate.
 - Docs updated: `docs/CONFIGURATION.md`, `docs/INTERNALS.md` and
   `docs/workflows/fleet-pr-babysitter.md`.
 
@@ -74,6 +82,8 @@ flowchart TD
     C -- "check fails" --> B["blocked: READY withheld"]
     C -- "cannot run (toolchain, disk, network)" --> I["infrastructure: no attempt spent"]
     C -- pass --> L["gitleaks, then READY"]
+    G -- after --> F["deno fmt --check on the changed files deno fmt covers"]
+    F -- "not formatted" --> B
 ```
 
 - Issue numbers this diff cites: #5169 ("Fix local quality-check bypasses before
@@ -107,12 +117,24 @@ flowchart TD
 - **missing** — "cargo llvm-cov" — reason: the test-target compile now gates the
   babysitter too, but the `--fail-under-lines` threshold is not measured,
   because cargo-llvm-cov is not installed in the worker container.
-- **missing** — "deno fmt" — reason: repair pushes still run no
-  `deno fmt
-  --check`, which is the existing repair formatter policy (PR
-  #5226). This PR does not change it.
+- **partial** — "deno fmt" — evidence:
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repairChecksWithCiCargo blocks a repair whose changed .ts file fails deno fmt --check, as CI's deno fmt step would (Issue #5169)`
+  — reviewer: partial — reason: every repair push now runs the changed-file
+  `deno fmt --check` (red on the unfixed gate), but not CI's whole-tree
+  command.
 
 ## Test Plan
+
+- `deno fmt` repair check (this round): new red/green test above, with a
+  passing control. Updated old-policy assertions that said a repair runs no
+  `deno fmt`: `babysitter_tree_gate_test.ts` (new test file, invalid and
+  unreadable Deno config cases), `git_push_preflight_test.ts` (`.ts` repair),
+  `babysitter_repair_4738_test.ts` (the runner now fails only the unit tests),
+  and the `pre_push_gate_test.ts` repair and docs-only tests. Fixture
+  `deno.json` files are now written formatted. Results: those three files gave
+  146 passed, 0 failed. The `PR #5034 review` tests gave 13 passed with the
+  host pre-push hook disabled. With the host hook on, they fail because the
+  fixtures' own `git push` meets that hook.
 
 - `worker/deno/tests/babysitter_tree_gate_test.ts` has three new tests. Each
   runs the real `runBabysitterTreeGate` and the real workflow scan (no
