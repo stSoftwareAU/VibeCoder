@@ -88,6 +88,7 @@ import {
 import {
   babysitterCheckoutDir,
   type BabysitterContainerDeps,
+  BabysitterDiskPark,
   BabysitterQuotaPark,
   BabysitterTaskFailure,
   checkBabysitterContainerChromium,
@@ -2312,13 +2313,16 @@ export function repairFailureClass(message: string) {
 
 /**
  * The {@link BabysitterFailure} a failed repair container raises. A spent
- * provider quota is a {@link BabysitterParked}: normal, quiet (Issue #5072).
+ * provider quota (Issue #5072) or a refused host-disk admission (Issue #5242)
+ * is a {@link BabysitterParked}: normal, quiet.
  */
 export function startBabysitterFailure(error: unknown): BabysitterFailure {
   const message = redactSecrets(
     error instanceof Error ? error.message : String(error),
   );
-  if (error instanceof BabysitterQuotaPark) {
+  if (
+    error instanceof BabysitterQuotaPark || error instanceof BabysitterDiskPark
+  ) {
     return new BabysitterParked(message);
   }
   return new BabysitterFailure(
@@ -2327,6 +2331,30 @@ export function startBabysitterFailure(error: unknown): BabysitterFailure {
       ? "code"
       : repairFailureClass(message),
   );
+}
+
+/**
+ * Runs the pass's Chromium self-check. A host-disk admission refusal is a
+ * wait, not a fault (Issue #5242): the check is skipped with one warning, the
+ * pass carries on, and the next pass retries it. Returns whether it ran; any
+ * other failure is rethrown and fails the pass.
+ */
+export async function babysitterChromiumSelfCheck(
+  check: () => Promise<void> = () =>
+    checkBabysitterContainerChromium({ baseDir: babysitterCheckoutDir() }),
+): Promise<boolean> {
+  try {
+    await check();
+    return true;
+  } catch (error) {
+    if (!(error instanceof BabysitterDiskPark)) throw error;
+    console.warn(
+      `Babysitter Chromium self-check skipped this pass; retried next pass: ${
+        redactSecrets(error.message)
+      }`,
+    );
+    return false;
+  }
 }
 
 /**
@@ -3988,9 +4016,7 @@ if (import.meta.main) {
   await prepareBabysitterStartUp(home, babysitterStateDir());
   do {
     try {
-      await checkBabysitterContainerChromium({
-        baseDir: babysitterCheckoutDir(),
-      });
+      await babysitterChromiumSelfCheck();
       app ??= await readBabysitterAppConfig(home);
       login ??= await babysitterAppIdentity(app);
       if (!identityAnnounced) {
