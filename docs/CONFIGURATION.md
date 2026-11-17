@@ -2073,7 +2073,7 @@ unless explicitly overridden.
 | Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway a new implementation claim must have; `0` disables the floor. When a run timeline is set the floor measures to the two-hour finish deadline (Issue #4245); otherwise to the supervisor hard cap (`VIBE_RUN_MAX_SECONDS`). A claim taken below it would be ended before it could finish setup. Measured against that instant, not the one-hour cycle: the target does not truncate an active claim, but the session budget is bounded by the finish less the kill grace and WIP reserve — see [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). On a run with neither a timeline nor a hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
 | Run finish deadline | `run_finish_seconds` | `7200` | Seconds from run start of the finish deadline (2 h by default; the run target is 1 h and the launcher watchdog's hard kill, about 3 h, logged at run start as `Run timeline:`). Must exceed the 3600 s target; the worker clamps a finish at or past the hard kill minus the kill grace and WIP-checkpoint reserve (with a warning). Validated at load and logged at run start. When a timeline is set, agent sessions, extension grants, the claim floor and the drain read this finish (Issues #4244, #4245, #4246). |
 | Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
-| Fast-failure threshold (seconds) | `fast_failure_seconds` | `60` | A failed run shorter than this died claiming or setting up — the repository's environment, not the issue. Counted by the [fast-failure repository back-off](#-fast-failure-repository-back-off) (Issue #1950). A `zero_output` failure or a setup fault (Issue #2954) counts however long it took. |
+| Fast-failure threshold (seconds) | `fast_failure_seconds` | `60` | A failed run shorter than this died claiming or setting up — the repository's environment, not the issue. Counted by the [fast-failure repository back-off](#-fast-failure-repository-back-off) (Issue #1950). A `zero_output` failure or a setup fault (Issue #2954) counts however long it took, unless its cause is host-wide (a rate limit, a scheduled release or a host-disk stop). |
 | Fast failures before back-off | `repo_fast_failure_threshold` | `3` | Fast failures in one repository inside the window before that repository stops being claimed and one diagnostic issue is filed. |
 | Fast-failure window (hours) | `repo_fast_failure_window_hours` | `24` | The rolling window the threshold is counted over, and the decay period — a repaired repository recovers on its own once its failures age out. |
 
@@ -2590,7 +2590,10 @@ flowchart TD
   repository at once, and a scheduled release is a deliberate handover. An
   agent-API payment refusal (`API Error: 402`, an out-of-credit message) is
   account state too and is categorised `rate_limit`; before Issue #2590 it
-  read as `internal_error` and backed off a healthy repository. A setup
+  read as `internal_error` and backed off a healthy repository. An
+  execute-phase host-disk park (`host_disk`, Issue #5077) is host-wide too
+  and never counts, even though it is a setup fault for the issue
+  (Issue #5237). A setup
   fault — a run that died in the `setup` phase, before the agent started, or
   whose failure names a recognised host fault — counts however long it took
   (Issue #2954); a host-wide cause still never counts.

@@ -76,11 +76,15 @@ export const REPO_FAST_FAILURE_MAX_EVENTS = 20;
  *
  * A rate-limited run dies in seconds on every repository at once, and a
  * scheduled release is a deliberate handover, not a fault. Counting either
- * would back off healthy repositories for a host-wide condition.
+ * would back off healthy repositories for a host-wide condition. An
+ * execute-phase host-disk park (Issue #5077) is the host's condition too, on
+ * every repository at once; counting it backed off healthy repositories
+ * (Issue #5237).
  */
 const NOT_REPO_FAULT: ReadonlySet<FailureCategory> = new Set<FailureCategory>([
   "rate_limit",
   "scheduled_release",
+  "host_disk",
 ]);
 
 /** One fast failure, as recorded on disk. */
@@ -234,7 +238,8 @@ export interface FastFailureCandidate {
  * ({@link NOT_REPO_FAULT}) never count, whichever of those applies. A
  * host-disk stop is the same kind of host-wide cause: it is still a setup
  * fault for the issue ladder, and it does not back this repository off
- * (Issue #4388).
+ * (Issue #4388); the `host_disk` category is in {@link NOT_REPO_FAULT} for
+ * the same reason (Issue #5237).
  */
 export function isFastFailure(
   candidate: FastFailureCandidate,
