@@ -164,24 +164,28 @@ flowchart TD
 
 - `deno fmt` repair check (this round): new red/green test above, with a passing
   control. Updated old-policy assertions that said a repair runs no `deno fmt`:
-  `babysitter_tree_gate_test.ts` (new test file, invalid and unreadable Deno
-  config cases), `git_push_preflight_test.ts` (`.ts` repair),
-  `babysitter_repair_4738_test.ts` (the runner now fails only the unit tests),
-  and the `pre_push_gate_test.ts` repair and docs-only tests. Fixture
+  `worker/deno/tests/babysitter_tree_gate_test.ts` (new test file, invalid and
+  unreadable Deno config cases), `worker/deno/tests/git_push_preflight_test.ts`
+  (`.ts` repair), `worker/deno/tests/babysitter_repair_4738_test.ts` (the runner
+  now fails only the unit tests), and the
+  `worker/deno/tests/pre_push_gate_test.ts` repair and docs-only tests. Fixture
   `deno.json` files are now written formatted. Results: those three files gave
   146 passed, 0 failed. The `PR #5034 review` tests gave 13 passed with the host
   pre-push hook disabled. With the host hook on, they fail because the fixtures'
   own `git push` meets that hook.
-- Final head, run from `worker/deno` with the host pre-push hook disabled:
+- Final head, run from `worker/deno` with the host pre-push hook disabled
+  (`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath
+  GIT_CONFIG_VALUE_0=/dev/null`):
   `deno test -A tests/pre_push_gate_test.ts tests/shellcheck_publication_test.ts`
-  gave 192 passed, 2 failed. Both failures are `pre-push CLI:` tests that could
-  not download `https://jsr.io/@std/yaml/meta.json` (no network here).
+  gave 192 passed, 2 failed (re-run on the head). Both failures are
+  `pre-push CLI:` tests that could not download
+  `https://jsr.io/@std/yaml/meta.json` (no network here).
 
-- `worker/deno/tests/babysitter_tree_gate_test.ts` has three new tests. Each
-  runs the real `runBabysitterTreeGate` and the real workflow scan (no
-  `findCiCargo` injected) over a real clone whose `main` holds a crate and a
-  pull-request workflow running `cargo clippy --all-targets -- -D warnings`.
-  Only the command runner is faked.
+- `worker/deno/tests/babysitter_tree_gate_test.ts` (66 tests at head) has three
+  new tests. Each runs the real `runBabysitterTreeGate` and the real workflow
+  scan (no `findCiCargo` injected) over a real clone whose `main` holds a crate
+  and a pull-request workflow running
+  `cargo clippy --all-targets -- -D warnings`. Only the command runner is faked.
   - `a repair changing a Rust file with a failing CI clippy blocks with its
     diagnostic (Issue #5169)`:
     an uncommitted `src/lib.rs` edit, clippy exits 101, and the outcome is
@@ -263,25 +267,28 @@ flowchart TD
     `deno fmt --check` passes. No assertion changes; the same test still blocks
     on a failing unit test.
 - Results on this head, run from `worker/deno`:
-  - `deno test -A tests/babysitter_tree_gate_test.ts
-    tests/babysitter_repair_4738_test.ts tests/pre_push_gate_cargo_deny_test.ts
-    tests/git_push_preflight_test.ts`:
-    159 passed, 0 failed.
+  - `worker/deno/tests/babysitter_tree_gate_test.ts` (66 tests at head),
+    `worker/deno/tests/babysitter_repair_4738_test.ts` (43),
+    `worker/deno/tests/pre_push_gate_cargo_deny_test.ts` (13) and
+    `worker/deno/tests/git_push_preflight_test.ts` (37): 159 passed, 0 failed in
+    total, each file run on its own.
   - `deno check` on the changed lib files and `commands/babysitter_repair.ts`:
     clean.
-  - Run directly with `deno test -A`, `tests/pre_push_gate_test.ts` (186 tests)
-    gave 145 passed and 41 failed on this head. The failures come from the
-    fixtures' own `git push` meeting the host's pre-push hook (markdownlint on a
-    fixture `README.md`; filed as #5254). Under `./quality.sh` that file raised
-    no failure.
+  - Run directly with `deno test -A`, `worker/deno/tests/pre_push_gate_test.ts`
+    (186 tests at head) gave 145 passed and 41 failed on this head. The failures
+    come from the fixtures' own `git push` meeting the host's pre-push hook
+    (markdownlint on a fixture `README.md`; filed as #5254). Under
+    `./quality.sh` that file raised no failure.
 - `./quality.sh < /dev/null` on this head:
   - Every stage passed except `deno tests`. Config integration and checkov were
     skipped in this environment.
-  - The parallel pass gave 35116 passed and 1 failed. The failure was
-    `tests/pr_summary_ci_workflow_3768_test.ts::PR summary CI task runs git with
-    restricted environment permissions`:
-    it could not resolve `registry.npmjs.org` (no network). This change does not
-    touch that test.
+  - The parallel pass gave 35116 passed and 1 failed. The failure was in the
+    unchanged
+    `PR summary CI task runs git with restricted environment
+    permissions`
+    test (Issue #3768): it could not resolve `registry.npmjs.org` (no network).
+    Re-run alone on the head, that file gave 10 passed, 1 failed for the same
+    reason. This change does not touch that test.
   - The serial pass did not run because the parallel pass had failed.
 
 Not done or not checked:
