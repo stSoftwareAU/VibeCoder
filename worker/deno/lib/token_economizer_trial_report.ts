@@ -6,9 +6,10 @@
  * on cost per completed implementation run, success rate and merge rate.
  *
  * The module is pure: run records and a pull request state lookup go in, a
- * report comes out. It renders no verdict; not yet: #4959 will apply the
- * predeclared bar. This module only shows the populations, the exclusions and
- * the figures, and says `unavailable` rather than guessing a missing one.
+ * report comes out. It renders no verdict; `token_economizer_verdict.ts`
+ * applies the predeclared bar to the report. This module only shows the
+ * populations, the exclusions and the figures, and says `unavailable` rather
+ * than guessing a missing one.
  *
  * Uses Australian English spelling throughout.
  */
@@ -637,7 +638,7 @@ export function formatTokenEconomizerTrialSection(
     `Trial host \`${report.trialHost}\`, mode \`${report.mode}\`, window ` +
     `${report.windowStart} to ${report.windowEnd}.`,
     "",
-    "This section reports figures only. It renders no verdict; not yet: #4959 will apply the bar.",
+    "This section reports figures only; the verdict section that follows applies the bar.",
     "",
     "### Before vs switched-on",
     "",

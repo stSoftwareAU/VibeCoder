@@ -3,12 +3,14 @@
  *
  *   deno run mod.ts token-economizer-report --archive <dir> \
  *     --trial-host <name> --window-start <iso> [--window-end <iso>] \
- *     --recorded-since <iso> [--mode work-on] [--format markdown|json]
+ *     --recorded-since <iso> [--mode work-on] [--format markdown|json] \
+ *     [--stop-rule <rule>]
  *
  * Reads every `*.json` run record under `--archive` (recursive, bounded,
  * symlinks skipped) and prints the weekly TokenEconomizer comparison section.
  * It is read-only: the only outside call is `gh pr view`, once per pull
- * request. It renders no verdict; not yet: #4959 will apply the bar.
+ * request. It prints the comparison section and then the keep-or-purge
+ * verdict (Issue #4959).
  *
  * Missing data fails loud: an unreadable archive, an archive with no records
  * or a missing option is a failure, never an empty report.
@@ -26,6 +28,14 @@ import {
   type PrStateLookup,
   type TokenEconomizerTrialReport,
 } from "../lib/token_economizer_trial_report.ts";
+import {
+  decideTokenEconomizerVerdict,
+  formatTokenEconomizerVerdict,
+  isTokenEconomizerStopRule,
+  TOKEN_ECONOMIZER_STOP_RULES,
+  type TokenEconomizerVerdict,
+} from "../lib/token_economizer_verdict.ts";
+import type { TokenEconomizerStopRule } from "../lib/token_economizer_plugin.ts";
 
 /** Most files the command reads from one archive. */
 const MAX_FILES = 100_000;
@@ -37,6 +47,7 @@ const MAX_FILE_BYTES = 1_000_000;
 /** What the command returns alongside its message. */
 export interface TokenEconomizerReportData {
   report: TokenEconomizerTrialReport;
+  verdict: TokenEconomizerVerdict;
 }
 
 /** Injectable dependencies. */
@@ -127,7 +138,7 @@ export function createTokenEconomizerReportCommand(
   return {
     name: "token-economizer-report",
     description:
-      "Report the TokenEconomizer trial comparison from archived runs (Issue #4958)",
+      "Report the TokenEconomizer trial comparison and keep-or-purge verdict from archived runs (Issues #4958, #4959)",
 
     async execute(
       args: Record<string, unknown>,
@@ -166,6 +177,18 @@ export function createTokenEconomizerReportCommand(
       if (modeArg !== undefined && text(modeArg) === undefined) {
         return fail("Argument --mode must be a non-empty label.");
       }
+      const stopArg = args["stop-rule"];
+      let stopRule: TokenEconomizerStopRule | undefined;
+      if (stopArg !== undefined) {
+        if (!isTokenEconomizerStopRule(stopArg)) {
+          return fail(
+            `Argument --stop-rule must be one of ${
+              TOKEN_ECONOMIZER_STOP_RULES.join(", ")
+            }.`,
+          );
+        }
+        stopRule = stopArg;
+      }
 
       try {
         const paths: string[] = [];
@@ -191,12 +214,17 @@ export function createTokenEconomizerReportCommand(
           },
           deps.lookup ?? ghPrStateLookup,
         );
+        const verdict = decideTokenEconomizerVerdict(report, {
+          now: (deps.now ?? (() => new Date()))(),
+          stopRule,
+        });
         return {
           success: true,
           message: format === "json"
-            ? JSON.stringify(report, null, 2)
-            : formatTokenEconomizerTrialSection(report),
-          data: { report },
+            ? JSON.stringify({ ...report, verdict }, null, 2)
+            : formatTokenEconomizerTrialSection(report) + "\n\n" +
+              formatTokenEconomizerVerdict(verdict),
+          data: { report, verdict },
         };
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);

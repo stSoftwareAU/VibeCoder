@@ -271,7 +271,7 @@ Deno.test("rendered section shows explicit populations and no verdict", async ()
   assertStringIncludes(text, "one side only): 2 (org/only-other, org/solo)");
   assertStringIncludes(
     text,
-    "It renders no verdict; not yet: #4959 will apply the bar.",
+    "This section reports figures only; the verdict section that follows applies the bar.",
   );
   for (
     const word of [
@@ -618,6 +618,31 @@ Deno.test("command reads a temp archive recursively and renders the section", as
     );
     assertEquals(json.success, true);
     assertEquals(JSON.parse(json.message).switchedOn.runs, 6);
+  });
+});
+
+Deno.test("command applies --stop-rule and refuses an unknown rule", async () => {
+  await withTemp(async (dir) => {
+    await Deno.writeTextFile(
+      `${dir}/a.json`,
+      JSON.stringify(fixture().slice(0, 4)),
+    );
+    const command = createTokenEconomizerReportCommand({ lookup });
+    const stopped = await command.execute(
+      { ...BASE_ARGS, archive: dir, "stop-rule": "cross-repo-fact" },
+      config(),
+    );
+    assertEquals(stopped.success, true);
+    assertStringIncludes(stopped.message, "**Verdict: stopped (failed).**");
+    const bogus = await command.execute(
+      { ...BASE_ARGS, archive: dir, "stop-rule": "bogus" },
+      config(),
+    );
+    assertEquals(bogus.success, false);
+    assertEquals(
+      bogus.message,
+      "Argument --stop-rule must be one of secret-in-learnings, cross-repo-fact, plugin-run-failure, unreadable-stop-record.",
+    );
   });
 });
 
