@@ -206,6 +206,54 @@ Deno.test("isFastFailure - a host-disk stop is not a repository fast failure (Is
   );
 });
 
+const HOST_DISK_PARK_MESSAGE =
+  "host disk below its floor — host (estimated from the launcher's reading 0 min ago) " +
+  "44.0 GB free (9.6%) of 460.4 GB, floor 46.0 GB — below the floor — ephemeral " +
+  "cargo root refresh in progress\n\n### Diagnostics\n- Elapsed: 2224s\n- Clarity: assessed as clear";
+
+Deno.test("isFastFailure - an execute-phase host_disk park is not a repository fast failure (Issue #5237)", () => {
+  const policy = resolveRepoFastFailurePolicy();
+  const message = HOST_DISK_PARK_MESSAGE;
+  const candidate = {
+    category: "host_disk" as const,
+    elapsedSeconds: 2224,
+    message,
+    setupFault: isSetupFault({
+      phase: "execute",
+      reason: message,
+      category: "host_disk",
+    }),
+  };
+  // Positive control: the setup-fault route is the one being reached.
+  assertEquals(candidate.setupFault, true);
+  assertEquals(isFastFailure(candidate, policy), false);
+  assertEquals(
+    isFastFailure({ ...candidate, elapsedSeconds: 10 }, policy),
+    false,
+  );
+  // The category alone decides, with no message to inspect.
+  assertEquals(
+    isFastFailure({ ...candidate, message: undefined }, policy),
+    false,
+  );
+  // Control: only host_disk is exempted.
+  assertEquals(
+    isFastFailure(
+      {
+        ...candidate,
+        category: "clone_corrupt",
+        setupFault: isSetupFault({
+          phase: "execute",
+          reason: message,
+          category: "clone_corrupt",
+        }),
+      },
+      policy,
+    ),
+    true,
+  );
+});
+
 Deno.test("isFastFailure - the cargo-budget parks in Discovery #2422 do not back off the repository", () => {
   const policy = resolveRepoFastFailurePolicy();
   for (
