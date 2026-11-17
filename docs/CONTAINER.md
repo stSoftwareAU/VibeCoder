@@ -1358,7 +1358,9 @@ when a caller quotes the floor check without its park note; the phrase inside
 formatted agent output does not. The same stop is not a
 repository fast failure: a host below its floor would otherwise back the
 repository off after three tallies, including when the manager quotes
-`host disk below its floor` without the park note (Issue #4388). A
+`host disk below its floor` without the park note (Issue #4388). The
+execute-phase park released as `host_disk` (Issue #5077) is not one either
+(Issue #5237). A
 `Read-only file system`
 /`os error 30` failure is classified the same way. While an agent, `cargo`
 or `deno` is running, polling stops the child only when the host crosses the
