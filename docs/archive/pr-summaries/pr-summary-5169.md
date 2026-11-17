@@ -101,27 +101,62 @@ flowchart TD
 
 ## Acceptance Criteria
 
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — "Do not create parallel language-specific gates" — evidence:
+  `worker/deno/lib/babysitter_tree_gate.ts` — reviewer: met — reason: reuses
+  `repairChecksWithCiCargo` and `repoCiCargoChecks`, and removes
+  `repairChecksOnly`.
+- **partial** — "focused behavioural regressions for the actual publication
+  paths, plus successful valid-path controls" — evidence:
+  `worker/deno/tests/babysitter_tree_gate_test.ts::a repair changing a Rust file with a failing CI clippy blocks with its diagnostic (Issue #5169)`
+  — reviewer: partial — reason: clippy block/pass tests exist for the
+  babysitter gate and fmt block/pass tests for `runPrePushGate`, but there is
+  no fmt-block test through `runBabysitterTreeGate` or `commitAndPushPending`,
+  and no ShellCheck or llvm-cov test.
 - **missing** — "Acceptance requires evidence for both incident groups" —
-  reason: the failing jobs of both groups are in a private repository that this
-  run could not read, and no shift-left ledger exists on this host. This PR
-  fixes a bypass found in code, without matching it to a private job.
-- **missing** — "incorporating #5151's three ShellCheck failures" — reason: no
-  ShellCheck bypass was found. Every push path, the babysitter tree gate
-  included, already runs the repo's ShellCheck policy. The private
-  `Run script
-  tests` jobs were not readable.
+  reviewer: missing — reason: both groups' failing jobs are in a private
+  repository this run could not read, and this host has no shift-left ledger.
+- **missing** — "incorporating #5151's three ShellCheck failures" — reviewer:
+  missing — reason: no ShellCheck change or test. #5151's failed step was "Run
+  script tests", and it was not investigated.
 - **missing** — "A disk/resource deferral must retain WIP and resume
-  automatically, not publish unvalidated work as passed" — reason: the milestone
-  merge-only sync (Issue #4326) still pushes a cargo-only merge with the
-  `UNGATED:` note and leaves the build to CI. This PR does not change that path.
-- **missing** — "cargo llvm-cov" — reason: the test-target compile now gates the
-  babysitter too, but the `--fail-under-lines` threshold is not measured,
-  because cargo-llvm-cov is not installed in the worker container.
+  automatically, not publish unvalidated work as passed" — reviewer: missing —
+  reason: the milestone merge-only sync (Issue #4326) still pushes an
+  `UNGATED:` cargo-only merge. This PR does not change that path.
+- **partial** — "cargo llvm-cov" — evidence:
+  `worker/deno/tests/babysitter_tree_gate_test.ts::a repair changing a Rust file with a passing CI clippy passes and ran clippy (Issue #5169)`
+  — reviewer: partial — reason: the babysitter gate now runs CI's test-target
+  compile, but the coverage threshold is not measured. cargo-llvm-cov is not
+  installed in the worker container.
 - **partial** — "deno fmt" — evidence:
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repairChecksWithCiCargo blocks a repair whose changed .ts file fails deno fmt --check, as CI's deno fmt step would (Issue #5169)`
   — reviewer: partial — reason: every repair push now runs the changed-file
   `deno fmt --check` (red on the unfixed gate), but not CI's whole-tree
   command.
+- **unrequested** — the cspell lookup is skipped in repair mode — reviewer:
+  unrequested — reason: needed so that taking the `deno fmt` files into repair
+  mode cannot make a missing cspell block a repair that never runs cspell.
+- **unrequested** — fixture `deno.json` files in `pre_push_gate_test.ts` are
+  written formatted — reviewer: unrequested — reason: a host pre-push hook now
+  runs `deno fmt` on the fixtures' own pushes.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — A Code Change Owes a Docs Change: doc comments and docs still
+  described repair mode without `deno fmt` — evidence:
+  `worker/deno/lib/git_push.ts:63` — reason: fixed in this diff, along with
+  `git_push.ts` (field doc and `resolveRepairPreFlightSpec`),
+  `pre_push_gate.ts` (the `runPrePushGate` doc comment),
+  `babysitter_tree_gate.ts`, `docs/INTERNALS.md` and three passages in
+  `docs/CONFIGURATION.md`.
+- **clean** — the `repairChecksOnly` removal (no hits outside `docs/archive`),
+  the updated CONFIGURATION.md, INTERNALS.md and fleet-pr-babysitter.md
+  paragraphs, test isolation (private temp dirs), the PR summary's records of
+  edited and removed tests, spelling, and fail-closed handling (infrastructure
+  faults never pass).
 
 ## Test Plan
 

@@ -59,9 +59,9 @@ import { runGhOrThrow } from "./gh_spawn.ts";
  * `repairChecksWithCiCargo` (Issues #4630 and #5169; CI-fix, PR-feedback,
  * spelling and merge-conflict repairs of a repo with no pre-flight commands,
  * and the fleet babysitter's tree gate)
- * runs those same repair checks and also the repo CI's own cargo clippy and
- * test-target compile: no fmt, lint, cspell or Floci checks, and no
- * pre-flight commands. See {@link REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT}.
+ * runs those same repair checks, the changed-file `deno fmt --check` (Issue
+ * #5169) and the repo CI's own cargo clippy and test-target compile: no other
+ * fmt check, no lint, cspell or Floci checks, and no pre-flight commands. See {@link REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT}.
  */
 export interface PreFlightGateSpec {
   /** Commands to run before the automated commit, in listed order. */
@@ -73,9 +73,9 @@ export interface PreFlightGateSpec {
   /**
    * Repair gate that adds the repo CI's cargo clippy and test-target compile
    * to the shared repair checks (ShellCheck policy, cargo deny for changed
-   * cargo inputs, and the pushed paths' unit tests and markdownlint) over the
-   * unpushed commits, and skips the pre-flight commands (Issues #4630 and
-   * #4930). Omit for the full changed-file gate.
+   * cargo inputs, and the pushed paths' unit tests, markdownlint and `deno fmt
+   * --check`) over the unpushed commits, and skips the pre-flight commands
+   * (Issues #4630, #4930 and #5169). Omit for the full changed-file gate.
    */
   repairChecksWithCiCargo?: boolean;
 }
@@ -126,8 +126,8 @@ export function resolvePreFlightSpec(
  * {@link REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT}, so before the repair is
  * pushed it gets the CI cargo clippy and test-target compile (compared against
  * the PR base), the ShellCheck publication check, the CI cargo-deny check, and
- * the dependency-selected unit tests and markdownlint for the pushed paths
- * (Issues #4631, #4626, #4930 and #5169). WIP checkpoint,
+ * the dependency-selected unit tests, markdownlint and `deno fmt --check` for
+ * the pushed paths (Issues #4631, #4626, #4930 and #5169). WIP checkpoint,
  * timeout-preservation and declared hand-off pushes never call this; they stay
  * ungated on purpose.
  */
@@ -928,8 +928,9 @@ export async function gateUnpushedCommits(
  *      those commands already ran there and are not repeated. A spec with
  *      `repairChecksWithCiCargo` (Issue #4630) runs only the repo CI's cargo
  *      clippy and test-target compile, the ShellCheck policy, cargo deny for
- *      changed cargo inputs (Issue #4626) and the pushed paths' unit tests and
- *      markdownlint (Issue #4930), in this step. A block
+ *      changed cargo inputs (Issue #4626), the pushed paths' unit tests and
+ *      markdownlint (Issue #4930) and their `deno fmt --check` (Issue #5169),
+ *      in this step. A block
  *      refuses the push. With no pre-flight spec Step 1b does not run, so
  *      WIP checkpoint pushes are never refused. The gate output in the
  *      returned error is cut to a head and a tail (as is Step 1's pre-flight
@@ -970,8 +971,8 @@ export async function gateUnpushedCommits(
  *   spelling and merge-conflict repairs, and the babysitter tree gate) runs
  *   just the repository ShellCheck policy, the CI cargo-deny check when the
  *   pushed paths include a cargo input, the dependency-selected unit tests and
- *   configured markdownlint for the pushed paths, plus the repo CI's cargo
- *   checks (Issues #4631, #4626, #4930, #4630 and #5169).
+ *   configured markdownlint and `deno fmt --check` for the pushed paths, plus
+ *   the repo CI's cargo checks (Issues #4631, #4626, #4930, #4630 and #5169).
  * @param runId - Run id stamped into the `Vibe-Coder-Run-Id` commit trailer
  *   (Issue #963). Omit in production: it then falls back to {@link getRunId},
  *   which reads `VIBE_RUN_ID` and generates-and-caches one when unset, exactly

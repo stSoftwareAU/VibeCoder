@@ -2864,8 +2864,9 @@ async function failsOnBaseToo(args: {
  * infrastructure fault, not a verdict. The agent's own hook sets `compareRef`
  * only for a run handed the PR base; with none, a failing check is a verdict.
  *
- * `repairChecksWithCiCargo` (CI-fix, PR-feedback, spelling and merge-conflict repair pushes of repos with no
- * pre-flight configuration, where only the CI cargo checks should gate) runs nothing but those CI cargo checks,
+ * `repairChecksWithCiCargo` (CI-fix, PR-feedback, spelling and merge-conflict
+ * repair pushes of repos with no pre-flight configuration, and the babysitter's
+ * tree gate) runs nothing but those CI cargo checks,
  * the repository's ShellCheck policy (Issue #4631), the cargo-deny gate
  * (Issue #4626), which every gate run applies, and, as every repair push does,
  * the `deno test` check and markdownlint for the pushed paths (Issue #4930),

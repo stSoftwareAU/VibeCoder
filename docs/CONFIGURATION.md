@@ -5223,7 +5223,8 @@ repo-specific commands in the worker.
   repair pushes are the exception: for such a repo they pass the
   `REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT` spec (Issue #4630), so only the repo CI's cargo clippy and test-target compile,
   the ShellCheck policy, `cargo deny` and the pushed paths' `deno test` and
-  markdownlint checks (Issue #4930) run there. Pushes that pass no spec (such as WIP-preservation pushes) stay
+  markdownlint checks (Issue #4930) and changed-file `deno fmt --check` (Issue
+  #5169) run there. Pushes that pass no spec (such as WIP-preservation pushes) stay
   ungated.
 
 Commands run directly (not through a shell), so each entry is a program plus
@@ -5287,8 +5288,9 @@ PR-feedback repair processors pass the repair-with-CI-cargo spec
 commands (Issue #4630), so their repair pushes run only the repo
 CI's cargo clippy and test-target compile, the ShellCheck policy
 (Issue #4631), cargo deny for changed cargo inputs (Issue #4626) and the
-pushed paths' `deno test` and markdownlint checks (Issue #4930), through
-Step 1b, and not the other changed-file checks listed below. Repos with
+pushed paths' `deno test` and markdownlint checks (Issue #4930) and their
+`deno fmt --check` (Issue #5169), through Step 1b, and not the other
+changed-file checks listed below. Repos with
 pre-flight commands keep their own spec. The completion phase's
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
@@ -5702,8 +5704,8 @@ gates do (see that bullet):
      processors (CI fix, review feedback, spelling and merge conflict) publish
      a repair through `commitAndPushPending`, including repositories without
      configured pre-flight commands, where all four repairs use
-     `repairChecksWithCiCargo`: the shared repair checks plus the CI cargo
-     clippy and test-target compile, compared against the PR base as described
+     `repairChecksWithCiCargo`: the shared repair checks, the changed-file
+     `deno fmt --check` and the CI cargo clippy and test-target compile, compared against the PR base as described
      above (Issues #4630 and #5169). A spelling or merge-conflict repair in a
      repo that has pre-flight commands also gets the CI cargo checks, compared
      against the PR base. The

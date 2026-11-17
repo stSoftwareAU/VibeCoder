@@ -3,9 +3,10 @@
  *
  * The repair agent leaves its edits uncommitted in a clone whose `.git` is
  * mounted read-only, so nothing here may write to `.git`. The gate runs the
- * checks the host's push would otherwise skip: deno test, markdownlint, the
- * ShellCheck policy, cargo-deny and, when a Rust-relevant file changed, the
- * repo CI's cargo clippy and test-target compile (Issue #5169). The gate's git calls that would write
+ * checks the host's push would otherwise skip: deno test, markdownlint,
+ * `deno fmt --check` on the changed files, the ShellCheck policy, cargo-deny
+ * and, when a Rust-relevant file changed, the repo CI's cargo clippy and
+ * test-target compile (Issue #5169). The gate's git calls that would write
  * (`worktree add`, `worktree remove`, `worktree prune`) are emulated through the
  * `git` seam: the fork commit is checked out into a fresh repository under a
  * temp root that borrows the clone's objects (`objects/info/alternates`), so
