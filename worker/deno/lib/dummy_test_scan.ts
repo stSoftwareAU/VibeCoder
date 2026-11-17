@@ -271,13 +271,12 @@ const matchCache = new Map<string, Int32Array>();
 
 /**
  * Offset of the bracket closing the one at `open`, or -1 past the end. Every
- * bracket's match is found in one linear pass per text and kept, so repeated
- * lookups on a hostile diff stay linear (Issue #5215).
+ * bracket table is built once per distinct text and retained until the scan
+ * ends, so body lookups cannot evict and rebuild the whole-hunk table.
  */
 function closingBracket(masked: string, open: number): number {
   let matched = matchCache.get(masked);
   if (matched === undefined) {
-    if (matchCache.size >= 256) matchCache.clear();
     matched = new Int32Array(masked.length).fill(-1);
     const stacks: Record<string, number[]> = { "(": [], "{": [], "[": [] };
     const openerOf: Record<string, string> = { ")": "(", "}": "{", "]": "[" };
@@ -693,13 +692,27 @@ function definitionsIn(
  * view that encloses the call at `open` and takes `name` as a parameter, with
  * that parameter's position. Null when the callback is not such a parameter.
  */
+const parameterIndex = new WeakMap<Definition[], Map<string, Definition[]>>();
+
 function registrarOf(
   spans: Definition[],
   open: number,
   name: string,
 ): { helper: string; index: number } | null {
   let best: { helper: string; index: number; start: number } | null = null;
-  for (const d of spans) {
+  let byName = parameterIndex.get(spans);
+  if (!byName) {
+    byName = new Map();
+    for (const d of spans) {
+      for (const name of d.params.keys()) {
+        const entries = byName.get(name) ?? [];
+        entries.push(d);
+        byName.set(name, entries);
+      }
+    }
+    parameterIndex.set(spans, byName);
+  }
+  for (const d of byName.get(name) ?? []) {
     if (d.end < 0 || d.start >= open || open >= d.end) continue;
     if (best !== null && d.start <= best.start) continue;
     const index = d.params.get(name);
@@ -781,6 +794,7 @@ function problemFor(rule: DummyTestRule): string {
  * names; a callback the diff cannot resolve is a note.
  */
 export function scanDummyTests(diff: string): DummyTestScan {
+  matchCache.clear();
   const findings: DummyTestFinding[] = [];
   const notes: DummyTestNote[] = [];
   const seen = new Set<string>();
@@ -892,11 +906,29 @@ export function scanDummyTests(diff: string): DummyTestScan {
       enclosing[k] = brackets[brackets.length - 1] ?? -1;
       if ("([{".includes(masked[k]!)) brackets.push(k);
     }
+    const definitionsByName = new Map<string, Definition[]>();
+    for (const d of spans) {
+      const entries = definitionsByName.get(d.name) ?? [];
+      entries.push(d);
+      definitionsByName.set(d.name, entries);
+    }
+    // A cut block has unknown ancestry. Do not infer callback scope from it.
+    const balanced = (() => {
+      const stack: string[] = [];
+      for (const c of masked) {
+        if ("([{".includes(c)) stack.push(c);
+        else if (")]}".includes(c) && stack.pop() !== "([{"[")]}".indexOf(c)]) {
+          return false;
+        }
+      }
+      return stack.length === 0;
+    })();
     const namedCallback = (name: string, at: number): string | null => {
+      if (!balanced) return null;
       if (registrarOf(spans, at, name) !== null) return null;
       let selected: Definition | undefined;
       let selectedScope = -2;
-      for (const d of spans) {
+      for (const d of definitionsByName.get(name) ?? []) {
         if (d.name !== name || d.end < 0) continue;
         const scope = enclosing[d.declaration] ?? -1;
         if (scope >= 0 && !(scope < at && at < closingBracket(masked, scope))) {
@@ -1077,6 +1109,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
   for (const p of pending) {
     if (!called.get(p.file)?.has(p.helper)) note(p.file, p.line, "unseen");
   }
+  matchCache.clear();
   return { findings, notes };
 }
 

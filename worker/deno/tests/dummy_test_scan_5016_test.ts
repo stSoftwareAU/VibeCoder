@@ -964,3 +964,42 @@ Deno.test("a loop callback cannot borrow an unrelated local's assertions", () =>
     kind: "unseen",
   }]);
 });
+
+Deno.test("cut blocks do not lend callback definitions to other registrations", () => {
+  for (const body of ["return 1;", "assertEquals(1, 1);"]) {
+    for (
+      const text of [
+        '): void {\nDeno.test({ name, fn });\n}\nDeno.test("other", () => {\nconst fn = () => { ' +
+        body + " };\nassertEquals(2, 2);",
+        "const fn = () => { " + body +
+        " };\nrun(fn);\nassertEquals(2, 2);\n});\nfor (const { name, fn } of cases) Deno.test({ name, fn });",
+      ]
+    ) {
+      const scan = scanDummyTests(added("tests/cut_test.ts", text));
+      assertEquals(scan.findings, []);
+      assertEquals(scan.notes.length, 1);
+    }
+  }
+});
+
+for (const named of [false, true]) {
+  Deno.test(`large ${named ? "named" : "inline"} registrations avoid quadratic lookup`, () => {
+    const scan = assertLinearGrowth(
+      "large registrations",
+      (n) =>
+        added(
+          "tests/large_test.ts",
+          Array.from({ length: n }, (_, k) =>
+            named
+              ? `const c${k} = () => { assertEquals(f(${k}), ${k}); };\nDeno.test("t", c${k});`
+              : `Deno.test("t", () => { assertEquals(f(${k}), ${k}); });`).join(
+              "\n",
+            ),
+        ),
+      scanDummyTests,
+      { baseChars: named ? 16000 : 20000, repeats: 1 },
+    );
+    assertEquals(scan.findings, []);
+    assertEquals(scan.notes, []);
+  });
+}

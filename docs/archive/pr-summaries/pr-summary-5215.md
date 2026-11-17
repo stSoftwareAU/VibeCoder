@@ -15,8 +15,8 @@ reference (`Deno.test("x", suite.check)`, `fn: suite.check`, or
 `register("a", suite.check)`). A trailing value after an inline callback, as in
 `it("x", async () => {...}, TIMEOUT)`, is not read as the callback: the inline
 body is judged as before. Each definition's parameter names are parsed once, and
-every bracket's match is found in one linear pass per text, so the helper lookup
-stays linear on a hostile diff. Closes #5215.
+bracket tables remain available for the duration of a scan. Callback and
+parameter candidates are indexed by name. Closes #5215.
 
 ## Spec
 
@@ -195,3 +195,20 @@ Validation after the scope repair: 79 tests pass across the scanner, wiring
 and parallel-unsafe manifest suites. All four new scope regressions fail with
 the previous head scanner restored. These include a missing wrapper header in
 another hunk and a destructured loop callback. Full hosted CI remains required.
+
+## Large-diff and truncated-block repair
+
+Bracket tables are retained throughout each scan instead of evicted every 256
+bodies. Callback definitions and registrar parameters are indexed by name.
+A hunk with unmatched brackets yields an unseen note for named callbacks,
+because its scope ancestry is incomplete. This deliberately favours uncertainty
+over a false finding, including callbacks inside the same truncated hunk.
+
+Added growth guards for many asserting inline tests and many named callbacks,
+and a regression for both directions of cut blocks with asserting/non-asserting
+locals. All 48 scanner tests pass locally with the temporary dependency map.
+Full hosted CI remains required.
+
+Both new growth guards fail against 2be8ac61: inline input grows from 2,544 ms
+to 31,591 ms at about 4x size; named registrations grow from 4,232 ms to
+63,447 ms. The cut-block regression also fails on that prior scanner.
