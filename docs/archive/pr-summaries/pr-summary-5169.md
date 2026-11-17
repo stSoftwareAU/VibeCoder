@@ -22,14 +22,14 @@ test-target compile (the build step behind `cargo llvm-cov`). The issue's
 - `worker/deno/lib/pre_push_gate.ts` and `worker/deno/lib/git_push.ts`: the
   `repairChecksOnly` option and spec field had no production caller left, so
   they are removed. `repairChecksWithCiCargo` is now the only repair mode.
-- `worker/deno/lib/pre_push_gate.ts`: the `repairChecksWithCiCargo` repair
-  mode now also keeps the changed-file `deno fmt --check` the full gate runs.
-  Before, a repair push ran no `deno fmt` at all, the issue's `deno fmt
-  --check` step. Its file selection now also takes the files `deno fmt`
-  covers, and the cspell lookup is skipped in that mode, so no check the mode
-  skips (deno lint, cargo fmt, cspell, Floci) can block the push. This covers
-  the CI-fix, PR-feedback, spelling and merge-conflict repairs and the
-  babysitter's tree gate.
+- `worker/deno/lib/pre_push_gate.ts`: the `repairChecksWithCiCargo` repair mode
+  now also keeps the changed-file `deno fmt --check` the full gate runs. Before,
+  a repair push ran no `deno fmt` at all, the issue's `deno fmt
+  --check` step.
+  Its file selection now also takes the files `deno fmt` covers, and the cspell
+  lookup is skipped in that mode, so no check the mode skips (deno lint, cargo
+  fmt, cspell, Floci) can block the push. This covers the CI-fix, PR-feedback,
+  spelling and merge-conflict repairs and the babysitter's tree gate.
 - Docs updated: `docs/CONFIGURATION.md`, `docs/INTERNALS.md` and
   `docs/workflows/fleet-pr-babysitter.md`.
 
@@ -110,10 +110,10 @@ flowchart TD
 - **partial** — "focused behavioural regressions for the actual publication
   paths, plus successful valid-path controls" — evidence:
   `worker/deno/tests/babysitter_tree_gate_test.ts::a repair changing a Rust file with a failing CI clippy blocks with its diagnostic (Issue #5169)`
-  — reviewer: partial — reason: clippy block/pass tests exist for the
-  babysitter gate and fmt block/pass tests for `runPrePushGate`, but there is
-  no fmt-block test through `runBabysitterTreeGate` or `commitAndPushPending`,
-  and no ShellCheck or llvm-cov test.
+  — reviewer: partial — reason: clippy block/pass tests exist for the babysitter
+  gate and fmt block/pass tests for `runPrePushGate`, but there is no fmt-block
+  test through `runBabysitterTreeGate` or `commitAndPushPending`, and no
+  ShellCheck or llvm-cov test.
 - **missing** — "Acceptance requires evidence for both incident groups" —
   reviewer: missing — reason: both groups' failing jobs are in a private
   repository this run could not read, and this host has no shift-left ledger.
@@ -122,8 +122,8 @@ flowchart TD
   script tests", and it was not investigated.
 - **missing** — "A disk/resource deferral must retain WIP and resume
   automatically, not publish unvalidated work as passed" — reviewer: missing —
-  reason: the milestone merge-only sync (Issue #4326) still pushes an
-  `UNGATED:` cargo-only merge. This PR does not change that path.
+  reason: the milestone merge-only sync (Issue #4326) still pushes an `UNGATED:`
+  cargo-only merge. This PR does not change that path.
 - **partial** — "cargo llvm-cov" — evidence:
   `worker/deno/tests/babysitter_tree_gate_test.ts::a repair changing a Rust file with a passing CI clippy passes and ran clippy (Issue #5169)`
   — reviewer: partial — reason: the babysitter gate now runs CI's test-target
@@ -132,8 +132,7 @@ flowchart TD
 - **partial** — "deno fmt" — evidence:
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repairChecksWithCiCargo blocks a repair whose changed .ts file fails deno fmt --check, as CI's deno fmt step would (Issue #5169)`
   — reviewer: partial — reason: every repair push now runs the changed-file
-  `deno fmt --check` (red on the unfixed gate), but not CI's whole-tree
-  command.
+  `deno fmt --check` (red on the unfixed gate), but not CI's whole-tree command.
 - **unrequested** — the cspell lookup is skipped in repair mode — reviewer:
   unrequested — reason: needed so that taking the `deno fmt` files into repair
   mode cannot make a missing cspell block a repair that never runs cspell.
@@ -148,10 +147,9 @@ flowchart TD
 - **violation** — A Code Change Owes a Docs Change: doc comments and docs still
   described repair mode without `deno fmt` — evidence:
   `worker/deno/lib/git_push.ts:63` — reason: fixed in this diff, along with
-  `git_push.ts` (field doc and `resolveRepairPreFlightSpec`),
-  `pre_push_gate.ts` (the `runPrePushGate` doc comment),
-  `babysitter_tree_gate.ts`, `docs/INTERNALS.md` and three passages in
-  `docs/CONFIGURATION.md`.
+  `git_push.ts` (field doc and `resolveRepairPreFlightSpec`), `pre_push_gate.ts`
+  (the `runPrePushGate` doc comment), `babysitter_tree_gate.ts`,
+  `docs/INTERNALS.md` and three passages in `docs/CONFIGURATION.md`.
 - **clean** — the `repairChecksOnly` removal (no hits outside `docs/archive`),
   the updated CONFIGURATION.md, INTERNALS.md and fleet-pr-babysitter.md
   paragraphs, test isolation (private temp dirs), the PR summary's records of
@@ -160,16 +158,16 @@ flowchart TD
 
 ## Test Plan
 
-- `deno fmt` repair check (this round): new red/green test above, with a
-  passing control. Updated old-policy assertions that said a repair runs no
-  `deno fmt`: `babysitter_tree_gate_test.ts` (new test file, invalid and
-  unreadable Deno config cases), `git_push_preflight_test.ts` (`.ts` repair),
+- `deno fmt` repair check (this round): new red/green test above, with a passing
+  control. Updated old-policy assertions that said a repair runs no `deno fmt`:
+  `babysitter_tree_gate_test.ts` (new test file, invalid and unreadable Deno
+  config cases), `git_push_preflight_test.ts` (`.ts` repair),
   `babysitter_repair_4738_test.ts` (the runner now fails only the unit tests),
   and the `pre_push_gate_test.ts` repair and docs-only tests. Fixture
   `deno.json` files are now written formatted. Results: those three files gave
-  146 passed, 0 failed. The `PR #5034 review` tests gave 13 passed with the
-  host pre-push hook disabled. With the host hook on, they fail because the
-  fixtures' own `git push` meets that hook.
+  146 passed, 0 failed. The `PR #5034 review` tests gave 13 passed with the host
+  pre-push hook disabled. With the host hook on, they fail because the fixtures'
+  own `git push` meets that hook.
 - Final head, run from `worker/deno` with the host pre-push hook disabled:
   `deno test -A tests/pre_push_gate_test.ts tests/shellcheck_publication_test.ts`
   gave 192 passed, 2 failed. Both failures are `pre-push CLI:` tests that could
