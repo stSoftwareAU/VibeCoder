@@ -3,12 +3,15 @@
  *
  *   deno run mod.ts token-economizer-report --archive <dir> \
  *     --trial-host <name> --window-start <iso> [--window-end <iso>] \
- *     --recorded-since <iso> [--mode work-on] [--format markdown|json]
+ *     --recorded-since <iso> [--mode work-on] [--format markdown|json] \
+ *     [--read-stop-comments]
  *
  * Reads every `*.json` run record under `--archive` (recursive, bounded,
  * symlinks skipped) and prints the weekly TokenEconomizer comparison section.
  * It is read-only: the only outside call is `gh pr view`, once per pull
- * request. It renders no verdict; not yet: #4959 will apply the bar.
+ * request, plus one `gh issue view 4959` with `--read-stop-comments`. It
+ * prints the comparison section and then the keep-or-purge verdict (Issue
+ * #4959). A stop comment counts only when a fleet account wrote it.
  *
  * Missing data fails loud: an unreadable archive, an archive with no records
  * or a missing option is a failure, never an empty report.
@@ -26,6 +29,18 @@ import {
   type PrStateLookup,
   type TokenEconomizerTrialReport,
 } from "../lib/token_economizer_trial_report.ts";
+import {
+  decideTokenEconomizerVerdict,
+  formatTokenEconomizerVerdict,
+  type StopComment,
+  type TokenEconomizerVerdict,
+  verifiedStopRule,
+} from "../lib/token_economizer_verdict.ts";
+import type { TokenEconomizerStopRule } from "../lib/token_economizer_plugin.ts";
+import {
+  parseIssueViewCommentRows,
+  resolveAlertDedupAuthors,
+} from "../lib/alert_dedup_authors.ts";
 
 /** Most files the command reads from one archive. */
 const MAX_FILES = 100_000;
@@ -37,12 +52,35 @@ const MAX_FILE_BYTES = 1_000_000;
 /** What the command returns alongside its message. */
 export interface TokenEconomizerReportData {
   report: TokenEconomizerTrialReport;
+  verdict: TokenEconomizerVerdict;
 }
 
 /** Injectable dependencies. */
 export interface TokenEconomizerReportDeps {
   lookup?: PrStateLookup;
   now?: () => Date;
+  /** Comments on #4959. Throws when they cannot be read. */
+  stopComments?: () => Promise<StopComment[]>;
+  /** The fleet logins; `[]` when they cannot be resolved. */
+  fleetAuthors?: () => Promise<string[]>;
+}
+
+/** Read the comments on #4959 through `gh issue view`. Throws on failure. */
+export async function ghStopComments(): Promise<StopComment[]> {
+  const result = await spawnGh([
+    "issue",
+    "view",
+    "4959",
+    "--repo",
+    "stSoftwareAU/VibeCoder",
+    "--json",
+    "comments",
+  ]);
+  if (!result.success) throw new Error("gh issue view failed");
+  const comments = (JSON.parse(result.stdout) as { comments?: unknown })
+    .comments;
+  if (!Array.isArray(comments)) throw new Error("no comments list");
+  return parseIssueViewCommentRows(comments);
 }
 
 /** Read pull request state through `gh pr view`; undefined when unknown. */
@@ -127,7 +165,7 @@ export function createTokenEconomizerReportCommand(
   return {
     name: "token-economizer-report",
     description:
-      "Report the TokenEconomizer trial comparison from archived runs (Issue #4958)",
+      "Report the TokenEconomizer trial comparison and keep-or-purge verdict from archived runs (Issues #4958, #4959)",
 
     async execute(
       args: Record<string, unknown>,
@@ -166,6 +204,34 @@ export function createTokenEconomizerReportCommand(
       if (modeArg !== undefined && text(modeArg) === undefined) {
         return fail("Argument --mode must be a non-empty label.");
       }
+      const readStops = args["read-stop-comments"] === true ||
+        args["read-stop-comments"] === "true";
+      let stopRule: TokenEconomizerStopRule | undefined;
+      if (readStops) {
+        let comments: StopComment[];
+        try {
+          comments = await (deps.stopComments ?? ghStopComments)();
+        } catch {
+          // Do not echo remote output: it can carry untrusted text.
+          return fail(
+            "The comments on #4959 could not be read, so no verdict was taken; re-run the report later.",
+          );
+        }
+        let fleet: string[] = [];
+        try {
+          fleet = await (deps.fleetAuthors ??
+            (() => resolveAlertDedupAuthors({}, (m) => console.error(m))))();
+        } catch {
+          fleet = [];
+        }
+        if (fleet.length === 0) {
+          // An unverifiable author set must not hide a real stop.
+          return fail(
+            "The fleet author set could not be resolved, so no stop comment on #4959 can be verified and no verdict was taken; re-run the report later.",
+          );
+        }
+        stopRule = verifiedStopRule(comments, fleet);
+      }
 
       try {
         const paths: string[] = [];
@@ -191,12 +257,17 @@ export function createTokenEconomizerReportCommand(
           },
           deps.lookup ?? ghPrStateLookup,
         );
+        const verdict = decideTokenEconomizerVerdict(report, {
+          now: (deps.now ?? (() => new Date()))(),
+          stopRule,
+        });
         return {
           success: true,
           message: format === "json"
-            ? JSON.stringify(report, null, 2)
-            : formatTokenEconomizerTrialSection(report),
-          data: { report },
+            ? JSON.stringify({ ...report, verdict }, null, 2)
+            : formatTokenEconomizerTrialSection(report) + "\n\n" +
+              formatTokenEconomizerVerdict(verdict),
+          data: { report, verdict },
         };
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);

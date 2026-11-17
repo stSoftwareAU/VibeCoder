@@ -226,16 +226,26 @@ flowchart LR
     A["image carrying the pinned commit<br/>deployed on GRQ-25"] --> B["a human sets<br/>token_economizer.enabled: true"]
     B --> C["first switched-on run completes —<br/>window open, date recorded below"]
     C --> D["7 days AND 60 runs"]
-    D --> E["verdict recorded in the protocol's results"]
+    D --> E["the report command's verdict is recorded in the protocol"]
 ```
 
 **Window opened:** — (not yet opened).
 
 Initial host opt-in remains within the owner's configuration authority. Once
 enabled, hook-failure monitoring and the shared stop controller below run
-without operator participation. Normal window scheduling and verdict processing
-are not present yet: #4959 owns them. A stop report does not wait for either
-normal threshold.
+without operator participation. The verdict is computed by the report command
+(see [The verdict](#the-verdict) in section 7). Nothing in the worker runs
+that command by itself: the #4959 run computes the verdict with the report
+command (passing `--window-start`, the first eligible switched-on completion,
+and `--read-stop-comments`, so the command reads the issue's stop comments
+itself) and follows the action table in "The verdict". While the verdict is `not due` or
+`undetermined`, the run ends with a `vibe-defer-until` marker at the verdict's
+next check so the worker re-runs it then; no human judges or schedules the
+verdict. The worker honours at most three time deferrals per issue
+(`MAX_TIME_DEFERRALS` in `worker/deno/lib/time_deferral.ts`), after which the
+issue goes to its ordinary retry, and a stop comment that lands while the issue
+is parked is read at the next check, at most 7 days later. A stop does not wait
+for either threshold.
 
 ## 4. 📏 The bar
 
@@ -390,7 +400,7 @@ The report command is read-only:
 ```text
 deno run mod.ts token-economizer-report --archive <dir> --trial-host <name> \
   --window-start <iso> [--window-end <iso>] --recorded-since <iso> \
-  [--mode work-on] [--format markdown|json]
+  [--mode work-on] [--format markdown|json] [--read-stop-comments]
 ```
 
 It compares the switched-on population with Before (trial host, the 14 days
@@ -429,7 +439,7 @@ with a different RTK setting and one-sided repositories. It prints three
 explicit "not checked" lines: the run record carries no advisor/executor-split
 setting, no other-trial-window flag, and the provider of a switch-off control
 run is the host's configured one, so those §5 exclusions cannot be applied from
-the archive and are left to the reader (#4959). It renders no verdict; not yet: #4959 will apply the bar.
+the archive and are left to the reader (#4959). It then prints the verdict (see [The verdict](#the-verdict)).
 
 Not yet: #5029 will account for billed capped and unfinished executor
 invocations in a run's totals. Until it lands, a run's cost total can omit those
@@ -439,6 +449,54 @@ The run archive is the operator's private repository named by
 `fleet_run_archive` in the [Configuration Reference](CONFIGURATION.md). A verdict
 taken without it is single-host and says so, naming the host and the window it
 covers.
+
+### The verdict
+
+`worker/deno/lib/token_economizer_verdict.ts` applies the bar after the
+comparison section and prints a `## TokenEconomizer trial verdict` section
+(`--format json` gains a `verdict` field). The thresholds are those of sections
+3 to 5, fixed before the window opened. The rules, in order:
+
+- **Stop overrides the window.** The verdict is `stopped (failed)` when any
+  run in the switched-on population (trial-host runs inside the window, in the
+  selected mode, served by Claude Code) recorded the plugin status `stopped`,
+  or, with `--read-stop-comments`, when #4959 carries the controller's stop
+  comment (first line `TokenEconomizer trial stopped: <rule>.`, one of
+  `secret-in-learnings`, `cross-repo-fact`, `plugin-run-failure`,
+  `unreadable-stop-record`, ending with the `vibe-token-economizer-stop`
+  marker) written by a fleet account. The fleet set is the configured fleet
+  identity (`resolveFleetMaintenanceAuthorSet`, through
+  `resolveAlertDedupAuthors`). The issue is public, so the same text from any
+  other author is ignored. If the comments cannot be read or the fleet set
+  cannot be resolved, the command fails and takes no verdict, so an
+  unverifiable author set never hides a real stop. A stop applies
+  whatever the window's age or run count, and the trial goes to the section 8
+  purge.
+- **Not due.** Otherwise the verdict is `not due` until the window is at least
+  7 days old and has at least 60 completed (successful-outcome, the report's
+  "Completed" row) switched-on runs. The window's age runs from window start to
+  window end (end defaults to now). It prints a next check: now plus the
+  estimated wait for both thresholds, at least 1 day and at most 7 days.
+- **Due.** Each comparison gets three clauses: cost passes when the relative
+  cost difference is at most -10%; success rate and merge rate pass when the
+  switched-on figure is no worse. A miss on any clause is a miss; otherwise an
+  unavailable clause makes the comparison unavailable. The concurrent
+  comparison decides: pass is `keep`, miss is `purge`. The before comparison is
+  reported beside it and a disagreement is stated.
+- **Undetermined.** If the concurrent comparison is unavailable, the verdict is
+  `undetermined` with a next check 7 days on, until the window is 28 days old.
+  From day 28 it is a `purge`, because missing data is not a successful trial.
+- **Not checked.** The three section 5 exclusions the archive cannot apply
+  (advisor/executor split, other trial windows, the provider that served a
+  control run) stay not checked, and every verdict other than `stopped (failed)` says so.
+
+What the #4959 run does with each outcome:
+
+| Verdict | Action |
+| --- | --- |
+| `not due`, `undetermined` | No change; end with a `vibe-defer-until` marker at the next check. |
+| `stopped (failed)`, `purge` | Record the figures and verdict here, set Status to purged, and remove the section 8 list in a PR after inhibiting the trial. |
+| `keep` | Record the figures and verdict here and set Status to kept, keeping the per-host switch. |
 
 ## 8. 🧹 The purge list
 
@@ -523,7 +581,10 @@ run there, with the steps in the
 | Test | the run callback context block tests | `worker/deno/tests/run_callback_context_test.ts` | present |
 | Test | the no-changes phase's run stats tests | `worker/deno/tests/handle_no_changes_phase_test.ts` | present |
 | Report section | the weekly report's comparison section | `worker/deno/lib/token_economizer_trial_report.ts` | present |
-| Command | the read-only `token-economizer-report` command | `worker/deno/commands/token_economizer_report.ts` | present |
+| Command | the read-only `token-economizer-report` command, which prints the comparison and the verdict | `worker/deno/commands/token_economizer_report.ts` | present |
+| Source | the keep-or-purge verdict: the bar, the window-due check, the stop override and the next check | `worker/deno/lib/token_economizer_verdict.ts` | present |
+| Source | the stop notification's marker and line, shared by the stop controller and the report reader | `worker/deno/lib/token_economizer_stop_format.ts` | present |
+| Test | the verdict tests | `worker/deno/tests/token_economizer_verdict_test.ts` | present |
 | Command | the command's registration | `worker/deno/mod.ts` | present |
 | Test | the run stats reader, line and block tests | `worker/deno/tests/token_economizer_run_stats_test.ts` | present |
 | Test | the trial report tests | `worker/deno/tests/token_economizer_trial_report_test.ts` | present |

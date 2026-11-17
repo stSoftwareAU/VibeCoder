@@ -271,7 +271,7 @@ Deno.test("rendered section shows explicit populations and no verdict", async ()
   assertStringIncludes(text, "one side only): 2 (org/only-other, org/solo)");
   assertStringIncludes(
     text,
-    "It renders no verdict; not yet: #4959 will apply the bar.",
+    "This section reports figures only; the verdict section that follows applies the bar.",
   );
   for (
     const word of [
@@ -621,6 +621,110 @@ Deno.test("command reads a temp archive recursively and renders the section", as
   });
 });
 
+Deno.test("command JSON carries a not-due verdict with the next check from the injected clock", async () => {
+  await withTemp(async (dir) => {
+    await Deno.writeTextFile(
+      `${dir}/a.json`,
+      JSON.stringify(fixture().slice(0, 4)),
+    );
+    const command = createTokenEconomizerReportCommand({
+      lookup,
+      now: () => new Date("2026-11-15T00:00:00Z"),
+    });
+    const result = await command.execute(
+      { ...BASE_ARGS, archive: dir, format: "json" },
+      config(),
+    );
+    assertEquals(result.success, true);
+    const parsed = JSON.parse(result.message);
+    assertEquals(parsed.verdict.kind, "not-due");
+    assertEquals(parsed.verdict.nextCheck, "2026-11-22T00:00:00.000Z");
+  });
+});
+
+Deno.test("command accepts a stop comment only from a fleet author", async () => {
+  await withTemp(async (dir) => {
+    await Deno.writeTextFile(
+      `${dir}/a.json`,
+      JSON.stringify(fixture().slice(0, 4)),
+    );
+    const stopBody = "TokenEconomizer trial stopped: cross-repo-fact.\n\n" +
+      "reason\n\n<!-- vibe-token-economizer-stop -->";
+    const run = async (
+      comments: { author: string; body: string }[],
+      fleet: string[],
+    ) => {
+      const command = createTokenEconomizerReportCommand({
+        lookup,
+        stopComments: () => Promise.resolve(comments),
+        fleetAuthors: () => Promise.resolve(fleet),
+      });
+      return await command.execute(
+        { ...BASE_ARGS, archive: dir, "read-stop-comments": true },
+        config(),
+      );
+    };
+    const fleetStop = await run(
+      [{ author: "VibeCoderST", body: stopBody }],
+      ["vibecoderst"],
+    );
+    assertEquals(fleetStop.success, true);
+    assertStringIncludes(fleetStop.message, "**Verdict: stopped (failed).**");
+    assertStringIncludes(
+      fleetStop.message,
+      "stop rule cross-repo-fact was reported by a fleet-authored stop comment.",
+    );
+
+    // The same text from anyone else, or with no resolvable fleet, is no stop.
+    const outsider = await run(
+      [{ author: "someone-else", body: stopBody }],
+      ["vibecoderst"],
+    );
+    assertEquals(outsider.success, true);
+    assertStringIncludes(outsider.message, "**Verdict: not due.**");
+    // An unresolvable fleet set takes no verdict rather than hide a stop.
+    const unverifiable = await run(
+      [{ author: "VibeCoderST", body: stopBody }],
+      [],
+    );
+    assertEquals(unverifiable.success, false);
+    assertEquals(
+      unverifiable.message,
+      "The fleet author set could not be resolved, so no stop comment on #4959 can be verified and no verdict was taken; re-run the report later.",
+    );
+
+    // Without the flag no comment is read at all.
+    const unread = await createTokenEconomizerReportCommand({
+      lookup,
+      stopComments: () => Promise.reject(new Error("must not be called")),
+    }).execute({ ...BASE_ARGS, archive: dir }, config());
+    assertStringIncludes(unread.message, "**Verdict: not due.**");
+  });
+});
+
+Deno.test("command fails loud, taking no verdict, when the stop comments cannot be read", async () => {
+  await withTemp(async (dir) => {
+    await Deno.writeTextFile(
+      `${dir}/a.json`,
+      JSON.stringify(fixture().slice(0, 4)),
+    );
+    const command = createTokenEconomizerReportCommand({
+      lookup,
+      stopComments: () => Promise.reject(new Error("token=secret")),
+      fleetAuthors: () => Promise.resolve(["vibecoderst"]),
+    });
+    const result = await command.execute(
+      { ...BASE_ARGS, archive: dir, "read-stop-comments": true },
+      config(),
+    );
+    assertEquals(result.success, false);
+    assertEquals(
+      result.message,
+      "The comments on #4959 could not be read, so no verdict was taken; re-run the report later.",
+    );
+  });
+});
+
 Deno.test("stopped corrupt accounting stays unavailable through summariser callback and report", async () => {
   const dir = await Deno.makeTempDir();
   try {
@@ -681,5 +785,83 @@ Deno.test("merge rate counts distinct PRs while cost and success retain every ru
     unknown: 0,
     noPr: 0,
     rate: 0.5,
+  });
+});
+
+Deno.test("production stop reader verifies controller notifications and fails closed", async () => {
+  const { _setGhSpawnRunner, _resetGhSpawnRunner } = await import(
+    "../lib/gh_spawn.ts"
+  );
+  const { reportTokenEconomizerStop } = await import(
+    "../lib/token_economizer_control.ts"
+  );
+  const { TOKEN_ECONOMIZER_STOP_RULES, verifiedStopRule } = await import(
+    "../lib/token_economizer_verdict.ts"
+  );
+  await withTemp(async (dir) => {
+    await Deno.writeTextFile(
+      `${dir}/a.json`,
+      JSON.stringify(fixture().slice(0, 4)),
+    );
+    for (const rule of TOKEN_ECONOMIZER_STOP_RULES) {
+      let body = "";
+      await reportTokenEconomizerStop(dir, {
+        rule,
+        reason: "test",
+        recordedAt: "2026-11-17T00:00:00Z",
+      }, (args) => {
+        body = args[args.indexOf("--body") + 1]!;
+        return Promise.resolve("");
+      });
+      assertEquals(
+        verifiedStopRule([{ author: "VibeCoderST", body }], ["vibecoderst"]),
+        rule,
+      );
+      for (const mode of ["fleet", "outsider", "failure", "malformed"]) {
+        _setGhSpawnRunner((args) => {
+          const matches = args.includes("issue") && args.includes("4959") &&
+            args.includes("--json") && args.includes("comments");
+          return Promise.resolve({
+            code: mode === "failure" || !matches ? 1 : 0,
+            success: mode !== "failure" && matches,
+            stderr: "",
+            stdout: mode === "malformed" ? "{}" : JSON.stringify({
+              comments: [{
+                author: {
+                  login: mode === "fleet" ? "VibeCoderST" : "outsider",
+                },
+                body,
+              }],
+            }),
+          });
+        });
+        try {
+          const result = await createTokenEconomizerReportCommand({
+            lookup,
+            fleetAuthors: () => Promise.resolve(["vibecoderst"]),
+          }).execute(
+            { ...BASE_ARGS, archive: dir, "read-stop-comments": true },
+            config(),
+          );
+          if (mode === "failure" || mode === "malformed") {
+            assertEquals(result.success, false);
+            assertEquals(
+              result.message,
+              "The comments on #4959 could not be read, so no verdict was taken; re-run the report later.",
+            );
+          } else {
+            assertEquals(result.success, true);
+            assertStringIncludes(
+              result.message,
+              mode === "fleet"
+                ? "**Verdict: stopped (failed).**"
+                : "**Verdict: not due.**",
+            );
+          }
+        } finally {
+          _resetGhSpawnRunner();
+        }
+      }
+    }
   });
 });

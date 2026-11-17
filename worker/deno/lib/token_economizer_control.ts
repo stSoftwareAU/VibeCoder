@@ -1,3 +1,7 @@
+import {
+  TOKEN_ECONOMIZER_STOP_MARKER,
+  tokenEconomizerStopLine,
+} from "./token_economizer_stop_format.ts";
 /** Shared latched trial stop and outcome notification (Issue #4956). */
 import { fenceUntrustedIssueText } from "./prompt_delimiter.ts";
 import { join } from "node:path";
@@ -82,14 +86,14 @@ export async function reportTokenEconomizerStop(
       "--repo",
       "stSoftwareAU/VibeCoder",
       "--body",
-      `TokenEconomizer trial stopped: ${stop.rule}.\n\n` +
+      tokenEconomizerStopLine(stop.rule) + "\n\n" +
       fenceUntrustedIssueText(
         stop.reason,
         "Recorded failure reason (untrusted data):",
       ).join("\n") + "\n\n" +
       "Plugin loading is inhibited and the shared sync permission is false. Persistence must honour that permission before each transfer. " +
       "This failed trial overrides the normal 7-day/60-run measurement window.\n\n" +
-      "<!-- vibe-token-economizer-stop -->",
+      TOKEN_ECONOMIZER_STOP_MARKER,
     ]);
     await Deno.writeTextFile(receipt, fingerprint, { mode: 0o600 });
   } catch {
