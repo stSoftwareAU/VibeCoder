@@ -227,3 +227,48 @@ on a46721e: callback blocks grew from 881 to 12,353 ms; registration helpers
 from 431 to 4,996 ms for approximately four times the input.
 All 84 scanner, wiring and manifest tests pass after repair. Local runs used
 the temporary dependency map described above; hosted CI remains required.
+
+## Nested-time and expression-helper follow-up
+
+The repair above kept two gaps, both closed here.
+
+- **Expression-bodied registration helpers were lost.** Keying registrars by
+  body opener alone skipped a helper whose body is an expression,
+  `const reg = (name, fn) => Deno.test({ name, fn })`. A dummy call
+  `reg("y", () => {...})` became an `unseen` note instead of `no-assertion`.
+  `registrarOf` now also checks expression-bodied arrows on the registration's
+  own line. New test: `an expression-bodied registration helper's calls are
+  judged (PR #5232)`. It fails on 4ba586e3 and passes here.
+- **Nested registrations re-read their arguments.** `callbackName` split each
+  registration's whole argument text, which holds every registration nested
+  inside it, and this ran in both passes. `flatArgs` now reads only the call's
+  own level and steps over nested groups by their closing offset. The
+  helper-call argument uses it too. The scope index and the masked hunk text
+  are built once, in the first pass, and reused in the second.
+- **The first definition of a name in a scope wins, as before.** The repair
+  above let the last one win.
+
+Measured through `scanDummyTests` on new-file diffs, in the same session on
+one host. The host was under load, so the absolute times are noisy; compare
+the columns.
+
+| Shape | Base | a46721e6 | 4ba586e3 | This head |
+| --- | --- | --- | --- | --- |
+| 6,000 nested `test("t", () => {` (141 KB): peak RSS | 113 MB | 868 MB | 203 MB | 117 MB |
+| Same: time | 9.8 s | 71.9 s | 27.9 s | 8.5 s |
+| 64,000 shared-name blocks (4.9 MB) | 1.1 s | over 120 s | 1.2 s | 1.1 s |
+| 64,000 shared-parameter helpers (4.7 MB) | 1.1 s | 75.0 s | 1.3 s | 1.3 s |
+
+The nested shape is quadratic on base too: each nested body is judged over its
+own text. This head keeps that cost at base's level and adds no guard for it.
+
+Results at this head:
+
+- `dummy_test_scan_5016_test.ts` and `dummy_test_scan_wiring_5016_test.ts`:
+  54 passed.
+- The four pre-PR verifier files and `parallel_unsafe_test_manifest_test.ts`:
+  148 passed.
+
+Red-run record, corrected: with the pre-verifier-fix scanner (1849c160), the
+trailing-value and property-path tests fail. The parameter-list test fails
+only through its `assertLinearGrowth` guard, not through its output.

@@ -267,44 +267,53 @@ export function maskSource(src: string, lang: Lang): string {
   return out.join("");
 }
 
-const hunkTexts = new Set<string>();
-const matchCache = new Map<string, Int32Array>();
-
 /**
- * Offset of the bracket closing the one at `open`, or -1 past the end. Whole-hunk
- * tables are retained until the scan ends. Body texts use a forward scan of
- * the requested bracket span, without allocating a body-sized table.
+ * The bracket table of the hunk being scanned. Only that one text has a
+ * table: a body judged inside it is scanned forward from its opener, so
+ * memory stays one table per hunk however many bodies nest (PR #5232).
  */
+let hunkBrackets: { text: string; matched: Int32Array | null } | null = null;
+
+/** Make `masked` the hunk whose bracket lookups are answered from a table. */
+function scanHunk(masked: string): void {
+  hunkBrackets = { text: masked, matched: null };
+}
+
+/** Offset of the bracket closing the one at `open`, or -1 past the end. */
 function closingBracket(masked: string, open: number): number {
-  if (!hunkTexts.has(masked)) {
-    const left = masked[open];
-    const pairs: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
-    const right = pairs[left ?? ""];
-    if (!right) return -1;
-    let depth = 0;
-    for (let k = open; k < masked.length; k++) {
-      if (masked[k] === left) depth++;
-      else if (masked[k] === right && --depth === 0) return k;
-    }
-    return -1;
+  if (hunkBrackets !== null && hunkBrackets.text === masked) {
+    hunkBrackets.matched ??= bracketTable(masked);
+    return hunkBrackets.matched[open] ?? -1;
   }
-  let matched = matchCache.get(masked);
-  if (matched === undefined) {
-    matched = new Int32Array(masked.length).fill(-1);
-    const stacks: Record<string, number[]> = { "(": [], "{": [], "[": [] };
-    const openerOf: Record<string, string> = { ")": "(", "}": "{", "]": "[" };
-    for (let k = 0; k < masked.length; k++) {
-      const ch = masked[k]!;
-      const stack = stacks[ch];
-      if (stack !== undefined) stack.push(k);
-      else if (openerOf[ch] !== undefined) {
-        const from = stacks[openerOf[ch]!]!.pop();
-        if (from !== undefined) matched[from] = k;
-      }
+  const opener = masked[open];
+  const closer = opener === "(" ? ")" : opener === "{" ? "}" : "]";
+  let depth = 0;
+  for (let k = open; k < masked.length; k++) {
+    const ch = masked[k];
+    if (ch === opener) depth++;
+    else if (ch === closer) {
+      depth--;
+      if (depth === 0) return k;
     }
-    matchCache.set(masked, matched);
   }
-  return matched[open] ?? -1;
+  return -1;
+}
+
+/** Each opener's matching closer (by bracket kind), or -1. */
+function bracketTable(masked: string): Int32Array {
+  const matched = new Int32Array(masked.length).fill(-1);
+  const stacks: Record<string, number[]> = { "(": [], "{": [], "[": [] };
+  const openerOf: Record<string, string> = { ")": "(", "}": "{", "]": "[" };
+  for (let k = 0; k < masked.length; k++) {
+    const ch = masked[k]!;
+    const stack = stacks[ch];
+    if (stack !== undefined) stack.push(k);
+    else if (openerOf[ch] !== undefined) {
+      const from = stacks[openerOf[ch]!]!.pop();
+      if (from !== undefined) matched[from] = k;
+    }
+  }
+  return matched;
 }
 
 /**
@@ -347,6 +356,42 @@ function inlineFunction(arg: string): boolean {
 }
 
 /**
+ * The top-level arguments of the call whose bracket is at `open`, whitespace
+ * removed, with each nested bracket group collapsed to its two brackets
+ * (`() => {}`). Groups are stepped over by their closing offset, so the cost is
+ * the call's own level, not everything nested inside it (PR #5232). Null when
+ * the call does not close in view.
+ */
+function flatArgs(
+  masked: string,
+  open: number,
+): Array<{ flat: string; groups: number[] }> | null {
+  const close = closingBracket(masked, open);
+  if (close < 0) return null;
+  const out: Array<{ flat: string; groups: number[] }> = [];
+  let flat = "";
+  let groups: number[] = [];
+  const flush = () => {
+    if (flat !== "") out.push({ flat, groups });
+    flat = "";
+    groups = [];
+  };
+  for (let k = open + 1; k < close; k++) {
+    const ch = masked[k]!;
+    if (ch === "(" || ch === "{" || ch === "[") {
+      const end = closingBracket(masked, k);
+      if (end < 0 || end > close) return null;
+      flat += ch + masked[end];
+      groups.push(k);
+      k = end;
+    } else if (ch === ",") flush();
+    else if (!/\s/.test(ch)) flat += ch;
+  }
+  flush();
+  return out;
+}
+
+/**
  * The named callback a registration call (its `(` at `open`) passes: the `fn`
  * of an options object (`fn` or `fn: check`), else a trailing reference
  * (`Deno.test("x", check)`) when no argument is an inline function. A property
@@ -354,18 +399,18 @@ function inlineFunction(arg: string): boolean {
  * is a note. Null for an inline callback.
  */
 function callbackName(masked: string, open: number): string | null {
-  const args = callArgs(masked, open);
+  const args = flatArgs(masked, open);
   if (args === null || args.length === 0) return null;
   for (const arg of args) {
-    if (!arg.startsWith("{") || !arg.endsWith("}")) continue;
-    for (const prop of splitTopLevel(arg.slice(1, -1))) {
-      if (prop === "fn") return "fn";
-      const named = FN_PROPERTY.exec(prop);
+    if (arg.flat !== "{}") continue;
+    for (const prop of flatArgs(masked, arg.groups[0]!) ?? []) {
+      if (prop.flat === "fn") return "fn";
+      const named = FN_PROPERTY.exec(prop.flat);
       if (named) return named[1]!;
     }
   }
-  if (args.some(inlineFunction)) return null;
-  const last = args[args.length - 1]!;
+  if (args.some((a) => inlineFunction(a.flat))) return null;
+  const last = args[args.length - 1]!.flat;
   return REF.test(last) ? last : null;
 }
 
@@ -701,66 +746,120 @@ function definitionsIn(
 }
 
 /**
+ * A hunk's definitions indexed by where they sit in its bracket structure, so
+ * a lookup walks up from the registration instead of over every definition
+ * that shares a name (PR #5232).
+ */
+interface Scope {
+  /** Innermost opener enclosing each offset, or -1 at the top level. */
+  enclosing: Int32Array;
+  /** A brace-bodied definition by the offset of its body's `{`. */
+  byBody: Map<number, Definition>;
+  /** Expression-bodied arrows (one line each) by the offset of their line. */
+  arrowsByLine: Map<number, Definition[]>;
+  /** The first definition of a name in a scope, keyed `${opener}:${name}`. */
+  byScopeName: Map<string, Definition>;
+  /** No bracket is cut, so ancestry in view is the whole ancestry. */
+  balanced: boolean;
+}
+
+function scopeOf(masked: string, spans: Definition[]): Scope {
+  // A definition is visible only inside every bracket surrounding its
+  // declaration; the innermost one stands for all of them.
+  const enclosing = new Int32Array(masked.length).fill(-1);
+  const brackets: number[] = [];
+  for (let k = 0; k < masked.length; k++) {
+    while (
+      brackets.length &&
+      closingBracket(masked, brackets[brackets.length - 1]!) < k
+    ) brackets.pop();
+    enclosing[k] = brackets[brackets.length - 1] ?? -1;
+    if ("([{".includes(masked[k]!)) brackets.push(k);
+  }
+  const byBody = new Map<number, Definition>();
+  const arrowsByLine = new Map<number, Definition[]>();
+  const byScopeName = new Map<string, Definition>();
+  for (const d of spans) {
+    if (d.end < 0) continue;
+    if (masked[d.start] === "{") byBody.set(d.start, d);
+    else {
+      const line = masked.lastIndexOf("\n", d.start) + 1;
+      arrowsByLine.set(line, [...(arrowsByLine.get(line) ?? []), d]);
+    }
+    const key = `${enclosing[d.declaration] ?? -1}:${d.name}`;
+    if (!byScopeName.has(key)) byScopeName.set(key, d);
+  }
+  // A cut block has unknown ancestry: callback scope is not inferred from it.
+  const stack: string[] = [];
+  let balanced = true;
+  for (const c of masked) {
+    if ("([{".includes(c)) stack.push(c);
+    else if (")]}".includes(c) && stack.pop() !== "([{"[")]}".indexOf(c)]) {
+      balanced = false;
+      break;
+    }
+  }
+  return {
+    enclosing,
+    byBody,
+    arrowsByLine,
+    byScopeName,
+    balanced: balanced && stack.length === 0,
+  };
+}
+
+/**
  * The registration helper a callback belongs to: the innermost function in
  * view that encloses the call at `open` and takes `name` as a parameter, with
  * that parameter's position. Null when the callback is not such a parameter.
  */
-interface ScopeIndex {
-  parent: Int32Array;
-  bodies: Map<number, Definition>;
-  definitions: Map<number, Map<string, Definition>>;
-  balanced: boolean;
-}
-const scopeIndexes = new WeakMap<Definition[], ScopeIndex>();
-function scopeIndex(spans: Definition[], masked: string): ScopeIndex {
-  const cached = scopeIndexes.get(spans);
-  if (cached) return cached;
-  const parent = new Int32Array(masked.length).fill(-1);
-  const stack: number[] = [];
-  let balanced = true;
-  for (let k = 0; k < masked.length; k++) {
-    parent[k] = stack[stack.length - 1] ?? -1;
-    const c = masked[k]!;
-    if ("([{".includes(c)) stack.push(k);
-    else if (")]}".includes(c)) {
-      const open = stack.pop();
-      if (open === undefined || masked[open] !== "([{"[")]}".indexOf(c)]) {
-        balanced = false;
-      }
-    }
-  }
-  balanced &&= stack.length === 0;
-  const bodies = new Map<number, Definition>();
-  const definitions = new Map<number, Map<string, Definition>>();
-  for (const d of spans) {
-    if (d.end < 0) continue;
-    bodies.set(d.start, d);
-    const scope = parent[d.declaration] ?? -1;
-    const names = definitions.get(scope) ?? new Map<string, Definition>();
-    names.set(d.name, d);
-    definitions.set(scope, names);
-  }
-  const result = { parent, bodies, definitions, balanced };
-  scopeIndexes.set(spans, result);
-  return result;
-}
 function registrarOf(
-  spans: Definition[],
+  scope: Scope,
+  masked: string,
   open: number,
   name: string,
-  masked: string,
 ): { helper: string; index: number } | null {
-  const scope = scopeIndex(spans, masked);
-  for (
-    let at = scope.parent[open] ?? -1;
-    at >= 0;
-    at = scope.parent[at] ?? -1
-  ) {
-    const d = scope.bodies.get(at);
-    const index = d?.params.get(name);
-    if (d && index !== undefined) return { helper: d.name, index };
+  let best: { helper: string; index: number; start: number } | null = null;
+  const line = masked.lastIndexOf("\n", open) + 1;
+  for (const d of scope.arrowsByLine.get(line) ?? []) {
+    const index = d.params.get(name);
+    if (index === undefined || d.start >= open || open >= d.end) continue;
+    if (best === null || d.start > best.start) {
+      best = { helper: d.name, index, start: d.start };
+    }
   }
-  return null;
+  for (let b = scope.enclosing[open] ?? -1; b >= 0; b = scope.enclosing[b]!) {
+    if (best !== null && b < best.start) break;
+    const d = scope.byBody.get(b);
+    const index = d?.params.get(name);
+    if (d !== undefined && index !== undefined) {
+      if (best === null || d.start > best.start) {
+        best = { helper: d.name, index, start: d.start };
+      }
+      break;
+    }
+  }
+  return best === null ? null : { helper: best.helper, index: best.index };
+}
+
+/**
+ * The body of the definition a named callback at `at` resolves to: the
+ * innermost same-named definition whose scope encloses the registration. Null
+ * when it is a helper's parameter, out of view, or the hunk cuts a block.
+ */
+function namedCallbackBody(
+  scope: Scope,
+  masked: string,
+  name: string,
+  at: number,
+): string | null {
+  if (!scope.balanced) return null;
+  if (registrarOf(scope, masked, at, name) !== null) return null;
+  for (let b = scope.enclosing[at] ?? -1;; b = scope.enclosing[b]!) {
+    const d = scope.byScopeName.get(`${b}:${name}`);
+    if (d !== undefined) return masked.slice(d.start, d.end + 1);
+    if (b < 0) return null;
+  }
 }
 
 const RUST_TEST_ATTR = /#\[\s*(?:[A-Za-z_]\w*::)*test\b[^\]\n]*\]/g;
@@ -836,8 +935,7 @@ function problemFor(rule: DummyTestRule): string {
  * names; a callback the diff cannot resolve is a note.
  */
 export function scanDummyTests(diff: string): DummyTestScan {
-  matchCache.clear();
-  hunkTexts.clear();
+  hunkBrackets = null;
   const findings: DummyTestFinding[] = [];
   const notes: DummyTestNote[] = [];
   const seen = new Set<string>();
@@ -865,17 +963,19 @@ export function scanDummyTests(diff: string): DummyTestScan {
   const definitions = new Map<string, Map<string, string | null>>();
   // Per file: a registration helper's name to the position of its callback.
   const registrars = new Map<string, Map<string, number>>();
-  const spansByHunk: Definition[][] = [];
+  // Each hunk is masked and indexed once; the second pass reuses both, so
+  // its bracket lookups hit the same table.
+  const maskedByHunk: string[] = [];
+  const scopeByHunk: Scope[] = [];
   for (const [h, hunk] of hunks.entries()) {
     const lang = langOf(hunk.file);
-    if (lang === null) {
-      spansByHunk[h] = [];
-      continue;
-    }
+    if (lang === null) continue;
     const masked = maskSource(hunk.lines.map((l) => l.text).join("\n"), lang);
-    hunkTexts.add(masked);
+    scanHunk(masked);
     const spans = definitionSpans(masked, lang);
-    spansByHunk[h] = spans;
+    const scope = scopeOf(masked, spans);
+    maskedByHunk[h] = masked;
+    scopeByHunk[h] = scope;
     const defs = definitions.get(hunk.file) ?? new Map();
     definitionsIn(masked, lang, defs);
     definitions.set(hunk.file, defs);
@@ -886,7 +986,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
         if (!m[1]!.startsWith("Deno.") && !testFile) continue;
         const open = (m.index ?? 0) + m[0].length - 1;
         const cb = callbackName(masked, open);
-        const reg = cb === null ? null : registrarOf(spans, open, cb, masked);
+        const reg = cb === null ? null : registrarOf(scope, masked, open, cb);
         if (reg !== null) regs.set(reg.helper, reg.index);
       }
       registrars.set(hunk.file, regs);
@@ -901,7 +1001,9 @@ export function scanDummyTests(diff: string): DummyTestScan {
   for (const [h, hunk] of hunks.entries()) {
     const lang = langOf(hunk.file);
     if (lang === null) continue;
-    const spans = spansByHunk[h]!;
+    const masked = maskedByHunk[h]!;
+    const scope = scopeByHunk[h]!;
+    scanHunk(masked);
     const defs = definitions.get(hunk.file)!;
     // What a body's calls add: the helpers' own assertions, one level deep
     // and then one more; a call out of view in an edited file is unseen.
@@ -927,8 +1029,6 @@ export function scanDummyTests(diff: string): DummyTestScan {
       return { out, unseen };
     };
     const testFile = TEST_PATH.test(hunk.file);
-    const raw = hunk.lines.map((l) => l.text).join("\n");
-    const masked = maskSource(raw, lang);
     const starts: number[] = [];
     let offset = 0;
     for (const l of hunk.lines) {
@@ -937,18 +1037,6 @@ export function scanDummyTests(diff: string): DummyTestScan {
     }
     const index = { starts };
     const maskedLines = masked.split("\n");
-    const scope = scopeIndex(spans, masked);
-    const namedCallback = (name: string, at: number): string | null => {
-      if (!scope.balanced || registrarOf(spans, at, name, masked)) return null;
-      let enclosing = scope.parent[at] ?? -1;
-      while (true) {
-        const d = scope.definitions.get(enclosing)?.get(name);
-        if (d) return masked.slice(d.start, d.end + 1);
-        if (enclosing < 0) return null;
-        enclosing = scope.parent[enclosing] ?? -1;
-      }
-    };
-
     const judge = (
       declLine: number,
       reportLine: number,
@@ -971,8 +1059,8 @@ export function scanDummyTests(diff: string): DummyTestScan {
       let body = masked.slice(bodyStart, bodyEnd + 1);
       if (callback !== null) {
         // A callback passed by name is judged by the function it names.
-        const named = namedCallback(callback, bodyStart);
-        if (named === undefined || named === null) {
+        const named = namedCallbackBody(scope, masked, callback, bodyStart);
+        if (named === null) {
           note(file, line, "unseen");
           return;
         }
@@ -1055,7 +1143,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
         }
         if (skipToken) continue; // a skipped test is judged by the rule above
         const cb = callbackName(masked, open);
-        const reg = cb === null ? null : registrarOf(spans, open, cb, masked);
+        const reg = cb === null ? null : registrarOf(scope, masked, open, cb);
         if (reg !== null) {
           // The callback is a helper's parameter: its calls are judged.
           if (hunk.lines.slice(declLine, last + 1).some((l) => l.added)) {
@@ -1091,7 +1179,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
           const declLine = lineAt(index, open);
           const close = closingBracket(masked, open);
           const last = close < 0 ? hunk.lines.length - 1 : lineAt(index, close);
-          const arg = callArgs(masked, open)?.[paramAt];
+          const arg = flatArgs(masked, open)?.[paramAt]?.flat;
           if (arg === undefined) {
             if (hunk.lines.slice(declLine, last + 1).some((l) => l.added)) {
               note(hunk.file, hunk.lines[declLine]!.line, "unseen");
@@ -1114,8 +1202,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
   for (const p of pending) {
     if (!called.get(p.file)?.has(p.helper)) note(p.file, p.line, "unseen");
   }
-  matchCache.clear();
-  hunkTexts.clear();
+  hunkBrackets = null;
   return { findings, notes };
 }
 

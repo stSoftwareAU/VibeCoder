@@ -1024,3 +1024,20 @@ for (const helper of [false, true]) {
     if (!helper) assertEquals(scan.notes, []);
   });
 }
+
+Deno.test("an expression-bodied registration helper's calls are judged (PR #5232)", () => {
+  const scan = scanDummyTests(
+    added(
+      "tests/arrow_helper_test.ts",
+      [
+        "const reg = (name: string, fn: () => void) => Deno.test({ name, fn });",
+        'reg("x", () => { assertEquals(1, 1); });',
+        'reg("y", () => { const v = 1; });',
+      ].join("\n"),
+    ),
+  );
+  assertEquals(scan.findings.map((f) => `${f.line}:${f.rule}`), [
+    "3:no-assertion",
+  ]);
+  assertEquals(scan.notes, []);
+});
