@@ -3069,9 +3069,9 @@ before creating the PR. A CI fix attempts that gate when Claude leaves
 uncommitted changes after its attempt, then runs configured pre-flight commands
 before the worker push; with no such changes and no pre-flight commands, it runs
 only the repair checks before that push: the ShellCheck publication check, the
-CI cargo-deny check when the pushed paths include a cargo input, and the
+CI cargo-deny check when the pushed paths include a cargo input, the
 dependency-selected unit tests and configured markdownlint for the pushed paths
-(Issue #4930). PR feedback and spelling fixes do not run the full
+(Issue #4930), and the changed-file `deno fmt --check` (Issue #5169). PR feedback and spelling fixes do not run the full
 gate before the worker push. Configured pre-flight commands also enable
 the full set of changed-file checks. PR-review feedback runs its independent fix verifier even
 without pre-flight configuration; persistent findings can block the push.
