@@ -119,7 +119,8 @@ Results:
 - Head: `deno test tests/dummy_test_scan_5016_test.ts` gave 38 passed and
   0 failed. `tests/dummy_test_scan_wiring_5016_test.ts` gave 3 passed.
 - `./quality.sh < /dev/null` passed on the final code head, with the
-  config-integration and checkov stages skipped.
+  config-integration and checkov stages skipped. `deno task
+  pr-summary-check` reported 0 gates blocked.
 
 Docs updated: `CODING-STANDARDS.md` (the dummy-test scan bullets under
 **Dummy tests and "how" tests are refused**) and `docs/review-checklists.md`
@@ -137,8 +138,6 @@ official AWS Emulator with an isolated test runner.
 
 Not done or not checked:
 
-- `deno task pr-summary-check` results are recorded in the run's final
-  message, not here.
 - Rust registrations are unchanged: the issue concerns Deno only.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
