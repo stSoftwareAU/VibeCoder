@@ -215,6 +215,43 @@ flowchart TD
     `{ ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner }`, with every
     assertion unchanged. The change has no Rust file, so no cargo check is
     planned and the assertions hold.
+  - `worker/deno/tests/pre_push_gate_test.ts`: five repair-mode tests change
+    because the mode now keeps the changed-file `deno fmt --check`.
+    - Obsolete: a `repairChecksWithCiCargo` repair push runs no `deno fmt` at
+      all.
+    - Remaining: no `deno lint`, no cspell, and no cargo command beyond the CI
+      checks; the docs-only repair still reads no CI cargo scan.
+    - Covered by:
+      - `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repairChecksWithCiCargo runs deno fmt --check and the CI cargo commands for a .rs and .ts push, and nothing else (Issue #5169)`
+        (renamed; expected `checksRun` goes from `[CLIPPY_CMD]` to
+        `[BAD_TS_FMT, CLIPPY_CMD]`, and the only-cargo-commands assertion also
+        allows the one `deno fmt --check` command).
+      - `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repairChecksWithCiCargo on a docs-only push runs only deno fmt --check and markdownlint for the pushed Markdown and does not read the CI cargo scan (Issues #4930 and #5169)`
+        (renamed; the control expects
+        `deno fmt --check --permit-no-files
+        'README.md'` first, then
+        markdownlint).
+      - `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repair pushes enforce unit tests and markdownlint (PR #5034 review)`
+        (the `{ repairChecksOnly: true }` mode entry is dropped; no longer
+        asserts that no `deno fmt` ran; asserts
+        `deno fmt --check --permit-no-files
+        'lib/foo.ts'` ran and no
+        `deno lint` ran).
+  - `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - repairChecksWithCiCargo: a .ts file gets only deno fmt --check, no other deno check (#4630, #5169)`:
+    renamed. It asserted that no deno command ran for a `.ts` file in a repair
+    push (obsolete); it now asserts the deno commands are exactly
+    `deno fmt --check --permit-no-files 'bad.ts'`, and still that no `deno lint`
+    or other deno check ran.
+  - `worker/deno/tests/babysitter_tree_gate_test.ts::an uncommitted new test file that fails blocks, naming the failing command, with only deno fmt --check and no linter run (#4930, #5169)`:
+    renamed. The expected `deno fmt` and `deno lint` command list goes from `[]`
+    (obsolete) to `["deno fmt --check --permit-no-files 'tests/new_test.ts'"]`.
+    The invalid-config test and both passes of the unreadable-config test in
+    that file likewise gain a leading `deno fmt --check` entry in the expected
+    `checksRun` of a passing gate.
+  - `worker/deno/tests/babysitter_repair_4738_test.ts`: the fake runner failed
+    every command; it now fails only `deno task test:unit` commands, so the new
+    `deno fmt --check` passes. No assertion changes; the same test still blocks
+    on a failing unit test.
 - Results on this head, run from `worker/deno`:
   - `deno test -A tests/babysitter_tree_gate_test.ts
     tests/babysitter_repair_4738_test.ts tests/pre_push_gate_cargo_deny_test.ts

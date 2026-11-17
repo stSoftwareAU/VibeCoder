@@ -3291,7 +3291,7 @@ Deno.test("runPrePushGate: without repairChecksWithCiCargo the same push still r
   }
 });
 
-Deno.test("runPrePushGate: repairChecksWithCiCargo on a docs-only push runs only markdownlint for the pushed Markdown and does not read the CI cargo scan (Issue #4930)", async () => {
+Deno.test("runPrePushGate: repairChecksWithCiCargo on a docs-only push runs only deno fmt --check and markdownlint for the pushed Markdown and does not read the CI cargo scan (Issues #4930 and #5169)", async () => {
   const { root, clone, stdin } = await makeRepoWithDocCommit();
   try {
     const run = async (markdownlintCode: number) => {
