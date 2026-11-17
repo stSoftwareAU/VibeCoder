@@ -58,7 +58,14 @@ flowchart LR
 ```
 
 - `success` runs only after a terminal **successful** issue run; `failure` only
-  after a terminal **failed** one. Exactly one of the two runs.
+  after a terminal **failed** one. Exactly one of the two runs — except for a
+  **parked** run (Issue #5241).
+- A **parked** run is a failed run whose outcome is `no_pr` with category
+  `host_disk` (the host-disk guard parked the agent, Issue #5077) or
+  `rate_limit` (a provider quota, rate or credit stop). Both are deliberate
+  waits that keep the work for the next claim, so neither `success` nor
+  `failure` runs; only `always` does, with the real `result` and `outcome`. A
+  health board fed by `failure` therefore stays green while a host waits.
 - `always` runs after the applicable outcome hook, in both cases — including
   when that hook exited non-zero, timed out or could not be spawned at all.
 - A hook that is not configured is a no-op, and its absence never skips the
