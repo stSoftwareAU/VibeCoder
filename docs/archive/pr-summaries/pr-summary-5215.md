@@ -131,8 +131,8 @@ assertion was edited or removed.
   #5215)`:
   one helper with 3,000 parameters around 3,000 `Deno.test({ name, fn
   })`
-  lines and an asserting call. It asserts no finding and no note, and that the
-  scan takes under 2 s.
+  lines and an asserting call. It asserts no finding and no note; the scan must
+  return on that input (no wall-clock bound, so the test stays parallel-safe).
 
 Results:
 
