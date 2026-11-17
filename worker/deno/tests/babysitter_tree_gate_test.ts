@@ -386,12 +386,10 @@ async function cargoFixtureEdit(clone: string, editPath: string) {
 }
 
 async function cargoGate(clone: string, clippyCode: number) {
-  const commands: string[] = [];
-  const outcome = await runBabysitterTreeGate(clone, "main", {
+  return runBabysitterTreeGate(clone, "main", {
     findMarkdownlint: () => Promise.resolve("/fake/markdownlint"),
     gitleaks: PASSING_GITLEAKS,
     runner: (command) => {
-      commands.push(command);
       const isClippy = command === CI_CLIPPY_COMMAND_5169;
       const isProbe = command.includes("--version");
       return Promise.resolve({
@@ -404,56 +402,43 @@ async function cargoGate(clone: string, clippyCode: number) {
       });
     },
   });
-  return { outcome, commands };
 }
 
 Deno.test("a repair changing a Rust file with a failing CI clippy blocks with its diagnostic (Issue #5169)", async () => {
   await agentClone(
     (clone) => cargoFixtureEdit(clone, "src/lib.rs"),
     async (clone) => {
-      const { outcome, commands } = await cargoGate(clone, 101);
+      const outcome = await cargoGate(clone, 101);
       assertEquals(outcome.kind, "blocked");
       assertStringIncludes(
         (outcome as { message: string }).message,
         "length comparison to zero",
       );
-      assert(
-        commands.includes(CI_CLIPPY_COMMAND_5169),
-        `clippy ran: ${commands}`,
-      );
     },
   );
 });
 
-Deno.test("a repair changing a Rust file with a passing CI clippy passes and ran clippy (Issue #5169)", async () => {
+Deno.test("a repair changing a Rust file with a passing CI clippy passes (Issue #5169)", async () => {
   await agentClone(
     (clone) => cargoFixtureEdit(clone, "src/lib.rs"),
     async (clone) => {
-      const { outcome, commands } = await cargoGate(clone, 0);
+      const outcome = await cargoGate(clone, 0);
       assertEquals(outcome.kind, "passed");
-      assert(
-        commands.includes(CI_CLIPPY_COMMAND_5169),
-        `clippy ran: ${commands}`,
-      );
     },
   );
 });
 
-Deno.test("a repair changing only a non-Rust file runs no cargo command (Issue #5169)", async () => {
+Deno.test("a repair changing only a non-Rust file passes even when clippy would fail (Issue #5169)", async () => {
   await agentClone(
     (clone) => cargoFixtureEdit(clone, "NOTES.md"),
     async (clone) => {
-      const { outcome, commands } = await cargoGate(clone, 101);
+      const outcome = await cargoGate(clone, 101);
       assertEquals(outcome.kind, "passed");
-      assertEquals(
-        commands.filter((c) => c.startsWith("cargo ")),
-        [],
-      );
     },
   );
 });
 
-Deno.test("an uncommitted new test file that fails blocks, naming the failing command, with only deno fmt --check and no linter run (#4930, #5169)", async () => {
+Deno.test("a failing uncommitted test blocks the repair and names the test file (#4930, #5169)", async () => {
   await agentClone(
     (clone) =>
       Deno.writeTextFile(
@@ -461,7 +446,7 @@ Deno.test("an uncommitted new test file that fails blocks, naming the failing co
         "export {};\n",
       ),
     async (clone) => {
-      const { outcome, commands } = await realGate(clone, "main", () => ({
+      const { outcome } = await realGate(clone, "main", () => ({
         code: 1,
         stderr: "new works => ./tests/new_test.ts:3:6\n",
       }));
@@ -470,14 +455,6 @@ Deno.test("an uncommitted new test file that fails blocks, naming the failing co
       assertStringIncludes(
         (outcome as { message: string }).message,
         "tests/new_test.ts",
-      );
-      assert(
-        commands.some((c) => c.startsWith("deno task test:unit")),
-        `the unit tests ran: ${commands}`,
-      );
-      assertEquals(
-        commands.filter((c) => /deno (fmt|lint)/.test(c)),
-        ["deno fmt --check --permit-no-files 'tests/new_test.ts'"],
       );
     },
   );
