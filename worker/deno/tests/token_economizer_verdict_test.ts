@@ -20,6 +20,7 @@ import {
   formatTokenEconomizerVerdict,
   isTokenEconomizerStopRule,
   type TokenEconomizerVerdict,
+  verifiedStopRule,
 } from "../lib/token_economizer_verdict.ts";
 
 const START = Date.parse("2026-11-01T00:00:00Z");
@@ -276,7 +277,8 @@ Deno.test("stopped overrides the window, by option and by a stopped record", asy
 
   assertEquals(await decide(small, "secret-in-learnings"), {
     kind: "stopped",
-    reason: "stop rule secret-in-learnings was reported",
+    reason:
+      "stop rule secret-in-learnings was reported by a fleet-authored stop comment",
   });
 
   const viaRecord = await decide({
@@ -403,6 +405,97 @@ Deno.test("isTokenEconomizerStopRule accepts the four rules only", () => {
   assert(isTokenEconomizerStopRule("unreadable-stop-record"));
   assert(!isTokenEconomizerStopRule("bogus"));
   assert(!isTokenEconomizerStopRule(undefined));
+});
+
+Deno.test("verifiedStopRule trusts a stop comment only from a fleet author", () => {
+  const body = "TokenEconomizer trial stopped: plugin-run-failure.\n\n" +
+    "reason\n\n<!-- vibe-token-economizer-stop -->";
+  const fleet = ["VibeCoderST", "fleet-bot"];
+  // Positive control: the controller's comment from a fleet login.
+  assertEquals(
+    verifiedStopRule([{ author: "vibecoderst", body }], fleet),
+    "plugin-run-failure",
+  );
+  // The same fixed text posted by a non-fleet commenter is no stop.
+  assertEquals(
+    verifiedStopRule([{ author: "drive-by", body }], fleet),
+    undefined,
+  );
+  // An unresolved fleet set cannot verify anyone.
+  assertEquals(
+    verifiedStopRule([{ author: "VibeCoderST", body }], []),
+    undefined,
+  );
+  // A fleet comment without the marker, or naming an unknown rule, is no stop.
+  assertEquals(
+    verifiedStopRule([{
+      author: "fleet-bot",
+      body: "TokenEconomizer trial stopped: plugin-run-failure.",
+    }], fleet),
+    undefined,
+  );
+  assertEquals(
+    verifiedStopRule([{
+      author: "fleet-bot",
+      body: body.replace("plugin-run-failure", "bogus"),
+    }], fleet),
+    undefined,
+  );
+  // An outsider's copy earlier in the thread does not hide the fleet one.
+  assertEquals(
+    verifiedStopRule([
+      { author: "drive-by", body: body.replace("plugin-run", "secret-in") },
+      { author: "fleet-bot", body },
+    ], fleet),
+    "plugin-run-failure",
+  );
+});
+
+Deno.test("concurrent clauses read the shared-repository population only; before reads every switched-on run", async () => {
+  // org/a: 60 clean switched-on runs beside 60 control runs. org/b has no
+  // control, and its switched-on runs fail or raise closed pull requests.
+  const oneSided = (
+    i: number,
+    result: "success" | "failure",
+    pr: number | undefined,
+  ) =>
+    record("trial", IN_WINDOW, result, pr, {
+      repository: "org/b",
+      tokenEconomizer: {
+        enabled: true,
+        status: "on",
+        persistence: "available",
+        runCostUsd: result === "success" ? 80 : 0,
+      },
+      _i: i,
+    });
+  const extra = runs(
+    { n: 10, cost: 80, closed: 10, failed: 20 },
+    50_000,
+    oneSided,
+  );
+  const r = await report({
+    on: { n: 60, cost: 80 },
+    control: { n: 60, cost: 100 },
+    before: { n: 60, cost: 100 },
+    extra,
+  });
+  // The two populations really differ here.
+  assertEquals(r.switchedOn.runs, 90);
+  assertEquals(r.concurrentOn.runs, 60);
+  const v = decideTokenEconomizerVerdict(r, { now: NOW });
+  assert(v.kind === "keep");
+  assertEquals(v.concurrent, {
+    cost: "pass",
+    success: "pass",
+    merge: "pass",
+    costPercent: -20,
+    outcome: "pass",
+  });
+  assertEquals(v.before.success, "miss");
+  assertEquals(v.before.merge, "miss");
+  assertEquals(v.before.outcome, "miss");
+  assertEquals(v.disagreement, true);
 });
 
 Deno.test("formatted verdicts carry the bold line, next check and disagreement", async () => {

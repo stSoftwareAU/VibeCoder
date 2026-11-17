@@ -237,8 +237,8 @@ without operator participation. The verdict is computed by the report command
 (see [The verdict](#the-verdict) in section 7). Nothing in the worker runs
 that command by itself: the #4959 run computes the verdict with the report
 command (passing `--window-start`, the first eligible switched-on completion,
-and `--stop-rule` when the controller's stop comment is on the issue) and
-follows the action table in "The verdict". While the verdict is `not due` or
+and `--read-stop-comments`, so the command reads the issue's stop comments
+itself) and follows the action table in "The verdict". While the verdict is `not due` or
 `undetermined`, the run ends with a `vibe-defer-until` marker at the verdict's
 next check so the worker re-runs it then; no human judges or schedules the
 verdict. The worker honours at most three time deferrals per issue
@@ -400,7 +400,7 @@ The report command is read-only:
 ```text
 deno run mod.ts token-economizer-report --archive <dir> --trial-host <name> \
   --window-start <iso> [--window-end <iso>] --recorded-since <iso> \
-  [--mode work-on] [--format markdown|json] [--stop-rule <rule>]
+  [--mode work-on] [--format markdown|json] [--read-stop-comments]
 ```
 
 It compares the switched-on population with Before (trial host, the 14 days
@@ -457,14 +457,21 @@ comparison section and prints a `## TokenEconomizer trial verdict` section
 (`--format json` gains a `verdict` field). The thresholds are those of sections
 3 to 5, fixed before the window opened. The rules, in order:
 
-- **Stop overrides the window.** The verdict is `stopped (failed)` when
-  `--stop-rule <rule>` is given (one of `secret-in-learnings`,
-  `cross-repo-fact`, `plugin-run-failure`, `unreadable-stop-record`, the rule
-  named in the controller's `TokenEconomizer trial stopped: <rule>.` comment on
-  #4959) or when any run in the switched-on population (trial-host runs inside the
-  window, in the selected mode, served by Claude Code) recorded the plugin
-  status `stopped`, whatever the window's age or run count. The trial goes to the
-  section 8 purge.
+- **Stop overrides the window.** The verdict is `stopped (failed)` when any
+  run in the switched-on population (trial-host runs inside the window, in the
+  selected mode, served by Claude Code) recorded the plugin status `stopped`,
+  or, with `--read-stop-comments`, when #4959 carries the controller's stop
+  comment (first line `TokenEconomizer trial stopped: <rule>.`, one of
+  `secret-in-learnings`, `cross-repo-fact`, `plugin-run-failure`,
+  `unreadable-stop-record`, ending with the `vibe-token-economizer-stop`
+  marker) written by a fleet account. The fleet set is the configured fleet
+  identity (`resolveFleetMaintenanceAuthorSet`, through
+  `resolveAlertDedupAuthors`). The issue is public, so the same text from any
+  other author is ignored. If the comments cannot be read or the fleet set
+  cannot be resolved, the command fails and takes no verdict, so an
+  unverifiable author set never hides a real stop. A stop applies
+  whatever the window's age or run count, and the trial goes to the section 8
+  purge.
 - **Not due.** Otherwise the verdict is `not due` until the window is at least
   7 days old and has at least 60 completed (successful-outcome, the report's
   "Completed" row) switched-on runs. The window's age runs from window start to

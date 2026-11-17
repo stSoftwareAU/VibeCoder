@@ -80,7 +80,7 @@ export type TokenEconomizerVerdict =
 /** Verdict options. */
 export interface VerdictOptions {
   now: Date;
-  /** A stop the outcome issue carries a report of. */
+  /** A stop rule from a fleet-authored stop comment ({@link verifiedStopRule}). */
   stopRule?: TokenEconomizerStopRule;
 }
 
@@ -89,6 +89,41 @@ export function isTokenEconomizerStopRule(
   value: unknown,
 ): value is TokenEconomizerStopRule {
   return TOKEN_ECONOMIZER_STOP_RULES.some((rule) => rule === value);
+}
+
+/** Marker the stop controller ends its #4959 stop comment with. */
+export const TOKEN_ECONOMIZER_STOP_MARKER =
+  "<!-- vibe-token-economizer-stop -->";
+
+/** One issue comment, as `gh issue view --json comments` returns it. */
+export interface StopComment {
+  author: string;
+  body: string;
+}
+
+/**
+ * The stop rule named by a stop comment a fleet account wrote, or undefined.
+ *
+ * The stop comment is fixed text on a public issue, so anyone can post a copy.
+ * Only a comment whose author is in `fleetAuthors` (compared case-blind) and
+ * which carries the controller's first line and marker counts. An empty fleet
+ * set verifies no comment; the report command refuses to take a verdict then.
+ */
+export function verifiedStopRule(
+  comments: readonly StopComment[],
+  fleetAuthors: readonly string[],
+): TokenEconomizerStopRule | undefined {
+  const fleet = new Set(fleetAuthors.map((a) => a.toLowerCase()));
+  for (const comment of comments) {
+    if (!fleet.has(comment.author.toLowerCase())) continue;
+    if (!comment.body.includes(TOKEN_ECONOMIZER_STOP_MARKER)) continue;
+    const firstLine = comment.body.split("\n", 1)[0] ?? "";
+    const match = /^TokenEconomizer trial stopped: ([a-z-]+)\.\r?$/.exec(
+      firstLine,
+    );
+    if (match && isTokenEconomizerStopRule(match[1])) return match[1];
+  }
+  return undefined;
 }
 
 function rateClause(on?: number, comparison?: number): ClauseResult {
@@ -144,7 +179,8 @@ export function decideTokenEconomizerVerdict(
   if (options.stopRule !== undefined) {
     return {
       kind: "stopped",
-      reason: `stop rule ${options.stopRule} was reported`,
+      reason:
+        `stop rule ${options.stopRule} was reported by a fleet-authored stop comment`,
     };
   }
   const stopped = report.exclusions.onByStatus.stopped;

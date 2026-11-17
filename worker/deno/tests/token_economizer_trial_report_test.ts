@@ -642,27 +642,85 @@ Deno.test("command JSON carries a not-due verdict with the next check from the i
   });
 });
 
-Deno.test("command applies --stop-rule and refuses an unknown rule", async () => {
+Deno.test("command accepts a stop comment only from a fleet author", async () => {
   await withTemp(async (dir) => {
     await Deno.writeTextFile(
       `${dir}/a.json`,
       JSON.stringify(fixture().slice(0, 4)),
     );
-    const command = createTokenEconomizerReportCommand({ lookup });
-    const stopped = await command.execute(
-      { ...BASE_ARGS, archive: dir, "stop-rule": "cross-repo-fact" },
-      config(),
+    const stopBody = "TokenEconomizer trial stopped: cross-repo-fact.\n\n" +
+      "reason\n\n<!-- vibe-token-economizer-stop -->";
+    const run = async (
+      comments: { author: string; body: string }[],
+      fleet: string[],
+    ) => {
+      const command = createTokenEconomizerReportCommand({
+        lookup,
+        stopComments: () => Promise.resolve(comments),
+        fleetAuthors: () => Promise.resolve(fleet),
+      });
+      return await command.execute(
+        { ...BASE_ARGS, archive: dir, "read-stop-comments": true },
+        config(),
+      );
+    };
+    const fleetStop = await run(
+      [{ author: "VibeCoderST", body: stopBody }],
+      ["vibecoderst"],
     );
-    assertEquals(stopped.success, true);
-    assertStringIncludes(stopped.message, "**Verdict: stopped (failed).**");
-    const bogus = await command.execute(
-      { ...BASE_ARGS, archive: dir, "stop-rule": "bogus" },
-      config(),
+    assertEquals(fleetStop.success, true);
+    assertStringIncludes(fleetStop.message, "**Verdict: stopped (failed).**");
+    assertStringIncludes(
+      fleetStop.message,
+      "stop rule cross-repo-fact was reported by a fleet-authored stop comment.",
     );
-    assertEquals(bogus.success, false);
+
+    // The same text from anyone else, or with no resolvable fleet, is no stop.
+    const outsider = await run(
+      [{ author: "someone-else", body: stopBody }],
+      ["vibecoderst"],
+    );
+    assertEquals(outsider.success, true);
+    assertStringIncludes(outsider.message, "**Verdict: not due.**");
+    // An unresolvable fleet set takes no verdict rather than hide a stop.
+    const unverifiable = await run(
+      [{ author: "VibeCoderST", body: stopBody }],
+      [],
+    );
+    assertEquals(unverifiable.success, false);
     assertEquals(
-      bogus.message,
-      "Argument --stop-rule must be one of secret-in-learnings, cross-repo-fact, plugin-run-failure, unreadable-stop-record.",
+      unverifiable.message,
+      "The fleet author set could not be resolved, so no stop comment on #4959 can be verified and no verdict was taken; re-run the report later.",
+    );
+
+    // Without the flag no comment is read at all.
+    const unread = await createTokenEconomizerReportCommand({
+      lookup,
+      stopComments: () => Promise.reject(new Error("must not be called")),
+    }).execute({ ...BASE_ARGS, archive: dir }, config());
+    assertStringIncludes(unread.message, "**Verdict: not due.**");
+  });
+});
+
+Deno.test("command fails loud, taking no verdict, when the stop comments cannot be read", async () => {
+  await withTemp(async (dir) => {
+    await Deno.writeTextFile(
+      `${dir}/a.json`,
+      JSON.stringify(fixture().slice(0, 4)),
+    );
+    const command = createTokenEconomizerReportCommand({
+      lookup,
+      stopComments: () => Promise.reject(new Error("token=secret")),
+      fleetAuthors: () => Promise.resolve(["vibecoderst"]),
+    });
+    const result = await command.execute(
+      { ...BASE_ARGS, archive: dir, "read-stop-comments": true },
+      config(),
+    );
+    assertEquals(result.success, false);
+    assertEquals(
+      result.message,
+      "The comments on #4959 could not be read, so no verdict was taken; re-run the report later.",
     );
   });
 });

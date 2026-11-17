@@ -15,7 +15,8 @@ in advance to the trial report:
 
 `token-economizer-report` now prints a `## TokenEconomizer trial verdict`
 section, adds a `verdict` field to `--format json`, and accepts
-`--stop-rule <rule>`. `docs/TOKEN-ECONOMIZER-TRIAL.md` §3 and §7 replace the
+`--read-stop-comments`. With that flag the command reads #4959's comments
+itself and counts a stop comment only when a fleet account wrote it. `docs/TOKEN-ECONOMIZER-TRIAL.md` §3 and §7 replace the
 "not present yet: #4959 owns them" wording with the delivered procedure and an
 action table per verdict.
 
@@ -51,9 +52,19 @@ purge was done. Part of #4959.
   inside the worker's 30-day `vibe-defer-until` cap. A stop comment posted while
   the issue is parked is therefore read within 7 days.
 - **Where a stop comes from.** A stop is read from the archive (any
-  switched-on-population run with status `stopped`) or from `--stop-rule`, the
-  rule named in the controller's `TokenEconomizer trial stopped: <rule>.`
-  comment on #4959.
+  switched-on-population run with status `stopped`) or, with
+  `--read-stop-comments`, from the controller's stop comment on #4959.
+  `verifiedStopRule` accepts that comment only when all of these hold:
+  - its author is in the fleet set (`resolveAlertDedupAuthors`, i.e.
+    `resolveFleetMaintenanceAuthorSet`);
+  - its first line is `TokenEconomizer trial stopped: <rule>.` with an
+    allow-listed rule;
+  - it carries the `<!-- vibe-token-economizer-stop -->` marker.
+
+  #4959 is public, so the same text from anyone else is ignored. If the
+  comments cannot be read, or the fleet set cannot be resolved, the command
+  fails and takes no verdict. An unverifiable author set therefore never hides
+  a real stop. The earlier caller-supplied `--stop-rule` option is removed.
 
 ### Undiscoverable Facts
 
@@ -68,7 +79,7 @@ Backend/CLI change; no UI files. Verified by the tests below.
 
 ```mermaid
 flowchart TD
-    R["token-economizer-report<br/>(archive, window, --stop-rule)"] --> S{"stop reported or<br/>stopped run in population?"}
+    R["token-economizer-report<br/>(archive, window, --read-stop-comments)"] --> S{"fleet-authored stop comment or<br/>stopped run in population?"}
     S -- yes --> F["stopped (failed) → §8 purge"]
     S -- no --> D{"≥ 7 days AND<br/>≥ 60 completed?"}
     D -- no --> N["not due → vibe-defer-until next check (1–7 days)"]
@@ -91,8 +102,9 @@ own cost in run stats, the run callback (additive only) and the weekly report".
 - **partial** — The verdict is reproducible from archived run data and the
   predeclared protocol. — evidence:
   `worker/deno/tests/token_economizer_verdict_test.ts` — reviewer: partial —
-  reason: the bar is applied deterministically from the archive, but
-  `--window-start` and `--stop-rule` are still supplied by the #4959 run, and
+  reason: the bar is applied deterministically from the archive, and the stop
+  comment is now read and author-checked by the command. But `--window-start`
+  is still supplied by the #4959 run, the source queries are not recorded, and
   the three section 5 exclusions the archive cannot apply stay not checked.
 - **partial** — A stop before the normal window is handled automatically; normal
   waiting resumes automatically without routine `needs-human`. — evidence:
@@ -100,26 +112,36 @@ own cost in run stats, the run callback (additive only) and the weekly report".
   — reviewer: partial — reason: the verdict puts a stop ahead of the window and
   gives a bounded next check, but nothing in the worker calls the command by
   itself. A stop comment is only read at the next check, and the worker's
-  three-deferral ceiling (`MAX_TIME_DEFERRALS`) is unchanged.
+  three-deferral ceiling (`MAX_TIME_DEFERRALS`, about 21 days at 7-day checks)
+  is unchanged. The window plus the day-28 limit can need more than that, so
+  the issue can still fall to its ordinary retry.
 - **missing** — Keep and purge outcomes above have concrete evidence; purge
   builds without the plugin and passes the required checks. — reviewer: missing
   — reason: the trial window has not opened (Status "not started"), so no
-  figures exist to keep or purge on.
-- **met** — Implementation and outcome PRs follow ordinary CI, review and
+  figures exist to keep or purge on, and no plugin-free build exists.
+- **partial** — Implementation and outcome PRs follow ordinary CI, review and
   automatic merge/completion. There is no additional sign-off tracker. —
   evidence: `docs/TOKEN-ECONOMIZER-TRIAL.md` (the action table under "The
-  verdict" adds no sign-off step) — reviewer: met
+  verdict" adds no sign-off step) — reviewer: partial — reason: no sign-off
+  tracker is added, but the outcome PRs do not exist yet, so ordinary CI and
+  merge cannot be shown for them.
 - **partial** — Unavailable host/store operations use existing authorised
   recovery and precise deferred status, never a false claim that the trial was
   enabled, stopped or purged. — evidence:
   `worker/deno/commands/token_economizer_report.ts` — reviewer: partial —
-  reason: the command still fails loud on an unreadable or empty archive, and an
-  unavailable figure gives `undetermined`, never `keep`. Nothing new covers an
-  unavailable host or learnings store during a purge.
+  reason: an unreadable or empty archive, unreadable #4959 comments and an
+  unresolvable fleet set all fail with no verdict taken
+  (`command fails loud, taking no verdict, when the stop comments cannot be read`,
+  `command accepts a stop comment only from a fleet author`). An unavailable
+  figure gives `undetermined`, never `keep`. Nothing covers an unavailable host
+  or learnings store during inhibit or purge.
 - **unrequested** — the `MISSING_DATA_LIMIT_DAYS = 28` limit and the
   `undetermined` state — reviewer: unrequested — reason: needed so that "missing
   data is not a successful trial" ends in a recorded outcome rather than an
   unbounded wait; set before any result exists.
+- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-4959.json` —
+  reviewer: unrequested — reason: the repository's sweep-coverage convention
+  for a new `lib/` module (`tests/lib_sweep_coverage_test.ts`).
 - **unrequested** — `--format json` now carries an added `verdict` field —
   reviewer: unrequested — reason: makes the verdict machine-readable for the
   #4959 run; the change only adds a field.
@@ -156,8 +178,8 @@ own cost in run stats, the run callback (additive only) and the weekly report".
 - **clean** — Review-enforced rules checked: dummy tests and "how" tests (rules
   1–4), documentation-drift review findings, and "Check where you insert". Also
   checked: the refusal test is refused by the rule it names, every named test
-  exists, issue numbers were cited after looking them up, `--stop-rule` is
-  allow-listed, tests use a fixed clock and private temp directories, Australian
+  exists, issue numbers were cited after looking them up, a stop comment's rule
+  is allow-listed and its author is fleet-checked, tests use a fixed clock and private temp directories, Australian
   English, and the JSON field is additive and never cached.
 
 ## Test Plan
@@ -176,11 +198,25 @@ own cost in run stats, the run callback (additive only) and the weekly report".
   - `compareAgainst` precedence: a miss beside an unavailable clause gives
     `miss`, with an `unavailable` control;
   - the stop-rule allow-list;
+  - `verifiedStopRule`: a fleet author's stop comment is accepted, case-blind.
+    It is refused from a non-fleet author, with an empty fleet set, without the
+    marker, or with an unknown rule. An outsider's copy earlier in the thread
+    does not hide the fleet one;
+  - the concurrent clauses read only the shared-repository population. The
+    test has 60 clean runs in `org/a` beside a control, plus 30 failed or
+    closed-PR runs in `org/b`, which has no control. Concurrent passes and the
+    verdict is `keep`, while `before` (all 90 runs) misses on success and merge
+    rate. Red-checked: reading `report.switchedOn` in the concurrent comparison
+    fails this test;
   - the formatted verdict lines.
 - Added to `worker/deno/tests/token_economizer_trial_report_test.ts`:
-  - a `--stop-rule cross-repo-fact` run gives a stopped verdict, and
-    `--stop-rule bogus` is refused with the exact message (otherwise valid
-    input);
+  - `--read-stop-comments` with a fleet-authored stop comment gives a stopped
+    verdict. The same comment from a non-fleet author gives `not due`. An
+    unresolvable fleet set fails with no verdict taken. Without the flag, no
+    comment is read. Red-checked: dropping the author check fails this test
+    and the `verifiedStopRule` test;
+  - unreadable #4959 comments fail with the exact no-verdict message, and the
+    remote error text is not echoed;
   - a `--format json` run carries `verdict.kind` `not-due` and a `nextCheck`
     taken from the injected clock.
 - Changed one existing assertion in
@@ -194,12 +230,14 @@ own cost in run stats, the run callback (additive only) and the weekly report".
       in the same test. The test still asserts that the comparison section
       contains no keep, purge or fail wording.
 - `deno test -A tests/token_economizer_verdict_test.ts tests/token_economizer_trial_report_test.ts`
-  (from `worker/deno`): passed, 30 tests.
-- `deno test -A tests/token_economizer_trial_docs_test.ts`: passed, 31 tests. It
+  (from `worker/deno`): passed, 33 tests.
+- `deno test -A tests/token_economizer_trial_docs_test.ts tests/mod_test.ts`:
+  passed (51 tests together); the docs test alone has 31. It
   needs the purge-list rows for the two new files, which this diff adds.
 - `deno test -A tests/lib_sweep_coverage_test.ts`: passed, 39 tests.
   `deno task check:manifests`: passed.
-- `./quality.sh < /dev/null`: failed, on deno tests only, with 2 of 35105 tests
+- `./quality.sh < /dev/null` (before this round's stop-comment change; the
+  worker re-runs it): failed, on deno tests only, with 2 of 35105 tests
   failing. Neither test imports a changed file:
   - `worker/deno/tests/ephemeral_root_telemetry_5105_test.ts:375` fails under
     the parallel pass and passes alone (20 of 20);
