@@ -57,7 +57,8 @@
  *    spec's `compareRef` (the PR base, for a CI-fix or PR-feedback run) as
  *    `compareRef`. The worker's own gates pass
  *    `repoCiCargoChecks` directly: `git_push.ts` `gateUnpushedCommits`
- *    (`commitAndPushPending` Step 1b and the completion phase).
+ *    (`commitAndPushPending` Step 1b and the completion phase) and
+ *    `babysitter_tree_gate.ts` `runBabysitterTreeGate` (Issue #5169).
  * 3. Then runs the repo's `cargo deny check` (Issue #4626) for eligible
  *    workflows when intermediate pushes or `repairChecksWithCiCargo` repairs
  *    change a cargo input (a Cargo manifest, lock file,

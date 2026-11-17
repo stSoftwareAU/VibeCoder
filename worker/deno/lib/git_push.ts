@@ -82,12 +82,14 @@ export interface PreFlightGateSpec {
 
 /**
  * The gate the repair processors (CI fix, PR feedback, spelling and
- * merge-conflict) pass when a repo has no pre-flight commands (Issues #4630
- * and #5169). Their repairs otherwise reach the
+ * merge-conflict) and the babysitter tree gate (`runBabysitterTreeGate`) pass
+ * when a repo has no pre-flight commands (Issues #4630 and #5169). Their
+ * repairs otherwise reach the
  * branch with no gate, and CI then fails on clippy. Only the repo CI's cargo
  * clippy and test-target compile run, plus the ShellCheck policy and the CI
  * cargo-deny check for changed cargo inputs (Issues #4631 and #4626), and the
- * pushed paths' dependency-selected unit tests and markdownlint (Issue #4930).
+ * pushed paths' dependency-selected unit tests, markdownlint (Issue #4930) and
+ * the changed-file `deno fmt --check` (Issue #5169).
  * Frozen so that no caller can change the shared spec. To inject a runner,
  * copy it: `{ ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner }`.
  */

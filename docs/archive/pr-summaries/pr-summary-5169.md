@@ -222,11 +222,11 @@ flowchart TD
     159 passed, 0 failed.
   - `deno check` on the changed lib files and `commands/babysitter_repair.ts`:
     clean.
-  - Run directly with `deno test`, `tests/pre_push_gate_test.ts` gave 144 passed
-    and 41 failed, and the same 144/41 on the unchanged base. The failures come
-    from the fixtures' own `git push` meeting the host's pre-push hook
-    (markdownlint on a fixture `README.md`). Under `./quality.sh` that file
-    raised no failure.
+  - Run directly with `deno test -A`, `tests/pre_push_gate_test.ts` (186 tests)
+    gave 145 passed and 41 failed on this head. The failures come from the
+    fixtures' own `git push` meeting the host's pre-push hook (markdownlint on a
+    fixture `README.md`; filed as #5254). Under `./quality.sh` that file raised
+    no failure.
 - `./quality.sh < /dev/null` on this head:
   - Every stage passed except `deno tests`. Config integration and checkov were
     skipped in this environment.
