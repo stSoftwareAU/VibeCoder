@@ -656,6 +656,36 @@ ${REGISTER_HELPER}register("by name", idle);
   assertEquals(rules(diff), [["no-assertion", 7]]);
 });
 
+Deno.test("registration patterns stay linear on long hostile runs (Issue #5215)", () => {
+  const file = "tests/hostile_test.ts";
+
+  // A helper name then a long whitespace run and no `(`: no call in view.
+  const noCall = scanDummyTests(
+    added(file, REGISTER_HELPER + "register" + " ".repeat(50_000) + "x;\n"),
+  );
+  assertEquals(noCall.findings, []);
+  assertEquals(noCall.notes, [{ file, line: 2, kind: "unseen" }]);
+
+  // An options `fn:` property with a long whitespace run before an undefined name.
+  const fnRun = scanDummyTests(
+    added(
+      file,
+      `Deno.test({ name: "n", fn:${" ".repeat(50_000)}missing });\n`,
+    ),
+  );
+  assertEquals(fnRun.findings, []);
+  assertEquals(fnRun.notes, [{ file, line: 1, kind: "unseen" }]);
+
+  // A long identifier run that the parameter pattern rejects, then the callback.
+  const longParam = added(
+    file,
+    `function register(${
+      "p".repeat(50_000)
+    }!, fn: () => Promise<void>): void {\n  Deno.test({ name: "n", fn });\n}\nregister("x", async () => {\n  await Promise.resolve(1);\n});\n`,
+  );
+  assertEquals(rules(longParam), [["no-assertion", 4]]);
+});
+
 // --- What the diff shows ---
 
 Deno.test("an unchanged test in context is not judged; an edited one is", () => {
