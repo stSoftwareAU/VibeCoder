@@ -93,10 +93,10 @@ flowchart TD
   "tree gate" and "formatters or linters". The babysitter "Pre-push gate"
   paragraph and the summary under "Container repairs" in
   `docs/workflows/fleet-pr-babysitter.md`, the babysitter paragraph and the
-  unit-test and `cargo deny` bullets and the CI-fix push-guarantee paragraph
-  in `docs/CONFIGURATION.md`, and the
-  publication-paths passage in `docs/INTERNALS.md` now name the CI cargo checks.
-  Each now says the gate runs no linter other than CI's cargo clippy.
+  unit-test and `cargo deny` bullets and the CI-fix push-guarantee paragraph in
+  `docs/CONFIGURATION.md`, and the publication-paths passage in
+  `docs/INTERNALS.md` now name the CI cargo checks. Each now says the gate runs
+  no linter other than CI's cargo clippy.
   `grep -rn repairChecksOnly worker/ docs/ --include=*.ts --include=*.md`,
   excluding `docs/archive`, finds nothing.
 
@@ -150,11 +150,10 @@ flowchart TD
   `worker/deno/lib/git_push.ts:63` — reason: fixed in this diff, along with
   `git_push.ts` (field doc and `resolveRepairPreFlightSpec`), `pre_push_gate.ts`
   (the `runPrePushGate` doc comment), `babysitter_tree_gate.ts`,
-  `docs/INTERNALS.md` and four passages in `docs/CONFIGURATION.md`. The
-  doc comments on `PreFlightGateSpec` and
-  `REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT` now say the babysitter tree gate
-  sets `repairChecksWithCiCargo` directly for every repo and that the constant
-  is used by the four repair processors only.
+  `docs/INTERNALS.md` and four passages in `docs/CONFIGURATION.md`. The doc
+  comments on `PreFlightGateSpec` and `REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT`
+  now say the babysitter tree gate sets `repairChecksWithCiCargo` directly for
+  every repo and that the constant is used by the four repair processors only.
 - **clean** — the `repairChecksOnly` removal (no hits outside `docs/archive`),
   the updated CONFIGURATION.md, INTERNALS.md and fleet-pr-babysitter.md
   paragraphs, test isolation (private temp dirs), the PR summary's records of
@@ -197,6 +196,12 @@ flowchart TD
     #5169)`:
     a `NOTES.md` edit with a failing clippy stub passes and runs no `cargo`
     command. Green on base too, as expected.
+- Governing requirement for the edited tests (Part of #5169, "What to fix",
+  quoted verbatim): "Make the fleet run
+  `cargo clippy, cargo llvm-cov, deno fmt, deno test` the way CI does, and
+  require it to pass, before a PR is raised or a fix is pushed. Find the path
+  that skipped it (a disk-budget deferral that leaves checks to CI, a targeted
+  subset) and close it."
 - Edited tests, after `repairChecksOnly` was removed:
   - Removed from `worker/deno/tests/pre_push_gate_cargo_deny_test.ts`: the whole
     test `cargo deny: repairChecksOnly mode checks Cargo.lock`, with
