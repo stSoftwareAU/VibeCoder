@@ -1522,6 +1522,19 @@ Deno.test("run.sh hands the round a read-only snapshot of only the test-change p
   }/test-policy.json`;
   const configArg = /--config=(\S+)/.exec(prompt)?.[1] ?? "";
   assertEquals(configArg, containerPath);
+  assertStringIncludes(
+    prompt,
+    "Pass this policy context verbatim to every reviewer",
+  );
+  assertStringIncludes(
+    prompt,
+    `The authoritative test-change policy is ${containerPath}.`,
+  );
+  assertStringIncludes(prompt, "stop the round without posting a review");
+  assertStringIncludes(
+    prompt,
+    "Reassess earlier trust findings using this snapshot",
+  );
   const hostPath = `${home}/logs/${configArg.slice("/home/vibe/logs/".length)}`;
   const policy = await postTestPolicy([
     "--input=x.json",

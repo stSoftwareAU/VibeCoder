@@ -781,6 +781,15 @@ and write its input files directly in $C_DIR (not a sub-directory: post.ts
 reads the round's attempt log beside its input). Skip the PushNotification step: this
 session is headless. Finish with the one-line round report.
 
+Pass this policy context verbatim to every reviewer and verification agent:
+The authoritative test-change policy is $C_DIR/test-policy.json. Any call to
+loadTestPolicy must pass that explicit path; never probe the checkout's
+.config.json or substitute an empty trustedLogins list. If this snapshot cannot
+be read or validated, stop the round without posting a review. A reviewer
+configuration failure is an infrastructure failure, not evidence against the PR.
+Reassess earlier trust findings using this snapshot and the linked issue evidence;
+do not preserve a finding solely because a previous review lacked configuration.
+
 $(round_shell_paragraph)
 PROMPT
   log "$key: round started: $dir"

@@ -217,6 +217,22 @@ it under `testChanges`. Do not guess: every finding needs a file and line from t
 diff and a concrete failure scenario. A problem the change introduces,
 widens or newly exposes is always a finding, never an unrelated issue.
 
+Before returning a blocking finding, verify its premises against the current
+head and the applicable requirement. State the concrete trigger, observed code
+or evidence, and resulting failure. Distinguish a result you ran from an inference
+based on reading code. Never invent a command result, missing requirement, trust
+decision or execution path. Check plausible existing handling and contrary
+evidence before asking the author to repair it.
+
+A failure to obtain reviewer configuration, credentials, tools or source data is
+not evidence of a PR defect. Repair or retry the unavailable input; if it remains
+unavailable and prevents a required verdict, stop the review without submitting
+an approval or request for changes. Report the infrastructure failure to the
+calling runner. Do not encode that uncertainty as a finding, a missing checklist
+item, or a partly/not-fixed earlier finding. This rule does not excuse a verified
+omission in the PR's own required evidence. Earlier findings need current
+support too; their presence in a previous review does not prove they are valid.
+
 Reply with only this JSON:
 `{"summary": "<one or two sentences>", "earlierFindings": [{"index": 1, "verdict": "fixed" | "partly" | "not fixed", "note": "<evidence covering every ask in this earlier finding>"}], "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "...", "category": "quality_check" | "summary_incomplete"}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value" | "replaced" | "removed-case" | "removed-file" | "weakened-assertion" | "added-skip" | "threshold-reduced" | "other", "verdict": "justified" | "unjustified" | "owner", "ownerQuestion": "<only for owner: the unclear product contract>", "obsolete": "<old behaviour that is obsolete or intentionally changed>", "remaining": "<required behaviour that remains, or omit when every coverage role is gone>", "coverage": [{"role": "replacement" | "existing" | "gone", "path": "<repo-relative path at the head>", "name": "<test name, optional>"}], "requirementQuote": "<verbatim from the governing issue's title or body, or omit>", "failsWithoutChange": true, "verification": "<regression command or coverage inspection and the observed result>"}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}], "closure": [{"criterion": "<text as listed>", "verdict": "met" | "partial" | "missing", "note": "<what is left out, or why every case is delivered>"}]}` (omit `existingIssue` unless an open issue covers the same defect class)
 Use `[]` for `checklist` when there is no checklist section, and for `closure` when no closure entry is listed.
