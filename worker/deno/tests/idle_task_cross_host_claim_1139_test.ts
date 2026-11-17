@@ -229,7 +229,10 @@ function wrapperInput(workDir: string) {
     workDir,
     githubUser: FLEET_USER,
     fleetAuthors: [FLEET_USER],
+    fleetIdentityLogins: [FLEET_USER],
     pushCapableAuthors: [FLEET_USER],
+    issueAuthor: FLEET_USER,
+    authorisedOptInTemplates: new Set<string>(),
   };
 }
 

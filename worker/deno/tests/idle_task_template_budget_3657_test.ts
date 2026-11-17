@@ -127,9 +127,8 @@ Deno.test({
       if (!source.includes("runIdleTaskClaude")) continue;
       budgeted++;
       assert(
-        source.includes(
-          'import { runIdleTaskClaude } from "../idle_task_claude_budget.ts";',
-        ),
+        /import\s*\{[^}]*\brunIdleTaskClaude\b[^}]*\}\s*from\s*"\.\.\/idle_task_claude_budget\.ts"/
+          .test(source),
         `${name} uses runIdleTaskClaude but does not import it from the ` +
           `shared budget module`,
       );

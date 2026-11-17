@@ -1,11 +1,13 @@
 /**
- * CLI entry point for raising all ten idle-task wrappers across a supplied set
- * of repos (Issue #3196).
+ * CLI entry point for raising the canonical idle-task wrappers across a supplied
+ * set of repos (Issue #3196).
  *
  * The steady-state random filer seeds one wrapper per idle tick, so bringing
  * several repos up to the full best-practice set on demand is slow. This
- * command seeds the whole canonical set in every named repo in a single pass —
- * the multi-repo, all-template parallel to `raise-boy-scout-idle-tasks`
+ * command seeds the canonical set in every named repo in a single pass. The
+ * opt-in `test-audit` template is seeded only when the worker config authorises
+ * it (Issue #5096) — the multi-repo, all-template parallel to
+ * `raise-boy-scout-idle-tasks`
  * (Issue #2933) and to the single-repo `create-all-idle-task-wrappers`
  * (Issue #2870).
  *
@@ -42,6 +44,7 @@ import {
   type RaiseAllIdleTasksOptions,
   type RaiseAllIdleTasksResult,
 } from "../lib/raise_all_idle_tasks.ts";
+import { authorisedOptInTemplates } from "../lib/idle_task_opt_in.ts";
 
 interface TestDeps {
   log?: (line: string) => void;
@@ -67,9 +70,9 @@ const KNOWN_OPTIONS: ReadonlySet<string> = new Set([
 
 export const raiseAllIdleTasksCommand: Command = {
   name: "raise-all-idle-tasks",
-  description:
-    "Seed all ten idle-task wrappers in every named repo (--monitored-repos " +
-    "CSV, else config repos), skipping any whose canonical title is already " +
+  description: "Seed the canonical idle-task wrappers in every named repo " +
+    "(--monitored-repos CSV, else config repos; opt-in test-audit only when " +
+    "the config authorises it, Issue #5096), skipping any whose canonical title is already " +
     "open (Issue #3196). A repo with any open idle-task issue is skipped " +
     "unless --force is passed (Issue #2753).",
 
@@ -128,6 +131,11 @@ export const raiseAllIdleTasksCommand: Command = {
       nowFn: deps.nowFn,
       rootDir: deps.rootDir,
       force: forceResult.value,
+      // Issue #5096: the owner's config decides which opt-in templates run.
+      // A missing config (tests) authorises none.
+      authorisedOptInTemplates: config
+        ? authorisedOptInTemplates(config)
+        : new Set<string>(),
       log,
     });
 

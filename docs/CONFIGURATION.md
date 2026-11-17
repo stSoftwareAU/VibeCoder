@@ -663,8 +663,8 @@ explicitly overridden.
 | `external_orchestration` | `false` | Opt into independent manager/executor/reviewer CLI calls for issue runs. A repository boolean overrides this host value; setting it to `false` restores native dispatch. See [Role configuration](ROLE-CONFIGURATION.md). |
 | `subscription_allocation` | absent | Optional dry-run-first allocation policy: explicit `auto_routing`, trial arms, fixed-subscription provider budgets, host capacities/weights, complete lifecycle ledger paths and measured capacity evidence. Applies to main-loop issue runs; no subscription changes or metered access. See [Subscription allocation](SUBSCRIPTION-ALLOCATION.md) for schema, defaults, sequential uncertainty, rollout and reset. |
 | `external_orchestration_settings` | `{}` | Validated role selections (`manager`, `executor`, `reviewer`: `provider`, `model`, `effort`, `cli_adapter`) and call limits (`max_retries`, `max_concurrency`, `max_invocations`, `max_cost_usd`). Repository settings override individual host fields. Read only for opted-in issue runs; all named providers must be enabled in `agent_providers`. See [Role configuration](ROLE-CONFIGURATION.md). |
-| `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#%EF%B8%8F-idle-task-template-weights))                                                                                                                                                                      |
-| `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#%EF%B8%8F-idle-task-cadence)) |
+| `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#%EF%B8%8F-idle-task-template-weights)). Naming the opt-in template `test-audit` with a positive weight is what enables it for automatic idle work (Issue #5096).                                                                                                                                                                      |
+| `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#%EF%B8%8F-idle-task-cadence)). Naming the opt-in template `test-audit` under `templates` is what enables it for automatic idle work (Issue #5096). |
 | `software_min_versions`      | `{ "claude": "2.1.293" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#%EF%B8%8F-minimum-version-floor))                                                                                                                                                                       |
 | `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
@@ -759,7 +759,9 @@ Semantics:
   weight `3` and the other fifteen keep the baseline `1`, so the totals are
   `6 : 15` — ~29% (6 of 21) on the two boosted supply-chain templates.
 - **Name only what you boost.** A template absent from the map keeps the
-  baseline weight of `1`, so you do not need to list every template.
+  baseline weight of `1`, so you do not need to list every template. The opt-in
+  `test-audit` is the exception: it is not drawn unless you give it a positive
+  weight, and that entry is what enables it for automatic idle work (Issue #5096).
 - **Zero / negative / non-finite → baseline.** A weight that is not a finite
   positive number collapses to the baseline `1` (it does **not** exclude the
   template).
@@ -777,7 +779,8 @@ random.
 
 Which templates get a floor, over which windows, and at which tier is a **spend**
 decision, so — like `phase_model_overrides` — it is operator-only configuration
-with no in-repo equivalent.
+with no in-repo equivalent. Naming the opt-in template `test-audit` under
+`templates` is also what enables it for automatic idle work (Issue #5096).
 
 **The default is the full policy**: change nothing and the floor above is
 already in force. Configure the block only to alter it:
@@ -5463,9 +5466,9 @@ gates do (see that bullet):
      CHECKED` line. A test file the
      push added, a base run that passes, a base the gate cannot check out (for
      example a deepen that failed, so no merge-base is found), or an output that
-     names no failed test stays a block. The spelling and merge-conflict
-     repairs' spec (`repairChecksOnly`) and the CI-fix and PR-feedback repairs'
-     spec (`repairChecksWithCiCargo`) also run these unit tests and configured markdownlint from the pushed
+     names no failed test stays a block. The CI-fix, PR-feedback, spelling
+     and merge-conflict repairs' spec (`repairChecksWithCiCargo`, Issue #5169)
+     and the babysitter repair container's tree gate (`repairChecksOnly`) also run these unit tests and configured markdownlint from the pushed
      paths, while retaining their existing formatter policy;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
@@ -5600,7 +5603,7 @@ gates do (see that bullet):
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
    - **`cargo deny`** (Issue #4626), for the whole-branch completion check.
-     Intermediate push hooks and both repair specs (`repairChecksOnly` and
+     Intermediate push hooks and both repair specs (`repairChecksOnly`, used only by the babysitter's tree gate, and
      `repairChecksWithCiCargo`) run it when pushed changes include a `Cargo.toml`,
      `Cargo.lock`, `deny.toml`, `.deny.toml`, `.cargo/config.toml` or
      `.cargo/deny.toml`. It reads the repo's own `.github/workflows/*.yml` and
@@ -5688,11 +5691,12 @@ gates do (see that bullet):
      gets no ShellCheck check. The same validation runs before the PR repair
      processors (CI fix, review feedback, spelling and merge conflict) publish
      a repair through `commitAndPushPending`, including repositories without
-     configured pre-flight commands, where it is the only Step 1b check for the
-     spelling and merge-conflict repairs (the CI-fix and review-feedback repairs
-     add the CI cargo checks, Issue #4630). A spelling or merge-conflict repair
-     in a repo that has pre-flight commands also gets the CI cargo checks,
-     compared against the PR base as described above. The
+     configured pre-flight commands, where all four repairs use
+     `repairChecksWithCiCargo`: the shared repair checks plus the CI cargo
+     clippy and test-target compile, compared against the PR base as described
+     above (Issues #4630 and #5169). A spelling or merge-conflict repair in a
+     repo that has pre-flight commands also gets the CI cargo checks, compared
+     against the PR base. The
      fleet babysitter's repair container runs the ShellCheck policy over the
      agent's uncommitted changes before a repair reports ready (Issue #4930),
      inside the worker container (#4768, #4770), never beside the host App key,

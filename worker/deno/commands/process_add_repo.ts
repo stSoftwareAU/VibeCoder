@@ -78,6 +78,9 @@ import {
   createAllIdleTaskWrappers,
   type CreateAllIdleTaskWrappersResult,
 } from "../lib/create_all_idle_task_wrappers.ts";
+// Issue #5096: opt-in templates (`test-audit`) are seeded only when the config
+// names them.
+import { authorisedOptInTemplates } from "../lib/idle_task_opt_in.ts";
 import { runGhCommand as defaultGhCommand } from "../lib/github.ts";
 import { spawnGh } from "../lib/gh_spawn.ts";
 import { runGitArgv } from "../lib/git_timeout.ts";
@@ -201,6 +204,11 @@ export interface ProcessAddRepoDeps {
   createWrappersFn?: (
     repo: string,
   ) => Promise<Result<CreateAllIdleTaskWrappersResult>>;
+  /**
+   * Ensure-label seam for the idle-task sweep; defaults to the production
+   * `ensureIdleTaskLabel` (Issue #5096 wiring test).
+   */
+  ensureLabelFn?: (repo: string) => Promise<Result<void>>;
   /** Label-sync seam (Issue #2599). Defaults to {@link syncLabelsForRepo}. */
   syncLabelsFn?: (repo: string) => Promise<LabelSyncResult>;
   /**
@@ -310,10 +318,11 @@ export function buildSuccessComment(opts: {
     }\n` +
     `- **Idle-task wrappers created:** ${createdLine}\n` +
     `- **Idle-task wrappers skipped (already open):** ${skippedLine}\n\n` +
-    "The ten idle-task scans (security, best-practices, test-audit, " +
+    "The nine idle-task scans (security, best-practices, " +
     "github-actions-audit, supply-chain-readiness, orphan-deps, dead-code, " +
     "doc-coverage, format-drift, deprecated-api) will bring this repo up to " +
-    "standard over the coming idle cycles."
+    "standard over the coming idle cycles. The test-audit scan is opt-in and " +
+    "runs only when requested or configured (Issue #5096)."
   );
 }
 
@@ -401,6 +410,10 @@ export const processAddRepoCommand: Command = {
           nowFn: now,
           // Surfaces the any-open gate's skip lines (Issue #2752).
           log: (line: string) => logger.info(line),
+          // Issue #5096: opt-in templates the owner config does not name are
+          // not seeded.
+          authorisedOptInTemplates: authorisedOptInTemplates(config),
+          ...(deps.ensureLabelFn ? { ensureLabelFn: deps.ensureLabelFn } : {}),
         }));
     // Label sync reuses the same inherited-env gh identity as the validate
     // path (defaultRunCommand); no ghConfigDir wiring is needed here.

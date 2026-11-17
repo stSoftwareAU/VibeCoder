@@ -38,6 +38,9 @@ const labelOk = (): Promise<Result<void>> =>
 
 const stableNow = () => new Date("2026-07-03T00:00:00.000Z");
 
+// Issue #5096: test-audit is opt-in; authorise it so the full canonical set is seeded.
+const AUTHORISED_OPT_IN: ReadonlySet<string> = new Set(["test-audit"]);
+
 /**
  * Mock gh that records `issue create` calls and returns no open wrappers by
  * default. `failRepos` makes `issue create` throw for any repo whose slug
@@ -76,6 +79,7 @@ Deno.test("raiseAllIdleTasks - seeds all ten canonical wrappers per repo", async
     findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
+    authorisedOptInTemplates: AUTHORISED_OPT_IN,
   });
 
   assert(result.ok);
@@ -108,6 +112,7 @@ Deno.test("raiseAllIdleTasks - skips wrappers already open", async () => {
       Promise.resolve(openIdleTaskIssues(ALL_TITLES)),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
+    authorisedOptInTemplates: AUTHORISED_OPT_IN,
   });
 
   assert(result.ok);
@@ -126,6 +131,7 @@ Deno.test("raiseAllIdleTasks - a failing repo never aborts the sweep", async () 
     findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
+    authorisedOptInTemplates: AUTHORISED_OPT_IN,
   });
 
   assert(result.ok);
@@ -170,6 +176,7 @@ Deno.test("raiseAllIdleTasks - a partly-failed repo still reports what it filed"
     findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
+    authorisedOptInTemplates: AUTHORISED_OPT_IN,
   });
 
   assert(result.ok);
@@ -198,6 +205,7 @@ Deno.test("raiseAllIdleTasks - an off-allowlist repo aborts in preflight without
       findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
       nowFn: stableNow,
       rootDir: REPO_ROOT,
+      authorisedOptInTemplates: AUTHORISED_OPT_IN,
     });
 
     assert(result.ok);
@@ -234,6 +242,7 @@ Deno.test("raiseAllIdleTasks - an open idle task blocks the repo unless forced",
         Promise.resolve(openIdleTaskIssues(["Some other open idle task"])),
       nowFn: stableNow,
       rootDir: REPO_ROOT,
+      authorisedOptInTemplates: AUTHORISED_OPT_IN,
       force,
       log: (line) => logs.push(line),
     });
