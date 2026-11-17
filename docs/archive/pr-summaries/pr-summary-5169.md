@@ -126,7 +126,7 @@ flowchart TD
   reason: the milestone merge-only sync (Issue #4326) still pushes an `UNGATED:`
   cargo-only merge. This PR does not change that path.
 - **partial** — "cargo llvm-cov" — evidence:
-  `worker/deno/tests/babysitter_tree_gate_test.ts::a repair changing a Rust file with a passing CI clippy passes and ran clippy (Issue #5169)`
+  `worker/deno/tests/babysitter_tree_gate_test.ts::a repair changing a Rust file with a passing CI clippy passes (Issue #5169)`
   — reviewer: partial — reason: the babysitter gate now runs CI's test-target
   compile, but the coverage threshold is not measured. cargo-llvm-cov is not
   installed in the worker container.
@@ -173,7 +173,7 @@ flowchart TD
   146 passed, 0 failed. The `PR #5034 review` tests gave 13 passed with the host
   pre-push hook disabled. With the host hook on, they fail because the fixtures'
   own `git push` meets that hook.
-- Final head, run from `worker/deno` with the host pre-push hook disabled
+- Before the review revisions, run from `worker/deno` with the host pre-push hook disabled
   (`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath
   GIT_CONFIG_VALUE_0=/dev/null`):
   `deno test -A tests/pre_push_gate_test.ts tests/shellcheck_publication_test.ts`
@@ -192,14 +192,8 @@ flowchart TD
     `blocked` with the clippy diagnostic. Red on the unfixed gate:
     `AssertionError: Values are not equal` (`passed` vs `blocked`), because
     clippy never ran.
-  - `a repair changing a Rust file with a passing CI clippy passes and ran
-    clippy (Issue #5169)`:
-    the valid-path control. Red on the unfixed gate:
-    `AssertionError: clippy ran:` (no commands).
-  - `a repair changing only a non-Rust file runs no cargo command (Issue
-    #5169)`:
-    a `NOTES.md` edit with a failing clippy stub passes and runs no `cargo`
-    command. Green on base too, as expected.
+  - A Rust edit passes when clippy succeeds.
+  - A Markdown-only edit passes even when clippy would fail.
 - Governing requirement for the edited tests (Part of #5169, "What to fix",
   quoted verbatim): "Make the fleet run
   `cargo clippy, cargo llvm-cov, deno fmt, deno test` the way CI does, and
@@ -222,8 +216,7 @@ flowchart TD
     It passes.
   - `worker/deno/tests/pre_push_gate_test.ts`: the `{ repairChecksOnly: true }`
     entry is dropped from two mode loops. The `{}` and
-    `{ repairChecksWithCiCargo: true }` entries and every assertion in the loop
-    bodies remain.
+    `{ repairChecksWithCiCargo: true }` entries remain. Repair failures are asserted through gate outcomes.
   - `worker/deno/tests/git_push_preflight_test.ts`: the repair test that passed
     `{ commands: [], repairChecksOnly: true, runner }` now passes
     `{ ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner }`, with every
@@ -238,35 +231,26 @@ flowchart TD
     - Covered by:
       - `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repairChecksWithCiCargo runs deno fmt --check and the CI cargo commands for a .rs and .ts push, and nothing else (Issue #5169)`
         (renamed; expected `checksRun` goes from `[CLIPPY_CMD]` to
-        `[BAD_TS_FMT, CLIPPY_CMD]`, and the only-cargo-commands assertion also
-        allows the one `deno fmt --check` command).
+        `[BAD_TS_FMT, CLIPPY_CMD]`).
       - `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repairChecksWithCiCargo on a docs-only push runs only deno fmt --check and markdownlint for the pushed Markdown and does not read the CI cargo scan (Issues #4930 and #5169)`
         (renamed; the control expects
         `deno fmt --check --permit-no-files
         'README.md'` first, then
         markdownlint).
       - `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repair pushes enforce unit tests and markdownlint (PR #5034 review)`
-        (the `{ repairChecksOnly: true }` mode entry is dropped; no longer
-        asserts that no `deno fmt` ran; asserts
-        `deno fmt --check --permit-no-files
-        'lib/foo.ts'` ran and no
-        `deno lint` ran).
-  - `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - repairChecksWithCiCargo: a .ts file gets only deno fmt --check, no other deno check (#4630, #5169)`:
-    renamed. It asserted that no deno command ran for a `.ts` file in a repair
-    push (obsolete); it now asserts the deno commands are exactly
-    `deno fmt --check --permit-no-files 'bad.ts'`, and still that no `deno lint`
-    or other deno check ran.
-  - `worker/deno/tests/babysitter_tree_gate_test.ts::an uncommitted new test file that fails blocks, naming the failing command, with only deno fmt --check and no linter run (#4930, #5169)`:
-    renamed. The expected `deno fmt` and `deno lint` command list goes from `[]`
-    (obsolete) to `["deno fmt --check --permit-no-files 'tests/new_test.ts'"]`.
-    The invalid-config test and both passes of the unreadable-config test in
-    that file likewise gain a leading `deno fmt --check` entry in the expected
-    `checksRun` of a passing gate.
+        (the gate reports independent formatter, unit-test and markdownlint
+        failures, and accepts the clean control).
+  - `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - a formatting failure keeps a repair local until the formatted file passes (#4630, #5169)`:
+    the real formatter blocks the unformatted commit and leaves the remote tip
+    unchanged. After the file is formatted, the repair reaches the remote.
+  - `worker/deno/tests/babysitter_tree_gate_test.ts::a failing uncommitted test blocks the repair and names the test file (#4930, #5169)`:
+    the blocked verdict includes the new test filename. The invalid-config and
+    unreadable-config controls check the returned list of completed checks.
   - `worker/deno/tests/babysitter_repair_4738_test.ts`: the fake runner failed
     every command; it now fails only `deno task test:unit` commands, so the new
     `deno fmt --check` passes. No assertion changes; the same test still blocks
     on a failing unit test.
-- Results on this head, run from `worker/deno`:
+- Results before the review revisions, run from `worker/deno`:
   - `worker/deno/tests/babysitter_tree_gate_test.ts` (66 tests at head),
     `worker/deno/tests/babysitter_repair_4738_test.ts` (43),
     `worker/deno/tests/pre_push_gate_cargo_deny_test.ts` (13) and
@@ -275,11 +259,11 @@ flowchart TD
   - `deno check` on the changed lib files and `commands/babysitter_repair.ts`:
     clean.
   - Run directly with `deno test -A`, `worker/deno/tests/pre_push_gate_test.ts`
-    (186 tests at head) gave 145 passed and 41 failed on this head. The failures
+    (186 tests at head) gave 145 passed and 41 failed on the tested revision. The failures
     come from the fixtures' own `git push` meeting the host's pre-push hook
     (markdownlint on a fixture `README.md`; filed as #5254). Under
     `./quality.sh` that file raised no failure.
-- `./quality.sh < /dev/null` on this head:
+- `./quality.sh < /dev/null` before the review revisions:
   - Every stage passed except `deno tests`. Config integration and checkov were
     skipped in this environment.
   - The parallel pass gave 35116 passed and 1 failed. The failure was in the
