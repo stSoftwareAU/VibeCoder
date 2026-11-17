@@ -31,6 +31,7 @@ import {
   startHeartbeat,
   stopHeartbeat,
 } from "./heartbeat.ts";
+import { formatBeforeGate } from "./repo_formatters.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
 import { guardGatedHead } from "./gated_head_guard.ts";
 import {
@@ -263,6 +264,23 @@ export async function processSpellingFailure(
 }
 
 /**
+ * Commit message for the spelling processor's final-mile and push-recovery
+ * commits.
+ * Carries no VibeCoder `#<n>` because it lands in the target repo, where a
+ * bare number links to an unrelated issue (Issue #5045).
+ */
+export function buildSpellingFixCommitMessage(
+  checkName: string,
+  prNumber: number,
+  attempt: "final-mile" | "push-recovery-retry",
+): string {
+  const tail = attempt === "final-mile"
+    ? "Automated final-mile commit"
+    : "Retry after push recovery";
+  return `Fix spelling check failures: ${checkName}\n\n${tail} for PR #${prNumber}.`;
+}
+
+/**
  * Inner spelling fix processing logic, separated to allow heartbeat
  * lifecycle management in the outer function (Issue #1204).
  */
@@ -475,6 +493,11 @@ async function _processSpellingWithHeartbeat(
     warn: (message) => logger.warn(message),
     log: (message) => logger.info(message),
   });
+  // Issue #5169: format the round's unpushed commits before the gate, as the
+  // CI-fix and PR-feedback rounds do, so a re-wrapped line never reaches CI
+  // failing `deno fmt --check`. Never fatal.
+  const formatRound = () =>
+    formatBeforeGate(deps, processorDeps.workDir ?? Deno.cwd(), undefined);
   const pushOptions = {
     cwd: processorDeps.workDir,
     expectedAncestor: beforeSha,
@@ -485,10 +508,12 @@ async function _processSpellingWithHeartbeat(
   };
   const finaliseResult = await deps.git.commitAndPushPending(
     input.branchName,
-    `Fix spelling check failures: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
+    buildSpellingFixCommitMessage(checkName, prNumber, "final-mile"),
     pushOptions,
     false,
     preFlight,
+    undefined,
+    formatRound,
   );
 
   let pushSucceeded = false;
@@ -528,10 +553,16 @@ async function _processSpellingWithHeartbeat(
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
-          `Fix spelling check failures: ${checkName}\n\nRetry after push recovery for PR #${prNumber} (Issue #1643).`,
+          buildSpellingFixCommitMessage(
+            checkName,
+            prNumber,
+            "push-recovery-retry",
+          ),
           pushOptions,
           false,
           preFlight,
+          undefined,
+          formatRound,
         );
         if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
           hasChanges = true;

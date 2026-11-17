@@ -36,6 +36,11 @@ function dataOf(
 // A minimal config — the command does not read any field from it.
 const EMPTY_CONFIG = {} as unknown as WorkerConfig;
 
+// Issue #5096: test-audit is opt-in; authorise it so the full canonical set is seeded.
+const AUTHORISED_CONFIG = {
+  idleTaskTemplateWeights: { "test-audit": 1 },
+} as unknown as WorkerConfig;
+
 const labelOk = (): Promise<Result<void>> =>
   Promise.resolve({ ok: true, value: undefined });
 
@@ -86,7 +91,7 @@ Deno.test("create-all-idle-task-wrappers - clean repo seeds all ten wrappers", a
         log: () => {},
       },
     },
-    EMPTY_CONFIG,
+    AUTHORISED_CONFIG,
   );
 
   assertEquals(result.success, true);
@@ -124,7 +129,7 @@ Deno.test("create-all-idle-task-wrappers - skips wrappers already open", async (
         log: () => {},
       },
     },
-    EMPTY_CONFIG,
+    AUTHORISED_CONFIG,
   );
 
   assertEquals(result.success, true);
@@ -175,7 +180,7 @@ Deno.test("create-all-idle-task-wrappers - prints the outcome table on success",
         log: (line: string) => lines.push(line),
       },
     },
-    EMPTY_CONFIG,
+    AUTHORISED_CONFIG,
   );
 
   assertEquals(result.success, true);
@@ -201,7 +206,7 @@ Deno.test("create-all-idle-task-wrappers - prints the outcome table and exits no
         log: (line: string) => lines.push(line),
       },
     },
-    EMPTY_CONFIG,
+    AUTHORISED_CONFIG,
   );
 
   assertEquals(result.success, false);

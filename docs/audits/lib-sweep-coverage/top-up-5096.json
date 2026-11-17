@@ -1,0 +1,12 @@
+{
+  "issue": 5096,
+  "chunk": "top-up-5096",
+  "title": "top-up: opt-in idle-task templates",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5096",
+  "definition": "modules added for opt-in idle-task templates (test-audit runs only when requested or configured): idle_task_opt_in.ts (#5096)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/idle_task_opt_in.ts"
+  ],
+  "sweptAt": "209df0a9196024245c0fec6b327c8ed823f7e57b"
+}

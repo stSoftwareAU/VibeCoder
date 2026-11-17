@@ -297,7 +297,7 @@ The current production templates live in
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `security-scan`                | [`security_scan_template.ts`](../worker/deno/lib/idle_task_templates/security_scan_template.ts)                       | Four-phase MythOS-style security audit. See [SECURITY-SCAN.md](SECURITY-SCAN.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `best-practices`               | [`best_practices_template.ts`](../worker/deno/lib/idle_task_templates/best_practices_template.ts)                     | Bucket-scoped LLM-only best-practices review. The bucket (one of `rust`, `typescript`, `react`, `java`, `html`, `aws-cloudformation`, `terraform`, `general`, `design`) is picked at file time using a SLOC-weighted random draw across the detected supported languages, with the two language-agnostic buckets — `general` (repo hygiene) and `design` (named design smells) — each competing at a weight equal to the dominant language. Language-targeted runs include a linter-in-CI configuration check (does the workflow invoke the standard linter?) before the LLM review; the missing-linter finding, if any, lands first and counts against the 6-issue cap. A second deterministic pre-check runs on every run regardless of bucket: `checkAwsEmulatorInCI` flags a repo that uses AWS but has no `floci/floci` emulator wired into CI, filing the fixed-id `BP-AWS-EMULATOR-MISSING` finding at `severity:medium`. Filed findings carry `best-practices` + `lang:<bucket>` + `severity:<level>` labels; the scan never raises a PR. See [BEST-PRACTICES-SCAN.md](BEST-PRACTICES-SCAN.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `test-audit`                   | [`test_audit_template.ts`](../worker/deno/lib/idle_task_templates/test_audit_template.ts)                             | Language-agnostic (no bucket) static test-suite maintainability and coverage-gap audit — flags implementation-coupled tests that assert on incidental implementation details rather than observable behaviour (the informal WHAT/HOW heuristic). Single prompt, structurally like `security-scan`. `runTask` ensures the `test-audit` label exists, then invokes Claude, which files each surviving finding as its own issue carrying `test-audit` + `severity:<level>` labels; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `test-audit`                   | [`test_audit_template.ts`](../worker/deno/lib/idle_task_templates/test_audit_template.ts)                             | Language-agnostic (no bucket) static test-suite maintainability and coverage-gap audit — flags implementation-coupled tests that assert on incidental implementation details rather than observable behaviour (the informal WHAT/HOW heuristic). Single prompt, structurally like `security-scan`. `runTask` ensures the `test-audit` label exists, then invokes Claude, which files each surviving finding as its own issue carrying `test-audit` + `severity:<level>` labels; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). Opt-in: it runs automatically only when the config names it or the wrapper is explicitly requested (see [Opt-in templates](#opt-in-templates--registered-is-not-enabled-issue-5096)).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `github-actions-audit` | [`github_actions_audit_template.ts`](../worker/deno/lib/idle_task_templates/github_actions_audit_template.ts) | Single-scope weekly review of the repo's GitHub Actions material only (`.github/workflows/*.yml` and composite actions) — SHA-pinning, supply-chain hardening, stale action majors, EOL runtimes, deprecated/archived actions, container-image pin trackability and freshness (v17,), and duplicate / obsolete steps. Two pre-filers run before Claude: an actionlint-in-CI check (`BP-LINTER-github-actions`) and a runner-deprecation scan (`BP-RUNNER-…`). Filed findings carry `github-actions-audit` + `severity:<level>` labels; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [GITHUB-ACTIONS-AUDIT-SCAN.md](GITHUB-ACTIONS-AUDIT-SCAN.md). |
 | `supply-chain-readiness`       | [`supply_chain_readiness_template.ts`](../worker/deno/lib/idle_task_templates/supply_chain_readiness_template.ts)     | Single-scope weekly **readiness** audit (no bucket, language-agnostic) of the repo's posture for surviving and responding to a supply-chain compromise — CI vuln-scan wiring, install-script blocking, auto-update of security advisories, dependency-review, provenance verification, lockfile/SBOM presence, and an emergency-bump runbook. Recommendations are calibrated to real risk (static-evidence only, no package-manager invocation) and cross-link the active-detection templates rather than duplicating them. Filed findings carry `supply-chain-readiness` + `severity:<level>` labels; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [SUPPLY-CHAIN-READINESS-SCAN.md](SUPPLY-CHAIN-READINESS-SCAN.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `orphan-deps`                  | [`orphan_deps_template.ts`](../worker/deno/lib/idle_task_templates/orphan_deps_template.ts)                           | Single-scope weekly audit (no bucket, language-agnostic) of the repo's declared / locked dependency set for **orphaned, abandoned, deprecated, or end-of-life** dependencies, suggesting a maintained replacement for each. The **one sanctioned-network exception**: it reads registry / source-host metadata (npm, JSR, crates.io, `gh api` repo metadata, published EOL data) within a strict allow-list — no installs, no lifecycle scripts, no repo-code execution. Complements the active-detection / readiness / dormant-republish siblings (cross-link only) and the merely-out-of-date dependency-bump flow. Filed findings carry `orphan-deps` + `severity:<level>` labels; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [ORPHAN-DEPS-SCAN.md](ORPHAN-DEPS-SCAN.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -320,6 +320,51 @@ The four `dead-code`, `doc-coverage`, `format-drift`, and `deprecated-api`
 templates are the "Boy Scout" family — created in milestone and wired into
 the production filer, claim handler, and seeding paths in so they
 are raised across the monitored repos like the original six.
+
+### Opt-in templates — registered is not enabled (Issue #5096)
+
+A template can be **registered** without being **enabled** for automatic idle
+work. The opt-in set is `OPT_IN_IDLE_TASK_TEMPLATES` in
+[`worker/deno/lib/idle_task_opt_in.ts`](../worker/deno/lib/idle_task_opt_in.ts);
+today it holds only `test-audit`. An opt-in template's wrapper stays registered,
+so the explicit paths below still work, but the automatic paths leave it out:
+
+- **Idle tick.** `maybe-file-idle-task` excludes it from the random weighted pick
+  and from the [cadence bias](#cadence-bias-on-the-idle-tick).
+- **Bulk seed sweeps.** `createAllIdleTaskWrappers`, used by `add-repo:`,
+  `seed-idle-tasks:`, `create-all-idle-task-wrappers` and
+  `raise-all-idle-tasks`, leaves it out unless the config names it.
+
+**Enabling automatic work.** The owner's `.config.json` enables an opt-in
+template when it names it in either of two places: a positive
+`idle_task_template_weights` entry (see
+[Weighting the template draw](#weighting-the-template-draw)), or a `test-audit`
+entry under `idle_task_cadence.templates` (see
+[Configuring the cadence](#configuring-the-cadence--idle_task_cadence)). No new
+config key is involved.
+
+**Explicit requests** run it without any config:
+
+1. `raise-single-idle-task --template test-audit --repo owner/repo` files or
+   reuses the existing wrapper, preserves its scope, and stamps the final line with
+   `<!-- vibe-idle-task-requested -->`.
+2. A human (non-fleet author) files an issue titled `Run a test-audit scan`.
+3. A trusted owner applies `work-on` to an existing wrapper. Pickup verifies
+   both its content and the live label-adder timeline; label presence alone
+   never authorises the scan.
+4. The `work-on-issue` CLI on a wrapper is not gated.
+
+**Claim gate.** The main loop route
+([`idle_task_process_issue_route.ts`](../worker/deno/lib/idle_task_process_issue_route.ts))
+checks a claimed opt-in wrapper. A `test-audit` wrapper authored by a fleet
+account, with no config authorisation, no verified owner request and no requested
+marker as its final line,
+is closed with an explanatory comment and does not run. Existing and
+label-backfilled fleet wrappers therefore cannot bypass the opt-in. An unknown
+author is treated as not requested.
+
+Every other template, including the security, supply-chain and workflow-security
+scans, is unchanged.
 
 ### Attribution footer
 
@@ -1671,10 +1716,12 @@ see [Cadence bias on the idle tick](#cadence-bias-on-the-idle-tick).
 ### Seeding all wrappers on demand
 
 The steady-state filer above deliberately seeds **one** wrapper per idle tick.
-That is the wrong cadence when an operator wants the **full** set of twenty
+That is the wrong cadence when an operator wants the **full** set of automatic
 wrappers raised on a single repo immediately — for example, to re-check a repo
-after the best-practices templates were improved. The
-`create-all-idle-task-wrappers` command
+after the best-practices templates were improved. The sweep leaves out an opt-in
+template such as `test-audit` unless the config names it (see
+[Opt-in templates](#opt-in-templates--registered-is-not-enabled-issue-5096)).
+The `create-all-idle-task-wrappers` command
 ([`worker/deno/commands/create_all_idle_task_wrappers.ts`](../worker/deno/commands/create_all_idle_task_wrappers.ts))
 exposes the same `createAllIdleTaskWrappers` seam that the
 `add-repo` onboarding flow uses, standalone:
@@ -1684,7 +1731,9 @@ deno run -A worker/deno/mod.ts create-all-idle-task-wrappers --repo owner/repo
 ```
 
 It bypasses the random single-pick so one call seeds every registered wrapper
-at once, and reports `N created, M already open`.
+at once (opt-in templates excepted, as above), and reports
+`N created, M already open`. To file an opt-in wrapper, use
+[`raise-single-idle-task`](#raising-one-named-template-against-a-pinned-repo).
 
 **Any open `idle-task` issue blocks the whole sweep** (Issue #2752). Before a
 single body is built, the sweep asks once for every open `idle-task` issue in
@@ -1814,11 +1863,11 @@ deno run -A worker/deno/mod.ts raise-boy-scout-idle-tasks \
 
 ### Raising all wrappers across several repos
 
-`create-all-idle-task-wrappers` seeds all twenty wrappers on **one** repo;
+`create-all-idle-task-wrappers` seeds every automatic wrapper on **one** repo;
 `raise-boy-scout-idle-tasks` seeds **four** wrappers on **every** repo. The
 `raise-all-idle-tasks` command
 ([`worker/deno/commands/raise_all_idle_tasks.ts`](../worker/deno/commands/raise_all_idle_tasks.ts))
-combines both axes — it seeds the **full** set of twenty wrappers in **each**
+combines both axes — it seeds the **full** set of automatic wrappers in **each**
 repo supplied, in a single pass. Use it to bring several repos up to the
 complete best-practice set at once:
 
@@ -1832,7 +1881,9 @@ deno run -A worker/deno/mod.ts raise-all-idle-tasks
 ```
 
 It reuses the same `createAllIdleTaskWrappers` seam per repo with **no**
-template-name filter, so it inherits the same per-repo **any-open gate** — a
+template-name filter. Like the other bulk sweeps, it leaves the opt-in
+`test-audit` out unless `.config.json` names it (file it explicitly with
+`raise-single-idle-task`). It inherits the same per-repo **any-open gate** — a
 repo already holding an open `idle-task` issue is skipped whole. A
 per-repo failure is recorded in the summary and the sweep continues to the next
 repo; the command reports `N filed, M already open, K failed`. Run it from the
@@ -1880,6 +1931,11 @@ inherits the same per-repo **any-open gate** — a repo already holding an open
 summary and the sweep continues; the command reports
 `N filed, M already open, K failed`. Run it from the repository root for the
 same prompt-path reason as above.
+
+Naming an opt-in template here is an explicit request (Issue #5096). It files
+the wrapper even though the template is not enabled for automatic work, and it
+stamps the final line of the body with `<!-- vibe-idle-task-requested -->`, so
+the claim gate runs it.
 
 `--force` files past the gate (Issue #2753), logging `action=forced` for each
 bypassed repo; the named wrapper is still never duplicated when its exact
@@ -1950,7 +2006,9 @@ issue is not seeded, and the run logs
 `[idle-task] repo=<repo> issue=<n> action=skipped reason=existing_wrapper_open`.
 A failed lookup (`reason=lookup_failed`) seeds nothing and is reported as a
 failure. The `add-repo:` onboarding route applies the same gate. A seeding failure is
-reported on the issue and the issue is left **open** for a safe retry.
+reported on the issue and the issue is left **open** for a safe retry. The
+`seed-idle-tasks:` and `add-repo:` sweeps both leave out opt-in templates such as
+`test-audit` unless the config names them (Issue #5096).
 
 ### Deciding *which* repo needs a sweep — the freshness report
 
@@ -2130,7 +2188,9 @@ Semantics:
   expensive scan discharges both obligations.
 - **`templates` replaces the default set** rather than merging with it — the
   block is the whole important-template list, keyed by registered template name.
-  Any registered template may be named, not just the default three.
+  Any registered template may be named, not just the default three. Naming an
+  opt-in template (`test-audit`) here is what enables it for automatic work
+  (Issue #5096).
 - **Models are the known aliases only** — `fable`, `opus`, `sonnet`, `haiku`
   (cf. `ModelTier`). An omitted `weekly_model` / `monthly_model` takes the
   default `sonnet` / `fable`.
@@ -2425,8 +2485,9 @@ flowchart TD
 ### Weighting the template draw
 
 The template draw is **weighted** and **config-driven**. By default every
-registered template carries an equal weight, so the draw is uniform (1/20 each
-with twenty templates) — no behaviour change unless configured. An operator
+registered template carries an equal weight, so the draw is uniform over the
+automatic templates (the opt-in `test-audit` is left out unless configured) — no
+behaviour change unless configured. An operator
 can bias the draw toward higher-priority templates (e.g. `security-scan` and
 `supply-chain-readiness`) via the `idle_task_template_weights` map in
 `.config.json`:
@@ -2440,7 +2501,9 @@ can bias the draw toward higher-priority templates (e.g. `security-scan` and
 }
 ```
 
-Templates absent from the map keep the baseline weight of `1`, and any
+Templates absent from the map keep the baseline weight of `1` — except opt-in
+templates such as `test-audit`, which are drawn only when the map gives them a
+positive weight (Issue #5096). Any
 non-positive or non-finite weight collapses to that baseline (it does not
 exclude the template). When no template carries a positive weight the draw falls
 back to a uniform pick. The picker (`weightedPickTemplate` in

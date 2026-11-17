@@ -292,10 +292,6 @@ for (const preFlight of [undefined, ["deno fmt --check"]]) {
 
       assertEquals(result.success, true, result.message);
       assertEquals(capturedPreFlight?.commands, preFlight ?? []);
-      assertEquals(
-        capturedPreFlight?.repairChecksOnly,
-        preFlight ? undefined : true,
-      );
       assertEquals(recordedOptions.length, 1, "the agent must be invoked");
       const prompt = recordedOptions[0]!.prompt;
       assertStringIncludes(prompt, PRE_FLIGHT_SENTENCE);

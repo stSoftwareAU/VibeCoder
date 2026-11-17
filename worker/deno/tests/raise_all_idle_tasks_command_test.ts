@@ -23,6 +23,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { raiseAllIdleTasksCommand } from "../commands/raise_all_idle_tasks.ts";
 import type { RaiseAllIdleTasksResult } from "../lib/raise_all_idle_tasks.ts";
 import { IDLE_TASK_WRAPPER_TITLES } from "../lib/idle_task_backfill.ts";
+import { TEST_AUDIT_ISSUE_TITLE } from "../lib/idle_task_templates/test_audit_template.ts";
 import type { Result, WorkerConfig } from "../types.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
 import { openIdleTaskIssues } from "./support/open_idle_task_issues.ts";
@@ -36,6 +37,11 @@ function dataOf(
 }
 
 const EMPTY_CONFIG = {} as unknown as WorkerConfig;
+
+// Issue #5096: test-audit is opt-in; authorise it so the full canonical set is seeded.
+const AUTHORISED_CONFIG = {
+  idleTaskTemplateWeights: { "test-audit": 1 },
+} as unknown as WorkerConfig;
 
 const labelOk = (): Promise<Result<void>> =>
   Promise.resolve({ ok: true, value: undefined });
@@ -78,7 +84,7 @@ Deno.test("raise-all-idle-tasks - honours --monitored-repos CSV", async () => {
       "monitored-repos": "org/alpha, org/beta",
       __testDeps: testDeps(fn),
     },
-    EMPTY_CONFIG,
+    AUTHORISED_CONFIG,
   );
 
   assertEquals(result.success, true);
@@ -89,7 +95,11 @@ Deno.test("raise-all-idle-tasks - honours --monitored-repos CSV", async () => {
 
 Deno.test("raise-all-idle-tasks - falls back to config.repos", async () => {
   const { fn, created } = makeMockGh();
-  const config = { repos: ["org/gamma"] } as unknown as WorkerConfig;
+  // Issue #5096: test-audit is opt-in; the owner config authorises it here.
+  const config = {
+    repos: ["org/gamma"],
+    idleTaskTemplateWeights: { "test-audit": 1 },
+  } as unknown as WorkerConfig;
   const result = await raiseAllIdleTasksCommand.execute(
     { __testDeps: testDeps(fn) },
     config,
@@ -99,6 +109,38 @@ Deno.test("raise-all-idle-tasks - falls back to config.repos", async () => {
   assertEquals(dataOf(result)?.repos.length, 1);
   assertEquals(dataOf(result)?.totalCreated, TEN);
   assertEquals(created.every((c) => c.repo === "org/gamma"), true);
+});
+
+// Issue #5096: the command wires the owner config into the bulk sweep, so the
+// opt-in test-audit wrapper is filed only when the config authorises it.
+Deno.test("raise-all-idle-tasks - test-audit is filed only when the config authorises it (Issue #5096)", async () => {
+  const defaultMock = makeMockGh();
+  const defaultResult = await raiseAllIdleTasksCommand.execute(
+    {
+      "monitored-repos": "org/alpha",
+      __testDeps: testDeps(defaultMock.fn),
+    },
+    EMPTY_CONFIG,
+  );
+  assertEquals(defaultResult.success, true);
+  assertEquals(
+    defaultMock.created.some((c) => c.title === TEST_AUDIT_ISSUE_TITLE),
+    false,
+  );
+
+  const authMock = makeMockGh();
+  const authResult = await raiseAllIdleTasksCommand.execute(
+    {
+      "monitored-repos": "org/alpha",
+      __testDeps: testDeps(authMock.fn),
+    },
+    AUTHORISED_CONFIG,
+  );
+  assertEquals(authResult.success, true);
+  assertEquals(
+    authMock.created.some((c) => c.title === TEST_AUDIT_ISSUE_TITLE),
+    true,
+  );
 });
 
 // --- Issue #2753: --force past the any-open idle-task gate ---
@@ -143,7 +185,7 @@ Deno.test("raise-all-idle-tasks - --force files past the gate and logs action=fo
       force: true,
       __testDeps: gatedDeps(fn, [UNRELATED_OPEN], logs),
     },
-    EMPTY_CONFIG,
+    AUTHORISED_CONFIG,
   );
 
   assertEquals(result.success, true);
@@ -163,7 +205,7 @@ Deno.test("raise-all-idle-tasks - --force never duplicates an open canonical tit
       force: true,
       __testDeps: gatedDeps(fn, [openTitle], []),
     },
-    EMPTY_CONFIG,
+    AUTHORISED_CONFIG,
   );
 
   assertEquals(result.success, true);

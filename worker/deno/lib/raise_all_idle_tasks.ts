@@ -1,15 +1,17 @@
 /**
- * Raise all ten standard idle-task wrappers across a supplied set of repos
+ * Raise the standard idle-task wrappers across a supplied set of repos
  * (Issue #3196).
  *
  * The steady-state idle-task filer (`maybe_file_idle_task.ts`) seeds only one
  * wrapper per idle tick and is gated by the cross-repo "any open idle-task
  * blocks filing" check, so bringing several repos up to the full best-practice
- * set on demand is slow. {@link raiseAllIdleTasks} seeds the whole canonical
- * set (all ten templates) in every supplied repo in a single pass.
+ * set on demand is slow. {@link raiseAllIdleTasks} seeds the canonical set in
+ * every supplied repo in a single pass. The opt-in `test-audit` template
+ * (Issue #5096) is seeded only when the caller passes the owner's authorised
+ * opt-in set; omitted, it is excluded.
  *
- * It reuses {@link createAllIdleTaskWrappers} per repo (no template filter, so
- * the default "all ten canonical wrappers" applies), keeping the body-building,
+ * It reuses {@link createAllIdleTaskWrappers} per repo (no template filter, with
+ * the caller's authorised opt-in set forwarded), keeping the body-building,
  * dedup, milestone, and attribution behaviour in a single place (DRY). The
  * per-repo call is idempotent — a wrapper whose canonical title is already open
  * is skipped — so re-running never duplicates.
@@ -72,6 +74,13 @@ export interface RaiseAllIdleTasksOptions {
   nowFn?: CreateAllIdleTaskWrappersDeps["nowFn"];
   runId?: string;
   /**
+   * Opt-in templates the owner's config authorises (Issue #5096), built by
+   * `authorisedOptInTemplates`. Forwarded to {@link createAllIdleTaskWrappers};
+   * omitted means none, so opt-in templates such as `test-audit` are excluded.
+   */
+  authorisedOptInTemplates?:
+    CreateAllIdleTaskWrappersDeps["authorisedOptInTemplates"];
+  /**
    * Bypass the any-open idle-task gate (Issue #2753). Forwarded to
    * {@link createAllIdleTaskWrappers}; exact-title dedup still applies.
    */
@@ -86,7 +95,9 @@ export interface RaiseAllIdleTasksOptions {
 }
 
 /**
- * Seed all ten canonical idle-task wrappers in every repo in `opts.repos`.
+ * Seed the canonical idle-task wrappers in every repo in `opts.repos`; opt-in
+ * templates are excluded unless `opts.authorisedOptInTemplates` names them
+ * (Issue #5096).
  *
  * Returns an aggregate summary. Never throws — a repo whose seeding fails is
  * recorded with an `error` and the sweep continues.
@@ -110,7 +121,8 @@ export async function raiseAllIdleTasks(
   };
 
   for (const repo of repos) {
-    // No `templateNames` filter -> the default "all ten canonical wrappers".
+    // No `templateNames` filter. The caller's authorised opt-in set decides
+    // whether opt-in templates (Issue #5096) are seeded; omitted -> excluded.
     const result = await createAllIdleTaskWrappers(repo, {
       ghCommandFn: opts.ghCommandFn,
       ensureLabelFn: opts.ensureLabelFn,
@@ -119,6 +131,7 @@ export async function raiseAllIdleTasks(
       runId: opts.runId,
       force: opts.force,
       rootDir: opts.rootDir,
+      authorisedOptInTemplates: opts.authorisedOptInTemplates,
       log,
     });
 

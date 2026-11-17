@@ -87,6 +87,8 @@ export interface IdleTaskRunOptions {
   workDir: string;
   /** Issue number of the filed idle-task issue. */
   idleTaskIssueNumber: number;
+  /** Verified wrapper content, including the owner-requested scan scope. */
+  issueBody?: string;
   /**
    * Model tier this wrapper was filed for (Issue #4003/#4010), recovered from
    * the wrapper body's attribution-footer stamp and allowlisted against

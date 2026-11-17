@@ -331,7 +331,7 @@ Deno.test("buildResolutionCommitMessage - records the reasoning for every file i
   assertStringIncludes(message, "milestone/1559");
   assertStringIncludes(message, "lib/spawn_runner.ts");
   assertStringIncludes(message, "superset");
-  assertStringIncludes(message, "Issue #1559");
+  assert(!message.includes("Issue #1559"), message);
 });
 
 Deno.test("buildResolutionCommitMessage - names every note that means a check did not run, never claiming it passed (Issue #4441)", () => {
@@ -359,6 +359,29 @@ Deno.test("buildResolutionCommitMessage - names every note that means a check di
       `${SYNC_UNCHECKED_NOTE.cargoSkipped}.`,
   );
   assertStringIncludes(message, "None of them means the check it names passed");
+});
+
+Deno.test("buildResolutionCommitMessage - cites no VibeCoder issue number (Issue #5045)", () => {
+  const message = buildResolutionCommitMessage({
+    defaultBranch: "main",
+    milestoneBranch: "milestone/payments",
+    plan: planConflictResolution([
+      file({
+        path: "lib/a.ts",
+        ours: "const a = 1;\n",
+        theirs: "const a = 1;\nconst b = 2;\n",
+      }),
+    ]),
+  });
+  assertEquals(message.match(/#\d+/g), null, message);
+  assertStringIncludes(
+    message,
+    "No conflicted test file was resolved by taking a side that drops cases.",
+  );
+  assertStringIncludes(
+    message,
+    `${SYNC_UNCHECKED_NOTE.ungated} means a cargo-only merge-only sync left the whole build to the milestone PR's CI.`,
+  );
 });
 
 Deno.test("buildConflictAnalysisComment - carries both sides' exports, test names and the difference", () => {

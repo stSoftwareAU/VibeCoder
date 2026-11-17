@@ -251,6 +251,15 @@ export class PrePushRecoveryPushDeferred extends Error {
 }
 
 /**
+ * Commit message for the in-run pre-push gate recovery (Issue #4128).
+ * Carries no VibeCoder `#<n>` because it lands in the target repo, where a
+ * bare number links to an unrelated issue (Issue #5045).
+ */
+export function buildPrePushRecoveryCommitMessage(issueNumber: number): string {
+  return `fix: pre-push gate findings for #${issueNumber}\n\nIn-run pre-push-gate recovery.`;
+}
+
+/**
  * Commit what the extra turn produced onto the issue branch (Issue #4128).
  *
  * HEAD is reconciled first, in case the turn left its commit on a detached
@@ -286,8 +295,7 @@ async function commitPrePushFindings(
   // Step 1b's gate (which has no base ref) does not run here either.
   const commit = await deps.git.commitAndPushPending(
     state.branchName,
-    `fix: pre-push gate findings for #${issueNumber}\n\n` +
-      `In-run pre-push-gate recovery (Issue #4128).`,
+    buildPrePushRecoveryCommitMessage(issueNumber),
     { cwd: state.repoPath },
     false,
     undefined,

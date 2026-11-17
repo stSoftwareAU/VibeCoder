@@ -106,7 +106,10 @@ const WRAPPER_INPUT = {
   workDir: "/tmp/widget",
   githubUser: "vibe-coder",
   fleetAuthors: ["vibe-coder"],
+  fleetIdentityLogins: ["vibe-coder"],
   pushCapableAuthors: ["vibe-coder"],
+  issueAuthor: "vibe-coder",
+  authorisedOptInTemplates: new Set<string>(),
 };
 
 // ---------------------------------------------------------------------------
@@ -226,7 +229,10 @@ Deno.test(
         workDir: "/tmp/widget",
         githubUser: "vibe-coder",
         fleetAuthors: ["vibe-coder"],
+        fleetIdentityLogins: ["vibe-coder"],
         pushCapableAuthors: ["vibe-coder"],
+        issueAuthor: "vibe-coder",
+        authorisedOptInTemplates: new Set<string>(),
       },
       {
         logger,
@@ -403,7 +409,10 @@ Deno.test(
         workDir: "/tmp/widget",
         githubUser: "vibe-coder",
         fleetAuthors: ["vibe-coder"],
+        fleetIdentityLogins: ["vibe-coder"],
         pushCapableAuthors: ["vibe-coder"],
+        issueAuthor: "vibe-coder",
+        authorisedOptInTemplates: new Set<string>(),
       },
       {
         logger,

@@ -267,6 +267,7 @@ export async function handleIdleTaskIssue(
           repo,
           workDir,
           idleTaskIssueNumber: issueNumber,
+          issueBody,
           ...(modelTier !== undefined ? { modelTier } : {}),
         }),
     );

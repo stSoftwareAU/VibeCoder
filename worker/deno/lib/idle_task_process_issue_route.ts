@@ -23,6 +23,12 @@
  * `route_claim.ts`, which Issue #1193 generalised so the `add-repo:` and
  * `seed-idle-tasks:` routes take the same lock.
  *
+ * Issue #5096 added the opt-in gate: an opt-in template (`test-audit`, a
+ * whole-repo coverage-gap scan) never runs as automatic idle work. A wrapper
+ * the fleet filed without an owner request is closed with a refusal comment
+ * and no scan runs. See `idle_task_opt_in.ts`. The gate sits in
+ * `runRoutedScan`, after the claim, so it applies to the claimed wrapper only.
+ *
  * Australian English spelling used throughout.
  */
 
@@ -41,12 +47,33 @@ import { runGhCommand as defaultRunGhCommand } from "./github.ts";
 import { resolveIdleTaskClaimRunway } from "./idle_task_claude_budget.ts";
 import { ensureRepoClone as defaultEnsureRepoClone } from "./ensure_repo_clone.ts";
 import { finaliseIdleTaskWrapper } from "./idle_task_wrapper_closure.ts";
+import { decideOptInClaim } from "./idle_task_opt_in.ts";
 
 /** Input describing the issue under consideration. */
 export interface RouteIdleTaskInput extends RouteClaimInput {
   issueTitle: string;
   issueLabels: string[];
   issueBody: string;
+  /**
+   * Login of the issue's author, `""` when unknown (Issue #5096). The opt-in
+   * gate uses it to tell a fleet-filed wrapper from one a human filed. An
+   * unknown author fails closed for opt-in templates.
+   */
+  issueAuthor: string;
+  /** A live, trusted owner label approval verified by the caller. */
+  ownerRequested?: boolean;
+  /**
+   * Opt-in templates the owner's `.config.json` authorises (Issue #5096), as
+   * built by `authorisedOptInTemplates`. Empty when the owner names none.
+   */
+  authorisedOptInTemplates: ReadonlySet<string>;
+  /**
+   * Fleet accounts only (Issue #5096): this host's login, `fleet_pr_authors`
+   * and `service_accounts`; never `allowed_authors`, which lists the human
+   * owners whose own issues are explicit requests. The opt-in gate tests the
+   * author against this set. Built by `idleRouteOptInInput`.
+   */
+  fleetIdentityLogins: readonly string[];
   /**
    * Epoch-ms deadline of the current cycle (Issue #186), forwarded to the
    * claim handler so the scan's Claude budget is bounded by the runway left.
@@ -83,7 +110,9 @@ export const IDLE_TASK_RUNWAY_DECLINED_MESSAGE =
  * - `{ routed: true, success }` — the claim handler took ownership.
  *   A successful run closed the wrapper with the template summary; a
  *   failed run left it open carrying a failure comment (Issue #179).
- *   `success` mirrors `HandleIdleTaskIssueResult.ok`.
+ *   `success` mirrors `HandleIdleTaskIssueResult.ok`. An opt-in template
+ *   refused by the Issue #5096 gate closes the wrapper with the refusal as
+ *   its comment and reports `success: true`: nothing failed, and no scan ran.
  * - `{ routed: true, success: false, claimLost: true, … }` — this host does
  *   not hold the wrapper (Issue #1139). Nothing was scanned and nothing was
  *   written to the wrapper. `claimReason: "insufficient_runway"` is the
@@ -201,6 +230,40 @@ async function runRoutedScan(
 ): Promise<RouteIdleTaskOutcome> {
   const { handleIdleTask, ghCommand, ensureClone } = fns;
   if (template !== undefined) {
+    // Issue #5096: an opt-in template (test-audit) runs only when the owner
+    // asked for it. A fleet-filed wrapper without a request is closed with the
+    // refusal as its comment and never reaches the clone or the scan. It must
+    // not fall through to the standard PR pipeline, so it is reported as
+    // routed.
+    const decision = decideOptInClaim({
+      template: template.name,
+      issueAuthor: input.issueAuthor,
+      issueBody: input.issueBody,
+      fleetIdentityLogins: input.fleetIdentityLogins,
+      authorised: input.authorisedOptInTemplates,
+      ownerRequested: input.ownerRequested,
+    });
+    if (!decision.allowed) {
+      deps.logger.info(
+        "idle-task wrapper not run: opt-in template without an owner request (Issue #5096)",
+        {
+          repo: input.repo,
+          issueNumber: input.issueNumber,
+          template: template.name,
+        },
+      );
+      await finaliseIdleTaskWrapper(
+        {
+          repo: input.repo,
+          issueNumber: input.issueNumber,
+          ok: true,
+          summary: decision.reason,
+        },
+        { logger: deps.logger, ghCommandFn: ghCommand },
+      );
+      return { routed: true, success: true };
+    }
+
     const clone = await ensureClone(input.repo, input.workDir);
     if (!clone.ok) {
       const summary = `idle-task ${template.name} could not run: no local ` +
