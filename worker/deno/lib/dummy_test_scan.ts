@@ -612,6 +612,7 @@ function afterReturnType(masked: string, from: number, arrow: boolean): number {
  */
 interface Definition {
   name: string;
+  declaration: number;
   /** Parameter name to its position, parsed once. */
   params: Map<string, number>;
   /**
@@ -631,6 +632,7 @@ function definitionSpans(masked: string, lang: Lang): Definition[] {
   const push = (name: string, paren: number, start: number, end: number) =>
     out.push({
       name,
+      declaration: paren,
       params: lang === "ts" && end >= 0 ? paramNames(masked, paren) : new Map(),
       start,
       end,
@@ -877,6 +879,38 @@ export function scanDummyTests(diff: string): DummyTestScan {
     }
     const index = { starts };
     const maskedLines = masked.split("\n");
+    // A definition is visible only inside every bracket surrounding its
+    // declaration. Keep the innermost one; its closing offset covers all
+    // ancestors too. Cross-hunk scope cannot be established, so stays unseen.
+    const enclosing = new Int32Array(masked.length).fill(-1);
+    const brackets: number[] = [];
+    for (let k = 0; k < masked.length; k++) {
+      while (
+        brackets.length &&
+        closingBracket(masked, brackets[brackets.length - 1]!) < k
+      ) brackets.pop();
+      enclosing[k] = brackets[brackets.length - 1] ?? -1;
+      if ("([{".includes(masked[k]!)) brackets.push(k);
+    }
+    const namedCallback = (name: string, at: number): string | null => {
+      if (registrarOf(spans, at, name) !== null) return null;
+      let selected: Definition | undefined;
+      let selectedScope = -2;
+      for (const d of spans) {
+        if (d.name !== name || d.end < 0) continue;
+        const scope = enclosing[d.declaration] ?? -1;
+        if (scope >= 0 && !(scope < at && at < closingBracket(masked, scope))) {
+          continue;
+        }
+        if (scope > selectedScope) {
+          selected = d;
+          selectedScope = scope;
+        }
+      }
+      return selected === undefined
+        ? null
+        : masked.slice(selected.start, selected.end + 1);
+    };
 
     const judge = (
       declLine: number,
@@ -900,7 +934,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
       let body = masked.slice(bodyStart, bodyEnd + 1);
       if (callback !== null) {
         // A callback passed by name is judged by the function it names.
-        const named = defs.get(callback);
+        const named = namedCallback(callback, bodyStart);
         if (named === undefined || named === null) {
           note(file, line, "unseen");
           return;

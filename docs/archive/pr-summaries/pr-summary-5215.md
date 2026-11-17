@@ -129,10 +129,11 @@ assertion was edited or removed.
   `register("a", suite.check)` each give no finding and one `unseen` note.
 - `a long parameter list around many registrations stays linear (Issue
   #5215)`:
-  one helper with 3,000 parameters around 3,000 `Deno.test({ name, fn
-  })`
-  lines and an asserting call. It asserts no finding and no note; the scan must
-  return on that input (no wall-clock bound, so the test stays parallel-safe).
+  compares 1,500 and 6,000 parameters/registrations with `assertLinearGrowth`,
+  and asserts no findings or notes. This file is registered in the serial pass.
+  At commit 1849c160 the larger input took 38,092 ms versus 2,337 ms for
+  the smaller input, exceeding the 18,872 ms allowance: the guard failed.
+
 
 Results:
 
@@ -145,10 +146,10 @@ Results:
   view that asserts nothing is refused on each registration`
   and the inline test pass on base too, as intended: the base scanner already
   refused them. The hostile test was added after this run.
-- Red against the previous head: with the pre-verifier-fix `dummy_test_scan.ts`
-  restored, the three tests added for the verifier's findings failed (the
-  trailing-value, property-path and parameter-list tests; the last took 6.9 s).
-  At head they pass.
+- The former output-only parameter-list test passed on the quadratic scanner;
+  its earlier red-run claim was incorrect after the wall-clock bound was removed.
+  The replacement growth detector was run against 1849c160 and failed as recorded
+  above. The trailing-value and property-path regressions are retained.
 - Head: `deno test tests/dummy_test_scan_5016_test.ts` gave 41 passed and 0
   failed. That file, the wiring test and the four `pre_pr_verifier` test files
   together gave 143 passed and 0 failed.
@@ -179,3 +180,18 @@ Not done or not checked:
 - Rust registrations are unchanged: the issue concerns Deno only.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## Scope review repair
+
+Named callbacks are resolved only within the same visible hunk, to a definition
+whose enclosing brackets also contain the registration. A forwarding helper's
+parameter stays unresolved. Cross-hunk scope is not guessed: it produces an
+unseen note. Regression tests cover non-asserting and asserting same-named locals
+in another test, positional/options/helper registrations, and a forwarding
+wrapper. Local runs use a temporary import map to published standard-library
+packages because direct JSR downloads stall; repository dependencies are unchanged.
+
+Validation after the scope repair: 79 tests pass across the scanner, wiring
+and parallel-unsafe manifest suites. All four new scope regressions fail with
+the previous head scanner restored. These include a missing wrapper header in
+another hunk and a destructured loop callback. Full hosted CI remains required.

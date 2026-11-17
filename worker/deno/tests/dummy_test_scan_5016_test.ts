@@ -7,6 +7,7 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertLinearGrowth } from "./support/growth.ts";
 import {
   applyDummyTestScan,
   DUMMY_TEST_CHECKLIST,
@@ -740,22 +741,27 @@ ${REGISTER_HELPER}register("a", suite.check);
 });
 
 Deno.test("a long parameter list around many registrations stays linear (Issue #5215)", () => {
-  const file = "tests/many_test.ts";
-  const params = Array.from({ length: 3000 }, (_, k) => `p${k}: number`);
-  const regs = Array.from(
-    { length: 3000 },
-    () => "  Deno.test({ name, fn });",
+  const scan = assertLinearGrowth(
+    "registration parameter lookup",
+    (size) => {
+      const count = Math.floor(size);
+      const params = Array.from({ length: count }, (_, k) => `p${k}: number`);
+      const regs = Array.from(
+        { length: count },
+        () => "  Deno.test({ name, fn });",
+      );
+      return added(
+        "tests/many_test.ts",
+        `function register(name: string, ${
+          params.join(", ")
+        }, fn: () => void) {\n${regs.join("\n")}\n}\nregister("a", ${
+          "0, ".repeat(count)
+        }() => {\n  assertEquals(run(), 2);\n});\n`,
+      );
+    },
+    scanDummyTests,
+    { baseChars: 1500 },
   );
-  const diff = added(
-    file,
-    `function register(name: string, ${params.join(", ")}, fn: () => void) {\n${
-      regs.join("\n")
-    }\n}\nregister("a", ${
-      "0, ".repeat(3000)
-    }() => {\n  assertEquals(run(), 2);\n});\n`,
-  );
-  // Output, not a stopwatch: a super-linear scan never returns on this input.
-  const scan = scanDummyTests(diff);
   assertEquals(scan.findings, []);
   assertEquals(scan.notes, []);
 });
@@ -881,4 +887,80 @@ Deno.test("the rules link every finding carries resolves to a real CODING-STANDA
   const fragment = DUMMY_TEST_RULES_URL.split("#")[1]!;
   assertEquals(slugs.includes(fragment), true, fragment);
   assertStringIncludes(DUMMY_TEST_RULES_URL, "/CODING-STANDARDS.md#");
+});
+
+Deno.test("named callbacks never resolve to another test's local", () => {
+  for (const local of ["return 1;", "assertEquals(1, 1);"]) {
+    for (
+      const registration of [
+        'Deno.test("x", fn);',
+        'Deno.test({ name: "x", fn });',
+        'register("x", fn);',
+      ]
+    ) {
+      const scan = scanDummyTests(
+        added(
+          "tests/scope_test.ts",
+          (registration.startsWith("register(") ? REGISTER_HELPER : "") +
+            'Deno.test("other", () => {\n const fn = () => { ' + local +
+            " };\n assertEquals(2, 2);\n});\n" + registration,
+        ),
+      );
+      assertEquals(scan.findings, []);
+      assertEquals(scan.notes.length, 1);
+      assertEquals(scan.notes[0]!.kind, "unseen");
+    }
+  }
+});
+
+Deno.test("a forwarding callback parameter is unresolved even with a same-named local", () => {
+  const scan = scanDummyTests(added(
+    "tests/scope_test.ts",
+    REGISTER_HELPER +
+      "function registerSlow(name, fn) { register(name, fn); }\n" +
+      'Deno.test("other", () => { const fn = () => { return 1; }; assertEquals(2, 2); });\n' +
+      'registerSlow("x", () => { assertEquals(3, 3); });',
+  ));
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes.length, 1);
+  assertEquals(scan.notes[0]!.kind, "unseen");
+});
+
+Deno.test("an out-of-hunk wrapper header cannot resolve a callback from another hunk", () => {
+  const diff = [
+    "diff --git a/tests/scope_test.ts b/tests/scope_test.ts",
+    "--- a/tests/scope_test.ts",
+    "+++ b/tests/scope_test.ts",
+    "@@ -20,1 +20,1 @@",
+    "-  Deno.test({ name, fn });",
+    "+  Deno.test({ name, ignore: condition, fn });",
+    "@@ -40,4 +40,4 @@",
+    ' Deno.test("other", () => {',
+    "   const fn = () => { return 1; };",
+    "   assertEquals(2, 2);",
+    " });",
+  ].join("\n");
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, [{
+    file: "tests/scope_test.ts",
+    line: 20,
+    kind: "unseen",
+  }]);
+});
+
+Deno.test("a loop callback cannot borrow an unrelated local's assertions", () => {
+  const scan = scanDummyTests(
+    added(
+      "tests/scope_test.ts",
+      "for (const { name, fn } of cases) Deno.test({ name, fn });\n" +
+        'Deno.test("other", () => { const fn = () => { assertEquals(1, 1); }; assertEquals(2, 2); });',
+    ),
+  );
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, [{
+    file: "tests/scope_test.ts",
+    line: 1,
+    kind: "unseen",
+  }]);
 });
