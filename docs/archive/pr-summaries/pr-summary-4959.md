@@ -269,3 +269,11 @@ actual notification body, round-trips it through the verifier and checks fleet,
 outsider, failed-command and missing-comments outcomes through the command.
 The report/verdict suites pass 34 tests and changed-file lint passes. Local
 execution uses the temporary published-dependency map; hosted CI remains required.
+
+## CI repair
+
+`token_economizer_stop_format.ts` was in neither the lib sweep ledger nor the
+trial page's purge list, so `lib_sweep_coverage_test.ts` and the trial drift
+test failed. It is now claimed in `docs/audits/lib-sweep-coverage/top-up-4959.json`
+and has a `Source` row in the purge list of `docs/TOKEN-ECONOMIZER-TRIAL.md`.
+Both suites pass (70 tests).

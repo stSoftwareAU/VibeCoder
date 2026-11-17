@@ -583,6 +583,7 @@ run there, with the steps in the
 | Report section | the weekly report's comparison section | `worker/deno/lib/token_economizer_trial_report.ts` | present |
 | Command | the read-only `token-economizer-report` command, which prints the comparison and the verdict | `worker/deno/commands/token_economizer_report.ts` | present |
 | Source | the keep-or-purge verdict: the bar, the window-due check, the stop override and the next check | `worker/deno/lib/token_economizer_verdict.ts` | present |
+| Source | the stop notification's marker and line, shared by the stop controller and the report reader | `worker/deno/lib/token_economizer_stop_format.ts` | present |
 | Test | the verdict tests | `worker/deno/tests/token_economizer_verdict_test.ts` | present |
 | Command | the command's registration | `worker/deno/mod.ts` | present |
 | Test | the run stats reader, line and block tests | `worker/deno/tests/token_economizer_run_stats_test.ts` | present |

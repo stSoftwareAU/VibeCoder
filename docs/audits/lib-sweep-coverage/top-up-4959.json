@@ -7,6 +7,7 @@
   "status": "claimed",
   "sweptAt": "0cbfe560a4661e995b8348522e53f0984704e699",
   "paths": [
+    "worker/deno/lib/token_economizer_stop_format.ts",
     "worker/deno/lib/token_economizer_verdict.ts"
   ]
 }
