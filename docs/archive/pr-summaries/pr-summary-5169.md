@@ -84,8 +84,8 @@ flowchart TD
   paragraph and the summary under "Container repairs" in
   `docs/workflows/fleet-pr-babysitter.md`, the babysitter paragraph and the
   unit-test and `cargo deny` bullets in `docs/CONFIGURATION.md`, and the
-  publication-paths passage in `docs/INTERNALS.md` now name the CI cargo
-  checks. Each now says the gate runs no linter other than CI's cargo clippy.
+  publication-paths passage in `docs/INTERNALS.md` now name the CI cargo checks.
+  Each now says the gate runs no linter other than CI's cargo clippy.
   `grep -rn repairChecksOnly worker/ docs/ --include=*.ts --include=*.md`,
   excluding `docs/archive`, finds nothing.
 
@@ -97,7 +97,8 @@ flowchart TD
   fixes a bypass found in code, without matching it to a private job.
 - **missing** — "incorporating #5151's three ShellCheck failures" — reason: no
   ShellCheck bypass was found. Every push path, the babysitter tree gate
-  included, already runs the repo's ShellCheck policy. The private `Run script
+  included, already runs the repo's ShellCheck policy. The private
+  `Run script
   tests` jobs were not readable.
 - **missing** — "A disk/resource deferral must retain WIP and resume
   automatically, not publish unvalidated work as passed" — reason: the milestone
@@ -106,9 +107,10 @@ flowchart TD
 - **missing** — "cargo llvm-cov" — reason: the test-target compile now gates the
   babysitter too, but the `--fail-under-lines` threshold is not measured,
   because cargo-llvm-cov is not installed in the worker container.
-- **missing** — "deno fmt" — reason: repair pushes still run no `deno fmt
-  --check`, which is the existing repair formatter policy (PR #5226). This PR
-  does not change it.
+- **missing** — "deno fmt" — reason: repair pushes still run no
+  `deno fmt
+  --check`, which is the existing repair formatter policy (PR
+  #5226). This PR does not change it.
 
 ## Test Plan
 
@@ -118,27 +120,32 @@ flowchart TD
   pull-request workflow running `cargo clippy --all-targets -- -D warnings`.
   Only the command runner is faked.
   - `a repair changing a Rust file with a failing CI clippy blocks with its
-    diagnostic (Issue #5169)`: an uncommitted `src/lib.rs` edit, clippy exits
-    101, and the outcome is `blocked` with the clippy diagnostic. Red on the
-    unfixed gate: `AssertionError: Values are not equal` (`passed` vs
-    `blocked`), because clippy never ran.
+    diagnostic (Issue #5169)`:
+    an uncommitted `src/lib.rs` edit, clippy exits 101, and the outcome is
+    `blocked` with the clippy diagnostic. Red on the unfixed gate:
+    `AssertionError: Values are not equal` (`passed` vs `blocked`), because
+    clippy never ran.
   - `a repair changing a Rust file with a passing CI clippy passes and ran
-    clippy (Issue #5169)`: the valid-path control. Red on the unfixed gate:
-    `AssertionError: clippy ran: ` (no commands).
+    clippy (Issue #5169)`:
+    the valid-path control. Red on the unfixed gate:
+    `AssertionError: clippy ran:` (no commands).
   - `a repair changing only a non-Rust file runs no cargo command (Issue
-    #5169)`: a `NOTES.md` edit with a failing clippy stub passes and runs no
-    `cargo` command. Green on base too, as expected.
+    #5169)`:
+    a `NOTES.md` edit with a failing clippy stub passes and runs no `cargo`
+    command. Green on base too, as expected.
 - Edited tests, after `repairChecksOnly` was removed:
-  - Removed from `worker/deno/tests/pre_push_gate_cargo_deny_test.ts`: the
-    whole test `cargo deny: repairChecksOnly mode checks Cargo.lock`, with
+  - Removed from `worker/deno/tests/pre_push_gate_cargo_deny_test.ts`: the whole
+    test `cargo deny: repairChecksOnly mode checks Cargo.lock`, with
     `assert(result.ok);` and
     `assertEquals(denyCommands(seen), [{ command: DENY_ARGV, cwd: clone }]);`.
     - Obsolete: the `repairChecksOnly` mode no longer exists.
-    - Still covered by: `worker/deno/tests/pre_push_gate_cargo_deny_test.ts::cargo deny: repairChecksWithCiCargo mode checks Cargo.lock`,
+    - Still covered by:
+      `worker/deno/tests/pre_push_gate_cargo_deny_test.ts::cargo deny: repairChecksWithCiCargo mode checks Cargo.lock`,
       which makes the same assertions.
-  - `worker/deno/tests/pre_push_gate_cargo_deny_test.ts`: `cargo deny:
-    repairChecksOnly mode skips a source-only repair even with a baseRef` is
-    renamed to the `repairChecksWithCiCargo` mode, with every assertion kept.
+  - `worker/deno/tests/pre_push_gate_cargo_deny_test.ts`:
+    `cargo deny:
+    repairChecksOnly mode skips a source-only repair even with a baseRef`
+    is renamed to the `repairChecksWithCiCargo` mode, with every assertion kept.
     It passes.
   - `worker/deno/tests/pre_push_gate_test.ts`: the `{ repairChecksOnly: true }`
     entry is dropped from two mode loops. The `{}` and
@@ -152,7 +159,8 @@ flowchart TD
 - Results on this head, run from `worker/deno`:
   - `deno test -A tests/babysitter_tree_gate_test.ts
     tests/babysitter_repair_4738_test.ts tests/pre_push_gate_cargo_deny_test.ts
-    tests/git_push_preflight_test.ts`: 159 passed, 0 failed.
+    tests/git_push_preflight_test.ts`:
+    159 passed, 0 failed.
   - `deno check` on the changed lib files and `commands/babysitter_repair.ts`:
     clean.
   - Run directly with `deno test`, `tests/pre_push_gate_test.ts` gave 144 passed
@@ -161,12 +169,13 @@ flowchart TD
     (markdownlint on a fixture `README.md`). Under `./quality.sh` that file
     raised no failure.
 - `./quality.sh < /dev/null` on this head:
-  - Every stage passed except `deno tests`. Config integration and checkov
-    were skipped in this environment.
+  - Every stage passed except `deno tests`. Config integration and checkov were
+    skipped in this environment.
   - The parallel pass gave 35116 passed and 1 failed. The failure was
     `tests/pr_summary_ci_workflow_3768_test.ts::PR summary CI task runs git with
-    restricted environment permissions`: it could not resolve
-    `registry.npmjs.org` (no network). This change does not touch that test.
+    restricted environment permissions`:
+    it could not resolve `registry.npmjs.org` (no network). This change does not
+    touch that test.
   - The serial pass did not run because the parallel pass had failed.
 
 Not done or not checked:
