@@ -129,7 +129,10 @@ defaults to `~/.vibe-coder/fleet-pr-babysitter.private-key.pem`, or pass
 
 Each automatic babysitter pass repeats the Chromium check before PR discovery
 or GitHub App authentication. A failure is reported as a failed pass and the
-existing supervisor or watch loop retries it. `--check-container` runs the
+existing supervisor or watch loop retries it. A host-disk admission refusal is
+a wait, not a failure (Issue #5242): the check is skipped with one warning, the
+pass continues and exits zero, and the next pass retries the check.
+`--check-container` runs the
 same bounded check on demand before reading App configuration or authenticating;
 it prints the specific runtime, image, timeout, exit, output or host-disk
 admission cause (`babysitter Chromium check not started: ...`) and exits
@@ -518,14 +521,16 @@ directory) the worker uses. The request is 16 GB (the worker container's
 rootfs plus its egress proxy's), plus the worker's 25 GB ephemeral cargo
 headroom when the clone holds a cargo project. A repair that would leave the
 host below its floor, counting what live reservations have yet to consume, is
-refused. A refusal is an infrastructure failure: it backs off and retries, and
-spends an infrastructure attempt, not a substantive repair attempt. The
+refused. A refusal is a park (`BabysitterParked`, Issue #5242): it backs off
+and retries, spends an infrastructure attempt, not a substantive repair
+attempt, and logs one `Babysitter repair parked:` line instead of failing the
+pass. The
 reservation is removed after the container and its proxy are torn down. A host
 whose disk cannot be measured admits the repair without a reservation. The
 Chromium launch check starts the same image and, on the Apple runtime, its own
 egress proxy, so it is admitted the same way before any egress starts, for the
-16 GB footprint alone (it builds nothing). A refusal is reported as a failed
-pass, which the supervisor or watch loop retries, and the reservation is removed
+16 GB footprint alone (it builds nothing). A refusal skips the check for that
+pass without failing it (Issue #5242), and the reservation is removed
 after its container and proxy are torn down.
 
 **Token restarts.** When a session ends at its read token's expiry, the host

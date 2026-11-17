@@ -132,6 +132,12 @@ export class BabysitterTaskFailure extends Error {}
 /** A spent provider quota reported through the container's exit status (#5072). */
 export class BabysitterQuotaPark extends Error {}
 
+/**
+ * A host-disk admission refusal (Issue #5105): a resource wait that clears by
+ * itself, so the container work is parked, never failed (Issue #5242).
+ */
+export class BabysitterDiskPark extends Error {}
+
 /** What one runtime process did. */
 export interface BabysitterSpawnResult {
   success: boolean;
@@ -1651,7 +1657,7 @@ async function releaseReservation(
  * run.sh does, admits against the worker's floor and the live reservations in
  * the shared ledger, and writes the reservation for this container: a repair's
  * (`clone` given), or the Chromium self-check's footprint-only one (no
- * `clone`). A refusal throws; an unmeasurable host admits with no reservation,
+ * `clone`). A refusal throws a {@link BabysitterDiskPark}; an unmeasurable host admits with no reservation,
  * as the worker's build gate does for an unknown reading.
  */
 export async function babysitterHostDiskAdmission(
@@ -1684,7 +1690,7 @@ export async function babysitterHostDiskAdmission(
     live: await readLiveHostDiskReservations(dir, admittedAt),
   });
   if (!verdict.admit) {
-    throw new Error(
+    throw new BabysitterDiskPark(
       `babysitter ${
         input.clone === undefined ? "Chromium check" : "repair"
       } not started: ${verdict.reason}`,
