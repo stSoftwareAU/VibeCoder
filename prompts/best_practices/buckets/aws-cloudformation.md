@@ -13,10 +13,11 @@ containing `AWSTemplateFormatVersion`, plus CDK-emitted templates.
 
 ## AWS integration-test guidance
 
-Follow [AWS integration testing](../../../CODING-STANDARDS.md#aws-integration-testing)
+Follow [AWS integration testing](https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#aws-integration-testing)
 for CLI/SDK tests, Blocks local tests, on-demand service lifecycle and
 documented coverage gaps. The runtime/CI rollout and detector migration are
-tracked in #5109–#5112; this guide does not establish that they have shipped.
+tracked in stSoftwareAU/VibeCoder#5109 through stSoftwareAU/VibeCoder#5112;
+this guide does not establish that they have shipped.
 Reuse the existing AWS-emulator finding and open migration issues rather
 than filing a second integration-test campaign. Installation or a successful
 stack status alone does not prove supported resource behaviour; unsupported
