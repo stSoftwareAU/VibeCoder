@@ -1038,8 +1038,35 @@ function reportInvocation(
 }
 
 /**
+ * Failure categories that are a deliberate wait rather than a failure
+ * (Issue #5241): a host-disk park (Issue #5077) and a provider quota, rate or
+ * credit stop. Both preserve the work for the next claim, and by owner rule
+ * both are normal, so they are never reported to `callbacks.failure`.
+ */
+const PARK_CATEGORIES: ReadonlySet<FailureCategory> = new Set([
+  "host_disk",
+  "rate_limit",
+]);
+
+/**
+ * Whether a failed run is a park — it ended without a PR on a
+ * {@link PARK_CATEGORIES} stop (Issue #5241).
+ */
+export function isParkedRun(
+  context: Pick<IssueRunCallbackContext, "result" | "outcome">,
+): boolean {
+  const outcome = context.outcome;
+  return context.result === "failure" && outcome?.kind === "no_pr" &&
+    outcome.category !== undefined && PARK_CATEGORIES.has(outcome.category);
+}
+
+/**
  * Run the callbacks for one terminal issue run: the outcome hook matching
  * `context.result`, then `always`.
+ *
+ * A parked run (Issue #5241) runs `always` only: it is a wait, not a
+ * failure, so it never reaches `failure` and the health board stays green.
+ * `always` still archives it with its real result and outcome.
  *
  * A hook that is not configured is a no-op and produces no record, so the
  * returned array is exactly the hooks that ran, in the order they ran. The
@@ -1054,8 +1081,19 @@ export async function invokeRunCallbacks(
   const { callbacks, context } = options;
   if (!hasAnyRunCallback(callbacks)) return [];
 
+  const parked = isParkedRun(context);
+  const events = parked
+    ? ["always"] as const
+    : [context.result, "always"] as const;
+  if (parked) {
+    options.log(
+      `${context.repository}#${context.issueNumber} parked ` +
+        `(${context.outcome?.category}) — a wait, not a failure; ` +
+        `skipping the failure callback (Issue #5241).`,
+    );
+  }
   const invocations: CallbackInvocation[] = [];
-  for (const event of [context.result, "always"] as const) {
+  for (const event of events) {
     const path = callbacks[event];
     if (path === undefined) continue;
     options.log(
