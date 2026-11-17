@@ -262,18 +262,19 @@ own cost in run stats, the run callback (additive only) and the weekly report".
 
 The production stop-comment reader now uses `parseIssueViewCommentRows` and
 `verifiedStopRule` uses `isFleetAuthor`. The controller and reader share the
-notification marker and first line from `token_economizer_stop_format.ts`.
-A command test exercises the default reader through `_setGhSpawnRunner`,
-restoring it after each case. For every controller stop rule it captures the
-actual notification body, round-trips it through the verifier and checks fleet,
-outsider, failed-command and missing-comments outcomes through the command.
-The report/verdict suites pass 34 tests and changed-file lint passes. Local
-execution uses the temporary published-dependency map; hosted CI remains required.
+notification marker and first line from `token_economizer_stop_format.ts`. A
+command test exercises the default reader through `_setGhSpawnRunner`, restoring
+it after each case. For every controller stop rule it captures the actual
+notification body, round-trips it through the verifier and checks fleet,
+outsider, failed-command and missing-comments outcomes through the command. The
+report/verdict suites pass 34 tests and changed-file lint passes. Local
+execution uses the temporary published-dependency map; hosted CI remains
+required.
 
 ## CI repair
 
 `token_economizer_stop_format.ts` was in neither the lib sweep ledger nor the
 trial page's purge list, so `lib_sweep_coverage_test.ts` and the trial drift
-test failed. It is now claimed in `docs/audits/lib-sweep-coverage/top-up-4959.json`
-and has a `Source` row in the purge list of `docs/TOKEN-ECONOMIZER-TRIAL.md`.
-Both suites pass (70 tests).
+test failed. It is now claimed in
+`docs/audits/lib-sweep-coverage/top-up-4959.json` and has a `Source` row in the
+purge list of `docs/TOKEN-ECONOMIZER-TRIAL.md`. Both suites pass (70 tests).
