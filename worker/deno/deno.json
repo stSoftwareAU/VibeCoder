@@ -50,7 +50,8 @@
   "imports": {
     "@std/assert": "jsr:@std/assert@^1.0.18",
     "@std/crypto": "jsr:@std/crypto@^1.1.0",
-    "@std/yaml/parse": "jsr:@std/yaml@^1.0.12/parse"
+    "@std/yaml/parse": "jsr:@std/yaml@^1.0.12/parse",
+    "commonmark": "npm:commonmark@0.31.2"
   },
   "lint": {
     "rules": {
@@ -61,6 +62,8 @@
     }
   },
   "fmt": {
-    "exclude": ["tests/fixtures/checkov/"]
+    "exclude": [
+      "tests/fixtures/checkov/"
+    ]
   }
 }

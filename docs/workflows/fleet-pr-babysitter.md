@@ -269,7 +269,9 @@ at the unchanged head, the description steps run in order:
 3. It strips every complete hidden `<!-- vibe-… -->` marker from the proposal in
    one linear scan. A marker quoted in a Markdown code span in the live body is
    not copied. A stray unclosed `<!--` in the proposal is neutralised, so it
-   cannot hide the appended reference or markers. It then appends the live
+   cannot hide the appended reference or markers. A proposal containing a fence delimiter receives restored references and
+   markers before its text, where list boundaries and unclosed fences cannot
+   swallow them. Other proposals retain a trailing block. It preserves the live
    body's markers (worker issue, summary digest, sub-agent tier and assignment
    id), so the digest reconcile keeps working.
 4. It decides closing or non-closing for the governing issue: the worker marker
@@ -308,8 +310,11 @@ at the unchanged head, the description steps run in order:
    gives `Part of #N`. So does a negated sentence such as "does not close #N",
    which GitHub still honours as a closing reference, so that sentence is
    reworded. An association the proposal dropped entirely is restored in the
-   form the evidence supports, and closing references to other issues that the
-   proposal dropped are restored.
+   form the evidence supports. The live body's closing references to other
+   issues that GitHub honours (one line, outside code, plain, colon or full-URL
+   form) are restored unless the proposal already closes that issue in such a
+   form. A hard-wrapped or code-split reference in the proposal does not count
+   as keeping one, and a line-wrapped one in the live body is not copied.
 5. It verifies before dismissal. The live head is checked before the edit and
    again after it. When an edit was made, the description read back must match
    what was published. When the close is withheld, GitHub's

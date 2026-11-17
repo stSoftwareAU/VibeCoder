@@ -499,7 +499,7 @@ Deno.test("a Refs inside a code span or fence does not settle a fully met issue'
     repo: REPO,
     headRefName: "feature",
   });
-  assertStringIncludes(output, "\n\nCloses #4637\n\n");
+  assertStringIncludes(output, "Closes #4637\n\n");
 });
 
 Deno.test("a Refs to a partly met issue is not a closing reference and adds no closing keyword (Issue #4637)", () => {
@@ -1035,7 +1035,7 @@ Deno.test("a colon or full-URL closing form inside code is left as written (Issu
     repo: REPO,
     headRefName: "feature",
   });
-  assertEquals(output, `${proposal}${partialSuffix()}`);
+  assertEquals(output, `${partialSuffix().trim()}\n\n${proposal}`);
 });
 
 Deno.test("with the close allowed, a colon or full-URL closing form is left as written (Issue #4637)", () => {
