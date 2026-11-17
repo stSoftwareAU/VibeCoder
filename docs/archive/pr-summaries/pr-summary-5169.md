@@ -170,6 +170,10 @@ flowchart TD
   146 passed, 0 failed. The `PR #5034 review` tests gave 13 passed with the
   host pre-push hook disabled. With the host hook on, they fail because the
   fixtures' own `git push` meets that hook.
+- Final head, run from `worker/deno` with the host pre-push hook disabled:
+  `deno test -A tests/pre_push_gate_test.ts tests/shellcheck_publication_test.ts`
+  gave 192 passed, 2 failed. Both failures are `pre-push CLI:` tests that could
+  not download `https://jsr.io/@std/yaml/meta.json` (no network here).
 
 - `worker/deno/tests/babysitter_tree_gate_test.ts` has three new tests. Each
   runs the real `runBabysitterTreeGate` and the real workflow scan (no
