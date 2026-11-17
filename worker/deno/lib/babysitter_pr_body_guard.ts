@@ -23,7 +23,12 @@
  * are stripped, and every other HTML-comment delimiter in it is made inert by
  * the shared neutralisation, so an unclosed `<!--` cannot hide the lines the
  * guard appends. The live body's markers are appended in their place, so the
- * summary digest and the worker-issue marker keep reconciling.
+ * summary digest and the worker-issue marker keep reconciling. When the body
+ * contains a fence delimiter, restored lines precede the proposal so no code
+ * container can swallow them. No guessed closing fence is emitted. The
+ * references restored are those GitHub honours in the live body (one line,
+ * outside code, plain, colon or full-URL form) that the proposal does not
+ * already close in such a form (Issue #5039).
  *
  * Every function here is pure. The caller reads the live body and the summary
  * as committed at HEAD, never the working tree.
@@ -44,6 +49,7 @@ import { maskMarkdownCode } from "./markdown_code_spans.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import {
   closingKeywordLine,
+  githubClosingReferences,
   hasGithubClosingReference,
   hasGithubColonOrUrlClosingReference,
   maskCodeWithPlaceholder,
@@ -128,7 +134,7 @@ export interface ClosingIssueReference {
   repository?: { name: string; owner?: { login: string } };
 }
 
-/** A closing reference the body names, read from a masked body. */
+/** A closing reference the body names. */
 interface ClosingRef {
   /** `#N` for this repository, `owner/name#N` for another. */
   key: string;
@@ -195,10 +201,17 @@ export function githubClosesIssue(
  * The description to publish for a repair's head (Issue #4637).
  *
  * With a proposal, the result is the proposal with its hidden markers
- * stripped, the live body's markers appended, closing references to other
- * issues that the proposal dropped restored, and the governing issue either
- * kept (its close is allowed) or withheld (its close is not). Without a
- * proposal, the live body is the base and only the withholding applies.
+ * stripped, closing references to other issues restored, the governing issue
+ * either kept (its close is allowed) or withheld (its close is not), and the
+ * live body's markers appended. Only closing references GitHub honours in the
+ * live body are restored: same line, outside code, in the plain, colon or
+ * full-URL form. A reference is restored unless the proposal already closes the
+ * issue in such a form; a line-wrapped or code-split close in the proposal does
+ * not count as keeping one. Without a proposal, the live body is the base and
+ * only the withholding (and its `Part of #N`) applies.
+ *
+ * When the body contains any fence delimiter, the restored block is placed
+ * before it. Other bodies retain the trailing block layout (Issue #5039).
  *
  * The governing issue is the worker marker in the live body, else the issue the
  * worker branch names ({@link governingIssueNumber}). An unrelated PR, with
@@ -215,10 +228,8 @@ export function guardPrBodyProposal(input: PrBodyGuardInput): string {
   const appended: string[] = [];
 
   if (proposal !== undefined) {
-    const kept = new Set(
-      closingRefs(maskMarkdownCode(text), repo).map((ref) => ref.key),
-    );
-    for (const ref of closingRefs(maskMarkdownCode(liveBody), repo)) {
+    const kept = new Set(effectiveCloses(text, repo).map((ref) => ref.key));
+    for (const ref of effectiveCloses(liveBody, repo)) {
       const governed = issueNumber !== undefined && ref.sameRepo &&
         ref.issueNumber === issueNumber;
       if (governed || kept.has(ref.key)) continue;
@@ -252,11 +263,17 @@ export function guardPrBodyProposal(input: PrBodyGuardInput): string {
     }
   }
 
-  let body = appended.length > 0 ? `${text}\n\n${appended.join("\n")}` : text;
+  const tail: string[] = [];
+  if (appended.length > 0) tail.push(appended.join("\n"));
   if (proposal !== undefined) {
     const markers = liveVibeMarkers(liveBody);
-    if (markers.length > 0) body = `${body}\n\n${markers.join("\n")}`;
+    if (markers.length > 0) tail.push(markers.join("\n"));
   }
+  const body = tail.length > 0
+    ? /`{3}|~{3}/.test(text)
+      ? `${tail.join("\n\n")}\n\n${text}`
+      : `${text}\n\n${tail.join("\n\n")}`
+    : text;
 
   if (issueNumber !== undefined && closeAllowed === false) {
     assertWithheld(body, issueNumber, repo);
@@ -356,7 +373,31 @@ function skipWhitespace(text: string, from: number): number {
   return at;
 }
 
-/** Every closing reference GitHub would honour, read from a masked body. */
+/**
+ * Every closing reference GitHub honours in `text`: same line, outside code,
+ * plain, colon or full-URL form (Issue #5039).
+ */
+function effectiveCloses(text: string, repo: string): ClosingRef[] {
+  const repoKey = repo.toLowerCase();
+  return githubClosingReferences(text, repo).map((ref) => {
+    const sameRepo = ref.repository === repoKey;
+    return {
+      key: sameRepo
+        ? `#${ref.issueNumber}`
+        : `${ref.repository}#${ref.issueNumber}`,
+      issueNumber: ref.issueNumber,
+      sameRepo,
+      text: text.slice(ref.start, ref.end),
+    };
+  });
+}
+
+/**
+ * Every closing reference under the loose pattern: whitespace, a line break
+ * included, between the keyword and `#N`. Only the withhold backstop uses it,
+ * the conservative side; the guard's keep and restore decisions use
+ * {@link effectiveCloses}.
+ */
 function closingRefs(masked: string, repo: string): ClosingRef[] {
   const refs: ClosingRef[] = [];
   for (const match of masked.matchAll(CLOSING_KEYWORD_RE)) {

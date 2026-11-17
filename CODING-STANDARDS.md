@@ -12,6 +12,44 @@ AI agents alike — no per-provider copy.
 - **Contributing (branching, commits, local quality gate)** —
   [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## AWS integration testing
+
+Use AWS Emulator for supported AWS CLI commands and SDK calls. Exercise the
+production scripts, clients and adapters with deterministic fixtures and
+meaningful positive and negative assertions. Keep fast unit tests for pure
+business logic; an installation, health probe or mocked response alone does
+not establish integration coverage.
+
+Pin the emulator version, isolate state and generated credentials per run,
+verify TLS, bound startup/polling, and propagate startup and test failures.
+Install tools without starting services. Container entrypoints, worker boot
+and shell initialisation must not launch emulators. Start one only when an
+explicitly invoked test command requests it, and clean up its owned processes
+and state on success, failure or termination.
+
+For applications using AWS Blocks, test the typed Block APIs through their
+local implementations. Those implementations do not exercise the underlying
+AWS CLI/SDK integration path. Do not require unrelated applications to adopt
+Blocks to test existing AWS calls.
+
+Record unsupported operations (including HTTP 501), fidelity limitations,
+skips and stubbed resources as coverage gaps, never passes. Name the version,
+affected behaviour, evidence, alternative validation and recheck condition.
+Retain Floci only for documented gaps where it supplies useful coverage.
+Keep relevant IAM, resource-policy, KMS-policy and deployment/runtime checks
+in the authorised real-AWS verification path; emulator success does not prove
+those properties. Emulator tests must not fall back to real AWS.
+
+Apply this policy to new or materially changed AWS behaviour, with existing
+regression tests retained. Do not add unrelated test-discovery campaigns.
+The runtime and CI rollout remains planned in #5109 and #5110; #5111 owns
+effective implementation/reviewer prompt wiring and #5112 owns detector
+migration. Enforce the new runtime requirement after its availability and
+reference CI path are verified, not merely because this policy is documented.
+
+References: [AWS Emulator](https://docs.aws.amazon.com/emulator/latest/userguide/what-is-service.html)
+and [AWS Blocks local development](https://docs.aws.amazon.com/blocks/latest/devguide/local-development.html).
+
 ## Language and Spelling
 
 Use **Australian English** spelling throughout all code, comments, and

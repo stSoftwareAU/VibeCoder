@@ -139,6 +139,10 @@ export function parseFenceLine(
     tick(meter);
     end++;
   }
+  // CommonMark forbids backticks in a backtick fence info string.
+  if (fenceChar === "`" && trimmed.slice(length, end).includes("`")) {
+    return null;
+  }
   return {
     char: fenceChar,
     length,
@@ -466,6 +470,8 @@ export function splitMarkdownCode(
   let fenceCursor = "";
   let paragraph = "";
   let inFence = false;
+  const listIndents: number[] = [];
+  let fenceListIndent = 0;
   let opener: FenceLine | null = null;
   // How many block-quote levels the open paragraph sits in (0 = unquoted) —
   // tracked separately from `startsNewBlock` because consecutive `>` lines
@@ -494,12 +500,65 @@ export function splitMarkdownCode(
 
   while (i < lines.length) {
     const line = lines[i]!;
+    // A list's fenced block ends when a nonblank line leaves its container.
+    // Process that line again as prose/an opener, never as the old closer.
+    const indentText = line.match(/^[ \t]*/)![0];
+    let indent = 0;
+    for (const char of indentText) {
+      tick(meter);
+      indent += char === "\t" ? 4 - indent % 4 : 1;
+    }
+    if (
+      inFence && fenceListIndent > 0 && line.trim() && indent < fenceListIndent
+    ) {
+      pushSegment(fenceCursor, true);
+      fenceCursor = "";
+      inFence = false;
+      opener = null;
+    }
+    if (!inFence && line.trim()) {
+      let leftContainer = false;
+      while (
+        listIndents.length && indent < listIndents[listIndents.length - 1]!
+      ) {
+        listIndents.pop();
+        leftContainer = true;
+      }
+      const marker = line.slice(indentText.length).match(
+        /^(?:[-+*]|[0-9]{1,9}[.)])([ \t]+)/,
+      );
+      // CommonMark gives thematic breaks precedence over list markers.
+      // A fictitious list indent would expose code references and live markers.
+      const thematicBreak =
+        /^(?:\*[ \t]*){3,}$|^(?:-[ \t]*){3,}$|^(?:_[ \t]*){3,}$/.test(
+          line.trim(),
+        );
+      // Only a nonempty item may interrupt a paragraph; ordered items must
+      // start at 1. A bare dash after prose is a setext underline. The rule
+      // also holds inside an open list item: a line at or beyond the item's
+      // content indent is paragraph text there, so only a sibling item
+      // (one that left the innermost container) is exempt.
+      const interruptsParagraph = paragraph.trim().length > 0 &&
+        (listIndents.length === 0 || !leftContainer);
+      const validInterruption = !interruptsParagraph ||
+        (line.slice(indentText.length + (marker?.[0].length ?? 0)).trim()
+                  .length > 0 &&
+            !/^[0-9]/.test(marker?.[0] ?? "") ||
+          /^1[.)][ \t]+\S/.test(line.slice(indentText.length)));
+      if (marker && !thematicBreak && validInterruption) {
+        const padding = marker[1]!.length;
+        listIndents.push(
+          indent + marker[0].length - padding + (padding > 4 ? 1 : padding),
+        );
+      }
+    }
     const fenceMatch = parseFenceLine(line, meter);
     if (fenceMatch && !inFence) {
       flushParagraph();
       currentQuoteDepth = 0;
       inFence = true;
       opener = fenceMatch;
+      fenceListIndent = listIndents[listIndents.length - 1] ?? 0;
       fenceCursor += line;
       i++;
       continue;

@@ -133,8 +133,9 @@ export function extractClosingIssueNumbers(prBody: string): number[] {
  * placeholder, so code can never read as prose and a code span between a
  * keyword and its `#N` ("Closes `x` #42") cannot collapse into a same-line
  * reference the way blanking it to spaces would. Used by
- * {@link hasGithubClosingReference} and, as the withhold backstop's masker, by
- * the babysitter guard's `assertWithheld` (Issue #4964).
+ * {@link hasGithubClosingReference}, {@link githubClosingReferences} and, as
+ * the withhold backstop's masker, by the babysitter guard's `assertWithheld`
+ * (Issue #4964).
  */
 export function maskCodeWithPlaceholder(text: string): string {
   return splitMarkdownCode(text)
@@ -203,6 +204,66 @@ export function hasGithubColonOrUrlClosingReference(
     if (`${match[1]}/${match[2]}`.toLowerCase() === repoKey) return true;
   }
   return false;
+}
+
+/** A closing reference GitHub honours, located in the text it was read from. */
+export interface GithubClosingReference {
+  /** The issue number the reference names. */
+  issueNumber: number;
+  /**
+   * The repository the reference names, `owner/name` lowercased; the `repo`
+   * argument (lowercased) when the reference names none.
+   */
+  repository: string;
+  /** Offset of the keyword's first character in the original text. */
+  start: number;
+  /** Offset just past the issue number in the original text. */
+  end: number;
+}
+
+/**
+ * Every same-line, outside-code closing reference GitHub honours, in plain,
+ * colon or full-URL form, sorted by position. A line-wrapped or code-split
+ * reference is not one (Issue #5039). Offsets index the original text, which
+ * the masked copy matches in length.
+ *
+ * @param prBody - The PR body, or the text to read
+ * @param repo - The pull request's repository, `owner/name`
+ */
+export function githubClosingReferences(
+  prBody: string,
+  repo: string,
+): GithubClosingReference[] {
+  const masked = maskCodeWithPlaceholder(prBody);
+  const repoKey = repo.toLowerCase();
+  const refs: GithubClosingReference[] = [];
+  const add = (
+    match: RegExpMatchArray,
+    issue: string,
+    repository: string | undefined,
+  ) => {
+    const issueNumber = Number(issue);
+    if (!Number.isSafeInteger(issueNumber)) return;
+    // The pattern's lead character is not part of the keyword.
+    const lead = /^[a-z]/i.test(match[0]) ? 0 : 1;
+    const start = (match.index ?? 0) + lead;
+    refs.push({
+      issueNumber,
+      repository: repository?.toLowerCase() ?? repoKey,
+      start,
+      end: (match.index ?? 0) + match[0].length,
+    });
+  };
+  for (const match of masked.matchAll(GITHUB_CLOSING_KEYWORD_PATTERN)) {
+    add(match, match[2]!, match[1]);
+  }
+  for (const match of masked.matchAll(SAME_LINE_COLON_CLOSE_PATTERN)) {
+    add(match, match[2]!, match[1]);
+  }
+  for (const match of masked.matchAll(SAME_LINE_URL_CLOSE_PATTERN)) {
+    add(match, match[3]!, `${match[1]}/${match[2]}`);
+  }
+  return refs.sort((a, b) => a.start - b.start);
 }
 
 /**
