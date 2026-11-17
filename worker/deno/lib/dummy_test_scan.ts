@@ -267,20 +267,32 @@ export function maskSource(src: string, lang: Lang): string {
   return out.join("");
 }
 
-/** Offset of the bracket closing the one at `open`, or -1 past the end. */
+const matchCache = new Map<string, Int32Array>();
+
+/**
+ * Offset of the bracket closing the one at `open`, or -1 past the end. Every
+ * bracket's match is found in one linear pass per text and kept, so repeated
+ * lookups on a hostile diff stay linear (Issue #5215).
+ */
 function closingBracket(masked: string, open: number): number {
-  const opener = masked[open];
-  const closer = opener === "(" ? ")" : opener === "{" ? "}" : "]";
-  let depth = 0;
-  for (let k = open; k < masked.length; k++) {
-    const ch = masked[k];
-    if (ch === opener) depth++;
-    else if (ch === closer) {
-      depth--;
-      if (depth === 0) return k;
+  let matched = matchCache.get(masked);
+  if (matched === undefined) {
+    if (matchCache.size >= 256) matchCache.clear();
+    matched = new Int32Array(masked.length).fill(-1);
+    const stacks: Record<string, number[]> = { "(": [], "{": [], "[": [] };
+    const openerOf: Record<string, string> = { ")": "(", "}": "{", "]": "[" };
+    for (let k = 0; k < masked.length; k++) {
+      const ch = masked[k]!;
+      const stack = stacks[ch];
+      if (stack !== undefined) stack.push(k);
+      else if (openerOf[ch] !== undefined) {
+        const from = stacks[openerOf[ch]!]!.pop();
+        if (from !== undefined) matched[from] = k;
+      }
     }
+    matchCache.set(masked, matched);
   }
-  return -1;
+  return matched[open] ?? -1;
 }
 
 /**
@@ -311,14 +323,23 @@ function callArgs(masked: string, open: number): string[] | null {
   return splitTopLevel(masked.slice(open + 1, close));
 }
 
-const IDENT = /^[A-Za-z_$][\w$]*$/;
+/** A callback reference: a bare identifier or a property path (`a.b.c`). */
+const REF = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/;
 const PARAM_NAME = /^(?:\.\.\.)?([A-Za-z_$][\w$]*)(?:[?:=]|$)/;
-const FN_PROPERTY = /^fn:([A-Za-z_$][\w$]*)$/;
+const FN_PROPERTY = /^fn:([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)$/;
+
+/** Whether a whitespace-stripped argument is an inline function. */
+function inlineFunction(arg: string): boolean {
+  if (arg.startsWith("{")) return false;
+  return arg.includes("=>") || /^(?:async)?function.*\{/.test(arg);
+}
 
 /**
  * The named callback a registration call (its `(` at `open`) passes: the `fn`
- * of an options object (`fn` or `fn: check`), else a trailing bare identifier
- * (`Deno.test("x", check)`). Null for an inline callback.
+ * of an options object (`fn` or `fn: check`), else a trailing reference
+ * (`Deno.test("x", check)`) when no argument is an inline function. A property
+ * path (`suite.check`) is returned as is, so it resolves to nothing in view and
+ * is a note. Null for an inline callback.
  */
 function callbackName(masked: string, open: number): string | null {
   const args = callArgs(masked, open);
@@ -331,21 +352,27 @@ function callbackName(masked: string, open: number): string | null {
       if (named) return named[1]!;
     }
   }
+  if (args.some(inlineFunction)) return null;
   const last = args[args.length - 1]!;
-  return IDENT.test(last) ? last : null;
+  return REF.test(last) ? last : null;
 }
 
 /**
- * The position of the parameter `name` in the parameter list whose `(` is at
- * `params`, or -1. A destructured parameter takes a position but no name; a
+ * Parameter names by position for the parameter list whose `(` is at
+ * `params`. A destructured parameter takes a position but no name (""); a
  * fragment a generic type's comma split leaves (`number>`) takes none.
  */
-function paramIndexOf(masked: string, params: number, name: string): number {
-  if (params < 0) return -1;
+function paramNames(masked: string, params: number): Map<string, number> {
+  const out = new Map<string, number>();
+  if (params < 0) return out;
   const kept = (callArgs(masked, params) ?? []).filter((p) =>
     /^[{[]/.test(p) || PARAM_NAME.test(p)
   );
-  return kept.findIndex((p) => PARAM_NAME.exec(p)?.[1] === name);
+  kept.forEach((p, k) => {
+    const name = PARAM_NAME.exec(p)?.[1];
+    if (name !== undefined && !out.has(name)) out.set(name, k);
+  });
+  return out;
 }
 
 /** A plain call's name: an identifier not after `.` or a word, then `(`. */
@@ -585,8 +612,8 @@ function afterReturnType(masked: string, from: number, arrow: boolean): number {
  */
 interface Definition {
   name: string;
-  /** Offset of the parameter list's `(`, or -1. */
-  params: number;
+  /** Parameter name to its position, parsed once. */
+  params: Map<string, number>;
   /**
    * Inclusive body offsets. `end` is -1 when the body runs past the hunk or
    * cannot be found.
@@ -601,6 +628,13 @@ interface Definition {
  */
 function definitionSpans(masked: string, lang: Lang): Definition[] {
   const out: Definition[] = [];
+  const push = (name: string, paren: number, start: number, end: number) =>
+    out.push({
+      name,
+      params: lang === "ts" && end >= 0 ? paramNames(masked, paren) : new Map(),
+      start,
+      end,
+    });
   const re = lang === "rust"
     ? /\bfn\s+([A-Za-z_]\w*)/g
     : /(?:^|[^\w$.])(?:function\s*\*?\s*([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]{0,120})?=\s*(?:async\s*)?(?:function\b|\())/g;
@@ -611,7 +645,7 @@ function definitionSpans(masked: string, lang: Lang): Definition[] {
     const paren = masked.indexOf("(", from - 1);
     const paramsEnd = paren < 0 ? -1 : closingBracket(masked, paren);
     if (paramsEnd < 0) {
-      out.push({ name, params: paren, start: -1, end: -1 });
+      push(name, paren, -1, -1);
       continue;
     }
     const arrow = lang === "ts" && m[0].endsWith("(");
@@ -619,7 +653,7 @@ function definitionSpans(masked: string, lang: Lang): Definition[] {
       ? afterReturnType(masked, paramsEnd + 1, arrow)
       : paramsEnd + 1;
     if (bodyFrom < 0) {
-      out.push({ name, params: paren, start: -1, end: -1 });
+      push(name, paren, -1, -1);
       continue;
     }
     const rest = masked.slice(bodyFrom);
@@ -627,16 +661,11 @@ function definitionSpans(masked: string, lang: Lang): Definition[] {
     const arrowExpr = lang === "ts" && /^\s*=>\s*[^{\s]/.test(rest);
     if (arrowExpr) {
       const nl = masked.indexOf("\n", bodyFrom);
-      out.push({
-        name,
-        params: paren,
-        start: bodyFrom,
-        end: (nl < 0 ? masked.length : nl) - 1,
-      });
+      push(name, paren, bodyFrom, (nl < 0 ? masked.length : nl) - 1);
       continue;
     }
     const close = brace < 0 ? -1 : closingBracket(masked, brace);
-    out.push({ name, params: paren, start: brace, end: close });
+    push(name, paren, brace, close);
   }
   return out;
 }
@@ -663,7 +692,6 @@ function definitionsIn(
  * that parameter's position. Null when the callback is not such a parameter.
  */
 function registrarOf(
-  masked: string,
   spans: Definition[],
   open: number,
   name: string,
@@ -672,8 +700,8 @@ function registrarOf(
   for (const d of spans) {
     if (d.end < 0 || d.start >= open || open >= d.end) continue;
     if (best !== null && d.start <= best.start) continue;
-    const index = paramIndexOf(masked, d.params, name);
-    if (index >= 0) best = { helper: d.name, index, start: d.start };
+    const index = d.params.get(name);
+    if (index !== undefined) best = { helper: d.name, index, start: d.start };
   }
   return best === null ? null : { helper: best.helper, index: best.index };
 }
@@ -798,7 +826,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
         if (!m[1]!.startsWith("Deno.") && !testFile) continue;
         const open = (m.index ?? 0) + m[0].length - 1;
         const cb = callbackName(masked, open);
-        const reg = cb === null ? null : registrarOf(masked, spans, open, cb);
+        const reg = cb === null ? null : registrarOf(spans, open, cb);
         if (reg !== null) regs.set(reg.helper, reg.index);
       }
       registrars.set(hunk.file, regs);
@@ -956,7 +984,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
         }
         if (skipToken) continue; // a skipped test is judged by the rule above
         const cb = callbackName(masked, open);
-        const reg = cb === null ? null : registrarOf(masked, spans, open, cb);
+        const reg = cb === null ? null : registrarOf(spans, open, cb);
         if (reg !== null) {
           // The callback is a helper's parameter: its calls are judged.
           if (hunk.lines.slice(declLine, last + 1).some((l) => l.added)) {
@@ -1005,7 +1033,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
               close,
               last,
               false,
-              IDENT.test(arg) ? arg : null,
+              REF.test(arg) ? arg : null,
             );
           }
         }

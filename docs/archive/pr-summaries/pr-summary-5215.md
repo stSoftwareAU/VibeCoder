@@ -10,7 +10,13 @@ scan gave a definitive `no-assertion` finding for every registration helper,
 whatever its callers passed. For a helper, the scan now judges the callback
 argument at each call of the helper in view. A callback defined in view that
 asserts nothing is still refused. A callback the diff cannot resolve becomes an
-`unseen` checklist note, never a finding. Closes #5215.
+`unseen` checklist note, never a finding. That includes a property-path
+reference (`Deno.test("x", suite.check)`, `fn: suite.check`, or
+`register("a", suite.check)`). A trailing value after an inline callback, as in
+`it("x", async () => {...}, TIMEOUT)`, is not read as the callback: the inline
+body is judged as before. Each definition's parameter names are parsed once, and
+every bracket's match is found in one linear pass per text, so the helper lookup
+stays linear on a hostile diff. Closes #5215.
 
 ## Spec
 
@@ -69,7 +75,7 @@ flowchart TD
     sites pass asserting callbacks, so all three were false positives. The run
     added no finding and no note.
 - Regexes on untrusted text that the change adds: `CALL_NAME`, `PARAM_NAME`,
-  `FN_PROPERTY` and `FUNCTION_HEAD` (`IDENT` is fully anchored).
+  `FN_PROPERTY` and `FUNCTION_HEAD` (`REF` is fully anchored).
   - `CALL_NAME`'s lookbehind allows one start per identifier run. `PARAM_NAME`
     and `FN_PROPERTY` are anchored. `FUNCTION_HEAD` runs on a 40-character
     slice.
@@ -112,6 +118,21 @@ assertion was edited or removed.
   helper calls that are not at statement level.
 - `registration patterns stay linear on long hostile runs (Issue #5215)`: the
   hostile regex cases described under Evidence.
+- `a trailing value after an inline callback is not read as the callback (Issue
+  #5215)`:
+  `it("x", async () => {...}, TIMEOUT)` with a dummy body is still
+  `no-assertion` on its line, and with an asserting body gives no finding and no
+  note.
+- `a callback passed as a property path is a note, not a finding (Issue
+  #5215)`:
+  `Deno.test("x", suite.check)`, `fn: suite.check` and
+  `register("a", suite.check)` each give no finding and one `unseen` note.
+- `a long parameter list around many registrations stays linear (Issue
+  #5215)`:
+  one helper with 3,000 parameters around 3,000 `Deno.test({ name, fn
+  })`
+  lines and an asserting call. It asserts no finding and no note, and that the
+  scan takes under 2 s.
 
 Results:
 
@@ -124,12 +145,17 @@ Results:
   view that asserts nothing is refused on each registration`
   and the inline test pass on base too, as intended: the base scanner already
   refused them. The hostile test was added after this run.
-- Head: `deno test tests/dummy_test_scan_5016_test.ts` gave 38 passed and 0
-  failed. `tests/dummy_test_scan_wiring_5016_test.ts` gave 3 passed.
-- `./quality.sh < /dev/null` passed on the final code head, with the
-  config-integration and checkov stages skipped. `deno task
-  pr-summary-check`
-  reported 0 gates blocked.
+- Red against the previous head: with the pre-verifier-fix `dummy_test_scan.ts`
+  restored, the three tests added for the verifier's findings failed (the
+  trailing-value, property-path and parameter-list tests; the last took 6.9 s).
+  At head they pass.
+- Head: `deno test tests/dummy_test_scan_5016_test.ts` gave 41 passed and 0
+  failed. That file, the wiring test and the four `pre_pr_verifier` test files
+  together gave 143 passed and 0 failed.
+- `./quality.sh < /dev/null` passed on the code head before the verifier fixes,
+  with the config-integration and checkov stages skipped. The worker re-runs it
+  on this head. `deno task
+  pr-summary-check` reported 0 gates blocked.
 
 Docs updated: `CODING-STANDARDS.md` (the dummy-test scan bullets under **Dummy
 tests and "how" tests are refused**) and `docs/review-checklists.md` (the
@@ -138,6 +164,9 @@ checklist item text and the review intro in `dummyTestNotesReview` now name the
 registered-callback case. The consumers in
 `.claude/skills/review-fleet-prs/scripts/gate.ts`, `post.ts` and
 `worker/deno/lib/pre_pr_verifier.ts` use the unchanged `scanDummyTests` API.
+With the fixes above they again get `no-assertion` for a dummy test with a
+trailing value after its inline callback, and no longer get a false `unseen`
+note for an asserting one.
 
 Issue numbers cited: #5215: Dummy-test scan mistakes a callback registration
 wrapper for an assertion-free test; #5065: Dummy-test scan reads a helper's

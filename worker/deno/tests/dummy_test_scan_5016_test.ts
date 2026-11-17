@@ -686,6 +686,82 @@ Deno.test("registration patterns stay linear on long hostile runs (Issue #5215)"
   assertEquals(rules(longParam), [["no-assertion", 4]]);
 });
 
+Deno.test("a trailing value after an inline callback is not read as the callback (Issue #5215)", () => {
+  const file = "tests/timeout_test.ts";
+  const dummy = scanDummyTests(added(
+    file,
+    `const TIMEOUT = 5000;
+it("x", async () => {
+  await run();
+}, TIMEOUT);
+`,
+  ));
+  assertEquals(dummy.findings.map((f) => [f.rule, f.line]), [[
+    "no-assertion",
+    2,
+  ]]);
+  assertEquals(dummy.notes, []);
+
+  const asserting = scanDummyTests(added(
+    file,
+    `const TIMEOUT = 5000;
+it("x", async () => {
+  expect(await run()).toBe(3);
+}, TIMEOUT);
+`,
+  ));
+  assertEquals(asserting.findings, []);
+  assertEquals(asserting.notes, []);
+});
+
+Deno.test("a callback passed as a property path is a note, not a finding (Issue #5215)", () => {
+  const file = "tests/suite_test.ts";
+  for (
+    const line of [
+      `Deno.test("x", suite.check);`,
+      `Deno.test({ name: "x", fn: suite.check });`,
+    ]
+  ) {
+    const scan = scanDummyTests(
+      added(file, `import { suite } from "./suite.ts";\n${line}\n`),
+    );
+    assertEquals(scan.findings, [], line);
+    assertEquals(scan.notes, [{ file, line: 2, kind: "unseen" }], line);
+  }
+
+  const helper = scanDummyTests(added(
+    file,
+    `import { suite } from "./suite.ts";
+${REGISTER_HELPER}register("a", suite.check);
+`,
+  ));
+  assertEquals(helper.findings, []);
+  assertEquals(helper.notes, [{ file, line: 5, kind: "unseen" }]);
+});
+
+Deno.test("a long parameter list around many registrations stays linear (Issue #5215)", () => {
+  const file = "tests/many_test.ts";
+  const params = Array.from({ length: 3000 }, (_, k) => `p${k}: number`);
+  const regs = Array.from(
+    { length: 3000 },
+    () => "  Deno.test({ name, fn });",
+  );
+  const diff = added(
+    file,
+    `function register(name: string, ${params.join(", ")}, fn: () => void) {\n${
+      regs.join("\n")
+    }\n}\nregister("a", ${
+      "0, ".repeat(3000)
+    }() => {\n  assertEquals(run(), 2);\n});\n`,
+  );
+  const started = performance.now();
+  const scan = scanDummyTests(diff);
+  const took = performance.now() - started;
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+  assertEquals(took < 2000, true, `took ${took} ms`);
+});
+
 // --- What the diff shows ---
 
 Deno.test("an unchanged test in context is not judged; an edited one is", () => {
