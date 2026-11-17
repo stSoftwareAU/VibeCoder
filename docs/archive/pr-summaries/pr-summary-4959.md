@@ -257,3 +257,15 @@ own cost in run stats, the run callback (additive only) and the weekly report".
   - the `definition` in `docs/audits/lib-sweep-coverage/top-up-4958.json` still
     says the report renders no verdict; it is a historical audit record and was
     left alone.
+
+## Review repair
+
+The production stop-comment reader now uses `parseIssueViewCommentRows` and
+`verifiedStopRule` uses `isFleetAuthor`. The controller and reader share the
+notification marker and first line from `token_economizer_stop_format.ts`.
+A command test exercises the default reader through `_setGhSpawnRunner`,
+restoring it after each case. For every controller stop rule it captures the
+actual notification body, round-trips it through the verifier and checks fleet,
+outsider, failed-command and missing-comments outcomes through the command.
+The report/verdict suites pass 34 tests and changed-file lint passes. Local
+execution uses the temporary published-dependency map; hosted CI remains required.

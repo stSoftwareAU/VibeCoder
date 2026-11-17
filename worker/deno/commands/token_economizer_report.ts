@@ -37,7 +37,10 @@ import {
   verifiedStopRule,
 } from "../lib/token_economizer_verdict.ts";
 import type { TokenEconomizerStopRule } from "../lib/token_economizer_plugin.ts";
-import { resolveAlertDedupAuthors } from "../lib/alert_dedup_authors.ts";
+import {
+  parseIssueViewCommentRows,
+  resolveAlertDedupAuthors,
+} from "../lib/alert_dedup_authors.ts";
 
 /** Most files the command reads from one archive. */
 const MAX_FILES = 100_000;
@@ -77,16 +80,7 @@ export async function ghStopComments(): Promise<StopComment[]> {
   const comments = (JSON.parse(result.stdout) as { comments?: unknown })
     .comments;
   if (!Array.isArray(comments)) throw new Error("no comments list");
-  return comments.map((c) => {
-    const row = c as { author?: unknown; body?: unknown };
-    const author = typeof row.author === "string"
-      ? row.author
-      : (row.author as { login?: unknown } | null)?.login;
-    return {
-      author: typeof author === "string" ? author : "",
-      body: typeof row.body === "string" ? row.body : "",
-    };
-  });
+  return parseIssueViewCommentRows(comments);
 }
 
 /** Read pull request state through `gh pr view`; undefined when unknown. */

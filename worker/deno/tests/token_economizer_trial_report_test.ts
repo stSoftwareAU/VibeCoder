@@ -787,3 +787,81 @@ Deno.test("merge rate counts distinct PRs while cost and success retain every ru
     rate: 0.5,
   });
 });
+
+Deno.test("production stop reader verifies controller notifications and fails closed", async () => {
+  const { _setGhSpawnRunner, _resetGhSpawnRunner } = await import(
+    "../lib/gh_spawn.ts"
+  );
+  const { reportTokenEconomizerStop } = await import(
+    "../lib/token_economizer_control.ts"
+  );
+  const { TOKEN_ECONOMIZER_STOP_RULES, verifiedStopRule } = await import(
+    "../lib/token_economizer_verdict.ts"
+  );
+  await withTemp(async (dir) => {
+    await Deno.writeTextFile(
+      `${dir}/a.json`,
+      JSON.stringify(fixture().slice(0, 4)),
+    );
+    for (const rule of TOKEN_ECONOMIZER_STOP_RULES) {
+      let body = "";
+      await reportTokenEconomizerStop(dir, {
+        rule,
+        reason: "test",
+        recordedAt: "2026-11-17T00:00:00Z",
+      }, (args) => {
+        body = args[args.indexOf("--body") + 1]!;
+        return Promise.resolve("");
+      });
+      assertEquals(
+        verifiedStopRule([{ author: "VibeCoderST", body }], ["vibecoderst"]),
+        rule,
+      );
+      for (const mode of ["fleet", "outsider", "failure", "malformed"]) {
+        _setGhSpawnRunner((args) => {
+          const matches = args.includes("issue") && args.includes("4959") &&
+            args.includes("--json") && args.includes("comments");
+          return Promise.resolve({
+            code: mode === "failure" || !matches ? 1 : 0,
+            success: mode !== "failure" && matches,
+            stderr: "",
+            stdout: mode === "malformed" ? "{}" : JSON.stringify({
+              comments: [{
+                author: {
+                  login: mode === "fleet" ? "VibeCoderST" : "outsider",
+                },
+                body,
+              }],
+            }),
+          });
+        });
+        try {
+          const result = await createTokenEconomizerReportCommand({
+            lookup,
+            fleetAuthors: () => Promise.resolve(["vibecoderst"]),
+          }).execute(
+            { ...BASE_ARGS, archive: dir, "read-stop-comments": true },
+            config(),
+          );
+          if (mode === "failure" || mode === "malformed") {
+            assertEquals(result.success, false);
+            assertEquals(
+              result.message,
+              "The comments on #4959 could not be read, so no verdict was taken; re-run the report later.",
+            );
+          } else {
+            assertEquals(result.success, true);
+            assertStringIncludes(
+              result.message,
+              mode === "fleet"
+                ? "**Verdict: stopped (failed).**"
+                : "**Verdict: not due.**",
+            );
+          }
+        } finally {
+          _resetGhSpawnRunner();
+        }
+      }
+    }
+  });
+});

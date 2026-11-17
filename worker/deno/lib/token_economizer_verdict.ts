@@ -91,13 +91,16 @@ export function isTokenEconomizerStopRule(
   return TOKEN_ECONOMIZER_STOP_RULES.some((rule) => rule === value);
 }
 
-/** Marker the stop controller ends its #4959 stop comment with. */
-export const TOKEN_ECONOMIZER_STOP_MARKER =
-  "<!-- vibe-token-economizer-stop -->";
+export { TOKEN_ECONOMIZER_STOP_MARKER } from "./token_economizer_stop_format.ts";
+import {
+  TOKEN_ECONOMIZER_STOP_MARKER,
+  tokenEconomizerStopLine,
+} from "./token_economizer_stop_format.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
 
 /** One issue comment, as `gh issue view --json comments` returns it. */
 export interface StopComment {
-  author: string;
+  author: string | null;
   body: string;
 }
 
@@ -113,15 +116,14 @@ export function verifiedStopRule(
   comments: readonly StopComment[],
   fleetAuthors: readonly string[],
 ): TokenEconomizerStopRule | undefined {
-  const fleet = new Set(fleetAuthors.map((a) => a.toLowerCase()));
   for (const comment of comments) {
-    if (!fleet.has(comment.author.toLowerCase())) continue;
+    if (!isFleetAuthor(comment.author, [...fleetAuthors])) continue;
     if (!comment.body.includes(TOKEN_ECONOMIZER_STOP_MARKER)) continue;
     const firstLine = comment.body.split("\n", 1)[0] ?? "";
-    const match = /^TokenEconomizer trial stopped: ([a-z-]+)\.\r?$/.exec(
-      firstLine,
+    const rule = TOKEN_ECONOMIZER_STOP_RULES.find((rule) =>
+      firstLine.replace(/\r$/, "") === tokenEconomizerStopLine(rule)
     );
-    if (match && isTokenEconomizerStopRule(match[1])) return match[1];
+    if (rule) return rule;
   }
   return undefined;
 }
