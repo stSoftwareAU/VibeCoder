@@ -7,6 +7,7 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertLinearGrowth } from "./support/growth.ts";
 import {
   applyDummyTestScan,
   DUMMY_TEST_CHECKLIST,
@@ -483,6 +484,288 @@ Deno.test("in an edited file, a test calling a function out of view is a note, n
   );
 });
 
+// --- Registration callbacks (Issue #5215) ---
+
+const REGISTER_HELPER =
+  `function register(name: string, fn: () => Promise<void>): void {
+  Deno.test({ name, fn });
+}
+`;
+
+Deno.test("a registration helper's asserting callback is accepted (Issue #5215)", () => {
+  const diff = added(
+    "tests/register_test.ts",
+    `import { assertEquals } from "@std/assert";
+${REGISTER_HELPER}register("observable result", async () => {
+  assertEquals(await Promise.resolve(42), 42);
+});
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+});
+
+Deno.test("a helper with the issue's options shape and an asserting callback is accepted (Issue #5215)", () => {
+  const diff = added(
+    "tests/ordinary_test.ts",
+    `function testAsOrdinaryUser(
+  name: string,
+  fn: () => Promise<void>,
+  alsoIgnore = false,
+): void {
+  Deno.test({ name, ignore: IS_WORKER_ACCOUNT || alsoIgnore, fn });
+}
+
+testAsOrdinaryUser("real shape", async () => {
+  assertEquals(await Promise.resolve(42), 42);
+});
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+});
+
+Deno.test("a registration helper's dummy call is refused on its call line, not the helper's (Issue #5215)", () => {
+  const diff = added(
+    "tests/register_test.ts",
+    `import { assertEquals } from "@std/assert";
+${REGISTER_HELPER}register("observable result", async () => {
+  assertEquals(await Promise.resolve(42), 42);
+});
+register("dummy", async () => {
+  await Promise.resolve(42);
+});
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 8]]);
+});
+
+Deno.test("a named callback defined in view and asserting is accepted (Issue #5215)", () => {
+  const diff = added(
+    "tests/named_test.ts",
+    `import { assertEquals } from "@std/assert";
+async function checks(): Promise<void> {
+  assertEquals(await Promise.resolve(42), 42);
+}
+Deno.test("named", checks);
+Deno.test({ name: "named opts", fn: checks });
+${REGISTER_HELPER}register("by name", checks);
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+});
+
+Deno.test("a named callback defined in view that asserts nothing is refused on each registration (Issue #5215)", () => {
+  const diff = added(
+    "tests/idle_test.ts",
+    `async function idle(): Promise<void> {
+  await Promise.resolve(42);
+}
+Deno.test("named", idle);
+Deno.test({ name: "opts", fn: idle });
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 4], ["no-assertion", 5]]);
+});
+
+Deno.test("a callback not defined in view is a note, not a finding (Issue #5215)", () => {
+  const file = "tests/imported_test.ts";
+  const diff = added(
+    file,
+    `import { imported } from "./elsewhere.ts";
+Deno.test("imported", imported);
+Deno.test({ name: "opts", fn: imported });
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, [
+    { file, line: 2, kind: "unseen" },
+    { file, line: 3, kind: "unseen" },
+  ]);
+});
+
+Deno.test("a registration helper whose calls are not in view is a note on its Deno.test line (Issue #5215)", () => {
+  const file = "tests/register_test.ts";
+  const scan = scanDummyTests(added(file, REGISTER_HELPER));
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, [{ file, line: 2, kind: "unseen" }]);
+});
+
+Deno.test("an inline options callback is judged as before (Issue #5215)", () => {
+  const dummy = added(
+    "tests/options_test.ts",
+    `Deno.test({ name: "x", fn: async () => {
+  await Promise.resolve(1);
+} });
+`,
+  );
+  assertEquals(rules(dummy), [["no-assertion", 1]]);
+  const asserting = added(
+    "tests/options_test.ts",
+    `Deno.test({ name: "x", fn: async () => {
+  assertEquals(1, 1);
+} });
+`,
+  );
+  assertEquals(rules(asserting), []);
+});
+
+Deno.test("a registration helper call nested in another call is judged (Issue #5215)", () => {
+  const diff = added(
+    "tests/register_test.ts",
+    `import { assertEquals } from "@std/assert";
+${REGISTER_HELPER}register("observable result", async () => {
+  assertEquals(await Promise.resolve(42), 42);
+});
+void Promise.resolve(register("nested dummy", async () => {
+  await Promise.resolve(1);
+}));
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 8]]);
+});
+
+Deno.test("a helper call directly inside a call's parentheses is judged (Issue #5215)", () => {
+  const diff = added(
+    "tests/register_test.ts",
+    `import { assertEquals } from "@std/assert";
+${REGISTER_HELPER}register("observable result", async () => {
+  assertEquals(await Promise.resolve(42), 42);
+});
+wrap(register("wrapped dummy", async () => {
+  await Promise.resolve(1);
+}));
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 8]]);
+});
+
+Deno.test("a helper call passing a named callback that asserts nothing is refused on the call line (Issue #5215)", () => {
+  const diff = added(
+    "tests/by_name_test.ts",
+    `async function idle(): Promise<void> {
+  await Promise.resolve(42);
+}
+${REGISTER_HELPER}register("by name", idle);
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 7]]);
+});
+
+Deno.test("registration patterns stay linear on long hostile runs (Issue #5215)", () => {
+  const file = "tests/hostile_test.ts";
+
+  // A helper name then a long whitespace run and no `(`: no call in view.
+  const noCall = scanDummyTests(
+    added(file, REGISTER_HELPER + "register" + " ".repeat(50_000) + "x;\n"),
+  );
+  assertEquals(noCall.findings, []);
+  assertEquals(noCall.notes, [{ file, line: 2, kind: "unseen" }]);
+
+  // An options `fn:` property with a long whitespace run before an undefined name.
+  const fnRun = scanDummyTests(
+    added(
+      file,
+      `Deno.test({ name: "n", fn:${" ".repeat(50_000)}missing });\n`,
+    ),
+  );
+  assertEquals(fnRun.findings, []);
+  assertEquals(fnRun.notes, [{ file, line: 1, kind: "unseen" }]);
+
+  // A long identifier run that the parameter pattern rejects, then the callback.
+  const longParam = added(
+    file,
+    `function register(${
+      "p".repeat(50_000)
+    }!, fn: () => Promise<void>): void {\n  Deno.test({ name: "n", fn });\n}\nregister("x", async () => {\n  await Promise.resolve(1);\n});\n`,
+  );
+  assertEquals(rules(longParam), [["no-assertion", 4]]);
+});
+
+Deno.test("a trailing value after an inline callback is not read as the callback (Issue #5215)", () => {
+  const file = "tests/timeout_test.ts";
+  const dummy = scanDummyTests(added(
+    file,
+    `const TIMEOUT = 5000;
+it("x", async () => {
+  await run();
+}, TIMEOUT);
+`,
+  ));
+  assertEquals(dummy.findings.map((f) => [f.rule, f.line]), [[
+    "no-assertion",
+    2,
+  ]]);
+  assertEquals(dummy.notes, []);
+
+  const asserting = scanDummyTests(added(
+    file,
+    `const TIMEOUT = 5000;
+it("x", async () => {
+  expect(await run()).toBe(3);
+}, TIMEOUT);
+`,
+  ));
+  assertEquals(asserting.findings, []);
+  assertEquals(asserting.notes, []);
+});
+
+Deno.test("a callback passed as a property path is a note, not a finding (Issue #5215)", () => {
+  const file = "tests/suite_test.ts";
+  for (
+    const line of [
+      `Deno.test("x", suite.check);`,
+      `Deno.test({ name: "x", fn: suite.check });`,
+    ]
+  ) {
+    const scan = scanDummyTests(
+      added(file, `import { suite } from "./suite.ts";\n${line}\n`),
+    );
+    assertEquals(scan.findings, [], line);
+    assertEquals(scan.notes, [{ file, line: 2, kind: "unseen" }], line);
+  }
+
+  const helper = scanDummyTests(added(
+    file,
+    `import { suite } from "./suite.ts";
+${REGISTER_HELPER}register("a", suite.check);
+`,
+  ));
+  assertEquals(helper.findings, []);
+  assertEquals(helper.notes, [{ file, line: 5, kind: "unseen" }]);
+});
+
+Deno.test("a long parameter list around many registrations stays linear (Issue #5215)", () => {
+  const scan = assertLinearGrowth(
+    "registration parameter lookup",
+    (size) => {
+      const count = Math.floor(size);
+      const params = Array.from({ length: count }, (_, k) => `p${k}: number`);
+      const regs = Array.from(
+        { length: count },
+        () => "  Deno.test({ name, fn });",
+      );
+      return added(
+        "tests/many_test.ts",
+        `function register(name: string, ${
+          params.join(", ")
+        }, fn: () => void) {\n${regs.join("\n")}\n}\nregister("a", ${
+          "0, ".repeat(count)
+        }() => {\n  assertEquals(run(), 2);\n});\n`,
+      );
+    },
+    scanDummyTests,
+    { baseChars: 1500 },
+  );
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+});
+
 // --- What the diff shows ---
 
 Deno.test("an unchanged test in context is not judged; an edited one is", () => {
@@ -604,4 +887,157 @@ Deno.test("the rules link every finding carries resolves to a real CODING-STANDA
   const fragment = DUMMY_TEST_RULES_URL.split("#")[1]!;
   assertEquals(slugs.includes(fragment), true, fragment);
   assertStringIncludes(DUMMY_TEST_RULES_URL, "/CODING-STANDARDS.md#");
+});
+
+Deno.test("named callbacks never resolve to another test's local", () => {
+  for (const local of ["return 1;", "assertEquals(1, 1);"]) {
+    for (
+      const registration of [
+        'Deno.test("x", fn);',
+        'Deno.test({ name: "x", fn });',
+        'register("x", fn);',
+      ]
+    ) {
+      const scan = scanDummyTests(
+        added(
+          "tests/scope_test.ts",
+          (registration.startsWith("register(") ? REGISTER_HELPER : "") +
+            'Deno.test("other", () => {\n const fn = () => { ' + local +
+            " };\n assertEquals(2, 2);\n});\n" + registration,
+        ),
+      );
+      assertEquals(scan.findings, []);
+      assertEquals(scan.notes.length, 1);
+      assertEquals(scan.notes[0]!.kind, "unseen");
+    }
+  }
+});
+
+Deno.test("a forwarding callback parameter is unresolved even with a same-named local", () => {
+  const scan = scanDummyTests(added(
+    "tests/scope_test.ts",
+    REGISTER_HELPER +
+      "function registerSlow(name, fn) { register(name, fn); }\n" +
+      'Deno.test("other", () => { const fn = () => { return 1; }; assertEquals(2, 2); });\n' +
+      'registerSlow("x", () => { assertEquals(3, 3); });',
+  ));
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes.length, 1);
+  assertEquals(scan.notes[0]!.kind, "unseen");
+});
+
+Deno.test("an out-of-hunk wrapper header cannot resolve a callback from another hunk", () => {
+  const diff = [
+    "diff --git a/tests/scope_test.ts b/tests/scope_test.ts",
+    "--- a/tests/scope_test.ts",
+    "+++ b/tests/scope_test.ts",
+    "@@ -20,1 +20,1 @@",
+    "-  Deno.test({ name, fn });",
+    "+  Deno.test({ name, ignore: condition, fn });",
+    "@@ -40,4 +40,4 @@",
+    ' Deno.test("other", () => {',
+    "   const fn = () => { return 1; };",
+    "   assertEquals(2, 2);",
+    " });",
+  ].join("\n");
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, [{
+    file: "tests/scope_test.ts",
+    line: 20,
+    kind: "unseen",
+  }]);
+});
+
+Deno.test("a loop callback cannot borrow an unrelated local's assertions", () => {
+  const scan = scanDummyTests(
+    added(
+      "tests/scope_test.ts",
+      "for (const { name, fn } of cases) Deno.test({ name, fn });\n" +
+        'Deno.test("other", () => { const fn = () => { assertEquals(1, 1); }; assertEquals(2, 2); });',
+    ),
+  );
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, [{
+    file: "tests/scope_test.ts",
+    line: 1,
+    kind: "unseen",
+  }]);
+});
+
+Deno.test("cut blocks do not lend callback definitions to other registrations", () => {
+  for (const body of ["return 1;", "assertEquals(1, 1);"]) {
+    for (
+      const text of [
+        '): void {\nDeno.test({ name, fn });\n}\nDeno.test("other", () => {\nconst fn = () => { ' +
+        body + " };\nassertEquals(2, 2);",
+        "const fn = () => { " + body +
+        " };\nrun(fn);\nassertEquals(2, 2);\n});\nfor (const { name, fn } of cases) Deno.test({ name, fn });",
+      ]
+    ) {
+      const scan = scanDummyTests(added("tests/cut_test.ts", text));
+      assertEquals(scan.findings, []);
+      assertEquals(scan.notes.length, 1);
+    }
+  }
+});
+
+for (const named of [false, true]) {
+  Deno.test(`large ${named ? "named" : "inline"} registrations avoid quadratic lookup`, () => {
+    const scan = assertLinearGrowth(
+      "large registrations",
+      (n) =>
+        added(
+          "tests/large_test.ts",
+          Array.from({ length: n }, (_, k) =>
+            named
+              ? `const c${k} = () => { assertEquals(f(${k}), ${k}); };\nDeno.test("t", c${k});`
+              : `Deno.test("t", () => { assertEquals(f(${k}), ${k}); });`).join(
+              "\n",
+            ),
+        ),
+      scanDummyTests,
+      { baseChars: named ? 16000 : 20000, repeats: 1 },
+    );
+    assertEquals(scan.findings, []);
+    assertEquals(scan.notes, []);
+  });
+}
+
+for (const helper of [false, true]) {
+  Deno.test(`shared callback names scale with scoped lookup: ${helper}`, () => {
+    const scan = assertLinearGrowth(
+      "shared names",
+      (n) =>
+        added(
+          "tests/shared_test.ts",
+          Array.from({ length: n }, (_, k) =>
+            helper
+              ? `function r${k}(name: string, fn: () => void) { Deno.test({name, fn}); }`
+              : `{ const fn = () => { assertEquals(f(${k}), ${k}); }; Deno.test("t", fn); }`)
+            .join("\n"),
+        ),
+      scanDummyTests,
+      { baseChars: 8000, repeats: 1 },
+    );
+    assertEquals(scan.findings, []);
+    if (!helper) assertEquals(scan.notes, []);
+  });
+}
+
+Deno.test("an expression-bodied registration helper's calls are judged (PR #5232)", () => {
+  const scan = scanDummyTests(
+    added(
+      "tests/arrow_helper_test.ts",
+      [
+        "const reg = (name: string, fn: () => void) => Deno.test({ name, fn });",
+        'reg("x", () => { assertEquals(1, 1); });',
+        'reg("y", () => { const v = 1; });',
+      ].join("\n"),
+    ),
+  );
+  assertEquals(scan.findings.map((f) => `${f.line}:${f.rule}`), [
+    "3:no-assertion",
+  ]);
+  assertEquals(scan.notes, []);
 });

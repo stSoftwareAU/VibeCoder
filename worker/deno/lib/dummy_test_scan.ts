@@ -20,8 +20,11 @@
  *
  * Only what the diff shows is judged. A test whose body runs past the end of
  * its hunk is not judged for assertions (the reviewer still reads it), so the
- * scan never guesses at lines it cannot see. String and comment contents are
- * masked before any pattern runs, so an assertion named inside a fixture
+ * scan never guesses at lines it cannot see. A callback passed by name
+ * (`Deno.test("x", check)`, `fn: check`), or through a registration helper's
+ * callback parameter, is judged by the body of the function it names; one the
+ * diff cannot resolve is a note, never a finding. String and comment contents
+ * are masked before any pattern runs, so an assertion named inside a fixture
  * string does not count. Every pattern is linear (no nested quantifiers).
  *
  * The fleet reviewer (`.claude/skills/review-fleet-prs/scripts/gate.ts` and
@@ -62,8 +65,9 @@ export interface DummyTestFinding {
 
 /**
  * A reviewer note: `interaction` for a mock-interaction assertion, `unseen`
- * for an edited file's test that asserts nothing the diff shows but calls a
- * function defined out of view, which may be the helper that asserts.
+ * for a test that asserts nothing the diff shows and may assert in a function
+ * out of view: one an edited file's test calls, or a callback it registers
+ * that is not defined in view.
  */
 export interface DummyTestNote {
   file: string;
@@ -263,8 +267,24 @@ export function maskSource(src: string, lang: Lang): string {
   return out.join("");
 }
 
+/**
+ * The bracket table of the hunk being scanned. Only that one text has a
+ * table: a body judged inside it is scanned forward from its opener, so
+ * memory stays one table per hunk however many bodies nest (PR #5232).
+ */
+let hunkBrackets: { text: string; matched: Int32Array | null } | null = null;
+
+/** Make `masked` the hunk whose bracket lookups are answered from a table. */
+function scanHunk(masked: string): void {
+  hunkBrackets = { text: masked, matched: null };
+}
+
 /** Offset of the bracket closing the one at `open`, or -1 past the end. */
 function closingBracket(masked: string, open: number): number {
+  if (hunkBrackets !== null && hunkBrackets.text === masked) {
+    hunkBrackets.matched ??= bracketTable(masked);
+    return hunkBrackets.matched[open] ?? -1;
+  }
   const opener = masked[open];
   const closer = opener === "(" ? ")" : opener === "{" ? "}" : "]";
   let depth = 0;
@@ -279,25 +299,143 @@ function closingBracket(masked: string, open: number): number {
   return -1;
 }
 
+/** Each opener's matching closer (by bracket kind), or -1. */
+function bracketTable(masked: string): Int32Array {
+  const matched = new Int32Array(masked.length).fill(-1);
+  const stacks: Record<string, number[]> = { "(": [], "{": [], "[": [] };
+  const openerOf: Record<string, string> = { ")": "(", "}": "{", "]": "[" };
+  for (let k = 0; k < masked.length; k++) {
+    const ch = masked[k]!;
+    const stack = stacks[ch];
+    if (stack !== undefined) stack.push(k);
+    else if (openerOf[ch] !== undefined) {
+      const from = stacks[openerOf[ch]!]!.pop();
+      if (from !== undefined) matched[from] = k;
+    }
+  }
+  return matched;
+}
+
+/**
+ * Top-level comma-separated pieces of `text`, whitespace removed, empty ones
+ * dropped.
+ */
+function splitTopLevel(text: string): string[] {
+  const pieces: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let k = 0; k < text.length; k++) {
+    const ch = text[k]!;
+    if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch)) depth--;
+    else if (ch === "," && depth === 0) {
+      pieces.push(text.slice(start, k));
+      start = k + 1;
+    }
+  }
+  pieces.push(text.slice(start));
+  return pieces.map((a) => a.replace(/\s+/g, "")).filter((a) => a !== "");
+}
+
 /** Top-level comma-separated arguments of the call whose `(` is at `open`. */
 function callArgs(masked: string, open: number): string[] | null {
   const close = closingBracket(masked, open);
   if (close < 0) return null;
-  const args: string[] = [];
-  let depth = 0;
-  let start = open + 1;
+  return splitTopLevel(masked.slice(open + 1, close));
+}
+
+/** A callback reference: a bare identifier or a property path (`a.b.c`). */
+const REF = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/;
+const PARAM_NAME = /^(?:\.\.\.)?([A-Za-z_$][\w$]*)(?:[?:=]|$)/;
+const FN_PROPERTY = /^fn:([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)$/;
+
+/** Whether a whitespace-stripped argument is an inline function. */
+function inlineFunction(arg: string): boolean {
+  if (arg.startsWith("{")) return false;
+  return arg.includes("=>") || /^(?:async)?function.*\{/.test(arg);
+}
+
+/**
+ * The top-level arguments of the call whose bracket is at `open`, whitespace
+ * removed, with each nested bracket group collapsed to its two brackets
+ * (`() => {}`). Groups are stepped over by their closing offset, so the cost is
+ * the call's own level, not everything nested inside it (PR #5232). Null when
+ * the call does not close in view.
+ */
+function flatArgs(
+  masked: string,
+  open: number,
+): Array<{ flat: string; groups: number[] }> | null {
+  const close = closingBracket(masked, open);
+  if (close < 0) return null;
+  const out: Array<{ flat: string; groups: number[] }> = [];
+  let flat = "";
+  let groups: number[] = [];
+  const flush = () => {
+    if (flat !== "") out.push({ flat, groups });
+    flat = "";
+    groups = [];
+  };
   for (let k = open + 1; k < close; k++) {
     const ch = masked[k]!;
-    if ("([{".includes(ch)) depth++;
-    else if (")]}".includes(ch)) depth--;
-    else if (ch === "," && depth === 0) {
-      args.push(masked.slice(start, k));
-      start = k + 1;
+    if (ch === "(" || ch === "{" || ch === "[") {
+      const end = closingBracket(masked, k);
+      if (end < 0 || end > close) return null;
+      flat += ch + masked[end];
+      groups.push(k);
+      k = end;
+    } else if (ch === ",") flush();
+    else if (!/\s/.test(ch)) flat += ch;
+  }
+  flush();
+  return out;
+}
+
+/**
+ * The named callback a registration call (its `(` at `open`) passes: the `fn`
+ * of an options object (`fn` or `fn: check`), else a trailing reference
+ * (`Deno.test("x", check)`) when no argument is an inline function. A property
+ * path (`suite.check`) is returned as is, so it resolves to nothing in view and
+ * is a note. Null for an inline callback.
+ */
+function callbackName(masked: string, open: number): string | null {
+  const args = flatArgs(masked, open);
+  if (args === null || args.length === 0) return null;
+  for (const arg of args) {
+    if (arg.flat !== "{}") continue;
+    for (const prop of flatArgs(masked, arg.groups[0]!) ?? []) {
+      if (prop.flat === "fn") return "fn";
+      const named = FN_PROPERTY.exec(prop.flat);
+      if (named) return named[1]!;
     }
   }
-  args.push(masked.slice(start, close));
-  return args.map((a) => a.replace(/\s+/g, "")).filter((a) => a !== "");
+  if (args.some((a) => inlineFunction(a.flat))) return null;
+  const last = args[args.length - 1]!.flat;
+  return REF.test(last) ? last : null;
 }
+
+/**
+ * Parameter names by position for the parameter list whose `(` is at
+ * `params`. A destructured parameter takes a position but no name (""); a
+ * fragment a generic type's comma split leaves (`number>`) takes none.
+ */
+function paramNames(masked: string, params: number): Map<string, number> {
+  const out = new Map<string, number>();
+  if (params < 0) return out;
+  const kept = (callArgs(masked, params) ?? []).filter((p) =>
+    /^[{[]/.test(p) || PARAM_NAME.test(p)
+  );
+  kept.forEach((p, k) => {
+    const name = PARAM_NAME.exec(p)?.[1];
+    if (name !== undefined && !out.has(name)) out.set(name, k);
+  });
+  return out;
+}
+
+/** A plain call's name: an identifier not after `.` or a word, then `(`. */
+const CALL_NAME = /(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g;
+/** The head of a definition, so the definition itself is not a call. */
+const FUNCTION_HEAD = /function\s*\*?\s*$/;
 
 type Strength = "weak" | "strong" | "interaction";
 
@@ -527,27 +665,46 @@ function afterReturnType(masked: string, from: number, arrow: boolean): number {
 }
 
 /**
- * Functions defined in view (name to masked body, or null when the body runs
- * past its hunk), so a test that delegates to a helper is judged by the
- * helper's assertions. A TS return-type annotation is stepped over first
- * (Issue #5065).
+ * A function defined in view: its name, its parameter list and its body span.
  */
-function definitionsIn(
-  masked: string,
-  lang: Lang,
-  into: Map<string, string | null>,
-) {
+interface Definition {
+  name: string;
+  declaration: number;
+  /** Parameter name to its position, parsed once. */
+  params: Map<string, number>;
+  /**
+   * Inclusive body offsets. `end` is -1 when the body runs past the hunk or
+   * cannot be found.
+   */
+  start: number;
+  end: number;
+}
+
+/**
+ * Functions defined in view, with their parameter lists and body spans. A TS
+ * return-type annotation is stepped over first (Issue #5065).
+ */
+function definitionSpans(masked: string, lang: Lang): Definition[] {
+  const out: Definition[] = [];
+  const push = (name: string, paren: number, start: number, end: number) =>
+    out.push({
+      name,
+      declaration: paren,
+      params: lang === "ts" && end >= 0 ? paramNames(masked, paren) : new Map(),
+      start,
+      end,
+    });
   const re = lang === "rust"
     ? /\bfn\s+([A-Za-z_]\w*)/g
     : /(?:^|[^\w$.])(?:function\s*\*?\s*([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]{0,120})?=\s*(?:async\s*)?(?:function\b|\())/g;
   for (const m of masked.matchAll(re)) {
     const name = m[1] ?? m[2];
-    if (!name || into.get(name)) continue;
+    if (!name) continue;
     const from = (m.index ?? 0) + m[0].length;
     const paren = masked.indexOf("(", from - 1);
     const paramsEnd = paren < 0 ? -1 : closingBracket(masked, paren);
     if (paramsEnd < 0) {
-      into.set(name, null);
+      push(name, paren, -1, -1);
       continue;
     }
     const arrow = lang === "ts" && m[0].endsWith("(");
@@ -555,7 +712,7 @@ function definitionsIn(
       ? afterReturnType(masked, paramsEnd + 1, arrow)
       : paramsEnd + 1;
     if (bodyFrom < 0) {
-      into.set(name, null);
+      push(name, paren, -1, -1);
       continue;
     }
     const rest = masked.slice(bodyFrom);
@@ -563,11 +720,145 @@ function definitionsIn(
     const arrowExpr = lang === "ts" && /^\s*=>\s*[^{\s]/.test(rest);
     if (arrowExpr) {
       const nl = masked.indexOf("\n", bodyFrom);
-      into.set(name, masked.slice(bodyFrom, nl < 0 ? masked.length : nl));
+      push(name, paren, bodyFrom, (nl < 0 ? masked.length : nl) - 1);
       continue;
     }
     const close = brace < 0 ? -1 : closingBracket(masked, brace);
-    into.set(name, close < 0 ? null : masked.slice(brace, close + 1));
+    push(name, paren, brace, close);
+  }
+  return out;
+}
+
+/**
+ * Functions defined in view (name to masked body, or null when the body runs
+ * past its hunk), so a test that delegates to a helper is judged by the
+ * helper's assertions. A name already holding a body keeps it.
+ */
+function definitionsIn(
+  masked: string,
+  lang: Lang,
+  into: Map<string, string | null>,
+) {
+  for (const d of definitionSpans(masked, lang)) {
+    if (into.get(d.name)) continue;
+    into.set(d.name, d.end < 0 ? null : masked.slice(d.start, d.end + 1));
+  }
+}
+
+/**
+ * A hunk's definitions indexed by where they sit in its bracket structure, so
+ * a lookup walks up from the registration instead of over every definition
+ * that shares a name (PR #5232).
+ */
+interface Scope {
+  /** Innermost opener enclosing each offset, or -1 at the top level. */
+  enclosing: Int32Array;
+  /** A brace-bodied definition by the offset of its body's `{`. */
+  byBody: Map<number, Definition>;
+  /** Expression-bodied arrows (one line each) by the offset of their line. */
+  arrowsByLine: Map<number, Definition[]>;
+  /** The first definition of a name in a scope, keyed `${opener}:${name}`. */
+  byScopeName: Map<string, Definition>;
+  /** No bracket is cut, so ancestry in view is the whole ancestry. */
+  balanced: boolean;
+}
+
+function scopeOf(masked: string, spans: Definition[]): Scope {
+  // A definition is visible only inside every bracket surrounding its
+  // declaration; the innermost one stands for all of them.
+  const enclosing = new Int32Array(masked.length).fill(-1);
+  const brackets: number[] = [];
+  for (let k = 0; k < masked.length; k++) {
+    while (
+      brackets.length &&
+      closingBracket(masked, brackets[brackets.length - 1]!) < k
+    ) brackets.pop();
+    enclosing[k] = brackets[brackets.length - 1] ?? -1;
+    if ("([{".includes(masked[k]!)) brackets.push(k);
+  }
+  const byBody = new Map<number, Definition>();
+  const arrowsByLine = new Map<number, Definition[]>();
+  const byScopeName = new Map<string, Definition>();
+  for (const d of spans) {
+    if (d.end < 0) continue;
+    if (masked[d.start] === "{") byBody.set(d.start, d);
+    else {
+      const line = masked.lastIndexOf("\n", d.start) + 1;
+      arrowsByLine.set(line, [...(arrowsByLine.get(line) ?? []), d]);
+    }
+    const key = `${enclosing[d.declaration] ?? -1}:${d.name}`;
+    if (!byScopeName.has(key)) byScopeName.set(key, d);
+  }
+  // A cut block has unknown ancestry: callback scope is not inferred from it.
+  const stack: string[] = [];
+  let balanced = true;
+  for (const c of masked) {
+    if ("([{".includes(c)) stack.push(c);
+    else if (")]}".includes(c) && stack.pop() !== "([{"[")]}".indexOf(c)]) {
+      balanced = false;
+      break;
+    }
+  }
+  return {
+    enclosing,
+    byBody,
+    arrowsByLine,
+    byScopeName,
+    balanced: balanced && stack.length === 0,
+  };
+}
+
+/**
+ * The registration helper a callback belongs to: the innermost function in
+ * view that encloses the call at `open` and takes `name` as a parameter, with
+ * that parameter's position. Null when the callback is not such a parameter.
+ */
+function registrarOf(
+  scope: Scope,
+  masked: string,
+  open: number,
+  name: string,
+): { helper: string; index: number } | null {
+  let best: { helper: string; index: number; start: number } | null = null;
+  const line = masked.lastIndexOf("\n", open) + 1;
+  for (const d of scope.arrowsByLine.get(line) ?? []) {
+    const index = d.params.get(name);
+    if (index === undefined || d.start >= open || open >= d.end) continue;
+    if (best === null || d.start > best.start) {
+      best = { helper: d.name, index, start: d.start };
+    }
+  }
+  for (let b = scope.enclosing[open] ?? -1; b >= 0; b = scope.enclosing[b]!) {
+    if (best !== null && b < best.start) break;
+    const d = scope.byBody.get(b);
+    const index = d?.params.get(name);
+    if (d !== undefined && index !== undefined) {
+      if (best === null || d.start > best.start) {
+        best = { helper: d.name, index, start: d.start };
+      }
+      break;
+    }
+  }
+  return best === null ? null : { helper: best.helper, index: best.index };
+}
+
+/**
+ * The body of the definition a named callback at `at` resolves to: the
+ * innermost same-named definition whose scope encloses the registration. Null
+ * when it is a helper's parameter, out of view, or the hunk cuts a block.
+ */
+function namedCallbackBody(
+  scope: Scope,
+  masked: string,
+  name: string,
+  at: number,
+): string | null {
+  if (!scope.balanced) return null;
+  if (registrarOf(scope, masked, at, name) !== null) return null;
+  for (let b = scope.enclosing[at] ?? -1;; b = scope.enclosing[b]!) {
+    const d = scope.byScopeName.get(`${b}:${name}`);
+    if (d !== undefined) return masked.slice(d.start, d.end + 1);
+    if (b < 0) return null;
   }
 }
 
@@ -639,8 +930,12 @@ function problemFor(rule: DummyTestRule): string {
  * Scan a unified diff for dummy tests and mock-interaction assertions. A test
  * with no assertion that calls a helper defined in view is judged by that
  * helper's assertions; in an edited file a call out of view makes it a note.
+ * A callback registered by name, or through a registration helper's callback
+ * parameter (judged at each call of that helper), is judged by the function it
+ * names; a callback the diff cannot resolve is a note.
  */
 export function scanDummyTests(diff: string): DummyTestScan {
+  hunkBrackets = null;
   const findings: DummyTestFinding[] = [];
   const notes: DummyTestNote[] = [];
   const seen = new Set<string>();
@@ -666,21 +961,49 @@ export function scanDummyTests(diff: string): DummyTestScan {
 
   const hunks = parseHunks(diff);
   const definitions = new Map<string, Map<string, string | null>>();
-  for (const hunk of hunks) {
+  // Per file: a registration helper's name to the position of its callback.
+  const registrars = new Map<string, Map<string, number>>();
+  // Each hunk is masked and indexed once; the second pass reuses both, so
+  // its bracket lookups hit the same table.
+  const maskedByHunk: string[] = [];
+  const scopeByHunk: Scope[] = [];
+  for (const [h, hunk] of hunks.entries()) {
     const lang = langOf(hunk.file);
     if (lang === null) continue;
+    const masked = maskSource(hunk.lines.map((l) => l.text).join("\n"), lang);
+    scanHunk(masked);
+    const spans = definitionSpans(masked, lang);
+    const scope = scopeOf(masked, spans);
+    maskedByHunk[h] = masked;
+    scopeByHunk[h] = scope;
     const defs = definitions.get(hunk.file) ?? new Map();
-    definitionsIn(
-      maskSource(hunk.lines.map((l) => l.text).join("\n"), lang),
-      lang,
-      defs,
-    );
+    definitionsIn(masked, lang, defs);
     definitions.set(hunk.file, defs);
+    if (lang === "ts") {
+      const regs = registrars.get(hunk.file) ?? new Map<string, number>();
+      const testFile = TEST_PATH.test(hunk.file);
+      for (const m of masked.matchAll(TS_TEST_START)) {
+        if (!m[1]!.startsWith("Deno.") && !testFile) continue;
+        const open = (m.index ?? 0) + m[0].length - 1;
+        const cb = callbackName(masked, open);
+        const reg = cb === null ? null : registrarOf(scope, masked, open, cb);
+        if (reg !== null) regs.set(reg.helper, reg.index);
+      }
+      registrars.set(hunk.file, regs);
+    }
   }
 
-  for (const hunk of hunks) {
+  // Registrations whose callback is a helper's parameter: each one needs a
+  // call of that helper in view, or it is a note at its registration.
+  const pending: Array<{ file: string; line: number; helper: string }> = [];
+  const called = new Map<string, Set<string>>();
+
+  for (const [h, hunk] of hunks.entries()) {
     const lang = langOf(hunk.file);
     if (lang === null) continue;
+    const masked = maskedByHunk[h]!;
+    const scope = scopeByHunk[h]!;
+    scanHunk(masked);
     const defs = definitions.get(hunk.file)!;
     // What a body's calls add: the helpers' own assertions, one level deep
     // and then one more; a call out of view in an edited file is unseen.
@@ -706,8 +1029,6 @@ export function scanDummyTests(diff: string): DummyTestScan {
       return { out, unseen };
     };
     const testFile = TEST_PATH.test(hunk.file);
-    const raw = hunk.lines.map((l) => l.text).join("\n");
-    const masked = maskSource(raw, lang);
     const starts: number[] = [];
     let offset = 0;
     for (const l of hunk.lines) {
@@ -716,7 +1037,6 @@ export function scanDummyTests(diff: string): DummyTestScan {
     }
     const index = { starts };
     const maskedLines = masked.split("\n");
-
     const judge = (
       declLine: number,
       reportLine: number,
@@ -724,6 +1044,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
       bodyEnd: number,
       lastLine: number,
       extraStrong: boolean,
+      callback: string | null,
     ) => {
       const span = hunk.lines.slice(declLine, lastLine + 1);
       if (!span.some((l) => l.added)) return;
@@ -733,13 +1054,22 @@ export function scanDummyTests(diff: string): DummyTestScan {
         }
       }
       if (bodyEnd < 0) return; // body runs past the hunk: not judged
-      const body = masked.slice(bodyStart, bodyEnd + 1);
+      const file = hunk.file;
+      const line = hunk.lines[reportLine]!.line;
+      let body = masked.slice(bodyStart, bodyEnd + 1);
+      if (callback !== null) {
+        // A callback passed by name is judged by the function it names.
+        const named = namedCallbackBody(scope, masked, callback, bodyStart);
+        if (named === null) {
+          note(file, line, "unseen");
+          return;
+        }
+        body = named;
+      }
       const found = assertionsIn(body, lang);
       if (extraStrong) found.push("strong");
       const helpers = delegated(body, 1);
       found.push(...helpers.out);
-      const file = hunk.file;
-      const line = hunk.lines[reportLine]!.line;
       if (found.length === 0) {
         if (helpers.unseen) note(file, line, "unseen");
         else add(file, line, "no-assertion");
@@ -781,7 +1111,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
         if (open < 0) continue;
         const close = closingBracket(masked, open);
         const last = close < 0 ? hunk.lines.length - 1 : lineAt(index, close);
-        judge(first, fnLine, open, close, last, shouldPanic);
+        judge(first, fnLine, open, close, last, shouldPanic, null);
       }
     } else {
       for (const m of masked.matchAll(TS_TEST_START)) {
@@ -812,7 +1142,18 @@ export function scanDummyTests(diff: string): DummyTestScan {
           }
         }
         if (skipToken) continue; // a skipped test is judged by the rule above
-        judge(declLine, declLine, open, close, last, false);
+        const cb = callbackName(masked, open);
+        const reg = cb === null ? null : registrarOf(scope, masked, open, cb);
+        if (reg !== null) {
+          // The callback is a helper's parameter: its calls are judged.
+          if (hunk.lines.slice(declLine, last + 1).some((l) => l.added)) {
+            pending.push({
+              file: hunk.file,
+              line: decl.line,
+              helper: reg.helper,
+            });
+          }
+        } else judge(declLine, declLine, open, close, last, false, cb);
       }
       if (testFile) {
         hunk.lines.forEach((l, k) => {
@@ -821,8 +1162,47 @@ export function scanDummyTests(diff: string): DummyTestScan {
           }
         });
       }
+      const regs = registrars.get(hunk.file);
+      if (regs !== undefined && regs.size > 0) {
+        const calls = called.get(hunk.file) ?? new Set<string>();
+        called.set(hunk.file, calls);
+        for (const m of masked.matchAll(CALL_NAME)) {
+          const helper = m[1]!;
+          const paramAt = regs.get(helper);
+          if (paramAt === undefined) continue;
+          const at = m.index ?? 0;
+          if (FUNCTION_HEAD.test(masked.slice(Math.max(0, at - 40), at))) {
+            continue;
+          }
+          calls.add(helper);
+          const open = at + m[0].length - 1;
+          const declLine = lineAt(index, open);
+          const close = closingBracket(masked, open);
+          const last = close < 0 ? hunk.lines.length - 1 : lineAt(index, close);
+          const arg = flatArgs(masked, open)?.[paramAt]?.flat;
+          if (arg === undefined) {
+            if (hunk.lines.slice(declLine, last + 1).some((l) => l.added)) {
+              note(hunk.file, hunk.lines[declLine]!.line, "unseen");
+            }
+          } else {
+            judge(
+              declLine,
+              declLine,
+              open,
+              close,
+              last,
+              false,
+              REF.test(arg) ? arg : null,
+            );
+          }
+        }
+      }
     }
   }
+  for (const p of pending) {
+    if (!called.get(p.file)?.has(p.helper)) note(p.file, p.line, "unseen");
+  }
+  hunkBrackets = null;
   return { findings, notes };
 }
 
@@ -831,7 +1211,7 @@ export function dummyTestNoteItem(note: DummyTestNote): string {
   const path = inlineSafe(note.file, 200).replace(/[^\w./ ()@+~[\]-]/g, "_");
   return note.kind === "interaction"
     ? `${path}:${note.line} asserts a mock interaction: met only if the test also asserts an observable outcome and the mock stands at a real external boundary (network, broker, clock).`
-    : `${path}:${note.line} asserts nothing the diff shows: met only if a helper it calls asserts an observable outcome.`;
+    : `${path}:${note.line} asserts nothing the diff shows: met only if a helper it calls, or the callback it registers, asserts an observable outcome.`;
 }
 
 /**
@@ -851,7 +1231,7 @@ export function dummyTestNotesReview(scan: DummyTestScan): CapabilityReview {
     markdown: [
       "### Dummy-test scan: tests to judge",
       "",
-      `The deterministic dummy-test scan found tests this change adds or edits that it cannot judge alone: a mock-interaction assertion, or a test with no visible assertion that calls a function out of view. A test that asserts which internal functions or mocks were called, how often or in what order is a "how" test, and a test that asserts nothing is a dummy test; both are refused by ${DUMMY_TEST_RULES_SECTION}. Report EVERY item below in the reply \`checklist\` array as \`met\`, \`missing\` or \`not applicable\`, copying the checklist name and the item text exactly. Any \`missing\` item is also a blocking finding.`,
+      `The deterministic dummy-test scan found tests this change adds or edits that it cannot judge alone: a mock-interaction assertion, or a test with no visible assertion that calls a function, or registers a callback, out of view. A test that asserts which internal functions or mocks were called, how often or in what order is a "how" test, and a test that asserts nothing is a dummy test; both are refused by ${DUMMY_TEST_RULES_SECTION}. Report EVERY item below in the reply \`checklist\` array as \`met\`, \`missing\` or \`not applicable\`, copying the checklist name and the item text exactly. Any \`missing\` item is also a blocking finding.`,
       "",
       `Checklist \`${DUMMY_TEST_CHECKLIST}\``,
       ...items.map((item, i) => `${i + 1}. ${item}`),
