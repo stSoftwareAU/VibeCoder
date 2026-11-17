@@ -10,6 +10,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildTokenEconomizerTrialReport,
+  type PopulationMetrics,
   type PrStateLookup,
   type TokenEconomizerTrialReport,
 } from "../lib/token_economizer_trial_report.ts";
@@ -322,23 +323,79 @@ Deno.test("undetermined while the concurrent comparison is unavailable, purge af
   assertEquals(late.disagreement, true);
 });
 
-Deno.test("compareAgainst treats a miss as a miss even beside unavailable clauses", async () => {
-  const r = await report({
-    on: { n: 60, cost: 95 },
-    control: { n: 60, cost: 100 },
+function metrics(
+  successRate: number | undefined,
+  mergeRate: number,
+): PopulationMetrics {
+  return {
+    runs: 60,
+    completed: 60,
+    ...(successRate === undefined ? {} : { successRate }),
+    cost: { available: true, totalUsd: 6000, perCompletedUsd: 100 },
+    merge: {
+      merged: 10,
+      closed: 0,
+      known: 10,
+      open: 0,
+      unknown: 0,
+      noPr: 0,
+      rate: mergeRate,
+    },
+  };
+}
+
+Deno.test("compareAgainst treats a cost miss as a miss beside an unavailable success clause", () => {
+  const on = metrics(undefined, 1);
+  const comparison = metrics(1, 1);
+  const miss = compareAgainst(on, comparison, {
+    available: true,
+    percent: -5,
   });
-  const v = compareAgainst(r.switchedOn, r.before, r.beforeDifference);
-  assertEquals(v, {
-    cost: "unavailable",
+  assertEquals(miss, {
+    cost: "miss",
     success: "unavailable",
-    merge: "unavailable",
+    merge: "pass",
+    costPercent: -5,
+    outcome: "miss",
+  });
+
+  // Control: the same shape with a passing cost is unavailable, not a pass.
+  const control = compareAgainst(on, comparison, {
+    available: true,
+    percent: -20,
+  });
+  assertEquals(control, {
+    cost: "pass",
+    success: "unavailable",
+    merge: "pass",
+    costPercent: -20,
     outcome: "unavailable",
   });
-  assertEquals(
-    compareAgainst(r.concurrentOn, r.concurrent, r.concurrentDifference)
-      .outcome,
-    "miss",
-  );
+});
+
+Deno.test("not due: an estimate between 1 and 7 days is used unclamped", async () => {
+  // 20 more runs at 40 runs per 8 days is 4 days.
+  const v = await decide({ days: 8, on: { n: 40, cost: 80 } });
+  assertEquals(v, {
+    kind: "not-due",
+    reason:
+      "the window is 8.0 of 7 days old and has 40 of 60 completed switched-on runs",
+    nextCheck: "2026-11-24T00:00:00.000Z",
+    elapsedDays: 8,
+    completedRuns: 40,
+  });
+});
+
+Deno.test("not due: no completed switched-on runs falls back to the 7 day wait", async () => {
+  const v = await decide({ days: 8, on: { n: 0, cost: 80, failed: 3 } });
+  assertEquals(v, {
+    kind: "not-due",
+    reason:
+      "the window is 8.0 of 7 days old and has 0 of 60 completed switched-on runs",
+    nextCheck: "2026-11-27T00:00:00.000Z",
+    elapsedDays: 8,
+    completedRuns: 0,
+  });
 });
 
 Deno.test("isTokenEconomizerStopRule accepts the four rules only", () => {

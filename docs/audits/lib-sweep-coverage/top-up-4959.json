@@ -1,0 +1,12 @@
+{
+  "issue": 4959,
+  "chunk": "top-up-4959",
+  "title": "top-up: TokenEconomizer keep-or-purge verdict",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4959",
+  "definition": "Apply the TokenEconomizer trial's predeclared bar to the trial report: the stop override, the 7-day and 60-run due check with a bounded next check, the three clauses on both comparisons with the concurrent one deciding, and the day-28 missing-data purge.",
+  "status": "claimed",
+  "sweptAt": "29b84dec88f2b79576c89c4ef956bde347d3cad2",
+  "paths": [
+    "worker/deno/lib/token_economizer_verdict.ts"
+  ]
+}

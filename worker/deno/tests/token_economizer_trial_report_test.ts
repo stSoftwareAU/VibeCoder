@@ -621,6 +621,27 @@ Deno.test("command reads a temp archive recursively and renders the section", as
   });
 });
 
+Deno.test("command JSON carries a not-due verdict with the next check from the injected clock", async () => {
+  await withTemp(async (dir) => {
+    await Deno.writeTextFile(
+      `${dir}/a.json`,
+      JSON.stringify(fixture().slice(0, 4)),
+    );
+    const command = createTokenEconomizerReportCommand({
+      lookup,
+      now: () => new Date("2026-11-15T00:00:00Z"),
+    });
+    const result = await command.execute(
+      { ...BASE_ARGS, archive: dir, format: "json" },
+      config(),
+    );
+    assertEquals(result.success, true);
+    const parsed = JSON.parse(result.message);
+    assertEquals(parsed.verdict.kind, "not-due");
+    assertEquals(parsed.verdict.nextCheck, "2026-11-22T00:00:00.000Z");
+  });
+});
+
 Deno.test("command applies --stop-rule and refuses an unknown rule", async () => {
   await withTemp(async (dir) => {
     await Deno.writeTextFile(

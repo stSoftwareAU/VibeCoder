@@ -234,10 +234,18 @@ flowchart LR
 Initial host opt-in remains within the owner's configuration authority. Once
 enabled, hook-failure monitoring and the shared stop controller below run
 without operator participation. The verdict is computed by the report command
-(see [The verdict](#the-verdict) in section 7). While it is `not due` or
-`undetermined`, the outcome issue #4959 is revisited through the worker's time
-deferral (`vibe-defer-until` at the verdict's next check), so no human opens or
-closes the window. A stop does not wait for either threshold.
+(see [The verdict](#the-verdict) in section 7). Nothing in the worker runs
+that command by itself: the #4959 run computes the verdict with the report
+command (passing `--window-start`, the first eligible switched-on completion,
+and `--stop-rule` when the controller's stop comment is on the issue) and
+follows the action table in "The verdict". While the verdict is `not due` or
+`undetermined`, the run ends with a `vibe-defer-until` marker at the verdict's
+next check so the worker re-runs it then; no human judges or schedules the
+verdict. The worker honours at most three time deferrals per issue
+(`MAX_TIME_DEFERRALS` in `worker/deno/lib/time_deferral.ts`), after which the
+issue goes to its ordinary retry, and a stop comment that lands while the issue
+is parked is read at the next check, at most 7 days later. A stop does not wait
+for either threshold.
 
 ## 4. 📏 The bar
 
@@ -453,8 +461,9 @@ comparison section and prints a `## TokenEconomizer trial verdict` section
   `--stop-rule <rule>` is given (one of `secret-in-learnings`,
   `cross-repo-fact`, `plugin-run-failure`, `unreadable-stop-record`, the rule
   named in the controller's `TokenEconomizer trial stopped: <rule>.` comment on
-  #4959) or when any switched-on run in the archive recorded the plugin status
-  `stopped`, whatever the window's age or run count. The trial goes to the
+  #4959) or when any run in the switched-on population (trial-host runs inside the
+  window, in the selected mode, served by Claude Code) recorded the plugin
+  status `stopped`, whatever the window's age or run count. The trial goes to the
   section 8 purge.
 - **Not due.** Otherwise the verdict is `not due` until the window is at least
   7 days old and has at least 60 completed (successful-outcome, the report's
@@ -472,7 +481,7 @@ comparison section and prints a `## TokenEconomizer trial verdict` section
   From day 28 it is a `purge`, because missing data is not a successful trial.
 - **Not checked.** The three section 5 exclusions the archive cannot apply
   (advisor/executor split, other trial windows, the provider that served a
-  control run) stay not checked, and the verdict says so.
+  control run) stay not checked, and every verdict other than `stopped (failed)` says so.
 
 What the #4959 run does with each outcome:
 
