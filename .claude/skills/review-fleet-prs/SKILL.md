@@ -325,6 +325,15 @@ fields as follows:
   this blockquote: the reviewer runs under the round's `--allowedTools`, so
   it is refused the same commands (and WebFetch) the round is.
 
+  Also pass the round's authoritative policy snapshot path verbatim to every
+  reviewer and verification agent in this context. All policy reads, including
+  independent checks of earlier findings, must call `loadTestPolicy` with that
+  explicit path. Do not probe the checkout's host-only `.config.json`, invent
+  an empty trust list, or turn a configuration failure into a code finding.
+  If the supplied snapshot is unavailable or invalid, stop without posting and
+  report an infrastructure failure so a later round can retry. Reassess earlier
+  trust findings against the supplied policy and issue evidence.
+
 - `{{NO_TEST_ADDED_NOTE}}` — when the entry's `noTestAdded` is true: "The PR
   changes code but adds no test: decide whether existing tests cover the
   supported behaviour or a new one is warranted."; otherwise empty.
