@@ -212,3 +212,18 @@ Full hosted CI remains required.
 Both new growth guards fail against 2be8ac61: inline input grows from 2,544 ms
 to 31,591 ms at about 4x size; named registrations grow from 4,232 ms to
 63,447 ms. The cut-block regression also fails on that prior scanner.
+
+## Shared-name and nested-memory review repair
+
+Only whole hunks receive cached bracket tables. Body-level argument matching
+uses a forward scan without allocating or retaining another table. On the
+2,000-nested-registration reproduction, Linux VmHWM fell from 294,676 kB on
+a46721e to 110,132 kB with this repair (separate Deno processes, same input).
+
+Definitions are keyed by enclosing opener and name; parameter-bearing functions
+are keyed by body opener. Lookup walks the registration's enclosing chain,
+never all definitions sharing a name. Both new shared-name growth tests fail
+on a46721e: callback blocks grew from 881 to 12,353 ms; registration helpers
+from 431 to 4,996 ms for approximately four times the input.
+All 84 scanner, wiring and manifest tests pass after repair. Local runs used
+the temporary dependency map described above; hosted CI remains required.

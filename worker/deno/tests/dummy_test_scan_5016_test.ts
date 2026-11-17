@@ -1003,3 +1003,24 @@ for (const named of [false, true]) {
     assertEquals(scan.notes, []);
   });
 }
+
+for (const helper of [false, true]) {
+  Deno.test(`shared callback names scale with scoped lookup: ${helper}`, () => {
+    const scan = assertLinearGrowth(
+      "shared names",
+      (n) =>
+        added(
+          "tests/shared_test.ts",
+          Array.from({ length: n }, (_, k) =>
+            helper
+              ? `function r${k}(name: string, fn: () => void) { Deno.test({name, fn}); }`
+              : `{ const fn = () => { assertEquals(f(${k}), ${k}); }; Deno.test("t", fn); }`)
+            .join("\n"),
+        ),
+      scanDummyTests,
+      { baseChars: 8000, repeats: 1 },
+    );
+    assertEquals(scan.findings, []);
+    if (!helper) assertEquals(scan.notes, []);
+  });
+}
