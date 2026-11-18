@@ -22,6 +22,7 @@ import {
   listPushedFiles,
   loadDenoScopes,
   loadDenoUnitTestRoots,
+  loadDirectoryListingTests,
   loadReferencedUnitTests,
   needsFullUnitSuite,
   parsePrePushRefs,
@@ -6050,6 +6051,141 @@ Deno.test("runPrePushGate: a prompt or lock change runs the whole unit suite, re
     } finally {
       await Deno.remove(root, { recursive: true });
     }
+  }
+});
+
+Deno.test("loadDirectoryListingTests: a test that lists a directory, or imports a file that does, is selected; a plain test and prose are not (Issue #5169)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const files: Record<string, string> = {
+      "worker/deno/tests/manifest_test.ts":
+        'for await (const e of Deno.readDir(".")) console.log(e);\n',
+      "worker/deno/lib/coverage.ts":
+        "export const list = (r: string) => walk(r);\n",
+      "worker/deno/tests/coverage_test.ts":
+        'import { list } from "../lib/coverage.ts";\nlist(".");\n',
+      "worker/deno/tests/support/listing.ts":
+        'export const args = ["ls-files", "-z"];\n',
+      "worker/deno/tests/uses_support_test.ts":
+        'import { args } from "./support/listing.ts";\nargs;\n',
+      "worker/deno/lib/foo.ts": "export const foo = 1;\n",
+      "worker/deno/tests/plain_test.ts":
+        'import { foo } from "../lib/foo.ts";\nfoo;\n',
+      "worker/deno/tests/prose_test.ts":
+        "// Deno.readDir is mentioned, not called\nexport {};\n",
+    };
+    for (const [path, text] of Object.entries(files)) {
+      await Deno.mkdir(`${dir}/${path.replace(/\/[^/]+$/, "")}`, {
+        recursive: true,
+      });
+      await Deno.writeTextFile(`${dir}/${path}`, text);
+    }
+    assertEquals(
+      await loadDirectoryListingTests(dir, Object.keys(files), [
+        "worker/deno",
+      ]),
+      {
+        "worker/deno": [
+          "tests/coverage_test.ts",
+          "tests/manifest_test.ts",
+          "tests/uses_support_test.ts",
+        ],
+      },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** The `test:unit` commands the gate runs for a push made by `edit` after `base`. */
+async function unitCommandsAfterBase(
+  base: (clone: string) => Promise<void>,
+  edit: (clone: string) => Promise<void>,
+): Promise<string[]> {
+  const { root, clone, stdin } = await makeUnitTestRepo(async (c) => {
+    await base(c);
+    await git(c, "add", "-A");
+    await git(c, "commit", "-qm", "listing base");
+    await git(c, "push", "-q", "--no-verify", "origin", "HEAD:main");
+    await edit(c);
+  });
+  try {
+    const ran: string[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      ...stubShellcheck(),
+      runner: (command) => {
+        ran.push(command);
+        return Promise.resolve({
+          started: true,
+          code: 0,
+          stdout: "",
+          stderr: "",
+        });
+      },
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    return ran.filter((c) => c.startsWith("deno task test:unit"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+Deno.test("runPrePushGate: a push that only adds a test file also runs the tests that list the tests directory (Issue #5169)", async () => {
+  const base = (c: string) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/tests/manifest_test.ts`,
+      'for await (const e of Deno.readDir(".")) console.log(e);\n',
+    );
+  assertEquals(
+    await unitCommandsAfterBase(base, (c) =>
+      Deno.writeTextFile(
+        `${c}/worker/deno/tests/new_test.ts`,
+        "export {};\n",
+      )),
+    ["deno task test:unit 'tests/manifest_test.ts' 'tests/new_test.ts'"],
+  );
+  // Control: editing an existing test adds or removes no file.
+  assertEquals(
+    await unitCommandsAfterBase(base, (c) =>
+      Deno.writeTextFile(
+        `${c}/worker/deno/tests/foo_test.ts`,
+        "export {};\n// edited\n",
+      )),
+    ["deno task test:unit 'tests/foo_test.ts'"],
+  );
+});
+
+Deno.test("runPrePushGate: a push that adds or deletes a source runs the tests whose imported module walks a directory (Issue #5169)", async () => {
+  const base = async (c: string) => {
+    await Deno.writeTextFile(
+      `${c}/worker/deno/lib/coverage.ts`,
+      "export const list = (r: string) => walk(r);\n",
+    );
+    await Deno.writeTextFile(
+      `${c}/worker/deno/tests/coverage_test.ts`,
+      'import { list } from "../lib/coverage.ts";\nlist(".");\n',
+    );
+  };
+  const adds = (c: string) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/lib/new_mod.ts`,
+      "export const n = 1;\n",
+    );
+  const deletes = (c: string) => Deno.remove(`${c}/worker/deno/lib/foo.ts`);
+  // A deleted source also runs its same-named sibling test.
+  for (
+    const [edit, expected] of [
+      [adds, "deno task test:unit 'tests/coverage_test.ts'"],
+      [
+        deletes,
+        "deno task test:unit 'tests/coverage_test.ts' 'tests/foo_test.ts'",
+      ],
+    ] as const
+  ) {
+    assertEquals(await unitCommandsAfterBase(base, edit), [expected]);
   }
 });
 
