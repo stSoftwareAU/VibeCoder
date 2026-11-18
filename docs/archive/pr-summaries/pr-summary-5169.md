@@ -117,12 +117,19 @@ flowchart LR
 - **met** — "focused behavioural regressions for the actual publication paths,
   plus successful valid-path controls" — evidence:
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a push that adds, deletes or renames a source runs the tests whose imported module walks a directory (Issue #5169)`
-  — reviewer: met — reason: the reviewer noted the stub runner always passes;
-  whether a failing selected test blocks the push is already covered by the
-  existing `deno test` failure tests.
+  and
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a push that only adds a test file also runs the tests that list the tests directory (Issue #5169)`
+  (each drives the real `runPrePushGate` publication path over a real git push;
+  the valid-path control in the second test, editing an existing test, runs only
+  that test) — reviewer: met — reason: the reviewer noted the stub runner always
+  passes; whether a failing selected test blocks the push is already covered by
+  the existing `deno test` failure tests.
 - **met** — "Do not create parallel language-specific gates" — evidence:
-  `worker/deno/lib/pre_push_gate.ts` (`runPrePushGate` merges into
-  `denoReferencedTests`) — reviewer: met
+  `worker/deno/lib/pre_push_gate.ts:3132` (`runPrePushGate` calls
+  `loadDirectoryListingTests` and merges the result into the existing
+  `denoReferencedTests` option at line 3155, consumed by the existing
+  `deno task test:unit` check at line 1379; no new gate or check type is added)
+  — reviewer: met
 - **unrequested** — the `pushedNames` helper, now shared by `listPushedFiles`
   and `listAddedOrDeletedFiles` — reviewer: unrequested — reason: the reviewer
   judged it traceable; it lets both functions share one `git log` call, and
@@ -164,7 +171,8 @@ flowchart LR
 - No existing test was edited, and no assertion was removed.
 - `deno test -A --filter "Issue #5169" tests/pre_push_gate_test.ts` (from
   `worker/deno`, with the host's `GIT_CONFIG_*` hook variables unset, on the
-  final code): 18 passed, 0 failed. `deno fmt --check`, `deno lint` and
+  final code): 18 passed, 0 failed. Re-run at the head after the pre-PR
+  verifier's notice: 18 passed, 0 failed. `deno fmt --check`, `deno lint` and
   `deno check` on the two changed code files are clean.
 - Docs: in `docs/CONFIGURATION.md`, I updated the pre-push gate's `deno test`
   selection paragraph and the stage summary ("the changed, referencing and, when
