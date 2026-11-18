@@ -92,14 +92,21 @@ Issue numbers this PR cites:
   `orchestration_3642_gate`, `batch_api`, `callback_schema_compat`, all under
   `worker/deno/tests/`): 443 passed, 0 failed. `deno fmt`, `deno lint` and
   `deno check` were clean on the four changed TypeScript files.
-- `./quality.sh`: its first run was stopped by my 900 s bound before it
-  finished. Every stage that reported had passed, including semgrep,
-  gitleaks, markdownlint and mermaid. See the result below.
-
-<!-- vibe-quality-gate-skipped reason="the full gate did not finish inside the 900 s bound on this host; every stage that reported passed, and the worker re-runs the gate before the PR is raised" -->
+- `./quality.sh` on the head (`445cbda30`): `Result: FAILED`. Every stage
+  passed except `deno tests`, which gave 35,122 passed, 1 failed and 5
+  ignored. The one failure is `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts::PR summary CI task runs git with restricted environment permissions`,
+  which quotes `error: Failed caching npm package 'entities@3.0.1'` and
+  `dns error: failed to lookup address information: Temporary failure in name resolution`
+  for `registry.npmjs.org`. It fails the same way when run alone. The test,
+  `worker/deno/deno.json`, `worker/deno/deno.lock` and
+  `worker/deno/lib/pr_summary_check_cli.ts` are all unchanged from
+  `origin/main` (`git diff --quiet`). The failure is this container's
+  network, not this change.
 
 ## Not done or not checked
 
-- The full `./quality.sh` did not complete in this run (see above).
+- `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` could not pass here
+  because it needs to reach `registry.npmjs.org` (see above). It was not
+  checked on a host with registry access.
 - `deno fmt --check docs/MODEL-AND-CACHING.md` already fails on the base
   branch, on hunks unrelated to this change. The file was not reformatted.
