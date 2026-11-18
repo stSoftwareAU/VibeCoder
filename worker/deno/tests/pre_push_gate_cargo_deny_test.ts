@@ -265,6 +265,39 @@ async function makeRepo(
   };
 }
 
+/**
+ * Like {@link makeRepo}, but `files` are pushed with the CI workflow and the one
+ * local commit only deletes `path` (or renames it to `renameTo`) (Issue #5169).
+ */
+async function makeRepoRemoving(
+  files: Record<string, string>,
+  path: string,
+  renameTo?: string,
+): Promise<{ root: string; clone: string; stdin: string }> {
+  const root = await Deno.makeTempDir({ prefix: "vibe-pp-cargo-deny-rm-" });
+  const remote = `${root}/remote.git`;
+  const clone = `${root}/clone`;
+  await git(root, "init", "-q", "--bare", "-b", "main", remote);
+  await git(root, "clone", "-q", remote, clone);
+  await Deno.mkdir(`${clone}/.github/workflows`, { recursive: true });
+  await Deno.writeTextFile(`${clone}/.github/workflows/ci.yml`, CI_WITH_DENY);
+  for (const [name, text] of Object.entries(files)) {
+    await Deno.writeTextFile(`${clone}/${name}`, text);
+  }
+  await git(clone, "add", ".");
+  await git(clone, "commit", "-qm", "init");
+  await git(clone, "push", "-q", "origin", "HEAD:main");
+  if (renameTo === undefined) await git(clone, "rm", "-q", path);
+  else await git(clone, "mv", path, renameTo);
+  await git(clone, "commit", "-qm", "remove");
+  const sha = await git(clone, "rev-parse", "HEAD");
+  return {
+    root,
+    clone,
+    stdin: `refs/heads/main ${sha} refs/heads/main ${ZERO}\n`,
+  };
+}
+
 interface Seen {
   command: string;
   cwd: string | undefined;
@@ -520,3 +553,106 @@ function recordingGate(
     runner: recordingRunner(seen, reply),
   });
 }
+
+const REMOVAL_FILES_5169 = {
+  "deny.toml": "[advisories]\n",
+  "Cargo.lock": "version = 4\n",
+  "NOTES.md": "# Notes\n",
+};
+
+for (
+  const [name, path, renameTo] of [
+    ["deletes deny.toml", "deny.toml", undefined],
+    ["deletes Cargo.lock", "Cargo.lock", undefined],
+    ["renames deny.toml away", "deny.toml", "deny.toml.bak"],
+  ] as const
+) {
+  Deno.test(`cargo deny: a push that only ${name} runs CI's cargo deny (Issue #5169)`, async () => {
+    const { root, clone, stdin } = await makeRepoRemoving(
+      REMOVAL_FILES_5169,
+      path,
+      renameTo,
+    );
+    try {
+      const seen: Seen[] = [];
+      const result = await runPrePushGate({
+        cwd: clone,
+        stdin,
+        preFlightCommands: [],
+        runner: recordingRunner(seen, () => PASS),
+      });
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assertEquals(denyCommands(seen), [{ command: DENY_ARGV, cwd: clone }]);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  });
+}
+
+Deno.test("cargo deny: a verdict after a push that only deletes Cargo.lock blocks, and is not infrastructure (Issue #5169)", async () => {
+  const { root, clone, stdin } = await makeRepoRemoving(
+    REMOVAL_FILES_5169,
+    "Cargo.lock",
+  );
+  try {
+    const seen: Seen[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: recordingRunner(seen, () => ({
+        started: true,
+        code: 1,
+        stdout: "",
+        stderr: VERDICT_OUTPUT,
+      })),
+    });
+    assert(!result.ok);
+    assert(!(result.error instanceof PrePushGateInfrastructureError));
+    assertStringIncludes(result.error.message, "error[vulnerability]");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("cargo deny: repairChecksWithCiCargo runs cargo deny for a push that only deletes deny.toml (Issue #5169)", async () => {
+  const { root, clone, stdin } = await makeRepoRemoving(
+    REMOVAL_FILES_5169,
+    "deny.toml",
+  );
+  try {
+    const seen: Seen[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      baseRef: "origin/main",
+      repairChecksWithCiCargo: true,
+      preFlightCommands: [],
+      runner: recordingRunner(seen, () => PASS),
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(denyCommands(seen), [{ command: DENY_ARGV, cwd: clone }]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("cargo deny: a push that only deletes a non-cargo file runs no cargo deny (Issue #5169)", async () => {
+  const { root, clone, stdin } = await makeRepoRemoving(
+    REMOVAL_FILES_5169,
+    "NOTES.md",
+  );
+  try {
+    const seen: Seen[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: recordingRunner(seen, () => PASS),
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(denyCommands(seen), []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

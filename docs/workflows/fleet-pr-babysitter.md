@@ -431,8 +431,9 @@ no check. The gate runs the unit tests selected for the changed files
 (`deno task test:unit` for a Deno root that defines that task, with the same
 selection as the worker's other repair pushes; a change to a prompt, `deno.json`
 or `deno.lock` runs the whole suite), markdownlint when configured, the
-ShellCheck policy and the cargo-deny gate. When a Rust-relevant file changed or
-was deleted it also runs the repo CI's cargo clippy and test-target compile (the
+ShellCheck policy and the cargo-deny gate (when a cargo input changed, was
+deleted or was renamed away). When a Rust-relevant file changed, was deleted or
+was renamed away it also runs the repo CI's cargo clippy and test-target compile (the
 `cargo clippy` and `cargo test --no-run`-style commands the gate derives from
 the repo's pull-request workflows, Issue #5169). A failing one blocks and spends
 a repair attempt. The clone's `.git` is read-only, so there is no PR-base
@@ -843,7 +844,7 @@ compile check for the code they touched. The container also withholds the
 READY line unless the pre-push gate over the uncommitted changes passes (see
 [Container repairs](#container-repairs)); that gate runs the unit tests,
 markdownlint, ShellCheck, cargo-deny and gitleaks checks and, when a
-Rust-relevant file changed or was deleted, the repo CI's cargo clippy and
+Rust-relevant file changed, was deleted or was renamed away, the repo CI's cargo clippy and
 test-target compile, plus `deno fmt --check` on the changed files it covers,
 but no other formatter check and no linters other than CI's cargo clippy.
 

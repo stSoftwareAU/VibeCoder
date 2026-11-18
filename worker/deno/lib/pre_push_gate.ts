@@ -1057,6 +1057,7 @@ function quoteForTokeniser(value: string): string | null {
 /**
  * Whether a changed path can change what a CI cargo command builds or checks:
  * a `.rs` file, a cargo manifest or lock, a toolchain pin, or a clippy config.
+ * The config names also apply from an ancestor directory ({@link governsCargoDir}).
  * The same set gates whether the CI cargo checks are read at all.
  */
 const RUST_CONFIG_NAMES = [
@@ -1071,6 +1072,22 @@ const RUST_CONFIG_NAMES = [
 function isRustRelevant(path: string): boolean {
   if (hasExtension(path, [".rs"])) return true;
   return RUST_CONFIG_NAMES.includes(path.slice(path.lastIndexOf("/") + 1));
+}
+
+/**
+ * Whether a changed path governs a CI cargo check run in `dir` (normalised: "."
+ * or a slash-joined relative path). A Rust-relevant file under `dir` does; so
+ * does a config file in an ancestor of `dir`, because rustup and clippy read
+ * `rust-toolchain` and `clippy.toml` from parent directories and a workspace's
+ * `Cargo.toml` and `Cargo.lock` sit above its member crates. A `.rs` file in an
+ * ancestor does not (Issue #5169).
+ */
+function governsCargoDir(path: string, dir: string): boolean {
+  if (!isRustRelevant(path)) return false;
+  if (dir === "." || path.startsWith(`${dir}/`)) return true;
+  const slash = path.lastIndexOf("/");
+  if (!RUST_CONFIG_NAMES.includes(path.slice(slash + 1))) return false;
+  return slash < 0 || dir.startsWith(`${path.slice(0, slash)}/`);
 }
 
 /**
@@ -1470,9 +1487,7 @@ export function planChangedFileChecks(
   const cargoChanged = opts.cargoChanged ?? changed;
   for (const check of cargoCheckOrder(opts.ciCargo?.checks ?? [])) {
     const dir = check.workingDirectory;
-    const touched = cargoChanged.some((p) =>
-      isRustRelevant(p) && (dir === "." || p.startsWith(`${dir}/`))
-    );
+    const touched = cargoChanged.some((p) => governsCargoDir(p, dir));
     if (!touched) continue;
     const command = argvCommand(check.argv);
     if (!command.ok) return command;
@@ -3225,7 +3240,8 @@ export async function runPrePushGate(opts: {
 
   const cargoDeny = await runCargoDenyGate({
     cwd: opts.cwd,
-    changed: contained.value,
+    // Deleted and renamed-away inputs change CI's cargo-deny result (Issue #5169).
+    changed: touched.value,
     always: !opts.repairChecksWithCiCargo &&
       opts.baseRef !== undefined,
     // The touched paths decide a workflow's `paths` filter only over the whole
