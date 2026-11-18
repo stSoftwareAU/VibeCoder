@@ -457,10 +457,14 @@ bash `worker/run_core.sh` conductor. It sequences:
    A PR into a milestone branch merges unreviewed on green CI, so a PR whose
    `## Acceptance Criteria` block marks any criterion `partial` or `missing`
    used to close its issue as completed. The issue stays open with its existing labels so the worker can finish
-   it. Both closers record the missing criteria in their diagnostic output;
+   it. Both closers also leave the issue open, labels kept, when the merged
+   body names it only as `Part of #N` and no closing keyword names it (Issue
+   #5135, `namesIssueOnlyAsPartOf`); a closing keyword still wins. Both
+   closers record the missing criteria in their diagnostic output;
    they neither apply `needs-human` nor post repeated hand-off comments.
    `ensureIssueClosedIfPrMerged` (the sweep and recovery path) logs a
-   did-not-land or missing-criteria hold at WARNING once per verdict; an
+   did-not-land, missing-criteria or `Part of` hold at WARNING once per
+   verdict; an
    unchanged repeat, including the one the next hourly worker start produces,
    is logged at DEBUG (`decision_warn_signatures.json` in the work directory,
    Issue #4495).

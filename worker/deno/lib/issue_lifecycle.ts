@@ -23,7 +23,10 @@ import {
 import { postMilestoneProgressComment } from "./milestone_progress.ts";
 import { type MergeLanding, verifyMergeLanded } from "./merge_landing.ts";
 import { prTitleMatchesIssue } from "./pr_issue_linking.ts";
-import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
+import {
+  bodyNamesIssueOnlyAsPartOf,
+  findMissingCriteria,
+} from "./missing_criterion_close_guard.ts";
 import { shouldWarnDecision } from "./decision_warn_dedup.ts";
 import {
   foreignMergedPrComment,
@@ -428,6 +431,34 @@ export async function ensureIssueClosedIfPrMerged(
           reason: `PR #${prNumber} merged, but its own summary marks ` +
             `${missing.length} acceptance criteria partial or missing — issue left ` +
             `queued for completion (Issue #3177): ${missing.join("; ")}`,
+        },
+      };
+    }
+
+    // Issue #5135: the merged body names the issue only as `Part of #N`, so
+    // the PR left it unfinished on purpose; its `(Issue #N)` title must not
+    // close it. Same hold as an unmet criterion: labels untouched.
+    const mergedBody = prState.body ?? "";
+    if (bodyNamesIssueOnlyAsPartOf(mergedBody, issueNumber)) {
+      const partOfMessage =
+        "Not closing the issue: the merged PR names it only as `Part of #N` (Issue #5135)";
+      const partOfContext = { repo, issueNumber, prNumber };
+      if (
+        shouldWarnDecision(
+          `part-of-only:${repo}#${issueNumber}:pr${prNumber}`,
+          "part-of-only",
+        )
+      ) {
+        logger.warn(partOfMessage, partOfContext);
+      } else {
+        logger.debug(partOfMessage, partOfContext);
+      }
+      return {
+        ok: true,
+        value: {
+          closed: false,
+          reason:
+            `PR #${prNumber} merged, but its body names issue #${issueNumber} only as \`Part of #${issueNumber}\` with no closing keyword — issue left open and queued for completion`,
         },
       };
     }
