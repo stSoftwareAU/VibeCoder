@@ -36,11 +36,12 @@ process. Test-only change: no production code is touched. Closes #5245.
   `deno run` children. `fleet_babysitter_container_preload.ts` imports it, so
   every CLI test using that preload is pinned too.
 - The guard allows one runtime call: `buildLaunchPlanForCommand` runs a
-  best-effort `<runtime> version --format …` query
+  best-effort `<runtime> version --format {{.Server.Version}}` query
   (`worker/deno/commands/container_launch_plan.ts`) that is caught and falls
   back to `unknown`. It is not the detection probe, and making it injectable
-  would be a production change outside this issue. Any other `container`,
-  `docker` or `podman` command makes the guard throw.
+  would be a production change outside this issue. The guard permits only that
+  exact three-argument call. Any other `container`, `docker` or `podman`
+  command, including a plain `version` detection call, makes the guard throw.
 
 ### Undiscoverable Facts
 
@@ -74,7 +75,12 @@ flowchart TD
     script with that preload followed by `linux_host_platform_preload.ts`, and
     asserts that the child and the grandchild each print `Deno.build.os` as
     `linux`. Only the Linux preload can produce that output, so the test passes
-    or fails on the same thing on Linux and macOS hosts.
+    or fails on the same thing on Linux and macOS hosts;
+  - `runtime guard refuses detection probes and permits only version metadata`.
+    With fixture `docker` and `podman` scripts, a plain `version` call throws
+    "unit test reached the real runtime" and is recorded as an attempt, while
+    the exact `version --format {{.Server.Version}}` query runs and returns the
+    fixture's output.
 - Issue numbers this diff cites: #5245 (Babysitter unit tests reach the real
   container-runtime probe and fail on macOS (11 tests in the 5105 and 4738
   files)). This summary also names #5088 (recovery_authority_4417_test fails on
@@ -106,8 +112,9 @@ flowchart TD
   `linux_host_platform_preload.ts`. With its forwarding to `deno run` children
   disabled, it printed `linux` then `darwin`. With the platform pin removed, it
   printed `darwin` twice. The test passed again once the preload was restored.
-- After the propagation test was rewritten, the new guard file, the 5105 file
-  and the 4738 Chromium file passed together: 39 passed, 0 failed.
+- After the propagation test was rewritten and the guard narrowed to the exact
+  version query, the new guard file, the 5105 file and the 4738 Chromium file
+  passed together: 40 passed, 0 failed.
 - `./quality.sh` on the final code: every stage passed except `deno tests`,
   which ran 35157 passed and 1 failed. The failure is
   `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`, which could not
