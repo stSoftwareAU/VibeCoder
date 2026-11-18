@@ -44,7 +44,11 @@ Part of #5105
   `hard-kill-watchdog-<phase>` and a recurrence still lands on this issue. Only
   the evidence `reason` and the public **Reason:** line differ: "The launcher's
   watchdog found the guest silent and not answering its exec probe."
-  `parseHardKillEvidence` accepts that one fixed reason shape and nothing else.
+  `parseHardKillEvidence` accepts only the deadline shapes and this fixed
+  silence shape. The cut-short case (see Review round 3) writes a third reason,
+  "the launcher's early silent-guest reap exited N before it finished", which the
+  parser does not accept: that record is kept in the evidence directory and the
+  parse failure is logged, and no issue is filed from it.
 - `container-reap` writes the wedge marker (`container_silent`) before it kills
   anything, as the deadline path already does. Once the client dies, the
   launcher reads the marker and still exits `87`.
@@ -144,9 +148,13 @@ flowchart TD
 
 ## Test Plan
 
-- [x] From `worker/deno`:
-      `deno test --allow-all tests/guest_silence_watch_test.ts tests/container_reap_command_test.ts tests/hard_kill_report_test.ts tests/hard_kill_evidence_test.ts tests/container_watchdog_test.ts tests/run_core_hard_kill_test.ts`
-      gave 161 passed, 0 failed.
+- [x] From `worker/deno`, run per file on this head, 0 failed in each:
+      `tests/guest_silence_watch_test.ts` (10 tests at head),
+      `tests/container_reap_command_test.ts` (10 tests at head),
+      `tests/hard_kill_report_test.ts` (69 tests at head),
+      `tests/hard_kill_evidence_test.ts` (32 tests at head),
+      `tests/container_watchdog_test.ts` (37 tests at head),
+      `tests/run_core_hard_kill_test.ts` (3 tests at head).
 - [x] `deno test --allow-all tests/run_sh_launcher_test.ts` (the whole launcher
       file) gave 123 passed, 0 failed.
 - [x] `deno fmt --check`, `deno lint` and `deno check` pass on the changed TS
@@ -184,8 +192,8 @@ flowchart TD
 - Branch outcomes: disabled, listing failure, no log, under threshold, a probe
   answering, all probes failing, and a probe that throws
   (`guest_silence_watch_test.ts`). For the launcher: exit 3 keeps waiting
-  (answering-guest test), and a written marker means an early reap (silent-guest
-  test). Any other exit with no marker logs a warning and keeps the deadline (the
+  (answering-guest test), and a written marker with an early command that
+  exited 0 means an early reap (silent-guest test). Any other exit with no marker logs a warning and keeps the deadline (the
   answering-guest launcher test asserts the warning). A non-zero exit with a
   marker (the reap was cut short) logs a warning and runs the ordinary reaper
   with its own budget (the cut-short launcher test).
@@ -245,7 +253,7 @@ keeps `containers/<name>` from `run` until an accepted `kill`; tests read that
 state. The earlier `#5105` telemetry test change is now tied to `#5105` (see the
 Test Plan).
 
-Validation on this head: 161 passed, 0 failed for the six-file group above; 123
+Validation on this head: 0 failed in each of the six files listed in the Test Plan; 123
 passed, 0 failed for `run_sh_launcher_test.ts`; `deno fmt --check`, `deno lint`
 and `deno check` clean on the changed TS; `shellcheck run.sh` clean. The full
 `./quality.sh` was not run in this round.

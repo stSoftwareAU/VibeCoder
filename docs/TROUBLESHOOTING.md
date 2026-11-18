@@ -232,9 +232,10 @@ Before the deadline, `run.sh` checks every `VIBE_GUEST_SILENCE_CHECK_SECONDS`
 `VIBE_GUEST_SILENCE_SECONDS` (default 900, `0` turns it off). Only if so does it
 probe the guest with `container exec <name> true` twice (30 seconds each). When
 neither probe answers it reaps the container early, with the same evidence
-capture and exit `87`, and the filed issue's Reason line reads "The launcher's
-watchdog found the guest silent and not answering its exec probe." A guest that
-answers is never reaped early, however long the log is silent. If the early reap is cut short after it decided to reap (for example its evidence capture crosses the deadline), the watchdog completes the reap with the ordinary reaper rather than trusting the decision. This is `run.sh`
+capture and exit `87`. When that reap finishes, the filed issue's Reason line
+reads "The launcher's watchdog found the guest silent and not answering its exec
+probe." A guest that
+answers is never reaped early, however long the log is silent. If the early reap is cut short after it decided to reap (for example its evidence capture crosses the deadline), the watchdog completes the reap with the ordinary reaper rather than trusting the decision. That evidence record carries the reason "the launcher's early silent-guest reap exited N before it finished", which the hard-kill report parser does not accept, so the record is kept, a parse error is logged, and no issue is filed from it. This is `run.sh`
 only: `run.ps1` keeps the deadline alone (it also captures no hard-kill
 evidence). Issue #5161.
 
