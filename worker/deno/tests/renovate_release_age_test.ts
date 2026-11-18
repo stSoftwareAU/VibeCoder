@@ -20,6 +20,7 @@ import {
 import { evaluateRenovatePolicy } from "../lib/supply_chain_gate.ts";
 import {
   isFirstPartyPackagePattern,
+  MERGED_PACKAGE_NAME_KEYS,
   parseRenovateDurationHours,
 } from "../lib/renovate_release_age.ts";
 import { INTERNAL_SCOPE_EXCLUDES } from "../lib/deno_minimum_dependency_age.ts";
@@ -281,10 +282,82 @@ Deno.test("parseRenovateDurationHours - refuses input over 64 characters even wh
   assertEquals(parseRenovateDurationHours("0".repeat(40) + "24 hours"), 24);
 });
 
-Deno.test("parseRenovateDurationHours - refuses a bare trailing number after a compound, and reads the compound with a unit", () => {
+Deno.test("parseRenovateDurationHours - reads a bare trailing number after a compound as milliseconds, as Renovate's toMs does", () => {
   assertEquals(parseRenovateDurationHours("1 day 5 hours"), 29);
-  assertEquals(parseRenovateDurationHours("1 day 5"), null);
+  // toMs splits "1 day 5" into "1 day" and "5"; ms("5") is 5 ms.
+  assertEquals(parseRenovateDurationHours("1 day 3600000"), 25);
 });
+
+Deno.test("parseRenovateDurationHours - follows toMs on case and decimals: a capitalised or decimal month, or an upper-case compound, is not a duration", () => {
+  // Renovate 44.251.0 toMs returns null for each of these.
+  assertEquals(parseRenovateDurationHours("1 Month"), null);
+  assertEquals(parseRenovateDurationHours("2 MONTHS"), null);
+  assertEquals(parseRenovateDurationHours("1.5 months"), null);
+  assertEquals(parseRenovateDurationHours("1 D 12 H"), null);
+  assertEquals(parseRenovateDurationHours("12 H 1 day"), null);
+  // toMs gives 1.5 minutes: the month rewrite takes integers only, so ms reads M as minutes.
+  assertEquals(parseRenovateDurationHours("1.5 M"), 1.5 / 60);
+  // Controls: the lower-case and upper-case single-part forms toMs does read.
+  assertEquals(parseRenovateDurationHours("2 months"), 1440);
+  assertEquals(parseRenovateDurationHours("36 H"), 36);
+});
+
+for (
+  const age of ["1 Month", "2 MONTHS", "1.5 months", "1 D 12 H", "12 H 1 day"]
+) {
+  Deno.test(`renovate release-age - a top-level "${age}" age, which Renovate's toMs reads as null (no quarantine), is refused`, () => {
+    assertEquals(
+      evaluateRenovatePolicy(
+        "renovate.json",
+        policy({ minimumReleaseAge: "1 month" }),
+      ),
+      [],
+    );
+    assertRefused(
+      evaluateRenovatePolicy(
+        "renovate.json",
+        policy({ minimumReleaseAge: age }),
+      ),
+      "is not a duration Renovate reads",
+    );
+  });
+}
+
+Deno.test('renovate release-age - a top-level "1.5 M" age, which Renovate reads as 1.5 minutes, is refused as below the floor', () => {
+  assertEquals(
+    evaluateRenovatePolicy(
+      "renovate.json",
+      policy({ minimumReleaseAge: "1 M" }),
+    ),
+    [],
+  );
+  assertRefused(
+    evaluateRenovatePolicy(
+      "renovate.json",
+      policy({ minimumReleaseAge: "1.5 M" }),
+    ),
+    "below the 24-hour quarantine floor",
+  );
+});
+
+for (const key of MERGED_PACKAGE_NAME_KEYS) {
+  Deno.test(`renovate release-age - a first-party exemption that also carries ${key} is refused, because Renovate merges it into matchPackageNames`, () => {
+    const control = withRule({
+      matchPackageNames: ["/^stSoftwareAU\\//"],
+      minimumReleaseAge: null,
+    });
+    assertEquals(evaluateRenovatePolicy("renovate.json", control), []);
+    const refused = withRule({
+      matchPackageNames: ["/^stSoftwareAU\\//"],
+      [key]: key === "matchPackagePrefixes" ? ["actions/"] : ["^actions/"],
+      minimumReleaseAge: null,
+    });
+    assertRefused(
+      evaluateRenovatePolicy("renovate.json", refused),
+      "not first-party",
+    );
+  });
+}
 
 Deno.test("parseRenovateDurationHours - reads capital M as a month and lower-case m as a minute", () => {
   assertEquals(parseRenovateDurationHours("1M"), 720);

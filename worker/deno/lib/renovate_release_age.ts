@@ -6,8 +6,9 @@
  * quarantine is only as strong as the shortest age a config can set. This
  * module reads that policy the way Renovate reads it:
  *
- *   - {@link parseRenovateDurationHours} mirrors Renovate's `toMs` duration
- *     parsing, returning hours.
+ *   - {@link parseRenovateDurationHours} mirrors Renovate's `toMs` exactly
+ *     (its lower-case split, its case-sensitive month rewrite and the `ms`
+ *     2.1.3 grammar), returning hours.
  *   - {@link isFirstPartyPackagePattern} says whether one `matchPackageNames`
  *     entry can only ever match stSoftwareAU names.
  *   - {@link findReleaseAgeProblems} walks a whole config and reports every
@@ -28,47 +29,64 @@ const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
 const YEAR_MS = 365.25 * DAY_MS;
-const MONTH_MS = 30 * DAY_MS;
 
-/** Unit names Renovate's `ms` library accepts, lower-cased, with their length in ms. */
-const UNIT_MS: ReadonlyMap<string, number> = new Map([
-  ["ms", 1],
-  ["msec", 1],
-  ["msecs", 1],
-  ["millisecond", 1],
-  ["milliseconds", 1],
-  ["s", SECOND_MS],
-  ["sec", SECOND_MS],
-  ["secs", SECOND_MS],
-  ["second", SECOND_MS],
-  ["seconds", SECOND_MS],
-  ["m", MINUTE_MS],
-  ["min", MINUTE_MS],
-  ["mins", MINUTE_MS],
-  ["minute", MINUTE_MS],
-  ["minutes", MINUTE_MS],
-  ["h", HOUR_MS],
-  ["hr", HOUR_MS],
-  ["hrs", HOUR_MS],
-  ["hour", HOUR_MS],
-  ["hours", HOUR_MS],
-  ["d", DAY_MS],
-  ["day", DAY_MS],
-  ["days", DAY_MS],
-  ["w", WEEK_MS],
-  ["week", WEEK_MS],
-  ["weeks", WEEK_MS],
-  ["y", YEAR_MS],
-  ["yr", YEAR_MS],
-  ["yrs", YEAR_MS],
-  ["year", YEAR_MS],
+/**
+ * Renovate's `toMs` split: each part runs up to and including a run of
+ * lower-case letters. Case-sensitive, as in Renovate, so `"1 D 12 H"` stays
+ * one part (which `ms` then refuses).
+ */
+const TO_MS_SPLIT = /(.*?[a-z]+)/;
+
+/** Renovate's month rewrite (`N months` → `N*30 days`): case-sensitive, integers only. */
+const TO_MS_MONTH = /^(\d+)\s*(?:months?|M)$/;
+
+/** The `ms` 2.1.3 grammar Renovate hands every other part to (case-insensitive). */
+const MS_GRAMMAR =
+  /^(-?(?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)?$/i;
+
+/** `ms` 2.1.3 unit lengths, keyed by the lower-cased unit `MS_GRAMMAR` captures. */
+const MS_UNIT: ReadonlyMap<string, number> = new Map([
   ["years", YEAR_MS],
-  ["month", MONTH_MS],
-  ["months", MONTH_MS],
+  ["year", YEAR_MS],
+  ["yrs", YEAR_MS],
+  ["yr", YEAR_MS],
+  ["y", YEAR_MS],
+  ["weeks", WEEK_MS],
+  ["week", WEEK_MS],
+  ["w", WEEK_MS],
+  ["days", DAY_MS],
+  ["day", DAY_MS],
+  ["d", DAY_MS],
+  ["hours", HOUR_MS],
+  ["hour", HOUR_MS],
+  ["hrs", HOUR_MS],
+  ["hr", HOUR_MS],
+  ["h", HOUR_MS],
+  ["minutes", MINUTE_MS],
+  ["minute", MINUTE_MS],
+  ["mins", MINUTE_MS],
+  ["min", MINUTE_MS],
+  ["m", MINUTE_MS],
+  ["seconds", SECOND_MS],
+  ["second", SECOND_MS],
+  ["secs", SECOND_MS],
+  ["sec", SECOND_MS],
+  ["s", SECOND_MS],
+  ["milliseconds", 1],
+  ["millisecond", 1],
+  ["msecs", 1],
+  ["msec", 1],
+  ["ms", 1],
 ]);
 
-// SIMPLE-ON-PURPOSE: one sticky token per number-and-unit pair, parsed left to right; a bare number is only accepted as the whole value (Renovate would drop a stray trailing number, so a compound with one is refused rather than guessed at) — upgrade when a fleet config uses a compound with a bare trailing number
-const DURATION_TOKEN = /(\d+(?:\.\d+)?)[ \t]*([a-zA-Z]*)[ \t]*/y;
+/** `ms` 2.1.3 `parse`: milliseconds for one part, or null when it does not match. */
+function msParse(part: string): number | null {
+  const match = MS_GRAMMAR.exec(part);
+  if (match === null) return null;
+  // MS_GRAMMAR captures only MS_UNIT keys, so the lookup always succeeds.
+  const factor = MS_UNIT.get((match[2] ?? "ms").toLowerCase())!;
+  return parseFloat(match[1]!) * factor;
+}
 
 /** Renovate's `matchPackageNames` regex prefixes that can only match stSoftwareAU names. */
 const FIRST_PARTY_REGEX_PREFIXES = [
@@ -87,6 +105,17 @@ const FIRST_PARTY_NAME_PREFIXES = ["stsoftwareau/", "@stsoftware/"];
 const PACKAGE_RULE_PATH = /^packageRules\[\d+\]$/;
 
 /**
+ * Legacy package-name matchers Renovate's migration folds into
+ * `matchPackageNames`, so each one widens what an exemption covers. A lifting
+ * rule carrying any of them is refused rather than translated.
+ */
+export const MERGED_PACKAGE_NAME_KEYS = [
+  "matchPackagePrefixes",
+  "packagePatterns",
+  "packageNames",
+] as const;
+
+/**
  * Parse a Renovate duration string (`"24 hours"`, `"2d"`, `"1 day 12 hours"`,
  * `"0"`) into hours, or return null when Renovate would not read it as a
  * duration. Trims first; returns null for empty input or input longer than
@@ -95,29 +124,15 @@ const PACKAGE_RULE_PATH = /^packageRules\[\d+\]$/;
 export function parseRenovateDurationHours(value: string): number | null {
   const text = value.trim();
   if (text === "" || text.length > MAX_DURATION_LENGTH) return null;
+  const parts = text.split(TO_MS_SPLIT)
+    .map((part) => part.trim())
+    .filter((part) => part !== "");
   let totalMs = 0;
-  let tokens = 0;
-  let position = 0;
-  while (position < text.length) {
-    DURATION_TOKEN.lastIndex = position;
-    const match = DURATION_TOKEN.exec(text);
-    if (match === null) return null;
-    const amount = Number(match[1]);
-    const unit = match[2] ?? "";
-    const end = DURATION_TOKEN.lastIndex;
-    if (unit === "") {
-      // A bare number is milliseconds, so "0" is zero; anywhere else it is refused.
-      if (tokens !== 0 || end !== text.length) return null;
-      totalMs += amount;
-    } else {
-      const factor = unit === "M"
-        ? MONTH_MS // Renovate reads a bare capital `M` as a month, not minutes.
-        : UNIT_MS.get(unit.toLowerCase());
-      if (factor === undefined) return null;
-      totalMs += amount * factor;
-    }
-    tokens += 1;
-    position = end;
+  for (const part of parts) {
+    const month = TO_MS_MONTH.exec(part);
+    const ms = month === null ? msParse(part) : Number(month[1]) * 30 * DAY_MS; // Renovate rewrites it to `N*30 days`.
+    if (ms === null) return null;
+    totalMs += ms;
   }
   return totalMs / HOUR_MS;
 }
@@ -237,7 +252,7 @@ function checkReleaseAge(
       problems.push(
         `${path} lifts the release-age quarantine (minimumReleaseAge ${
           JSON.stringify(value)
-        }) for packages that are not first-party stSoftwareAU — list only first-party names in matchPackageNames`,
+        }) for packages that are not first-party stSoftwareAU — list only first-party names in matchPackageNames (or matchPackagePatterns), and drop matchPackagePrefixes, packagePatterns and packageNames, which Renovate merges into matchPackageNames`,
       );
     }
     return;
@@ -254,9 +269,13 @@ function checkReleaseAge(
 /**
  * A packageRules entry is first-party only when its `matchPackageNames` and
  * legacy `matchPackagePatterns` (bare regexes, read as `/${p}/`) together form
- * a non-empty list in which every entry is a first-party pattern.
+ * a non-empty list in which every entry is a first-party pattern, and it
+ * carries none of {@link MERGED_PACKAGE_NAME_KEYS}.
  */
 export function isScopedToFirstParty(rule: Record<string, unknown>): boolean {
+  if (MERGED_PACKAGE_NAME_KEYS.some((key) => Object.hasOwn(rule, key))) {
+    return false;
+  }
   const names = listOrNull(rule["matchPackageNames"]);
   const patterns = listOrNull(rule["matchPackagePatterns"]);
   if (names === null || patterns === null) return false;

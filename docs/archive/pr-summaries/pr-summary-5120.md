@@ -16,7 +16,12 @@ Semgrep's `p/default` rule does not report it. `false` is refused everywhere.
 - **Supply-chain gate**: `renovate-release-age` (via the new
   `worker/deno/lib/renovate_release_age.ts`) now refuses a boolean or other
   non-string age, a top-level age below 24 hours or unreadable, and a `null` or
-  sub-24h age that is not scoped to first-party names.
+  sub-24h age that is not scoped to first-party names. Durations are read
+  exactly as Renovate's `toMs` reads them, so `"1 Month"` or `"1 D 12 H"` (which
+  Renovate applies as no quarantine) is refused as unreadable and `"1.5 M"` as
+  1.5 minutes. A lifting rule that also carries `matchPackagePrefixes`,
+  `packagePatterns` or `packageNames` is refused, because Renovate merges those
+  into `matchPackageNames`.
 - **Local Semgrep stage**: prints a remedy for
   `renovate-missing-minimum-release-age`. It contradicts the rule's own advice
   to write `false`.
@@ -46,7 +51,9 @@ Closes #5120.
   `renovate_config_test.ts` fails if a first-party action appears without the
   `null` rule, or if the rule exists without one.
 - First-party scope is decided by `matchPackageNames` / `matchPackagePatterns`
-  only. It fails closed: a negation, a `|` alternation, a prefix without the
+  only. It fails closed: a rule also carrying `matchPackagePrefixes`,
+  `packagePatterns` or `packageNames` (folded into `matchPackageNames` by
+  Renovate's migration), a negation, a `|` alternation, a prefix without the
   slash, a quantifier after the slash, or a rule scoped only by `matchManagers`
   / `matchSourceUrls` is refused. The `@stsoftware/` scope counts as
   first-party, matching the Deno exclude globs; a test pins the two together.
@@ -149,9 +156,14 @@ never inspects `cargo install`.
   intended finding. — evidence: Semgrep 1.182.1 (the CI image tag, same
   `p/default` as the local stage) 0 findings on the valid fixtures;
   `worker/deno/tests/renovate_release_age_test.ts::renovate release-age - fixture: null exemption for a third-party action is refused`,
-  `::renovate release-age - fixture: a 12-hour top-level age is refused` —
-  reviewer: partial — reason: the reviewer noted Semgrep is stubbed in unit
-  tests; the real scan was run and recorded above
+  `::renovate release-age - fixture: a 12-hour top-level age is refused`,
+  `::renovate release-age - a top-level "1 Month" age, which Renovate's toMs reads as null (no quarantine), is refused`
+  (and the same for `"2 MONTHS"`, `"1.5 months"`, `"1 D 12 H"`, `"12 H 1 day"`),
+  `::renovate release-age - a top-level "1.5 M" age, which Renovate reads as 1.5 minutes, is refused as below the floor`,
+  `::renovate release-age - a first-party exemption that also carries matchPackagePrefixes is refused, because Renovate merges it into matchPackageNames`
+  (and the same for `packagePatterns`, `packageNames`) — reviewer: partial —
+  reason: the reviewer noted Semgrep is stubbed in unit tests; the real scan was
+  run and recorded above
 - **met** — Invalid boolean age values are rejected; an expected false positive
   is not addressed by omitting the Renovate manager. — evidence:
   `worker/deno/tests/renovate_release_age_test.ts::renovate release-age - fixture: a boolean false age is refused by type`,
@@ -218,11 +230,16 @@ never inspects `cargo install`.
 
 ## Test Plan
 
-- Added `worker/deno/tests/renovate_release_age_test.ts`, 29 tests covering:
+- Added `worker/deno/tests/renovate_release_age_test.ts`, 39 tests covering:
   - the five fixtures;
   - the first-party matcher, accepted and refused;
   - type, floor and category refusals, each with an accepted control;
-  - the duration parser, including hostile and over-cap input;
+  - the duration parser, including hostile and over-cap input, and the `toMs`
+    case and decimal rules (`"1 Month"`, `"1 D 12 H"`, `"1.5 months"`,
+    `"1.5 M"`, expected values from Renovate 44.251.0's `toMs`), refused through
+    `evaluateRenovatePolicy` with an accepted control;
+  - the legacy `matchPackagePrefixes` / `packagePatterns` / `packageNames` keys,
+    each refused on a lifting rule with the accepted control;
   - the Deno and Renovate scope twin.
 - Added `worker/deno/tests/semgrep_check_test.ts`:
   - `runSemgrepCheck - FAILED naming the Renovate release-age remedy (Issue #5120)`;
@@ -262,7 +279,7 @@ never inspects `cargo install`.
   - the security-scan prompt and `docs/SECURITY-SCAN.md`, both updated.
 - Results on the final head:
   - `deno task test tests/renovate_release_age_test.ts tests/supply_chain_gate_test.ts tests/renovate_config_test.ts tests/deno_minimum_dependency_age_test.ts`:
-    90 passed, 0 failed.
+    100 passed, 0 failed.
   - `tests/semgrep_check_test.ts`: 31 passed.
 - `./quality.sh`:
   - passes every stage except deno tests, including semgrep, completeness,
