@@ -5,9 +5,9 @@
 The PR feedback scan no longer spends a `pr_feedback` run on the fleet PR
 babysitter's attempt record. After each repair the babysitter posts a top-level
 comment holding the line `Babysitter repair recorded.` and one
-`vibe-babysitter-attempt` marker. That line is visible, so the #4673
-marker-only skip did not catch it, and the babysitter App is an authorised
-commenter, so `findActionableComment` returned the record as feedback.
+`vibe-babysitter-attempt` marker. That line is visible, so the #4673 marker-only
+skip did not catch it, and the babysitter App is an authorised commenter, so
+`findActionableComment` returned the record as feedback.
 
 `findActionableComment` (`worker/deno/lib/pr_maintenance.ts`) now skips a
 top-level comment when both of these hold:
@@ -32,9 +32,9 @@ Closes #5150.
 - The record is bookkeeping for the babysitter's own retry tally. Each one
   claimed as feedback cost a model run and three PR comments, and held the PR's
   feedback claim.
-- The check recognises the record by its exact body, not by the marker
-  appearing somewhere. An authorised reviewer who quotes the marker inside a
-  real request is still answered.
+- The check recognises the record by its exact body, not by the marker appearing
+  somewhere. An authorised reviewer who quotes the marker inside a real request
+  is still answered.
 
 ### Essential Design Decisions
 
@@ -106,8 +106,8 @@ flowchart TD
   - a record followed by an authorised ordinary comment returns the ordinary
     comment;
   - control: the same body from an authorised human is still returned;
-  - look-alikes from an App are still returned: leading text, trailing text,
-    and the marker in a code span;
+  - look-alikes from an App are still returned: leading text, trailing text, and
+    the marker in a code span;
   - the skip logs one INFO line naming the comment and PR;
   - `isBabysitterAttemptRecord` accepts the literal from #5106, its CRLF and
     trailing-newline forms, and the builder's output. It rejects a marker-only
@@ -116,8 +116,9 @@ flowchart TD
     `signature`, and an unclosed 100,000-space hostile input.
 - No existing test was edited.
 - Regression runs:
-  - the new file, `worker/deno/tests/pr_feedback_marker_only_comment_4673_test.ts`
-    and `worker/deno/tests/babysitter_retry_state_test.ts`: 22 passed;
+  - the new file,
+    `worker/deno/tests/pr_feedback_marker_only_comment_4673_test.ts` and
+    `worker/deno/tests/babysitter_retry_state_test.ts`: 22 passed;
   - `worker/deno/tests/fleet_pr_babysitter_test.ts` and
     `worker/deno/tests/pr_feedback_trusted_bot_e2e_test.ts`: 126 passed;
   - after the last commit, the new file again: 7 passed.
@@ -129,11 +130,10 @@ flowchart TD
 - `./quality.sh < /dev/null`, run on the first commit:
   - every stage passed or was skipped, except `deno tests`, which had 35,140
     passed and 1 failed;
-  - the failure is `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`
-    ("PR summary CI task runs git with restricted environment permissions"),
-    which downloads from `registry.npmjs.org`. In this container it fails with
-    "dns error: failed to lookup address information". This PR does not touch
-    it;
+  - the failure is `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` ("PR
+    summary CI task runs git with restricted environment permissions"), which
+    downloads from `registry.npmjs.org`. In this container it fails with "dns
+    error: failed to lookup address information". This PR does not touch it;
   - that failure stopped the gate's serial pass, so I ran
     `deno task test:unit --serial-only` on its own: 936 passed, 0 failed.
 
