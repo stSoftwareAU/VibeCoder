@@ -169,10 +169,12 @@ because the failing jobs are private.
   - `runPrePushGate: a push that only changes a sibling directory's tools/Cargo.lock runs no CI clippy for rust (Issue #5169)`
     and `… a root .rs file build.rs …` (the controls).
 - No existing test was edited, and no assertion was removed.
-- `deno task test:unit tests/pre_push_gate_test.ts tests/pre_push_gate_cargo_deny_test.ts tests/babysitter_tree_gate_test.ts`
-  (from `worker/deno`, on the final code): 285 passed, 0 failed.
-  `deno fmt
-  --check`, `deno lint` and `deno check` on the three changed code
+- `deno task test:unit` (from `worker/deno`, re-run on the head, 0 failed in each):
+  `worker/deno/tests/pre_push_gate_test.ts` (198 tests at head) and
+  `worker/deno/tests/pre_push_gate_cargo_deny_test.ts` (19 tests at head), both changed
+  by this PR; `worker/deno/tests/babysitter_tree_gate_test.ts` (68 tests at head) is an
+  unchanged regression suite run for the callers of the changed gate.
+  `deno fmt --check`, `deno lint` and `deno check` on the three changed code
   files are clean.
 - Docs: in `docs/CONFIGURATION.md`, I read and updated the "push guarantee"
   paragraph, the repair-processor paragraph, the "CI's cargo clippy and
