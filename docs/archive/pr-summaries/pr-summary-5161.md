@@ -17,6 +17,7 @@ existing one: evidence capture first, then kill, then exit `87`. A guest that
 answers is never reaped early. If that early command is cut short after it
 decided to reap (for example its evidence capture crosses the remaining-deadline
 bound), the watchdog finishes the reap itself instead of trusting the marker.
+
 Closes #5161.
 
 Part of #5105
@@ -46,9 +47,9 @@ Part of #5105
   watchdog found the guest silent and not answering its exec probe."
   `parseHardKillEvidence` accepts only the deadline shapes and this fixed
   silence shape. The cut-short case (see Review round 3) writes a third reason,
-  "the launcher's early silent-guest reap exited N before it finished", which the
-  parser does not accept: that record is kept in the evidence directory and the
-  parse failure is logged, and no issue is filed from it.
+  "the launcher's early silent-guest reap exited N before it finished", which
+  the parser does not accept: that record is kept in the evidence directory and
+  the parse failure is logged, and no issue is filed from it.
 - `container-reap` writes the wedge marker (`container_silent`) before it kills
   anything, as the deadline path already does. Once the client dies, the
   launcher reads the marker and still exits `87`.
@@ -92,8 +93,9 @@ flowchart TD
   drives the real `run.sh` with a stub runtime whose `exec` fails, a 120s
   deadline and a worker log ten minutes old. It asserts exit 87, the early-reap
   stderr line, that the container is gone from the stub runtime's table (the
-  stub's `kill` removes it; the test reads that state, not the call), and a hard-kill record whose reason is the silence form
-  with trigger `watchdog`. The deadline path would record a different reason.
+  stub's `kill` removes it; the test reads that state, not the call), and a
+  hard-kill record whose reason is the silence form with trigger `watchdog`. The
+  deadline path would record a different reason.
 - `worker/deno/tests/run_sh_launcher_test.ts::run.sh - a silent guest that still answers is left to the deadline (Issue #5161)`
   uses the same silent log but `exec` answers, so the reap comes only at the 6s
   deadline, with the deadline reason. Its probes are slower than the early
@@ -102,8 +104,8 @@ flowchart TD
 - `worker/deno/tests/run_sh_launcher_test.ts::run.sh - an early reap cut short by the deadline is finished, not trusted (Issue #5161)`
   authorises the reap with two instantly failing probes, then stalls the first
   evidence read past the early command's bound (a stub `logs` arm, first call
-  only). The early command dies after writing the marker and before its kill.
-  It asserts exit 87, the "before it finished" warning, that the stub runtime's
+  only). The early command dies after writing the marker and before its kill. It
+  asserts exit 87, the "before it finished" warning, that the stub runtime's
   container table no longer holds the container, and that one hard-kill record
   carries the "early silent-guest reap exited N before it finished" reason. It
   fails against the previous `run.sh` (the warning is absent; the early branch
@@ -116,9 +118,9 @@ flowchart TD
   mode against a stateful fake runtime (a table of running containers; `kill`
   removes one and the listing reports the rest). An answering guest exits 3 and
   is still running, with nothing written. A silent, unanswering guest gets the
-  marker, is gone from the table and reports `reaped`, with the silence reason in
-  its evidence. A run without `--evidence-dir` is refused and the guest is still
-  running.
+  marker, is gone from the table and reports `reaped`, with the silence reason
+  in its evidence. A run without `--evidence-dir` is refused and the guest is
+  still running.
 - `worker/deno/tests/hard_kill_report_test.ts` checks that the silence reason
   parses, the issue body carries the new public reason, the failure class is
   unchanged, and a reason with invented wording is still rejected.
@@ -171,13 +173,14 @@ flowchart TD
 - [x] `worker/deno/tests/ephemeral_root_telemetry_5105_test.ts` (the slow-scan
       ordering test of #5105 "Agent-owned ephemeral cargo target dirs cannot be
       released mid-cycle (EACCES)…", opened by a maintainer; this PR links it
-      with `Part of #5105` because it only de-flakes that test's race guard) lost a race under the pre-push gate's loaded
-      parallel pass: its zero-delay timer beat the probe's verdict. The guard
-      timer is now 10s and is cleared once the race settles, so it only bounds a
-      probe that really blocks on the never-completing scan. No assertion was
-      removed: the verdict is still asserted to be the host-disk-below-floor
-      reason, and a probe blocked on the scan still resolves the guard instead.
-      The `docs/audits/lib-sweep-coverage/top-up-5161.json` `sweptAt` is the
+      with `Part of #5105` because it only de-flakes that test's race guard)
+      lost a race under the pre-push gate's loaded parallel pass: its zero-delay
+      timer beat the probe's verdict. The guard timer is now 10s and is cleared
+      once the race settles, so it only bounds a probe that really blocks on the
+      never-completing scan. No assertion was removed: the verdict is still
+      asserted to be the host-disk-below-floor reason, and a probe blocked on
+      the scan still resolves the guard instead. The
+      `docs/audits/lib-sweep-coverage/top-up-5161.json` `sweptAt` is the
       `origin/main` merge-base (not a branch commit), which `sweep-drift`
       checks.
 - The answering-guest launcher test is expected to pass on base too: it pins
@@ -192,11 +195,12 @@ flowchart TD
 - Branch outcomes: disabled, listing failure, no log, under threshold, a probe
   answering, all probes failing, and a probe that throws
   (`guest_silence_watch_test.ts`). For the launcher: exit 3 keeps waiting
-  (answering-guest test), and a written marker with an early command that
-  exited 0 means an early reap (silent-guest test). Any other exit with no marker logs a warning and keeps the deadline (the
-  answering-guest launcher test asserts the warning). A non-zero exit with a
-  marker (the reap was cut short) logs a warning and runs the ordinary reaper
-  with its own budget (the cut-short launcher test).
+  (answering-guest test), and a written marker with an early command that exited
+  0 means an early reap (silent-guest test). Any other exit with no marker logs
+  a warning and keeps the deadline (the answering-guest launcher test asserts
+  the warning). A non-zero exit with a marker (the reap was cut short) logs a
+  warning and runs the ordinary reaper with its own budget (the cut-short
+  launcher test).
 - Twinned copies: `GUEST_ANSWERING_EXIT` (TS) and its `run.sh` copy. The
   launcher tests exercise both sides together. `run.ps1` is deliberately not
   changed (see Essential Design Decisions).
@@ -215,25 +219,26 @@ flowchart TD
 
 ## Review fixes and validation
 
-The watchdog now measures elapsed time, including probe commands, and bounds each
-early check by the remaining deadline budget. Without a host timeout command it
-skips early checks. A fresh worker-log listing and fresh clock reading after the
-failed probes prevent reaping a guest that resumed logging; unavailable fresh
-evidence also retains the guest. Updated the resilience documentation.
+The watchdog now measures elapsed time, including probe commands, and bounds
+each early check by the remaining deadline budget. Without a host timeout
+command it skips early checks. A fresh worker-log listing and fresh clock
+reading after the failed probes prevent reaping a guest that resumed logging;
+unavailable fresh evidence also retains the guest. Updated the resilience
+documentation.
 
-Replaced probe call-count/order assertions with outcome assertions. Added resumed
-logging and unavailable-fresh-evidence regressions. The launcher fixture can delay
-exec responses and records runtime-start timestamps; the answering-guest test
-asserts deadline evidence capture starts within ten seconds of runtime start for
-a six-second deadline. This excludes unrelated setup and cleanup overhead.
-The two watchdog fixtures disable the unrelated host disk floor to reach the
-watchdog on small test hosts.
+Replaced probe call-count/order assertions with outcome assertions. Added
+resumed logging and unavailable-fresh-evidence regressions. The launcher fixture
+can delay exec responses and records runtime-start timestamps; the
+answering-guest test asserts deadline evidence capture starts within ten seconds
+of runtime start for a six-second deadline. This excludes unrelated setup and
+cleanup overhead. The two watchdog fixtures disable the unrelated host disk
+floor to reach the watchdog on small test hosts.
 
 Validation: 10 guest-silence tests and both Issue #5161 launcher tests pass.
-Restoring the original run.sh makes the delayed-answering regression fail on
-its deadline assertion. Shell syntax and diff whitespace checks pass.
-Local runs used temporary dependency mappings and --no-check; those environment
-changes are not committed. Hosted CI must validate the normal dependency setup.
+Restoring the original run.sh makes the delayed-answering regression fail on its
+deadline assertion. Shell syntax and diff whitespace checks pass. Local runs
+used temporary dependency mappings and --no-check; those environment changes are
+not committed. Hosted CI must validate the normal dependency setup.
 
 ## Review round 3
 
@@ -253,7 +258,7 @@ keeps `containers/<name>` from `run` until an accepted `kill`; tests read that
 state. The earlier `#5105` telemetry test change is now tied to `#5105` (see the
 Test Plan).
 
-Validation on this head: 0 failed in each of the six files listed in the Test Plan; 123
-passed, 0 failed for `run_sh_launcher_test.ts`; `deno fmt --check`, `deno lint`
-and `deno check` clean on the changed TS; `shellcheck run.sh` clean. The full
-`./quality.sh` was not run in this round.
+Validation on this head: 0 failed in each of the six files listed in the Test
+Plan; 123 passed, 0 failed for `run_sh_launcher_test.ts`; `deno fmt --check`,
+`deno lint` and `deno check` clean on the changed TS; `shellcheck run.sh` clean.
+The full `./quality.sh` was not run in this round.
