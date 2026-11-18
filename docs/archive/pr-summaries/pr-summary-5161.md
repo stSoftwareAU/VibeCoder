@@ -140,6 +140,15 @@ flowchart TD
       passes after two declarations: `VIBE_GUEST_SILENCE_SECONDS` is registered
       in `worker/deno/lib/vibe_env_registry.ts` with role `switch`, and the new
       module is claimed by `docs/audits/lib-sweep-coverage/top-up-5161.json`.
+- [x] `worker/deno/tests/ephemeral_root_telemetry_5105_test.ts` (the Issue #5105
+      slow-scan ordering test) lost a race under the pre-push gate's loaded
+      parallel pass: its zero-delay timer beat the probe's verdict. The guard
+      timer is now 10s and is cleared once the race settles, so it only bounds a
+      probe that really blocks on the never-completing scan. No assertion was
+      removed: the verdict is still asserted to be the host-disk-below-floor
+      reason, and a probe blocked on the scan still resolves the guard instead.
+      The `docs/audits/lib-sweep-coverage/top-up-5161.json` `sweptAt` is the
+      `origin/main` merge-base (not a branch commit), which `sweep-drift` checks.
 - The answering-guest launcher test is expected to pass on base too: it pins
   that a guest that answers is not reaped early.
 - No assertion was removed from any existing test. The stub runtime's new
