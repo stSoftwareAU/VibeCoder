@@ -5298,8 +5298,8 @@ and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the first stage below: deno fmt/lint,
 `deno test` of the changed and referencing tests (the whole `test:unit` suite
 when a `prompts/` file or a root's `deno.json`, `deno.jsonc` or `deno.lock`
-changes), cargo fmt, markdownlint, cspell, ShellCheck and the Floci
-CloudFormation deploy test), the CI cargo clippy and test-target compile (which
+changes), cargo fmt, markdownlint, cspell and ShellCheck), the CI cargo
+clippy and test-target compile (which
 the agent's hook also runs from its precomputed spec) and cargo deny still run
 and can fail the run. Unlike Step 1b, the completion gate checks every commit
 the branch has ahead of the PR base, not only commits on no remote-tracking ref;
@@ -5371,9 +5371,7 @@ gates do (see that bullet):
    are excluded from execution; the issue completion phase widens the range to every commit ahead of the PR
    base, see above), then runs
    the repo's own tools on just those files (deno gets only the files its own
-   config would check, see below). The one exception is the Floci deploy test
-   below: a changed file only triggers it, and it is passed no files, so it
-   deploys every template in `infra/cloudformation/`, changed or not:
+   config would check, see below):
    - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,
      cts, json, jsonc, md, markdown) and `deno lint --permit-no-files` (the
      ts/js family), per outermost `deno.json` / `deno.jsonc` directory. Only
@@ -5719,22 +5717,7 @@ gates do (see that bullet):
      inside the worker container (#4768, #4770), never beside the host App key,
      so babysitter repairs are ShellCheck-validated there. WIP checkpoint,
      timeout-preservation and declared hand-off pushes pass no pre-flight spec
-     and stay ungated;
-   - **Floci CloudFormation deploy test** (Issue #3727), only when the push
-     adds or modifies a file whose path starts with `infra/cloudformation/` and
-     the repo tracks `infra/cloudformation/test-floci.sh`: it runs
-     `bash infra/cloudformation/test-floci.sh` from the repo root, after the
-     other changed-file checks. That is the same script
-     `.github/workflows/floci.yml` runs in CI. Outside CI, a template that
-     creates an `AWS::EC2::Instance` when there is no Docker socket is printed
-     `SKIPPED (needs Docker): <template>` and left to CI. When every template
-     is skipped the script exits 0 there, before it checks for the `aws` CLI
-     or starts anything. Otherwise it exits 1 when the `aws` CLI is missing,
-     and only then starts the baked `floci` on `127.0.0.1:4566` if nothing
-     answers there. The worker container has no Docker socket and no `aws`
-     CLI, and today's only template creates an `AWS::EC2::Instance`, so inside
-     the container this check skips it, exits 0 and never starts `floci`; only
-     a host with Docker and the `aws` CLI exercises it.
+     and stay ungated.
 2. **Configured `pre-flight` commands.** The commands are resolved by the
    run's repo from `repo_config`, so every agent run that names its repo gets
    that repo's `pre-flight` commands in the hook; a run that names no repo gets
@@ -5747,9 +5730,7 @@ fail is the one exception: it only prints a `[PRE_PUSH_WARNING]`); markdownlint 
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
 does not); a ShellCheck CI policy with a missing or mismatched binary, an
 unreadable config, or an unsupported workflow shape is incomplete and refuses
-a push that changes a script, a ShellCheck config or a ShellCheck workflow; a
-Floci deploy test that exits non-zero, including when Floci cannot be started
-or the `aws` CLI is missing for a deployable template, refuses the push; a CI
+a push that changes a script, a ShellCheck config or a ShellCheck workflow; a CI
 cargo check that fails refuses the push with its output, unless the PR base
 fails with every diagnostic the push shows, when it is a `[PRE_PUSH_WARNING]`
 (in the worker's own gates, and in the agent's hook when its spec carries a
