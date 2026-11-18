@@ -10,9 +10,9 @@ defects the last run recorded against that delivery:
   failed with `java: command not
   found` when run as `agent` on the worker
   image, which has no `java`.
-  - Off CI, it is now skipped only when no `java` is on `/usr/bin:/bin`.
-  - On GitHub Actions (`GITHUB_ACTIONS=true`) a missing JDK still fails it
-    loudly.
+  - The test is not skipped anywhere. Its first step now asserts that a `java`
+    is on `/usr/bin:/bin` and, when none is, fails with a message naming the
+    missing JDK instead of the shell's `java: command not found`.
   - A new JVM-free test checks the same scrub on every image:
     `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS` and `JDK_JAVA_OPTIONS` are replaced
     before COMMAND runs.
@@ -37,8 +37,8 @@ Part of #5109.
 - The last run left one red lifecycle test and a misleading failure reason; both
   are fixed here rather than redoing the delivered runtime.
 - A JDK-dependent test cannot be the only check of the `JAVA_*` scrub on an
-  image without a JDK, so the scrub gets a JVM-free test; the real-JVM test
-  stays loud wherever a JDK is expected (CI).
+  image without a JDK, so the scrub gets a JVM-free test; the real-JVM test is
+  never skipped: where no JDK is provisioned it fails loudly, naming the JDK.
 
 ### Essential Design Decisions
 
@@ -136,11 +136,13 @@ with an isolated test runner).
   real image/runtime evidence rather than claiming that a mocked installer
   proves availability. Use existing unattended verification paths for any
   architecture unavailable on the implementing host. — evidence:
-  `worker/deno/tests/aws_emulator_run_5109_test.ts` as `agent`, unmodified:
-  `ok | 21 passed | 0 failed | 2 ignored`; real-emulator runs as `agent` on
-  arm64 (Test Plan); amd64 left to Container Build — reviewer: partial — reason:
-  the unattended amd64 path (Container Build) has not run on this head, and the
-  real-JVM test runs nowhere yet
+  `worker/deno/tests/aws_emulator_run_5109_test.ts` as `agent` on this JDK-less
+  host: `FAILED | 21 passed | 1 failed | 1 ignored`, the one failure being the
+  real-JVM test failing loudly on the missing JDK (Test Plan); real-emulator
+  runs as `agent` on arm64 (Test Plan); amd64 left to Container Build —
+  reviewer: partial — reason: the unattended amd64 path (Container Build) has
+  not run on this head, and the real-JVM test cannot pass on this host (it
+  passes only where a JDK is provisioned, such as the CI integration tests job)
 - **unrequested** — the `FAILED:` line now names the emulator's exit status or
   signal — reviewer: unrequested — reason: the last run recorded that a killed
   emulator's failure line quoted the telemetry notice instead of the cause; the
@@ -161,10 +163,10 @@ with an isolated test runner).
   evidence: `container/aws-emulator-run.sh:212` — reason: fixed in this diff
   (assert `killed by signal 9 (KILL)`; the unnamed case now reports
   `exit status N`, covered by the exit-200 test)
-- **violation** — real-JVM test silently skipped where a JDK is expected —
-  evidence: `worker/deno/tests/aws_emulator_run_5109_test.ts:898` — reason:
-  fixed in this diff (skipped only off GitHub Actions; on CI a missing JDK
-  fails)
+- **violation** — real-JVM test skipped on a host without a JDK — evidence:
+  `worker/deno/tests/aws_emulator_run_5109_test.ts:898` — reason: fixed in this
+  diff (the skip is removed; a missing JDK now fails the test with a message
+  naming the prerequisite)
 - **clean** — fail-loud cause naming and redaction, cleanup after reap, macOS
   bash 3.2 portability, no shared `/tmp` paths, no dummy or "how" tests, skip
   carries a reason, docs match the code, Australian English; review-enforced
@@ -192,14 +194,17 @@ with an isolated test runner).
     `rec/exit-code` (default 1, as before).
   - `aws-emulator-run: JVM options cannot override or leak the generated
     identity`:
-    body unchanged; ignored only when no `java` is on `/usr/bin:/bin` and
-    `GITHUB_ACTIONS` is not `true`.
+    never skipped (no `ignore` condition added). It gains one leading assertion
+    that `java` is on `/usr/bin:/bin`, with a message naming the missing JDK;
+    the rest of the body is unchanged, so nothing is weakened.
 - As `vibe` (the real task): `ok | 2 passed | 0 failed | 21 ignored` — the
   helper refuses `vibe` by design.
 - As `agent` (`sudo -n -u agent -H`), with this head's helper and the test file
-  unmodified, copied to a scratch dir: `ok | 21 passed | 0 failed | 2 ignored`.
-  The two ignored are the `vibe`-refusal case (not running as `vibe`) and the
-  real-JVM case (no `java` here).
+  unmodified, copied to a scratch dir (no network, so the Deno cache was copied
+  too): `FAILED | 21 passed | 1 failed | 1 ignored`. The ignored case is the
+  `vibe`-refusal case (not running as `vibe`). The failure is the real-JVM case,
+  which fails with the JDK-naming assertion because this host has no `java`; on
+  the base it failed here with `java: command not found`.
 - Real emulator, as `agent`, arm64 full image, this head's helper:
   - `--smoke` → `emulator ready on https://127.0.0.1:<port>`,
     `smoke passed: Version: 1.0.385`, exit 0, in about 5 s.
@@ -236,4 +241,8 @@ Not done or not checked:
   files included in the report`. No carried TypeScript line
   exists. The gate's skip setting lives in the operator's `.config.json`, which
   is outside this repo.
-- The `REQUIRE_JAVA` path runs only on CI.
+- The real-JVM test
+  (`JVM options cannot override or leak the generated
+  identity`) was not run
+  green here: this host has no JDK. It runs in the PR's `integration tests` CI
+  job, where a JDK is present.

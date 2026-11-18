@@ -659,8 +659,6 @@ const HAS_JAVA = new Deno.Command("sh", {
   stdout: "null",
   stderr: "null",
 }).outputSync().success;
-// CI runners carry a JDK, so there a missing java fails the test loudly instead of skipping it.
-const REQUIRE_JAVA = Deno.env.get("GITHUB_ACTIONS") === "true";
 
 testAsOrdinaryUser(
   "aws-emulator-run: SIGTERM stops the command, the emulator and the state dir",
@@ -874,6 +872,12 @@ testAsOrdinaryUser(
 testAsOrdinaryUser(
   "aws-emulator-run: JVM options cannot override or leak the generated identity",
   async () => {
+    // The real JVM is the point of this case, so a missing JDK is a loud
+    // failure that names the prerequisite, never a skip.
+    assert(
+      HAS_JAVA,
+      "this test needs a JDK (java on /usr/bin:/bin); install one or run it where one is provisioned",
+    );
     await withFixture("normal", {}, async (fx) => {
       const source = `${fx.root}/Identity.java`;
       await Deno.writeTextFile(
@@ -895,8 +899,7 @@ testAsOrdinaryUser(
       await assertCleanedUp(fx);
     });
   },
-  !HAS_JAVA && !REQUIRE_JAVA,
-); // skipped off CI without a JDK on PATH; the JVM-free case below still checks the scrub
+);
 
 testAsOrdinaryUser(
   "aws-emulator-run: inherited JVM option variables are replaced before COMMAND runs",
