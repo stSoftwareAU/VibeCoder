@@ -120,13 +120,16 @@ function usageFrom(source: Record<string, unknown>): TokenUsage | undefined {
   const input = readNumber(source.input_tokens);
   const output = readNumber(source.output_tokens);
   if (input === undefined && output === undefined) return undefined;
+  const cached = readNumber(source.cached_input_tokens) ?? 0;
   return {
-    inputTokens: input ?? 0,
+    // Codex's `input_tokens` includes the cached prefix, so the uncached input
+    // is input less cached (clamped at 0), matching the shared shape's meaning.
+    inputTokens: Math.max(0, (input ?? 0) - cached),
     outputTokens: output ?? 0,
     // Codex reports cached *input* tokens and has no cache-write counter, so
     // the write count stays 0 rather than being invented from the read.
     cacheCreationTokens: 0,
-    cacheReadTokens: readNumber(source.cached_input_tokens) ?? 0,
+    cacheReadTokens: cached,
   };
 }
 

@@ -17,6 +17,7 @@ import {
 import {
   extractPartOfIssueNumbers,
   findMissingCriteria,
+  namesIssueOnlyAsPartOf,
 } from "./missing_criterion_close_guard.ts";
 import { runGhCommand } from "./github.ts";
 import {
@@ -158,6 +159,14 @@ export interface MergedPR {
    * collected — treat as no references, never as "no fix".
    */
   closingRefs?: number[];
+  /**
+   * Same-repository issues the body names as `Part of #N` (Issue #5135). The
+   * closers leave such an issue open unless a closing keyword also names it.
+   * Absent on a `prs_merged_${user}` entry written before this field was
+   * collected (no reader of that key reads it); the `prs_merged_any_v2` key
+   * the closer reads was bumped so every entry it serves carries it.
+   */
+  partOfRefs?: number[];
   /**
    * The `partial` and `missing` entries of the PR body's `## Acceptance
    * Criteria` block (Issues #3177, #4644): a merged PR whose own summary marks
@@ -2249,8 +2258,8 @@ export async function fetchMergedPRsByUser(
 /**
  * Parse a `gh pr list --state merged --json
  * number,title,headRefName,mergedAt,body` listing. The body itself is not
- * kept — only the closing references the closers need from it and the
- * sub-agent tier its marker names (`sonnet` when it has none, Issue #3404).
+ * kept — only the closing and `Part of` references the closers need from it
+ * (Issue #5135) and the sub-agent tier its marker names (`sonnet` when it has none, Issue #3404).
  */
 function parseMergedPrListing(output: string): MergedPR[] {
   let parsed: unknown;
@@ -2273,6 +2282,7 @@ function parseMergedPrListing(output: string): MergedPR[] {
       headRefName: typeof item.headRefName === "string" ? item.headRefName : "",
       mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : "",
       closingRefs: extractClosingIssueNumbers(body),
+      partOfRefs: extractPartOfIssueNumbers(body),
       subAgentTier: subAgentTierFromBody(body) ?? "sonnet",
       lifecycleAssignmentId: assignmentIdFromBody(body) ?? null,
       ...(missingCriteria.length > 0 ? { missingCriteria } : {}),
@@ -2292,10 +2302,14 @@ function parseMergedPrListing(output: string): MergedPR[] {
  * host listed only its own PRs. Merging needs write access, so no author
  * filter is protecting anything here.
  *
- * Cached under `prs_merged_any` for the cache's normal TTL — at worst a close
+ * Cached under `prs_merged_any_v2` for the cache's normal TTL — at worst a close
  * lands one TTL late, and each host spends one listing per repo per TTL.
  * Ordered by update recency, not creation date, so a long-lived PR's merge
  * keeps it in the window (Issue #2901).
+ *
+ * Bumped from `prs_merged_any` by Issue #5135: entries now carry `partOfRefs`,
+ * and an older entry without it would read as "no `Part of`" and close an
+ * issue the PR left open.
  */
 export async function fetchMergedPRsAnyAuthor(
   repo: string,
@@ -2303,7 +2317,7 @@ export async function fetchMergedPRsAnyAuthor(
   limit = 30,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
 ): Promise<MergedPR[]> {
-  const cacheKey = "prs_merged_any";
+  const cacheKey = "prs_merged_any_v2";
   if (cache) {
     const cached = await cache.read<MergedPR[]>(repo, cacheKey);
     if (Array.isArray(cached)) return cached;
@@ -3494,11 +3508,12 @@ export function mergedPrNamesIssue(
   // even under `Closes #N`. The scan must agree, or
   // the issue and every issue that depends on it are stranded for good.
   if ((pr.missingCriteria ?? []).length > 0) return false;
-  if ((pr.closingRefs ?? []).includes(issueNumber)) return true;
   // Issue #3177: a body that says only `Part of #N` left the work unfinished
   // on purpose, and the closers keep the issue open to resume it. The title
   // still says `(Issue #N)`, so letting it decide stranded the issue for good.
-  if ((pr.partOfRefs ?? []).includes(issueNumber)) return false;
+  // The closers share this helper since Issue #5135.
+  if (namesIssueOnlyAsPartOf(pr, issueNumber)) return false;
+  if ((pr.closingRefs ?? []).includes(issueNumber)) return true;
   return prTitleMatchesIssue(pr.title, issueNumber);
 }
 

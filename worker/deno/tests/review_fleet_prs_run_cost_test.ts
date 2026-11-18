@@ -124,9 +124,10 @@ Deno.test("attemptCost prices a Codex attempt on gpt-5 from its turn.completed u
   assertEquals(cost.models, ["gpt-5"]);
   assert(cost.usd !== null);
   // GPT_5_PRICING in token_usage.ts, per million tokens: $1.25 input,
-  // $10.00 output, $0.125 cached input. Usage: 18,342 input, 1,201 output,
-  // 16,000 cached. 18,342 × 1.25 + 1,201 × 10 + 16,000 × 0.125, per million.
-  assertEquals(cost.usd.toFixed(7), "0.0369375");
+  // $10.00 output, $0.125 cached input. Usage is 18,342 input of which 16,000
+  // cached, so 2,342 uncached is charged at the input rate:
+  // 2,342 × 1.25 + 1,201 × 10 + 16,000 × 0.125, per million.
+  assertEquals(cost.usd.toFixed(7), "0.0169375");
   assertEquals(cost.apiEquivalent, true);
 });
 

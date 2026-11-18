@@ -94,8 +94,9 @@ Deno.test("provider_token_usage - Codex run with parseable usage is measured, no
     model: "gpt-5-codex",
   });
 
+  // Codex's input_tokens (1,200) includes the cached 900, so 300 is uncached.
   assertEquals(result.usage, {
-    inputTokens: 1200,
+    inputTokens: 300,
     outputTokens: 300,
     cacheCreationTokens: 0,
     cacheReadTokens: 900,

@@ -566,7 +566,11 @@ Deno/TypeScript (`Deno.test`, and `it` / `test` in test files):
   the helper that asserts. A test registered with a named callback
   (`Deno.test("x", check)`, `fn: check`) or through a registration helper's
   callback parameter is judged by that callback's body, and a callback the diff
-  cannot resolve is a checklist item instead of a finding.
+  cannot resolve is a checklist item instead of a finding. An inline body that
+  calls such a parameter, and asserts too little alone, is judged at each call
+  of that helper, on only the callback arguments that registration invokes
+  (not another registration's, nor an unused one), with the helper's own
+  assertions counted.
 
 The scan sees only the diff. Everything else in this section is the
 reviewer's to judge.
