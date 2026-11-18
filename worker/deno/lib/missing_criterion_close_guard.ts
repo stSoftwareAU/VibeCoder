@@ -32,6 +32,7 @@
  */
 
 import { parseClosureEntries } from "./acceptance_criteria_gate.ts";
+import { extractClosingIssueNumbers } from "./pr_body.ts";
 import { splitMarkdownCode } from "./markdown_code_spans.ts";
 
 /** Longest criterion text quoted back in a comment or PR note. */
@@ -207,6 +208,17 @@ export function namesIssueOnlyAsPartOf(
 ): boolean {
   return (refs.partOfRefs ?? []).includes(issueNumber) &&
     !(refs.closingRefs ?? []).includes(issueNumber);
+}
+
+/** {@link namesIssueOnlyAsPartOf} read straight from a merged PR body (Issue #5135). */
+export function bodyNamesIssueOnlyAsPartOf(
+  prBody: string,
+  issueNumber: number,
+): boolean {
+  return namesIssueOnlyAsPartOf({
+    closingRefs: extractClosingIssueNumbers(prBody),
+    partOfRefs: extractPartOfIssueNumbers(prBody),
+  }, issueNumber);
 }
 
 /** Whether the closure block requires withholding the issue close. */

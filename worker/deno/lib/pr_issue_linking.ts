@@ -40,6 +40,7 @@ import { defaultLogger } from "./logger.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { isDefinitiveNotFound } from "./github_not_found.ts";
 import {
+  bodyNamesIssueOnlyAsPartOf,
   findMissingCriteria,
   namesIssueOnlyAsPartOf,
 } from "./missing_criterion_close_guard.ts";
@@ -417,7 +418,8 @@ export async function findExistingPrForIssue(
       return { ok: true, value: buildPrUrl(repo, openMatch.number) };
     }
 
-    // Merged: only a PR without declared missing criteria can mean done.
+    // Merged: only a PR without declared missing criteria, and not naming the
+    // issue only as `Part of #N`, can mean done (Issue #5135).
     const mergedPrs = await fetchPRsForIssueByTitle(
       repo,
       issueNumber,
@@ -439,6 +441,7 @@ export async function findExistingPrForIssue(
       ]);
       const { body } = JSON.parse(output) as { body?: string };
       if (findMissingCriteria(body ?? "").length > 0) continue;
+      if (bodyNamesIssueOnlyAsPartOf(body ?? "", issueNumber)) continue;
       return { ok: true, value: buildPrUrl(repo, pr.number) };
     }
 
@@ -528,7 +531,10 @@ export async function findExistingPrForIssue(
         // skipped above must not reappear here as a recent closed attempt.
         if (state === "closed" && pr.mergedAt) continue;
         if (
-          state === "merged" && findMissingCriteria(pr.body ?? "").length > 0
+          state === "merged" && (
+            findMissingCriteria(pr.body ?? "").length > 0 ||
+            bodyNamesIssueOnlyAsPartOf(pr.body ?? "", issueNumber)
+          )
         ) continue;
 
         // For closed PRs, only block if closed within the cooldown window

@@ -13,7 +13,13 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { closeIssuesForMergedPrs } from "../lib/pr_issue_linking.ts";
+import {
+  closeIssuesForMergedPrs,
+  findExistingPrForIssue,
+} from "../lib/pr_issue_linking.ts";
+import { workOnIssueMergedPrPrecheck } from "../lib/phases/merged_pr_precheck_phase.ts";
+import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { ensureIssueClosedIfPrMerged } from "../lib/issue_lifecycle.ts";
 import { fetchMergedPRsAnyAuthor } from "../lib/issue_query.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
@@ -254,3 +260,95 @@ Deno.test("fetchMergedPRsAnyAuthor - carries partOfRefs and ignores an old-shape
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+for (const cached of [false, true]) {
+  Deno.test(`findExistingPrForIssue - a merged Part of-only PR does not suppress the remaining work (cache=${cached}) (Issue #5135)`, async () => {
+    const dir = await Deno.makeTempDir({ prefix: "part-of-only-lookup-" });
+    try {
+      const cache = cached ? new IssueCache(dir) : undefined;
+      let body = SUMMARY_BODY;
+      const gh = (args: string[]): Promise<string> => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(JSON.stringify({ body, state: "MERGED" }));
+        }
+        const state = args[args.indexOf("--state") + 1];
+        return Promise.resolve(JSON.stringify(
+          state === "open" ? [] : [{
+            number: 4200,
+            title: `Scoring refactor (Issue #${ISSUE})`,
+            url: "https://github.com/owner/repo/pull/4200",
+            body,
+            mergedAt: "2026-10-03T21:00:00Z",
+            closedAt: new Date().toISOString(),
+            isCrossRepository: false,
+          }],
+        ));
+      };
+      const partOf = await findExistingPrForIssue(
+        "owner/repo",
+        ISSUE,
+        gh,
+        undefined,
+        cache,
+      );
+      assertEquals(
+        partOf.ok,
+        false,
+        "a Part of-only merge leaves the original issue eligible",
+      );
+      const lookup = () =>
+        findExistingPrForIssue("owner/repo", ISSUE, gh, undefined, cache);
+      let precheckLookups = 0;
+      const precheck = await workOnIssueMergedPrPrecheck(
+        {
+          repo: "owner/repo",
+          issueNumber: ISSUE,
+          issueTitle: "Finish the scoring refactor",
+          issueBody: "",
+          issueLabels: ["work-on"],
+          issueComments: "",
+          githubUser: "bot",
+          config: buildDefaultWorkerConfig(),
+        },
+        {
+          branchName: "",
+          baseBranch: "",
+          defaultBranch: "",
+          repoPath: dir,
+          clarityStatus: "not_assessed",
+          claudeOutput: "",
+          executeStartTime: 0,
+          baselineQualityPassed: true,
+          baselineQualityOutput: "",
+        },
+        createMockDeps({
+          pr: { findExistingPrForIssue: lookup },
+          github: {
+            runGhCommand: (args) => {
+              precheckLookups++;
+              return gh(args);
+            },
+          },
+        }),
+      );
+      assertEquals(precheck, { status: "continue" });
+      assertEquals(
+        precheckLookups,
+        0,
+        "a Part of-only merge is not a candidate",
+      );
+      body = `${SUMMARY_BODY}\n\nCloses #${ISSUE}`;
+      const closes = await findExistingPrForIssue(
+        "owner/repo",
+        ISSUE,
+        gh,
+        undefined,
+        cache,
+      );
+      assert(closes.ok);
+      assertEquals(closes.value, "https://github.com/owner/repo/pull/4200");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+}

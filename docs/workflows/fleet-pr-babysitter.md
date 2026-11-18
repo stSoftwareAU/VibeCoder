@@ -301,7 +301,11 @@ at the unchanged head, the description steps run in order:
    `Related to #N` or `Relates to #N` (in this repository, or with no repository
    given). That can only leave the issue open, never close it, and a proposal is
    data and not authority to close, so that reference is not overridden with
-   `Closes #N`. A bare mention such as "addresses the review on #N", or another
+   `Closes #N`. The merged-PR closers leave the issue open on merge
+   when the body names it only as `Part of #N` (Issue #5135); the other
+   non-closing forms do not hold it open against an `(Issue #N)` title, so a
+   repair that means to keep the issue open writes `Part of #N`. A bare mention
+   such as "addresses the review on #N", or another
    repository's `owner/repo#N`, is not a closing claim and does not stop the
    append. The summary is read with the shared committed loader
    (`loadCommittedPrSummary`) at the verified pushed head sha, using
