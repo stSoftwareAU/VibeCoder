@@ -159,6 +159,8 @@ export function isFirstPartyPackagePattern(pattern: string): boolean {
         !QUANTIFIER_CHARS.has(body.charAt(prefix.length))
       );
   }
+  // Minimatch normalises parent segments, including inside brace alternatives.
+  if (pattern.includes("..")) return false;
   const lower = pattern.toLowerCase();
   return FIRST_PARTY_NAME_PREFIXES.some((prefix) => lower.startsWith(prefix));
 }
@@ -282,9 +284,11 @@ function checkReleaseAge(
  * A packageRules entry is first-party only when its `matchPackageNames` and
  * legacy `matchPackagePatterns` (bare regexes, read as `/${p}/`) together form
  * a non-empty list in which every entry is a first-party pattern, and it
- * carries none of {@link MERGED_PACKAGE_NAME_KEYS}.
+ * carries neither extends nor any of {@link MERGED_PACKAGE_NAME_KEYS}.
  */
 export function isScopedToFirstParty(rule: Record<string, unknown>): boolean {
+  // Presets can merge external package names into an otherwise scoped rule.
+  if (Object.hasOwn(rule, "extends")) return false;
   if (MERGED_PACKAGE_NAME_KEYS.some((key) => Object.hasOwn(rule, key))) {
     return false;
   }

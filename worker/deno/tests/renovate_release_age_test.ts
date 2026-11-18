@@ -561,3 +561,23 @@ Deno.test("renovate release-age - mixed first-party and external matchers are re
     );
   }
 });
+
+
+Deno.test("renovate release-age - parent globs and preset expansion cannot exempt external packages", () => {
+  const control = { matchPackageNames: ["stSoftwareAU/**"], minimumReleaseAge: null };
+  assertEquals(evaluateRenovatePolicy("renovate.json", withRule(control)), []);
+  for (const pattern of [
+    "stSoftwareAU/../**",
+    "@stsoftware/../**",
+    "stSoftwareAU/../actions/checkout",
+    "stSoftwareAU/x/../../actions/*",
+    "stSoftwareAU/{x,../actions/checkout}",
+  ]) {
+    assertRefused(evaluateRenovatePolicy("renovate.json", withRule({
+      ...control, matchPackageNames: [pattern],
+    })), "first-party");
+  }
+  assertRefused(evaluateRenovatePolicy("renovate.json", withRule({
+    ...control, extends: ["packages:eslint"],
+  })), "first-party");
+});
