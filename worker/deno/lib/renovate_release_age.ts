@@ -19,7 +19,7 @@
 /** The 24-hour quarantine floor: the `VIBE_BUMP_QUARANTINE_HOURS` default. */
 export const RENOVATE_RELEASE_AGE_FLOOR_HOURS = 24;
 
-// SIMPLE-ON-PURPOSE: a 64-character cap on the trimmed duration, so the parser below never sees a hostile-length string; no real Renovate duration comes close to it.
+// SIMPLE-ON-PURPOSE: a 64-character cap on the trimmed duration, so the parser below never sees a hostile-length string; no real Renovate duration comes close to it — upgrade when Renovate accepts durations longer than 64 characters
 const MAX_DURATION_LENGTH = 64;
 
 const SECOND_MS = 1_000;

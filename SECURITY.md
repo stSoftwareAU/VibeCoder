@@ -2289,8 +2289,11 @@ New dependency releases are quarantined for **24 hours** before adoption
 **actively exploited** and upstream ships a fix inside that window, a maintainer
 may bypass the quarantine for that one package — by merging the security PR
 directly or adding a temporary `minimumReleaseAge: "0"` rule — then record the
-bypass and revert the temporary rule. The full, pre-agreed procedure (who, when,
-how, and the cleanup step) is in
+bypass and revert the temporary rule. Both the blocking Semgrep check
+(`renovate-missing-minimum-release-age`) and the supply-chain gate
+(`renovate-release-age`) report such a rule, because it lifts the window for an
+external package, so merging the security PR directly is preferred. The full,
+pre-agreed procedure (who, when, how, and the cleanup step) is in
 [docs/security-advisory-triage.md → Emergency dependency override](docs/security-advisory-triage.md#emergency-dependency-override).
 
 ## 📚 Known upstream advisories
