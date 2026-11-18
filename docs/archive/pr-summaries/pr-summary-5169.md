@@ -16,7 +16,9 @@ Every caller that passes `findCiCargo` goes through this code: the agent's
 pre-push hook, `gateUnpushedCommits` and the babysitter tree gate. The
 stsoftware-pr-reviewer comment on #5169 (from the PR #5252 review) reported this
 bypass. Parts of the issue are still not done (listed under Acceptance
-Criteria). Part of #5169.
+Criteria).
+
+Part of #5169
 
 ## Spec
 
@@ -140,14 +142,29 @@ flowchart LR
   "CI's cargo clippy and test-target compile" bullet) and
   `docs/workflows/fleet-pr-babysitter.md` (the "Container repairs" gate
   paragraph and the READY-line paragraph) now say "changed or was deleted".
-- Edited `worker/deno/tests/pre_push_hook_test.ts`
-  (`integration: a CI scan the worker could not produce refuses a Rust push as infrastructure, and lets a doc push through`):
-  the positive control used to delete `src` and `Cargo.toml` on top of the
-  unpushed Rust root commit, so its pushed range still touched Rust paths, and
-  under the new trigger it was refused. The control now clears the unborn branch
-  (`git update-ref -d HEAD`) before committing `notes.txt`, so it pushes a
-  genuinely docs-only range. No assertion was removed, and the refusal half of
-  the test is unchanged.
+- Test change in `worker/deno/tests/pre_push_hook_test.ts`, test
+  `integration: a CI scan the worker could not produce refuses a Rust push as infrastructure, and lets a doc push through`
+  (governing issue #5169, requirement quoted verbatim from its body: "fix each
+  demonstrated bypass using the existing pre-push/quality mechanism"):
+  - Obsolete old behaviour: the positive control deleted `src` and `Cargo.toml`
+    in a new commit on top of the unpushed Rust commit and expected that push to
+    pass. Its pushed range still contained the Rust commit's paths, and the CI
+    cargo trigger now reads the touched list that keeps deleted paths (the #5169
+    fix), so that range is refused. The expectation "a range that touched and
+    then deleted Rust paths passes" is the bypass the issue asks to close.
+  - Remaining behaviour: a Rust push is refused as infrastructure when the CI
+    scan is unverifiable, with the reason in stderr and nothing reaching the
+    remote (the refusal half is unchanged, with all of its assertions), and a
+    push whose range touches no Rust path is allowed with the same unverifiable
+    scan (exit code 0), so the refusal is the scan and not the push.
+  - Coverage:
+    `worker/deno/tests/pre_push_hook_test.ts::integration: a CI scan the worker could not produce refuses a Rust push as infrastructure, and lets a doc push through`
+    (the changed test itself), and
+    `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a push that only deletes a .rs file runs CI's clippy, and a failing clippy blocks it (Issue #5169)`
+    for the deletion trigger.
+  - The control now runs `git update-ref -d HEAD` (exit code asserted 0) so the
+    branch is unborn, then commits `notes.txt` as a docs-only range. No
+    assertion was removed, and one was added.
 - `./quality.sh < /dev/null` on the final code: every stage passed except
   `deno tests`, with 35116 passed and 1 failed. The failure is
   `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` ("PR summary CI task
