@@ -1614,8 +1614,9 @@ export function planFormatterFixes(
  * them back on the command line (Issue #5238).
  *
  * A missing file, a file without `globs`, or one that cannot be read or parsed
- * gives []. That is not a silent pass: markdownlint-cli2 reads the same config
- * itself and fails on one it cannot parse, which refuses the push.
+ * gives []. That fails closed, never open: dropping a negation only lints more
+ * of the pushed paths, never fewer, and markdownlint-cli2 reads the same config
+ * itself and exits non-zero on one it cannot parse.
  * `.markdownlint-cli2.cjs` and `.mjs` are not read, since reading them would
  * mean executing them.
  */
