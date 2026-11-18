@@ -594,17 +594,28 @@ than duplicating it here.
   Audit the target repo's auto-update tooling and confirm external
   (non-`stSoftwareAU/*`) packages cannot land until they have been
   publicly visible for at least `VIBE_BUMP_QUARANTINE_HOURS` hours
-  (default `24`). Internal `stSoftwareAU/*` dependencies must update
-  **immediately** — they are out of the supply-chain attack surface, so
-  a quarantine rule that gates them is itself a misconfiguration to flag.
+  (default `24`). Where the repo's Renovate config manages internal
+  `stSoftwareAU/*` packages, those updates land **immediately** — a
+  first-party update-policy choice, not a claim that internal code or its
+  publishing chain cannot be compromised. A quarantine rule that gates
+  managed internal deps is itself a misconfiguration to flag.
 
   Inspect each configuration in turn:
 
   - **Renovate** (`renovate.json`, `.github/renovate.json`,
-    `renovate.json5`): confirm a top-level or `packageRules` entry sets
-    `minimumReleaseAge` (or its legacy alias `stabilityDays`) to at
-    least `VIBE_BUMP_QUARANTINE_HOURS` hours, with `stSoftwareAU/*`
-    excluded from the quarantine so internal deps bypass the wait.
+    `renovate.json5`): confirm a top-level `minimumReleaseAge` (or its
+    legacy alias `stabilityDays`) is a string of at least
+    `VIBE_BUMP_QUARANTINE_HOURS` hours, e.g. `"24 hours"`. Only where the
+    config manages a matching internal package (e.g. a
+    `uses: stSoftwareAU/<repo>` action) should a `packageRules` entry set
+    `"minimumReleaseAge": null` for it; its `matchPackageNames` must list
+    only first-party names (e.g. `"/^stSoftwareAU\\//"`). Where no such
+    package is managed, no first-party rule is needed and its absence is
+    not a finding. `null` is the valid no-wait value. A boolean `false` or
+    any other non-string, non-null age is invalid config (Renovate rejects
+    it and no update PR is raised), so flag it as
+    `quarantine-misconfigured`. A `null` or short window on any package
+    that is not first-party is also `quarantine-misconfigured`.
   - **Dependabot** (`.github/dependabot.yml`): Dependabot has **no
     native `minimumReleaseAge`** — only the in-preview `cooldown`
     keyword. Treat a Dependabot-only repo as **misconfigured** unless a

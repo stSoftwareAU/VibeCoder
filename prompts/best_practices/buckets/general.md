@@ -41,10 +41,13 @@ Canonical guides — link, do not restate:
    Dependabot is configured for the repo's dominant ecosystem(s),
    with an external-dependency quarantine window (Renovate
    `minimumReleaseAge` ≥ 24h, or per-repo `bump-deps.sh` with an
-   age gate). Internal `stSoftwareAU/*` dependencies are
-   excluded from the quarantine so they update immediately. Flag
+   age gate). Where a repo's Renovate manages internal
+   `stSoftwareAU/*` dependencies, a `packageRules` entry matched by
+   first-party names sets `"minimumReleaseAge": null` so they update
+   immediately; a repo that manages none needs no such rule. Flag
    repos with no auto-update tooling, or with a quarantine that
-   gates internal dependencies.
+   gates managed internal dependencies. A boolean `minimumReleaseAge`
+   is invalid config.
 6. **Error handling / logging / observability posture.** A library
    surfaces structured errors (no string-typed errors crossing
    public APIs); a service emits structured logs with a

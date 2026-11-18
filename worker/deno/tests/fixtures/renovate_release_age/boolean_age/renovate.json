@@ -1,0 +1,11 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "minimumReleaseAge": "24 hours",
+  "packageRules": [
+    {
+      "matchPackageNames": ["/^stSoftwareAU\\//"],
+      "minimumReleaseAge": false
+    }
+  ]
+}

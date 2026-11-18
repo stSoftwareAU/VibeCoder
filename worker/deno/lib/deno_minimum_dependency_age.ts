@@ -42,9 +42,10 @@ export const CANONICAL_MINIMUM_DEPENDENCY_AGE_HOURS = 24;
 
 /**
  * Internal stSoftwareAU Deno deps exempted from the floor (0h quarantine).
- * Mirrors the `stSoftwareAU/*` bypass in `renovate.json`. Each glob carries
- * a `jsr:` or `npm:` prefix to satisfy deno's exclude schema. The repo
- * itself imports only `jsr:@std/*` today, so these entries match nothing
+ * Mirrors the fleet's first-party immediate-update policy (Renovate's
+ * `null`-age rule where a repo manages stSoftwareAU packages). Each glob
+ * carries a `jsr:` or `npm:` prefix to satisfy deno's exclude schema. The
+ * repo itself imports only `jsr:@std/*` today, so these entries match nothing
  * yet — they pin the canonical pattern for repos that do have internal
  * Deno deps.
  */
