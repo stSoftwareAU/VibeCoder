@@ -191,3 +191,12 @@ flowchart LR
 Replaced the two publication-path command-log assertions with gate outcome assertions. The process-boundary fake checks the actual fixture file set when its unchanged invariant test is selected. Invalid additions, deletions and renames must block with `directory invariant violated`; valid controls pass. The module fixture now uses the real `Deno.readDir` API instead of an undefined walk.
 
 All 18 Issue #5169 tests pass locally using a temporary dependency import map and --no-check. Disabling the directory-listing selector makes both replacement regression tests fail (11 other filtered tests pass). This is selector red/green evidence; no hosted CI result is claimed for this repair.
+
+## CI fix (PR #5267)
+
+The `unitCommandsForFooEdit` helper in `worker/deno/tests/pre_push_gate_test.ts`
+(an existing test helper, not part of the Issue #5169 tests) was declared to
+return `Awaited<ReturnType<typeof runPrePushGate>>` but returns the recorded
+`string[]` of `test:unit` commands. The declared return type is now `string[]`,
+which matches what the helper returns. No assertion changed and no behaviour
+changed; only the type annotation did.
