@@ -10,6 +10,7 @@ import {
   type CiFixAttemptMarker,
   type CiFixMarkerComment,
   collectFleetCiFixMarkers,
+  parseCiFixAttemptMarkers,
 } from "./ci_fix_attempt_markers.ts";
 
 /** Distinguishes a stall handoff from a label the fleet applied. */
@@ -407,6 +408,45 @@ export function buildBabysitterAttemptMarker(
       outcome,
     }).replace("vibe-ci-fix-attempt", "vibe-babysitter-attempt"),
   };
+}
+
+/**
+ * The attempt record's one visible line. A marker-only body renders as a
+ * blank comment (Issue #1659).
+ */
+export const BABYSITTER_ATTEMPT_RECORD_LINE = "Babysitter repair recorded.";
+
+/** Build the top-level comment body that records one babysitter attempt. */
+export function buildBabysitterAttemptRecordBody(marker: string): string {
+  return `${BABYSITTER_ATTEMPT_RECORD_LINE}\n\n${marker}`;
+}
+
+/**
+ * True when `body` is exactly the babysitter's attempt record: the record
+ * line, a blank line and one well-formed `vibe-babysitter-attempt` marker,
+ * with nothing else (Issue #5150). The worker uses it to avoid spending a
+ * pr_feedback run on the babysitter's own bookkeeping. No regex runs over
+ * the whole body, so a hostile long body cannot cause backtracking. Anything
+ * unexpected returns false, so the comment is acted on as before.
+ */
+export function isBabysitterAttemptRecord(body: string): boolean {
+  const normalised = body.replaceAll("\r\n", "\n").trimEnd();
+  const prefix = `${BABYSITTER_ATTEMPT_RECORD_LINE}\n\n`;
+  if (!normalised.startsWith(prefix)) return false;
+  const marker = normalised.slice(prefix.length).trim();
+  const opening = "<!-- vibe-babysitter-attempt";
+  if (!marker.startsWith(opening) || !marker.endsWith("-->")) return false;
+  if (!/^\s/.test(marker.slice(opening.length, opening.length + 1))) {
+    return false;
+  }
+  if (marker.split("<!--").length !== 2 || marker.split("-->").length !== 2) {
+    return false;
+  }
+  // Same translation sharedBabysitterAttemptCount uses for the strict parser.
+  const parsed = parseCiFixAttemptMarkers(
+    marker.replace("vibe-babysitter-attempt", "vibe-ci-fix-attempt"),
+  );
+  return parsed.length === 1;
 }
 
 export function babysitterFailureSignature(

@@ -24,6 +24,7 @@ import type { PrRollup } from "./check_runs_batch.ts";
 import { recordPrRejection } from "./fleet_telemetry.ts";
 import { PRE_PR_VERIFIER_HOLD_MARKER } from "./standing_violation_routing.ts";
 import { hasVisibleText } from "./visible_comment_text.ts";
+import { isBabysitterAttemptRecord } from "./babysitter_retry_state.ts";
 import {
   commentCarriesOpenPreprReview,
   preprReviewIsOpen,
@@ -1285,6 +1286,9 @@ export async function findPrCommentsToFix(
  *   an authorised thumbs-up or authorisation.
  * - a top-level comment with no visible text outside HTML comments is never
  *   actionable, whoever wrote it (Issue #4673).
+ * - a top-level comment that is exactly the fleet PR babysitter's attempt
+ *   record, from a fleet account or a GitHub App, is never actionable
+ *   (Issue #5150).
  */
 async function findActionableComment(
   repo: string,
@@ -1335,6 +1339,21 @@ async function findActionableComment(
     if (commentType === "issue" && !hasVisibleText(comment.body)) {
       logger.info(
         `Skipping PR comment ${comment.id} on ${repo}#${prNumber} — it has no visible text to act on (a marker-only comment)`,
+      );
+      continue;
+    }
+    // Issue #5150: the babysitter's attempt record is bookkeeping for its own
+    // retry tally, not feedback. Skipped before any reaction lookup. The
+    // `[bot]` clause covers a host whose `fleet_pr_authors` does not list the
+    // babysitter App: the setup only adds the App's login to the config of
+    // the host that ran it.
+    if (
+      commentType === "issue" && isBabysitterAttemptRecord(comment.body) &&
+      (isFleetAuthor(comment.login, [...fleetAuthors]) ||
+        comment.login.endsWith("[bot]"))
+    ) {
+      logger.info(
+        `Skipping PR comment ${comment.id} on ${repo}#${prNumber} — it is the fleet PR babysitter's attempt record, not feedback to act on`,
       );
       continue;
     }
