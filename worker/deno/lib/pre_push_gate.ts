@@ -1387,7 +1387,8 @@ export function planChangedFileChecks(
     checks.push({
       label: "markdownlint",
       cwd: opts.repoRoot,
-      command: `${binary} ${quoted.value}`,
+      // --no-globs keeps config globs from linting .git/graft (Issue #5238).
+      command: `${binary} --no-globs ${quoted.value}`,
     });
   }
 

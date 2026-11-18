@@ -19,6 +19,7 @@ import {
 } from "../lib/repo_formatters.ts";
 import {
   defaultPrePushGit,
+  findMarkdownlintBinary,
   listPushedFiles,
   loadDenoScopes,
   loadDenoUnitTestRoots,
@@ -168,7 +169,7 @@ Deno.test("planChangedFileChecks: doc-only change plans fmt and markdownlint, no
   const commands = result.value.map((c) => c.command);
   assertEquals(commands, [
     "deno fmt --check --permit-no-files 'README.md'",
-    "'/r/node_modules/.bin/mdl' 'README.md'",
+    "'/r/node_modules/.bin/mdl' --no-globs 'README.md'",
   ]);
   assert(result.value.every((c) => c.cwd === "/r"));
 });
@@ -1044,6 +1045,79 @@ Deno.test("runPrePushGate: doc-only push blocked by failing markdownlint", async
     await Deno.remove(root, { recursive: true });
   }
 });
+
+// The real markdownlint-cli2 as the production runner finds it, or null.
+const markdownlintBinary = await findMarkdownlintBinary(
+  Deno.cwd(),
+  Deno.env.get("PATH") ?? "",
+);
+
+Deno.test(
+  "runPrePushGate: markdownlint ignores Graft cards under .git (Issue #5238)",
+  {
+    // The CI test shard does not install markdownlint-cli2 (see
+    // commitShellcheckFiles), so skip when no runnable binary is found.
+    ignore: markdownlintBinary === null,
+  },
+  async () => {
+    assert(markdownlintBinary !== null);
+    const binary = markdownlintBinary;
+    const root = await Deno.makeTempDir({ prefix: "vibe-pp-graft-" });
+    try {
+      const remote = `${root}/remote.git`;
+      const clone = `${root}/clone`;
+      await git(root, "init", "-q", "--bare", "-b", "main", remote);
+      await git(root, "clone", "-q", remote, clone);
+      await Deno.writeTextFile(
+        `${clone}/.markdownlint-cli2.jsonc`,
+        '{ "globs": ["**/*.md"] }\n',
+      );
+      await Deno.writeTextFile(`${clone}/other.md`, "#Bad\n");
+      await git(clone, "add", "-A");
+      await git(clone, "commit", "-qm", "init");
+      // --no-verify: the run's own pre-push hook (core.hooksPath) would refuse
+      // this fixture push of the violating other.md. The gate under test is
+      // invoked directly by runPrePushGate below.
+      await git(clone, "push", "-q", "--no-verify", "origin", "HEAD:main");
+      const pushed = await git(clone, "rev-parse", "HEAD");
+      await Deno.mkdir(`${clone}/.git/graft`, { recursive: true });
+      await Deno.writeTextFile(
+        `${clone}/.git/graft/card.md`,
+        "# Card\n\nVec<u64> <b>x</b>\n",
+      );
+      await Deno.writeTextFile(`${clone}/good.md`, "# Good\n\nText.\n");
+      await git(clone, "add", "-A");
+      await git(clone, "commit", "-qm", "good docs");
+      const tip = await git(clone, "rev-parse", "HEAD");
+      const runGate = (sha: string) =>
+        runPrePushGate({
+          cwd: clone,
+          stdin: `refs/heads/main ${sha} refs/heads/main ${pushed}\n`,
+          preFlightCommands: [],
+          findMarkdownlint: () => Promise.resolve(binary),
+        });
+
+      const ok = await runGate(tip);
+      assert(ok.ok, ok.ok ? "" : ok.error.message);
+      assert(
+        ok.value.checksRun.some((c) =>
+          c.includes("--no-globs") && c.includes("good.md")
+        ),
+      );
+
+      await Deno.writeTextFile(`${clone}/bad.md`, "#Bad\n");
+      await git(clone, "add", "-A");
+      await git(clone, "commit", "-qm", "bad docs");
+      const badTip = await git(clone, "rev-parse", "HEAD");
+      const blocked = await runGate(badTip);
+      assert(!blocked.ok);
+      assertInstanceOf(blocked.error, PreFlightGateError);
+      assert(blocked.error.command.includes("bad.md"));
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+);
 
 Deno.test("runPrePushGate: deleted scripts are not passed to ShellCheck", async () => {
   const { root, clone } = await makeRepoWithDocCommit();

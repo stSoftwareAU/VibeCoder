@@ -47,10 +47,13 @@
  * linked worktree, where `.git` is a file rather than a directory. That
  * location survives `git reset --hard` and `git clean -fd` exactly as
  * `info/exclude` did (git clean never descends into `.git`), is never staged
- * (nothing outside the working tree can be), and no repo-local linter or
- * globber ever walks into it, because none of them have a reason to look
- * inside `.git`. {@link resolveGraftDir} does the resolution; nothing is
- * appended to `info/exclude` any more. `/graft/` remains in
+ * (nothing outside the working tree can be), and a working-tree walk such as
+ * `git ls-files` or a formatter honouring git ignores never reaches it, but a
+ * globbing linter run from the checkout root can: markdownlint-cli2 with a
+ * config `globs` entry matching every markdown file matches dot directories
+ * and reached `.git/graft` cards, which is why the pre-push gate passes
+ * `--no-globs` (Issue #5238). {@link resolveGraftDir} does the resolution;
+ * nothing is appended to `info/exclude` any more. `/graft/` remains in
  * `REQUIRED_GITIGNORE_PATTERNS` (`gitignore_enforcer.ts`) purely as
  * belt-and-braces cover for a stale in-tree `graft/` an older worker build
  * left behind (Issue #2099); {@link cleanUpLegacyInTreeGraft} removes such a

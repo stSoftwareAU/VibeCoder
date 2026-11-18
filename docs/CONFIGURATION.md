@@ -5602,7 +5602,9 @@ gates do (see that bullet):
    - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo
      root carries a markdownlint config (`.markdownlint-cli2.*` or
      `.markdownlint.*`), using the repo's `node_modules/.bin/markdownlint-cli2`
-     first, else the one on `PATH`;
+     first, else the one on `PATH`, run with `--no-globs` so the config's
+     `globs` do not add files beyond the pushed paths (the config's rules and
+     `ignores` still apply) (Issue #5238);
    - `cspell` on changed `.md`, `.markdown`, `.html`, `.js`, `.ts`, `.css` and
      `.sh` files (the Spelling workflow's glob) when the repo tracks a cspell
      config and its own CI runs cspell: a tracked workflow under
