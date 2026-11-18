@@ -11,16 +11,16 @@ the CI cargo trigger in `runPrePushGate` read a file list built with
 went out as passed while CI's clippy failed. The trigger now reads the touched
 list that keeps deleted paths. Every caller that passes `findCiCargo` goes
 through this code: the agent's pre-push hook, `gateUnpushedCommits` and the
-babysitter tree gate. The stsoftware-pr-reviewer comment on #5169 (from the
-PR #5252 review) reported this bypass. Parts of the issue are still not done
+babysitter tree gate. The stsoftware-pr-reviewer comment on #5169 (from the PR
+#5252 review) reported this bypass. Parts of the issue are still not done
 (listed under Acceptance Criteria). Part of #5169.
 
 ## Spec
 
 ### Intent and Rationale
 
-- A deletion changes what CI's `cargo clippy` builds as much as an edit does,
-  so it has to trigger the same checks. The fix changes the list the existing
+- A deletion changes what CI's `cargo clippy` builds as much as an edit does, so
+  it has to trigger the same checks. The fix changes the list the existing
   trigger reads. No new gate is added, as the issue requires ("Do not create
   parallel language-specific gates").
 
@@ -34,13 +34,13 @@ PR #5252 review) reported this bypass. Parts of the issue are still not done
   `listPushedFiles`, so the parameter was removed and the symlinked-parent skip
   is always on.
 - A deletion that removes a CI cargo working directory entirely now reaches the
-  existing "working directory … is missing" refusal, an infrastructure fault.
-  It is refused and not published, and CI would fail on that tree too.
+  existing "working directory … is missing" refusal, an infrastructure fault. It
+  is refused and not published, and CI would fail on that tree too.
 
 ### Undiscoverable Facts
 
-- PR #5252 (merged) already made the babysitter tree gate run CI's cargo
-  checks and `deno fmt --check`. This PR builds on that head.
+- PR #5252 (merged) already made the babysitter tree gate run CI's cargo checks
+  and `deno fmt --check`. This PR builds on that head.
 
 ## Evidence
 
@@ -74,26 +74,26 @@ flowchart LR
   ShellCheck bypass was found. Every push path runs the repo's ShellCheck
   policy, and #5151's failing jobs are private, so they could not be diagnosed.
 - **missing** — "A disk/resource deferral must retain WIP and resume
-  automatically, not publish unvalidated work as passed" — reason: the
-  milestone merge-only sync (Issue #4326) still pushes a cargo-only merge with
-  an `UNGATED:` note under disk pressure. This PR does not change that path.
+  automatically, not publish unvalidated work as passed" — reason: the milestone
+  merge-only sync (Issue #4326) still pushes a cargo-only merge with an
+  `UNGATED:` note under disk pressure. This PR does not change that path.
 - **missing** — "cargo llvm-cov" — reason: the gates run CI's test-target
   compile, but no gate measures the line-coverage threshold, and
   `cargo-llvm-cov` is not installed in the worker container.
 
 ## Test Plan
 
-- Added to `worker/deno/tests/pre_push_gate_test.ts` (with a
-  `makeRepoDeleting` helper that commits and pushes files to origin, then makes
-  one local commit that only deletes a path):
+- Added to `worker/deno/tests/pre_push_gate_test.ts` (with a `makeRepoDeleting`
+  helper that commits and pushes files to origin, then makes one local commit
+  that only deletes a path):
   - `runPrePushGate: a push that only deletes a .rs file runs CI's clippy, and a failing clippy blocks it (Issue #5169)`:
     a failing clippy blocks with `PreFlightGateError` (not infrastructure),
     `command === CLIPPY_CMD`, and `E0583` in the message.
   - `runPrePushGate: a push that only deletes a .rs file runs CI's clippy when it passes (Issue #5169)`:
     the positive control; `ciRuns` is exactly `[CLIPPY_CMD]`.
   - `runPrePushGate: a push that only deletes clippy.toml runs CI's clippy (Issue #5169)`.
-  - The negative control: deleting `rust/NOTES.md` runs no CI cargo command,
-    and `findCiCargo` is never called.
+  - The negative control: deleting `rust/NOTES.md` runs no CI cargo command, and
+    `findCiCargo` is never called.
 - Added to `worker/deno/tests/babysitter_tree_gate_test.ts`, through the real
   `runBabysitterTreeGate` and the production workflow scan:
   - `a repair deleting a Rust file with a failing CI clippy blocks with its diagnostic (Issue #5169)`.
@@ -103,9 +103,8 @@ flowchart LR
     unchanged, and no assertion was removed from them.
 - Existing symlinked-crate and missing-directory refusals
   (`runPrePushGate: a CI cargo working directory that is a symlink outside the repository is infrastructure`)
-  still pass, so the removed `containToCheckout = false` list lost no
-  coverage. The `listPushedFiles` symlink tests use the default and are
-  unchanged.
+  still pass, so the removed `containToCheckout = false` list lost no coverage.
+  The `listPushedFiles` symlink tests use the default and are unchanged.
 - No other caller of `listPushedFiles` passed a sixth argument
   (`worker/deno/lib/repo_formatters.ts` uses the defaults). I checked with
   `git grep -n listPushedFiles`.
@@ -122,14 +121,14 @@ flowchart LR
   (`integration: a CI scan the worker could not produce refuses a Rust push as infrastructure, and lets a doc push through`):
   the positive control used to delete `src` and `Cargo.toml` on top of the
   unpushed Rust root commit, so its pushed range still touched Rust paths, and
-  under the new trigger it was refused. The control now clears the unborn
-  branch (`git update-ref -d HEAD`) before committing `notes.txt`, so it pushes
-  a genuinely docs-only range. No assertion was removed, and the refusal half
-  of the test is unchanged.
+  under the new trigger it was refused. The control now clears the unborn branch
+  (`git update-ref -d HEAD`) before committing `notes.txt`, so it pushes a
+  genuinely docs-only range. No assertion was removed, and the refusal half of
+  the test is unchanged.
 - `./quality.sh < /dev/null` on the final code: every stage passed except
   `deno tests`, with 35116 passed and 1 failed. The failure is
   `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` ("PR summary CI task
   runs git with restricted environment permissions"). It needs
-  `registry.npmjs.org` ("dns error: failed to lookup address information"),
-  and this container has no network. Because of that failure the serial test
-  pass did not run.
+  `registry.npmjs.org` ("dns error: failed to lookup address information"), and
+  this container has no network. Because of that failure the serial test pass
+  did not run.
