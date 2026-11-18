@@ -158,7 +158,8 @@ flowchart TD
       `tests/container_watchdog_test.ts` (37 tests at head),
       `tests/run_core_hard_kill_test.ts` (3 tests at head).
 - [x] `deno test --allow-all tests/run_sh_launcher_test.ts` (the whole launcher
-      file) gave 123 passed, 0 failed before the round-4 edits; the three Issue #5161 launcher tests pass at head.
+      file) gave 123 passed, 0 failed before the round-4 edits; the three Issue
+      #5161 launcher tests pass at head.
 - [x] `deno fmt --check`, `deno lint` and `deno check` pass on the changed TS
       files. `bash -n run.sh` and `shellcheck run.sh` are clean.
 - [x] `./quality.sh` on the final code: every stage passed except `deno tests`.
@@ -264,8 +265,8 @@ The full `./quality.sh` was not run in this round.
 ## Review round 4
 
 The completing reap's reason ("the launcher's early silent-guest reap exited N
-before it finished") was rejected by `parseHardKillEvidence`, so that record
-was never filed or archived. The parser now accepts that fixed shape
+before it finished") was rejected by `parseHardKillEvidence`, so that record was
+never filed or archived. The parser now accepts that fixed shape
 (`worker/deno/lib/hard_kill_report.ts`) with its own public reason, and the
 cut-short launcher test parses the record it leaves. `run.sh` also skips the
 second evidence capture when the early command already wrote a
