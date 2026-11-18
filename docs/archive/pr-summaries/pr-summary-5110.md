@@ -154,7 +154,8 @@ flowchart LR
   required execution cannot become a green check. — evidence:
   `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts`,
   `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` — reviewer:
-  partial — reason: a failing data assertion now has a focused test (`an aws
+  partial — reason: a failing data assertion now has a focused test
+  (`an aws
   CLI that succeeds with no data fails the run on its first data assertion`,
   exit 1, no PASS), added in the gate retry and not yet re-reviewed; a failed
   cleanup and a template with no property checks still have no focused test;
