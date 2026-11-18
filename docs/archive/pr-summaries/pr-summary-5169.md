@@ -121,9 +121,8 @@ flowchart LR
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a push that only adds a test file also runs the tests that list the tests directory (Issue #5169)`
   (each drives the real `runPrePushGate` publication path over a real git push;
   the valid-path control in the second test, editing an existing test, runs only
-  that test) — reviewer: met — reason: the reviewer noted the stub runner always
-  passes; whether a failing selected test blocks the push is already covered by
-  the existing `deno test` failure tests.
+  that test) — reviewer: met — reason: the process-boundary fixture now models directory-invariant failures: additions,
+  deletions and renames block with the diagnostic, and valid file-set controls pass.
 - **met** — "Do not create parallel language-specific gates" — evidence:
   `worker/deno/lib/pre_push_gate.ts:3132` (`runPrePushGate` calls
   `loadDirectoryListingTests` and merges the result into the existing
@@ -186,3 +185,9 @@ flowchart LR
   needs `registry.npmjs.org` ("dns error: failed to lookup address
   information"); this container has no network. Because of that failure the
   serial test pass did not run.
+
+## Review fix validation
+
+Replaced the two publication-path command-log assertions with gate outcome assertions. The process-boundary fake checks the actual fixture file set when its unchanged invariant test is selected. Invalid additions, deletions and renames must block with `directory invariant violated`; valid controls pass. The module fixture now uses the real `Deno.readDir` API instead of an undefined walk.
+
+All 18 Issue #5169 tests pass locally using a temporary dependency import map and --no-check. Disabling the directory-listing selector makes both replacement regression tests fail (11 other filtered tests pass). This is selector red/green evidence; no hosted CI result is claimed for this repair.

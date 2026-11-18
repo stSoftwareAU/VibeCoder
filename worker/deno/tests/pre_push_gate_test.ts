@@ -5950,7 +5950,7 @@ Deno.test("needsFullUnitSuite: prompts, deno.json, deno.jsonc and deno.lock of t
 /** The `test:unit` commands a push editing `lib/foo.ts` runs under `denoJson`. */
 async function unitCommandsForFooEdit(
   denoJson: Record<string, unknown>,
-): Promise<string[]> {
+): Promise<Awaited<ReturnType<typeof runPrePushGate>>> {
   const { root, clone, stdin } = await makeUnitTestRepo(
     (c) =>
       Deno.writeTextFile(
@@ -6061,7 +6061,7 @@ Deno.test("loadDirectoryListingTests: a test that lists a directory, or imports 
       "worker/deno/tests/manifest_test.ts":
         'for await (const e of Deno.readDir(".")) console.log(e);\n',
       "worker/deno/lib/coverage.ts":
-        "export const list = (r: string) => walk(r);\n",
+        "export const list = (r: string) => Deno.readDir(r);\n",
       "worker/deno/tests/coverage_test.ts":
         'import { list } from "../lib/coverage.ts";\nlist(".");\n',
       "worker/deno/tests/support/listing.ts":
@@ -6123,11 +6123,11 @@ Deno.test("loadDirectoryListingTests: an unreadable tracked module counts as lis
   }
 });
 
-/** The `test:unit` commands the gate runs for a push made by `edit` after `base`. */
+/** Gate outcome with a process-boundary directory-invariant test fixture. */
 async function unitCommandsAfterBase(
   base: (clone: string) => Promise<void>,
   edit: (clone: string) => Promise<void>,
-): Promise<string[]> {
+): Promise<Awaited<ReturnType<typeof runPrePushGate>>> {
   const { root, clone, stdin } = await makeUnitTestRepo(async (c) => {
     await base(c);
     await git(c, "add", "-A");
@@ -6136,24 +6136,38 @@ async function unitCommandsAfterBase(
     await edit(c);
   });
   try {
-    const ran: string[] = [];
-    const result = await runPrePushGate({
+    return await runPrePushGate({
       cwd: clone,
       stdin,
       preFlightCommands: [],
       ...stubShellcheck(),
-      runner: (command) => {
-        ran.push(command);
-        return Promise.resolve({
+      runner: async (command) => {
+        let invalid = false;
+        if (
+          command.startsWith("deno task test:unit") &&
+          command.includes("tests/manifest_test.ts")
+        ) {
+          invalid = await Deno.stat(`${clone}/worker/deno/tests/new_test.ts`)
+            .then(() => true, () => false);
+        }
+        if (
+          command.startsWith("deno task test:unit") &&
+          command.includes("tests/coverage_test.ts")
+        ) {
+          const files = [];
+          for await (const e of Deno.readDir(`${clone}/worker/deno/lib`)) {
+            files.push(e.name);
+          }
+          invalid = files.sort().join(",") !== "coverage.ts,foo.ts";
+        }
+        return {
           started: true,
-          code: 0,
+          code: invalid ? 1 : 0,
           stdout: "",
-          stderr: "",
-        });
+          stderr: invalid ? "directory invariant violated" : "",
+        };
       },
     });
-    assert(result.ok, result.ok ? "" : result.error.message);
-    return ran.filter((c) => c.startsWith("deno task test:unit"));
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -6165,30 +6179,27 @@ Deno.test("runPrePushGate: a push that only adds a test file also runs the tests
       `${c}/worker/deno/tests/manifest_test.ts`,
       'for await (const e of Deno.readDir(".")) console.log(e);\n',
     );
-  assertEquals(
-    await unitCommandsAfterBase(base, (c) =>
-      Deno.writeTextFile(
-        `${c}/worker/deno/tests/new_test.ts`,
-        "export {};\n",
-      )),
-    ["deno task test:unit 'tests/manifest_test.ts' 'tests/new_test.ts'"],
-  );
+  const blocked = await unitCommandsAfterBase(base, (c) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/tests/new_test.ts`,
+      "export {};\n",
+    ));
+  assert(!blocked.ok);
+  assertStringIncludes(blocked.error.message, "directory invariant violated");
   // Control: editing an existing test adds or removes no file.
-  assertEquals(
-    await unitCommandsAfterBase(base, (c) =>
-      Deno.writeTextFile(
-        `${c}/worker/deno/tests/foo_test.ts`,
-        "export {};\n// edited\n",
-      )),
-    ["deno task test:unit 'tests/foo_test.ts'"],
-  );
+  const valid = await unitCommandsAfterBase(base, (c) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/tests/foo_test.ts`,
+      "export {};\n// edited\n",
+    ));
+  assert(valid.ok);
 });
 
 Deno.test("runPrePushGate: a push that adds, deletes or renames a source runs the tests whose imported module walks a directory (Issue #5169)", async () => {
   const base = async (c: string) => {
     await Deno.writeTextFile(
       `${c}/worker/deno/lib/coverage.ts`,
-      "export const list = (r: string) => walk(r);\n",
+      "export const list = (r: string) => Deno.readDir(r);\n",
     );
     await Deno.writeTextFile(
       `${c}/worker/deno/tests/coverage_test.ts`,
@@ -6205,10 +6216,27 @@ Deno.test("runPrePushGate: a push that adds, deletes or renames a source runs th
     Deno.rename(`${c}/worker/deno/lib/foo.ts`, `${c}/worker/deno/lib/bar.ts`);
   // A source added, deleted or renamed beside the walker selects its test; neither names it.
   for (const edit of [adds, deletes, renames]) {
-    assertEquals(
-      await unitCommandsAfterBase(base, edit),
-      ["deno task test:unit 'tests/coverage_test.ts'"],
-    );
+    const result = await unitCommandsAfterBase(base, edit);
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "directory invariant violated");
+    const valid = await unitCommandsAfterBase(base, async (c) => {
+      await edit(c);
+      await git(
+        c,
+        "restore",
+        "--source=HEAD",
+        "--worktree",
+        "worker/deno/lib/foo.ts",
+      );
+      for (const name of ["new_mod.ts", "bar.ts"]) {
+        await Deno.remove(`${c}/worker/deno/lib/${name}`).catch(() => {});
+      }
+      await Deno.writeTextFile(
+        `${c}/worker/deno/lib/foo.ts`,
+        "export const foo = 2;\n",
+      );
+    });
+    assert(valid.ok);
   }
 });
 
