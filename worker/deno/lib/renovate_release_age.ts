@@ -78,6 +78,9 @@ const FIRST_PARTY_REGEX_PREFIXES = [
   "^@stsoftware/",
 ];
 
+/** Characters that make the character before them optional or repeated. */
+const QUANTIFIER_CHARS: ReadonlySet<string> = new Set(["?", "*", "+", "{"]);
+
 /** Exact-name and glob prefixes that can only match stSoftwareAU names. */
 const FIRST_PARTY_NAME_PREFIXES = ["stsoftwareau/", "@stsoftware/"];
 
@@ -122,8 +125,11 @@ export function parseRenovateDurationHours(value: string): number | null {
 /**
  * True only when a Renovate `matchPackageNames` entry can match nothing but
  * stSoftwareAU names. A leading `!` (negation) is never first-party. A regex
- * `/body/flags` (flags `i` or none) must anchor its body on the org prefix and
- * carry no alternation; an exact name or glob must start with the org prefix.
+ * `/body/flags` (flags `i` or none) must anchor its body on the org prefix,
+ * with the next character after the prefix not a quantifier (`?`, `*`, `+`,
+ * `{`, which would make the slash optional or repeated, so `\/?evil` matches
+ * `stSoftwareAUevil`), and carry no alternation. An exact name or glob must
+ * start with the org prefix.
  */
 export function isFirstPartyPackagePattern(pattern: string): boolean {
   if (pattern.startsWith("!")) return false;
@@ -133,7 +139,10 @@ export function isFirstPartyPackagePattern(pattern: string): boolean {
   if (isRegex) {
     const body = pattern.slice(1, close).toLowerCase();
     return !body.includes("|") &&
-      FIRST_PARTY_REGEX_PREFIXES.some((prefix) => body.startsWith(prefix));
+      FIRST_PARTY_REGEX_PREFIXES.some((prefix) =>
+        body.startsWith(prefix) &&
+        !QUANTIFIER_CHARS.has(body.charAt(prefix.length))
+      );
   }
   const lower = pattern.toLowerCase();
   return FIRST_PARTY_NAME_PREFIXES.some((prefix) => lower.startsWith(prefix));
@@ -144,13 +153,15 @@ export function isFirstPartyPackagePattern(pattern: string): boolean {
  * objects and arrays; each object holding a `minimumReleaseAge` key is checked
  * at its path (`""` is the top level, `packageRules[0]`, `github-actions`, ...).
  *
- * - Any value that is neither a string nor null is refused by type.
- * - The top level is the gate's own concern when missing or non-string, so
- *   only an unreadable or sub-floor string is reported there.
+ * - Any value that is neither a string nor null is refused by type, at the
+ *   top level too (path `top-level`).
+ * - The top level then reports only an unreadable or sub-floor string: a
+ *   missing, null or blank age is the gate's own finding (Issue #4192).
+ * - An unparseable string is refused as not a duration, wherever it sits
+ *   except `vulnerabilityAlerts`, which keeps Renovate's own treatment and so
+ *   gets the type check only.
  * - A `packageRules` entry that sets null or a sub-floor age is an exemption,
  *   and must be scoped to first-party names only.
- * - `vulnerabilityAlerts` keeps Renovate's own treatment, so it gets the type
- *   check only.
  * - Any other category that sets null or a sub-floor age lifts the quarantine
  *   for everything it covers, so it is refused.
  */
@@ -162,11 +173,13 @@ export function findReleaseAgeProblems(
   return problems;
 }
 
-function visitReleaseAge(node: unknown, path: string, problems: string[]): void {
+function visitReleaseAge(
+  node: unknown,
+  path: string,
+  problems: string[],
+): void {
   if (Array.isArray(node)) {
-    node.forEach((item, i) =>
-      visitReleaseAge(item, `${path}[${i}]`, problems)
-    );
+    node.forEach((item, i) => visitReleaseAge(item, `${path}[${i}]`, problems));
     return;
   }
   if (typeof node !== "object" || node === null) return;
@@ -186,7 +199,15 @@ function checkReleaseAge(
 ): void {
   const value = node["minimumReleaseAge"];
   const floor = RENOVATE_RELEASE_AGE_FLOOR_HOURS;
+  if (value !== null && typeof value !== "string") {
+    const label = path === "" ? "top-level" : path;
+    problems.push(
+      `${label}.minimumReleaseAge is a ${typeof value}; Renovate accepts only a duration string or null, so its validator rejects the config and the repository run aborts — spell a first-party exemption as null, never false`,
+    );
+    return;
+  }
   if (path === "") {
+    // A missing, null or blank top-level age is the gate's own finding.
     if (typeof value !== "string" || value.trim() === "") return;
     const hours = parseRenovateDurationHours(value);
     if (hours === null) {
@@ -200,24 +221,18 @@ function checkReleaseAge(
     }
     return;
   }
-  if (value !== null && typeof value !== "string") {
-    problems.push(
-      `${path}.minimumReleaseAge is a ${typeof value}; Renovate accepts only a duration string or null, so its validator rejects the config and the repository run aborts — spell a first-party exemption as null, never false`,
-    );
-    return;
-  }
   if (path === "vulnerabilityAlerts") return;
   const hours = typeof value === "string"
     ? parseRenovateDurationHours(value)
     : null;
+  if (typeof value === "string" && hours === null) {
+    problems.push(
+      `${path}.minimumReleaseAge "${value}" is not a duration Renovate reads`,
+    );
+    return;
+  }
   const lifts = value === null || (hours !== null && hours < floor);
   if (PACKAGE_RULE_PATH.test(path)) {
-    if (typeof value === "string" && hours === null) {
-      problems.push(
-        `${path}.minimumReleaseAge "${value}" is not a duration Renovate reads`,
-      );
-      return;
-    }
     if (lifts && !isScopedToFirstParty(node)) {
       problems.push(
         `${path} lifts the release-age quarantine (minimumReleaseAge ${
