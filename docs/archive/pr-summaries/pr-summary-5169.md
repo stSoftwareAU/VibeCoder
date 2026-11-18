@@ -118,4 +118,18 @@ flowchart LR
   "CI's cargo clippy and test-target compile" bullet) and
   `docs/workflows/fleet-pr-babysitter.md` (the "Container repairs" gate
   paragraph and the READY-line paragraph) now say "changed or was deleted".
-- `./quality.sh`: see the gate result recorded below.
+- Edited `worker/deno/tests/pre_push_hook_test.ts`
+  (`integration: a CI scan the worker could not produce refuses a Rust push as infrastructure, and lets a doc push through`):
+  the positive control used to delete `src` and `Cargo.toml` on top of the
+  unpushed Rust root commit, so its pushed range still touched Rust paths, and
+  under the new trigger it was refused. The control now clears the unborn
+  branch (`git update-ref -d HEAD`) before committing `notes.txt`, so it pushes
+  a genuinely docs-only range. No assertion was removed, and the refusal half
+  of the test is unchanged.
+- `./quality.sh < /dev/null` on the final code: every stage passed except
+  `deno tests`, with 35116 passed and 1 failed. The failure is
+  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` ("PR summary CI task
+  runs git with restricted environment permissions"). It needs
+  `registry.npmjs.org` ("dns error: failed to lookup address information"),
+  and this container has no network. Because of that failure the serial test
+  pass did not run.
