@@ -127,8 +127,12 @@ flowchart LR
 - No other caller of `listPushedFiles` passed a sixth argument
   (`worker/deno/lib/repo_formatters.ts` uses the defaults). I checked with
   `git grep -n listPushedFiles`.
-- `deno task test:unit tests/pre_push_gate_test.ts tests/babysitter_tree_gate_test.ts tests/repo_formatters_test.ts`
-  (from `worker/deno`), before the rename fix: 277 passed, 0 failed.
+- `deno task test:unit` (from `worker/deno`), one file at a time, re-run at the
+  head: `tests/pre_push_gate_test.ts` (193 tests at head, 0 failed),
+  `tests/babysitter_tree_gate_test.ts` (68 tests at head, 0 failed) and
+  `tests/repo_formatters_test.ts` (19 tests at head, 0 failed; this file is
+  unchanged by the PR and is run only as a regression check on the shared
+  `listPushedFiles` caller).
 - After the rename fix: `deno test -A --filter 5169 tests/pre_push_gate_test.ts`
   gave 10 passed, 0 failed. A plain `deno test -A` over the four touched test
   files (not the `test:unit` task) gave 252 passed and 43 failed, in tests that
