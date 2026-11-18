@@ -6175,17 +6175,12 @@ Deno.test("runPrePushGate: a push that adds or deletes a source runs the tests w
       "export const n = 1;\n",
     );
   const deletes = (c: string) => Deno.remove(`${c}/worker/deno/lib/foo.ts`);
-  // A deleted source also runs its same-named sibling test.
-  for (
-    const [edit, expected] of [
-      [adds, "deno task test:unit 'tests/coverage_test.ts'"],
-      [
-        deletes,
-        "deno task test:unit 'tests/coverage_test.ts' 'tests/foo_test.ts'",
-      ],
-    ] as const
-  ) {
-    assertEquals(await unitCommandsAfterBase(base, edit), [expected]);
+  // A source added or deleted beside the walker selects its test; neither names it.
+  for (const edit of [adds, deletes]) {
+    assertEquals(
+      await unitCommandsAfterBase(base, edit),
+      ["deno task test:unit 'tests/coverage_test.ts'"],
+    );
   }
 });
 
