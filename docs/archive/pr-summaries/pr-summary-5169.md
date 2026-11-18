@@ -9,14 +9,14 @@ the CI cargo trigger in `runPrePushGate` read a file list built with
 `src/helper.rs` while `mod helper;` stayed in `lib.rs`, or deleting
 `clippy.toml` or a toolchain pin, therefore planned no cargo check, and the push
 went out as passed while CI's clippy failed. The trigger now reads the touched
-list that keeps deleted paths, and that list now runs `git log --no-renames`,
-so a rename such as `src/helper.rs` to `src/helper.rs.disabled` or
-`clippy.toml` to `clippy.toml.bak` is listed under its old name too and triggers
-the same checks. Every caller that passes `findCiCargo` goes
-through this code: the agent's pre-push hook, `gateUnpushedCommits` and the
-babysitter tree gate. The stsoftware-pr-reviewer comment on #5169 (from the PR
-#5252 review) reported this bypass. Parts of the issue are still not done
-(listed under Acceptance Criteria). Part of #5169.
+list that keeps deleted paths, and that list now runs `git log --no-renames`, so
+a rename such as `src/helper.rs` to `src/helper.rs.disabled` or `clippy.toml` to
+`clippy.toml.bak` is listed under its old name too and triggers the same checks.
+Every caller that passes `findCiCargo` goes through this code: the agent's
+pre-push hook, `gateUnpushedCommits` and the babysitter tree gate. The
+stsoftware-pr-reviewer comment on #5169 (from the PR #5252 review) reported this
+bypass. Parts of the issue are still not done (listed under Acceptance
+Criteria). Part of #5169.
 
 ## Spec
 
@@ -35,8 +35,8 @@ babysitter tree gate. The stsoftware-pr-reviewer comment on #5169 (from the PR
   refusal (`cwdEscape`, "resolves outside the repository") still fires.
 - That list passes `--no-renames` to `git log`. By default git's rename
   detection lists a rename under its new name only, so a Rust-relevant path
-  renamed to a non-Rust name was invisible to the trigger. With `--no-renames`
-  a rename shows as a deletion of the old path plus an addition of the new one.
+  renamed to a non-Rust name was invisible to the trigger. With `--no-renames` a
+  rename shows as a deletion of the old path plus an addition of the new one.
   The default list (`--diff-filter=d`) is unchanged.
 - Once that list was replaced, nothing passed `containToCheckout = false` to
   `listPushedFiles`, so the parameter was removed and the symlinked-parent skip
@@ -105,8 +105,8 @@ flowchart LR
   - The negative control: deleting `rust/NOTES.md` runs no CI cargo command, and
     `findCiCargo` is never called.
   - `runPrePushGate: a push that only renames rust/src/helper.rs to a non-Rust name runs CI's clippy, and a failing clippy blocks it (Issue #5169)`
-    and the same for `rust/clippy.toml` to `rust/clippy.toml.bak`: the push
-    runs exactly `[CLIPPY_CMD]` and a failing clippy blocks with
+    and the same for `rust/clippy.toml` to `rust/clippy.toml.bak`: the push runs
+    exactly `[CLIPPY_CMD]` and a failing clippy blocks with
     `PreFlightGateError`. `makeRepoDeleting` gained an optional `renameTo`
     argument that runs `git mv` in place of `git rm`.
   - `runPrePushGate: a push that only renames a non-Rust file runs no CI cargo and never reads the scan (Issue #5169)`:
