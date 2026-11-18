@@ -22,6 +22,7 @@ import {
   listPushedFiles,
   loadDenoScopes,
   loadDenoUnitTestRoots,
+  loadDirectoryListingTests,
   loadReferencedUnitTests,
   needsFullUnitSuite,
   parsePrePushRefs,
@@ -6050,6 +6051,192 @@ Deno.test("runPrePushGate: a prompt or lock change runs the whole unit suite, re
     } finally {
       await Deno.remove(root, { recursive: true });
     }
+  }
+});
+
+Deno.test("loadDirectoryListingTests: a test that lists a directory, or imports a file that does, is selected; a plain test and prose are not (Issue #5169)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const files: Record<string, string> = {
+      "worker/deno/tests/manifest_test.ts":
+        'for await (const e of Deno.readDir(".")) console.log(e);\n',
+      "worker/deno/lib/coverage.ts":
+        "export const list = (r: string) => Deno.readDir(r);\n",
+      "worker/deno/tests/coverage_test.ts":
+        'import { list } from "../lib/coverage.ts";\nlist(".");\n',
+      "worker/deno/tests/support/listing.ts":
+        'export const args = ["ls-files", "-z"];\n',
+      "worker/deno/tests/uses_support_test.ts":
+        'import { args } from "./support/listing.ts";\nargs;\n',
+      "worker/deno/lib/foo.ts": "export const foo = 1;\n",
+      "worker/deno/tests/plain_test.ts":
+        'import { foo } from "../lib/foo.ts";\nfoo;\n',
+      "worker/deno/tests/prose_test.ts":
+        "// Deno.readDir is mentioned, not called\nexport {};\n",
+    };
+    for (const [path, text] of Object.entries(files)) {
+      await Deno.mkdir(`${dir}/${path.replace(/\/[^/]+$/, "")}`, {
+        recursive: true,
+      });
+      await Deno.writeTextFile(`${dir}/${path}`, text);
+    }
+    assertEquals(
+      await loadDirectoryListingTests(dir, Object.keys(files), [
+        "worker/deno",
+      ]),
+      {
+        "worker/deno": [
+          "tests/coverage_test.ts",
+          "tests/manifest_test.ts",
+          "tests/uses_support_test.ts",
+        ],
+      },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("loadDirectoryListingTests: an unreadable tracked module counts as listing a directory, so its importer runs (Issue #5169)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/worker/deno/tests`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/worker/deno/tests/missing_user_test.ts`,
+      'import { m } from "../lib/missing.ts";\nm;\n',
+    );
+    await Deno.writeTextFile(
+      `${dir}/worker/deno/tests/plain_test.ts`,
+      "export {};\n",
+    );
+    // lib/missing.ts is tracked but absent from disk, so it cannot be read.
+    assertEquals(
+      await loadDirectoryListingTests(dir, [
+        "worker/deno/tests/missing_user_test.ts",
+        "worker/deno/tests/plain_test.ts",
+        "worker/deno/lib/missing.ts",
+      ], ["worker/deno"]),
+      { "worker/deno": ["tests/missing_user_test.ts"] },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** Gate outcome with a process-boundary directory-invariant test fixture. */
+async function unitCommandsAfterBase(
+  base: (clone: string) => Promise<void>,
+  edit: (clone: string) => Promise<void>,
+): Promise<Awaited<ReturnType<typeof runPrePushGate>>> {
+  const { root, clone, stdin } = await makeUnitTestRepo(async (c) => {
+    await base(c);
+    await git(c, "add", "-A");
+    await git(c, "commit", "-qm", "listing base");
+    await git(c, "push", "-q", "--no-verify", "origin", "HEAD:main");
+    await edit(c);
+  });
+  try {
+    return await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      ...stubShellcheck(),
+      runner: async (command) => {
+        let invalid = false;
+        if (
+          command.startsWith("deno task test:unit") &&
+          command.includes("tests/manifest_test.ts")
+        ) {
+          invalid = await Deno.stat(`${clone}/worker/deno/tests/new_test.ts`)
+            .then(() => true, () => false);
+        }
+        if (
+          command.startsWith("deno task test:unit") &&
+          command.includes("tests/coverage_test.ts")
+        ) {
+          const files = [];
+          for await (const e of Deno.readDir(`${clone}/worker/deno/lib`)) {
+            files.push(e.name);
+          }
+          invalid = files.sort().join(",") !== "coverage.ts,foo.ts";
+        }
+        return {
+          started: true,
+          code: invalid ? 1 : 0,
+          stdout: "",
+          stderr: invalid ? "directory invariant violated" : "",
+        };
+      },
+    });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+Deno.test("runPrePushGate: a push that only adds a test file also runs the tests that list the tests directory (Issue #5169)", async () => {
+  const base = (c: string) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/tests/manifest_test.ts`,
+      'for await (const e of Deno.readDir(".")) console.log(e);\n',
+    );
+  const blocked = await unitCommandsAfterBase(base, (c) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/tests/new_test.ts`,
+      "export {};\n",
+    ));
+  assert(!blocked.ok);
+  assertStringIncludes(blocked.error.message, "directory invariant violated");
+  // Control: editing an existing test adds or removes no file.
+  const valid = await unitCommandsAfterBase(base, (c) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/tests/foo_test.ts`,
+      "export {};\n// edited\n",
+    ));
+  assert(valid.ok);
+});
+
+Deno.test("runPrePushGate: a push that adds, deletes or renames a source runs the tests whose imported module walks a directory (Issue #5169)", async () => {
+  const base = async (c: string) => {
+    await Deno.writeTextFile(
+      `${c}/worker/deno/lib/coverage.ts`,
+      "export const list = (r: string) => Deno.readDir(r);\n",
+    );
+    await Deno.writeTextFile(
+      `${c}/worker/deno/tests/coverage_test.ts`,
+      'import { list } from "../lib/coverage.ts";\nlist(".");\n',
+    );
+  };
+  const adds = (c: string) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/lib/new_mod.ts`,
+      "export const n = 1;\n",
+    );
+  const deletes = (c: string) => Deno.remove(`${c}/worker/deno/lib/foo.ts`);
+  const renames = (c: string) =>
+    Deno.rename(`${c}/worker/deno/lib/foo.ts`, `${c}/worker/deno/lib/bar.ts`);
+  // A source added, deleted or renamed beside the walker selects its test; neither names it.
+  for (const edit of [adds, deletes, renames]) {
+    const result = await unitCommandsAfterBase(base, edit);
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "directory invariant violated");
+    const valid = await unitCommandsAfterBase(base, async (c) => {
+      await edit(c);
+      await git(
+        c,
+        "restore",
+        "--source=HEAD",
+        "--worktree",
+        "worker/deno/lib/foo.ts",
+      );
+      for (const name of ["new_mod.ts", "bar.ts"]) {
+        await Deno.remove(`${c}/worker/deno/lib/${name}`).catch(() => {});
+      }
+      await Deno.writeTextFile(
+        `${c}/worker/deno/lib/foo.ts`,
+        "export const foo = 2;\n",
+      );
+    });
+    assert(valid.ok);
   }
 });
 

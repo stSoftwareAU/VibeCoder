@@ -3080,7 +3080,11 @@ which dispatches on the active provider descriptor:
 
 - **Claude** — unchanged, and quiet when a run genuinely reports no usage.
 - **Codex** — `turn.completed` / `token_count` usage is mapped onto the shared
-  `TokenUsage` shape. A run that reports none is still `usageUnknown`.
+  `TokenUsage` shape. Codex's `input_tokens` includes its
+  `cached_input_tokens`, so the input count is input less cached (never below
+  0) and the cached count is the cache-read count; the cache-write count stays
+  0 because Codex reports none (Issue #5125). A run that reports none is still
+  `usageUnknown`.
 - **Gemini** — the terminal `result` event's `stats.models` counters are summed
   onto the same shape: prompt less cached is the input count, candidates the
   output count, `cached` the cache-read count, and the cache-write count stays
