@@ -44,6 +44,7 @@ import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { formatReleaseNotice } from "../lib/release_notice.ts";
+import { parseHardKillEvidence } from "../lib/hard_kill_report.ts";
 import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import {
   HOST_DISK_REFRESH_FILE,
@@ -839,6 +840,10 @@ Deno.test("run.sh - an early reap cut short by the deadline is finished, not tru
         .test(String(evidence.reason)),
       `unexpected reason: ${String(evidence.reason)}`,
     );
+    // The hard-kill report must be able to read the record, or it is kept
+    // for ever and never filed (PR #5266 review).
+    const parsed = parseHardKillEvidence(await Deno.readTextFile(records[0]!));
+    assertEquals(parsed.trigger, "watchdog");
   } finally {
     await harness.cleanup();
   }

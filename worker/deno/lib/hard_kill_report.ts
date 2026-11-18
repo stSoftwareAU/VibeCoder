@@ -85,13 +85,23 @@ const PHASE_NAME = /^[a-z][a-z0-9_]{0,39}$/;
 const GUEST_SILENT_REASON =
   /^the launcher's watchdog found the guest silent for [0-9]{1,10}s and not answering$/;
 
+/**
+ * The reason the watchdog's completing reap writes when the early reap was
+ * cut short after it decided to reap (Issue #5161, PR #5266 review).
+ */
+const EARLY_REAP_UNFINISHED_REASON =
+  /^the launcher's early silent-guest reap exited [0-9]{1,10} before it finished$/;
+
 /** Fixed public explanations; never publish the evidence file's free text. */
 function publicReason(trigger: string, reason: string): string {
   if (trigger !== "watchdog") {
     return "The pre-launch scan reaped a stale container.";
   }
-  return GUEST_SILENT_REASON.test(reason)
-    ? "The launcher's watchdog found the guest silent and not answering its exec probe."
+  if (GUEST_SILENT_REASON.test(reason)) {
+    return "The launcher's watchdog found the guest silent and not answering its exec probe.";
+  }
+  return EARLY_REAP_UNFINISHED_REASON.test(reason)
+    ? "The launcher's watchdog found the guest silent and not answering its exec probe; its early reap was cut short and the watchdog finished it."
     : "The launcher's watchdog deadline expired.";
 }
 
@@ -362,7 +372,7 @@ export function parseHardKillEvidence(text: string): HardKillEvidence {
       ? new RegExp(
         `${
           /^the launcher's (?:[0-9]{1,10}s )?watchdog deadline expired$/.source
-        }|${GUEST_SILENT_REASON.source}`,
+        }|${GUEST_SILENT_REASON.source}|${EARLY_REAP_UNFINISHED_REASON.source}`,
       )
       : /^pre-launch scan found (?:no live launcher process for it|it [0-9]{1,10}s old, past the [0-9]{1,10}s deadline)$/,
   );

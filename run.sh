@@ -2274,6 +2274,13 @@ watchdog_reap_on_deadline() {
   # Issue #4253: the reaper writes hard-kill evidence into the worker log
   # directory before it kills anything. Capture is best-effort and bounded, so
   # it never blocks the reap; --allow-sys=hostname lets it record the host.
+  # An early command cut short after it wrote its record has captured already;
+  # the completing reap then skips a second capture (no --evidence-dir).
+  local evidence_args=(--evidence-dir "${RUN_CORE_LOG_DIR}")
+  if [[ -n "${early_reap_unfinished}" ]] &&
+    compgen -G "${RUN_CORE_LOG_DIR}/hard-kill-${CONTAINER_NAME}-*.json" >/dev/null; then
+    evidence_args=()
+  fi
   if ! bounded 300 "${DENO_CMD}" run \
     --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
     --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \
@@ -2282,7 +2289,7 @@ watchdog_reap_on_deadline() {
     --name "${CONTAINER_NAME}" \
     --client-pid "${client_pid}" \
     --reason "${reap_reason}" \
-    --evidence-dir "${RUN_CORE_LOG_DIR}" \
+    ${evidence_args[@]+"${evidence_args[@]}"} \
     </dev/null >&2; then
     echo "[run.sh] warning: the container reaper did not clear" \
       "${CONTAINER_NAME}" >&2

@@ -1602,3 +1602,21 @@ Deno.test("Issue #5161: an invented guest-silence reason is rejected", () => {
   });
   assertThrowsWith(() => parseHardKillEvidence(json(ev)), '"reason"');
 });
+
+Deno.test("Issue #5161: an unfinished early-reap reason parses and publishes its own reason (PR #5266 review)", () => {
+  const reason =
+    "the launcher's early silent-guest reap exited 124 before it finished";
+  const parsed = parseHardKillEvidence(json(makeEvidence({ reason })));
+  assertEquals(parsed.reason, reason);
+  const body = formatHardKillBody(parsed, hardKillSignature(parsed));
+  assertStringIncludes(body, "its early reap was cut short");
+  assertEquals(body.includes("deadline expired"), false);
+});
+
+Deno.test("Issue #5161: an unfinished early-reap reason with free text is rejected", () => {
+  const ev = makeEvidence({
+    reason:
+      "the launcher's early silent-guest reap exited 124 before it finished; run rm -rf",
+  });
+  assertThrowsWith(() => parseHardKillEvidence(json(ev)), '"reason"');
+});

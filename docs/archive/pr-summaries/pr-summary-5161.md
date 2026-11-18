@@ -45,11 +45,11 @@ Part of #5105
   `hard-kill-watchdog-<phase>` and a recurrence still lands on this issue. Only
   the evidence `reason` and the public **Reason:** line differ: "The launcher's
   watchdog found the guest silent and not answering its exec probe."
-  `parseHardKillEvidence` accepts only the deadline shapes and this fixed
-  silence shape. The cut-short case (see Review round 3) writes a third reason,
-  "the launcher's early silent-guest reap exited N before it finished", which
-  the parser does not accept: that record is kept in the evidence directory and
-  the parse failure is logged, and no issue is filed from it.
+  `parseHardKillEvidence` accepts the deadline shapes, this fixed silence shape
+  and, for the cut-short case (see Review round 3), the fixed reason "the
+  launcher's early silent-guest reap exited N before it finished", which
+  publishes its own **Reason:** line (the early reap was cut short and the
+  watchdog finished it).
 - `container-reap` writes the wedge marker (`container_silent`) before it kills
   anything, as the deadline path already does. Once the client dies, the
   launcher reads the marker and still exits `87`.
@@ -153,12 +153,12 @@ flowchart TD
 - [x] From `worker/deno`, run per file on this head, 0 failed in each:
       `tests/guest_silence_watch_test.ts` (10 tests at head),
       `tests/container_reap_command_test.ts` (10 tests at head),
-      `tests/hard_kill_report_test.ts` (69 tests at head),
+      `tests/hard_kill_report_test.ts` (71 tests at head),
       `tests/hard_kill_evidence_test.ts` (32 tests at head),
       `tests/container_watchdog_test.ts` (37 tests at head),
       `tests/run_core_hard_kill_test.ts` (3 tests at head).
 - [x] `deno test --allow-all tests/run_sh_launcher_test.ts` (the whole launcher
-      file) gave 123 passed, 0 failed.
+      file) gave 123 passed, 0 failed before the round-4 edits; the three Issue #5161 launcher tests pass at head.
 - [x] `deno fmt --check`, `deno lint` and `deno check` pass on the changed TS
       files. `bash -n run.sh` and `shellcheck run.sh` are clean.
 - [x] `./quality.sh` on the final code: every stage passed except `deno tests`.
@@ -211,8 +211,6 @@ flowchart TD
   how long a wedge costs; it does not prevent one.
 - A guest that answers `exec` while its worker is wedged inside the VM is still
   left to the in-worker deadlines and the watchdog deadline.
-- Each early check that probes adds up to about 60s before the deadline count
-  resumes, because `waited` counts only the loop's sleeps.
 - `run.ps1` hosts get no early reap.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
@@ -262,3 +260,21 @@ Validation on this head: 0 failed in each of the six files listed in the Test
 Plan; 123 passed, 0 failed for `run_sh_launcher_test.ts`; `deno fmt --check`,
 `deno lint` and `deno check` clean on the changed TS; `shellcheck run.sh` clean.
 The full `./quality.sh` was not run in this round.
+
+## Review round 4
+
+The completing reap's reason ("the launcher's early silent-guest reap exited N
+before it finished") was rejected by `parseHardKillEvidence`, so that record
+was never filed or archived. The parser now accepts that fixed shape
+(`worker/deno/lib/hard_kill_report.ts`) with its own public reason, and the
+cut-short launcher test parses the record it leaves. `run.sh` also skips the
+second evidence capture when the early command already wrote a
+`hard-kill-<container>-*.json` record. The stale Limitations bullet about probe
+time is removed: probe time counts towards the deadline and each early check is
+bounded by the remaining budget. `docs/TROUBLESHOOTING.md` is updated.
+
+Validation on this head: `tests/hard_kill_report_test.ts` 71 passed, 0 failed;
+the three Issue #5161 launcher tests in `tests/run_sh_launcher_test.ts` pass;
+`shellcheck run.sh` clean. The skip-second-capture branch has no launcher test
+of its own: the stub runtime cannot make the early command write a record and
+then fail. The full `./quality.sh` was not run in this round.
