@@ -457,10 +457,14 @@ bash `worker/run_core.sh` conductor. It sequences:
    A PR into a milestone branch merges unreviewed on green CI, so a PR whose
    `## Acceptance Criteria` block marks any criterion `partial` or `missing`
    used to close its issue as completed. The issue stays open with its existing labels so the worker can finish
-   it. Both closers record the missing criteria in their diagnostic output;
+   it. Both closers also leave the issue open, labels kept, when the merged
+   body names it only as `Part of #N` and no closing keyword names it (Issue
+   #5135, `namesIssueOnlyAsPartOf`); a closing keyword still wins. Both
+   closers record the missing criteria in their diagnostic output;
    they neither apply `needs-human` nor post repeated hand-off comments.
    `ensureIssueClosedIfPrMerged` (the sweep and recovery path) logs a
-   did-not-land or missing-criteria hold at WARNING once per verdict; an
+   did-not-land, missing-criteria or `Part of` hold at WARNING once per
+   verdict; an
    unchanged repeat, including the one the next hourly worker start produces,
    is logged at DEBUG (`decision_warn_signatures.json` in the work directory,
    Issue #4495).
@@ -2711,7 +2715,7 @@ feedback:
 | Type                               | API endpoint                        | Authorisation                                                                                                                                                                                                                             |
 | ---------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Inline review comments**         | `repos/{repo}/pulls/{pr}/comments`  | Authorised commenters: process immediately. Others: require a thumbs-up reaction **from an authorised user** (a bare `+1` count is not trusted, since any user can self-react).                                                           |
-| **Issue/discussion comments**      | `repos/{repo}/issues/{pr}/comments` | Same as review comments, and a comment with no visible text once HTML comments are removed (for example a review round's `vibe-review-claim` marker) is never actionable (Issue #4673).                                                   |
+| **Issue/discussion comments**      | `repos/{repo}/issues/{pr}/comments` | Same as review comments, and a comment with no visible text once HTML comments are removed (for example a review round's `vibe-review-claim` marker) is never actionable (Issue #4673); the fleet PR babysitter's attempt record (the line "Babysitter repair recorded." and one `vibe-babysitter-attempt` marker), posted by a fleet account or a GitHub App, is not actionable either (Issue #5150).                                                   |
 | **PR reviews** (CHANGES_REQUESTED) | `repos/{repo}/pulls/{pr}/reviews`   | Authorised commenters and `trusted_review_bots` only (Issue #185) — anyone can review a PR, and the body goes straight into the feedback prompt. Only each reviewer's latest review counts, whatever commit it was left on (Issue #2697). |
 
 **Processed-comment tracking** — comments are marked as processed by adding an

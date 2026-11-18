@@ -1125,15 +1125,27 @@ reads that signal at both ends
   prompt tells the run to record each part it leaves undone as a `missing` entry
   quoting the issue, with no reviewer provenance marker (Issue #4477).
 - **At merge.** A fleet PR's title still names its issue (`(Issue #N)`), and
-  the merged-PR closers read titles, so the PR body alone cannot hold the
-  issue open. Both closers — the priority-1.67 `closeIssuesForMergedPrs` (the
-  milestone auto-close) and `ensureIssueClosedIfPrMerged` (used by the
-  housekeeping sweep and the recovery path) — read the merged PR's closure
-  block. With a `partial` or `missing` entry they leave the issue open and preserve its
-  existing discovery labels. They log the unmet criteria without applying
-  `needs-human` or posting repeated hand-off comments. Existing-PR lookup
-  also skips such merged PRs, including when a cached title lookup finds
-  them, so the original issue can resume and raise its completion PR. The
+  the merged-PR closers read titles, so the body's `Part of #N` holds the
+  issue open only because the closers check for it. Both closers — the
+  priority-1.67 `closeIssuesForMergedPrs` (the milestone auto-close) and
+  `ensureIssueClosedIfPrMerged` (used by the housekeeping sweep and the
+  recovery path) — read the merged PR's closure block. With a `partial` or
+  `missing` entry they leave the issue open and preserve its
+  existing discovery labels. They also leave it open (Issue #5135), labels
+  kept, when the merged body names the issue only as `Part of #N` and no
+  closing keyword (`Closes`/`Fixes`/`Resolves #N`) names it
+  (`namesIssueOnlyAsPartOf`, shared with the claim scan's
+  `merged-pr-permanent` gate below). A closing keyword naming the issue still
+  wins and the issue closes, and a body that names the issue nowhere still
+  closes it from the title. Only `Part of #N` holds it: `Ref`, `Refs`,
+  `References`, `Related to` and `Relates to` do not stop the title closing it.
+  Both closers log the unmet criteria without applying
+  `needs-human` or posting repeated hand-off comments. The closer's merged-PR
+  listing cache key is now `prs_merged_any_v2`, as its entries carry
+  `partOfRefs`. Existing-PR lookup
+  also skips a merged PR with a `partial` or `missing` entry or a
+  `Part of #N`-only body, including when a cached title lookup finds it, so
+  the original issue can resume and raise its completion PR. The
   cached path reads the merged PR body live; no persisted cache shape changes.
   The claim scan's `merged-pr-permanent` gate agrees: a merged PR whose
   closure block marks a criterion `partial` or `missing`, or whose body names
