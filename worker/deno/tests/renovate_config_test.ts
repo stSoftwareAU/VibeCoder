@@ -19,7 +19,7 @@
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { extractUsesValue } from "../lib/action_pin_scanner.ts";
 import {
-  isFirstPartyPackagePattern,
+  isScopedToFirstParty,
   parseRenovateDurationHours,
 } from "../lib/renovate_release_age.ts";
 
@@ -104,16 +104,14 @@ async function usesOwners(): Promise<Set<string>> {
 
 /**
  * True when a packageRules entry lifts the quarantine (a `null` or zero age)
- * for a non-empty list of `matchPackageNames`, every one of them first-party.
+ * and is scoped to first-party names by the production `isScopedToFirstParty`.
  */
 function holdsFirstPartyExemption(rules: PackageRule[]): boolean {
   return rules.some((rule) => {
     const age = rule.minimumReleaseAge;
     const lifts = age === null ||
       (typeof age === "string" && parseRenovateDurationHours(age) === 0);
-    const names = rule.matchPackageNames ?? [];
-    return lifts && names.length > 0 &&
-      names.every((name) => isFirstPartyPackagePattern(name));
+    return lifts && isScopedToFirstParty(rule as Record<string, unknown>);
   });
 }
 

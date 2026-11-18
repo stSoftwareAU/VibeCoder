@@ -26,8 +26,9 @@
  *                             Podman's enforcing short-name mode can resolve
  *                             it on a fresh host (Issue #728).
  *   - `renovate-automerge` /  Renovate may auto-merge only pin-class updates
- *     `renovate-release-age`  and must keep the release-age quarantine: a
- *                             null or sub-24h age is allowed only for
+ *     `renovate-release-age`  and must keep the release-age quarantine: outside
+ *                             `vulnerabilityAlerts`, a null or sub-24h age is
+ *                             allowed only in a packageRules entry scoped to
  *                             first-party stSoftwareAU names (Issue #5120).
  *   - `inventory-stale`       `docs/audits/dependency-inventory.md` matches
  *                             what {@link buildDependencyInventory} generates

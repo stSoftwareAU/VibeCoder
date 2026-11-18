@@ -12,9 +12,17 @@
  * Australian English used throughout (behaviour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { evaluateRenovatePolicy } from "../lib/supply_chain_gate.ts";
-import { parseRenovateDurationHours } from "../lib/renovate_release_age.ts";
+import {
+  isFirstPartyPackagePattern,
+  parseRenovateDurationHours,
+} from "../lib/renovate_release_age.ts";
+import { INTERNAL_SCOPE_EXCLUDES } from "../lib/deno_minimum_dependency_age.ts";
 
 const FIXTURES = new URL("./fixtures/renovate_release_age/", import.meta.url);
 const SCHEMA = "https://docs.renovatebot.com/renovate-schema.json";
@@ -265,8 +273,75 @@ Deno.test("parseRenovateDurationHours - refuses input Renovate does not read as 
   assertEquals(parseRenovateDurationHours("abc"), null);
 });
 
-Deno.test("parseRenovateDurationHours - refuses hostile over-long input without scanning it", () => {
+Deno.test("parseRenovateDurationHours - refuses input over 64 characters even when it is a valid duration, and reads a valid duration under the cap", () => {
   assertEquals(parseRenovateDurationHours("1".repeat(50_000) + "x"), null);
+  // 78 characters: would parse to 24 hours without the length cap.
+  assertEquals(parseRenovateDurationHours("0".repeat(70) + "24 hours"), null);
+  // 48 characters: under the cap, so the same shape parses.
+  assertEquals(parseRenovateDurationHours("0".repeat(40) + "24 hours"), 24);
+});
+
+Deno.test("parseRenovateDurationHours - refuses a bare trailing number after a compound, and reads the compound with a unit", () => {
+  assertEquals(parseRenovateDurationHours("1 day 5 hours"), 29);
+  assertEquals(parseRenovateDurationHours("1 day 5"), null);
+});
+
+Deno.test("parseRenovateDurationHours - reads capital M as a month and lower-case m as a minute", () => {
+  assertEquals(parseRenovateDurationHours("1M"), 720);
+  assertEquals(parseRenovateDurationHours("1m"), 1 / 60);
+});
+
+Deno.test("isFirstPartyPackagePattern - accepts exact names and globs under the org, refuses another owner", () => {
+  assertEquals(isFirstPartyPackagePattern("stSoftwareAU/some-action"), true);
+  assertEquals(isFirstPartyPackagePattern("@stsoftware/*"), true);
+  assertEquals(isFirstPartyPackagePattern("actions/checkout"), false);
+});
+
+Deno.test("isFirstPartyPackagePattern - accepts an anchored @stsoftware regex", () => {
+  assertEquals(isFirstPartyPackagePattern("/^@stsoftware\\//"), true);
+});
+
+Deno.test("renovate release-age - a legacy matchPackagePatterns entry is first-party only when it names stSoftwareAU", () => {
+  const control = withRule({
+    matchPackagePatterns: ["^stSoftwareAU/"],
+    minimumReleaseAge: null,
+  });
+  assertEquals(evaluateRenovatePolicy("renovate.json", control), []);
+  const refused = withRule({
+    matchPackagePatterns: ["^actions/"],
+    minimumReleaseAge: null,
+  });
+  assertRefused(
+    evaluateRenovatePolicy("renovate.json", refused),
+    "not first-party",
+  );
+});
+
+Deno.test("renovate release-age - a matchPackageNames string instead of a list is refused", () => {
+  const control = withRule({
+    matchPackageNames: ["/^stSoftwareAU\\//"],
+    minimumReleaseAge: null,
+  });
+  assertEquals(evaluateRenovatePolicy("renovate.json", control), []);
+  const refused = withRule({
+    matchPackageNames: "/^stSoftwareAU\\//",
+    minimumReleaseAge: null,
+  });
+  assertRefused(
+    evaluateRenovatePolicy("renovate.json", refused),
+    "not first-party",
+  );
+});
+
+Deno.test("renovate release-age - every Deno internal-scope exclude is first-party, so the two scope copies cannot drift", () => {
+  assertNotEquals(INTERNAL_SCOPE_EXCLUDES.length, 0);
+  for (const entry of INTERNAL_SCOPE_EXCLUDES) {
+    assertEquals(
+      isFirstPartyPackagePattern(entry.replace(/^(?:jsr|npm):/, "")),
+      true,
+      `${entry} is not first-party`,
+    );
+  }
 });
 
 Deno.test("renovate release-age - a quantifier after the first-party slash is refused", () => {

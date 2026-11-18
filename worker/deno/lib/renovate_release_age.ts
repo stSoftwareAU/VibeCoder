@@ -67,7 +67,7 @@ const UNIT_MS: ReadonlyMap<string, number> = new Map([
   ["months", MONTH_MS],
 ]);
 
-// SIMPLE-ON-PURPOSE: one sticky token per number-and-unit pair, parsed left to right; a bare number is only accepted as the whole value (Renovate would drop a stray trailing number, so a compound with one is refused rather than guessed at).
+// SIMPLE-ON-PURPOSE: one sticky token per number-and-unit pair, parsed left to right; a bare number is only accepted as the whole value (Renovate would drop a stray trailing number, so a compound with one is refused rather than guessed at) — upgrade when a fleet config uses a compound with a bare trailing number
 const DURATION_TOKEN = /(\d+(?:\.\d+)?)[ \t]*([a-zA-Z]*)[ \t]*/y;
 
 /** Renovate's `matchPackageNames` regex prefixes that can only match stSoftwareAU names. */
@@ -256,7 +256,7 @@ function checkReleaseAge(
  * legacy `matchPackagePatterns` (bare regexes, read as `/${p}/`) together form
  * a non-empty list in which every entry is a first-party pattern.
  */
-function isScopedToFirstParty(rule: Record<string, unknown>): boolean {
+export function isScopedToFirstParty(rule: Record<string, unknown>): boolean {
   const names = listOrNull(rule["matchPackageNames"]);
   const patterns = listOrNull(rule["matchPackagePatterns"]);
   if (names === null || patterns === null) return false;
