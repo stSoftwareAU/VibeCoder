@@ -358,7 +358,11 @@ const CI_CLIPPY_WORKFLOW_5169 = [
 ].join("\n");
 
 /** Commits and pushes a Rust crate with a CI clippy workflow, then edits `editPath`. */
-async function cargoFixtureEdit(clone: string, editPath: string) {
+async function cargoFixtureEdit(
+  clone: string,
+  editPath: string,
+  deleteInstead = false,
+) {
   await Deno.mkdir(`${clone}/src`, { recursive: true });
   await Deno.mkdir(`${clone}/.github/workflows`, { recursive: true });
   await Deno.writeTextFile(
@@ -370,6 +374,7 @@ async function cargoFixtureEdit(clone: string, editPath: string) {
     "pub fn value() -> u8 {\n    1\n}\n",
   );
   await Deno.writeTextFile(`${clone}/NOTES.md`, "# Notes\n");
+  await Deno.writeTextFile(`${clone}/src/helper.rs`, "pub fn h() {}\n");
   await Deno.writeTextFile(
     `${clone}/.github/workflows/ci.yml`,
     CI_CLIPPY_WORKFLOW_5169,
@@ -377,6 +382,10 @@ async function cargoFixtureEdit(clone: string, editPath: string) {
   await git(clone, "add", "-A");
   await git(clone, "commit", "-q", "-m", "add crate");
   await git(clone, "push", "-q", "--no-verify", "origin", "HEAD:main");
+  if (deleteInstead) {
+    await Deno.remove(`${clone}/${editPath}`);
+    return;
+  }
   await Deno.writeTextFile(
     `${clone}/${editPath}`,
     editPath === "src/lib.rs"
@@ -421,6 +430,30 @@ Deno.test("a repair changing a Rust file with a failing CI clippy blocks with it
 Deno.test("a repair changing a Rust file with a passing CI clippy passes (Issue #5169)", async () => {
   await agentClone(
     (clone) => cargoFixtureEdit(clone, "src/lib.rs"),
+    async (clone) => {
+      const outcome = await cargoGate(clone, 0);
+      assertEquals(outcome.kind, "passed");
+    },
+  );
+});
+
+Deno.test("a repair deleting a Rust file with a failing CI clippy blocks with its diagnostic (Issue #5169)", async () => {
+  await agentClone(
+    (clone) => cargoFixtureEdit(clone, "src/helper.rs", true),
+    async (clone) => {
+      const outcome = await cargoGate(clone, 101);
+      assertEquals(outcome.kind, "blocked");
+      assertStringIncludes(
+        (outcome as { message: string }).message,
+        "length comparison to zero",
+      );
+    },
+  );
+});
+
+Deno.test("a repair deleting a Rust file with a passing CI clippy passes (Issue #5169)", async () => {
+  await agentClone(
+    (clone) => cargoFixtureEdit(clone, "src/helper.rs", true),
     async (clone) => {
       const outcome = await cargoGate(clone, 0);
       assertEquals(outcome.kind, "passed");
