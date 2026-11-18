@@ -105,14 +105,45 @@ Deno.test("fakeContainer's Chromium check reaches its spawn seam on a macOS host
   }
 });
 
-// What each script prints: the platform and the Deno.Command class in force.
-const REPORT = "console.log(Deno.build.os + ' ' + Deno.Command.name);";
+// What each script prints: the platform it sees.
+const REPORT = "console.log(Deno.build.os);";
+
+// A scratch preload that simulates a macOS host: it sets the platform to
+// darwin and forwards itself to every `deno run` child, as a real macOS host
+// would report darwin in every process.
+const DARWIN_PRELOAD = `
+const self = new URL(import.meta.url).pathname;
+Object.defineProperty(Deno, "build", {
+  configurable: true,
+  value: Object.freeze({ ...Deno.build, os: "darwin" }),
+});
+const RealCommand = Deno.Command;
+class DarwinCommand extends RealCommand {
+  constructor(command, options) {
+    const args = options?.args?.map(String) ?? [];
+    if (
+      String(command) === Deno.execPath() && args[0] === "run" &&
+      !args.includes(self)
+    ) {
+      options = { ...options, args: ["run", "--preload", self, ...args.slice(1)] };
+    }
+    super(command, options);
+  }
+}
+Object.defineProperty(Deno, "Command", {
+  configurable: true,
+  writable: true,
+  value: DarwinCommand,
+});
+`;
 
 Deno.test("the Linux preload pins a deno run child and its own deno run children", async () => {
   const root = await Deno.makeTempDir();
   try {
+    const darwin = `${root}/darwin_preload.js`;
     const inner = `${root}/inner.ts`;
     const outer = `${root}/outer.ts`;
+    await Deno.writeTextFile(darwin, DARWIN_PRELOAD);
     await Deno.writeTextFile(inner, `${REPORT}\n`);
     await Deno.writeTextFile(
       outer,
@@ -123,20 +154,21 @@ const out = await new Deno.Command(Deno.execPath(), {
 console.log(new TextDecoder().decode(out.stdout).trim());
 `,
     );
+    // The darwin simulation loads first, so only the Linux preload can make a
+    // process report linux, in the child and in the grandchild alike.
     const result = await runWithTimeout(Deno.execPath(), [
       "run",
       "--allow-all",
       "--cached-only",
+      "--preload",
+      darwin,
       "--preload",
       PRELOAD,
       outer,
     ], { timeoutMs: 30_000 });
     assert(result.ok);
     assertEquals(result.value.success, true, result.value.stderr);
-    assertEquals(
-      result.value.stdout.trim(),
-      "linux PinnedCommand\nlinux PinnedCommand",
-    );
+    assertEquals(result.value.stdout.trim(), "linux\nlinux");
   } finally {
     await Deno.remove(root, { recursive: true });
   }

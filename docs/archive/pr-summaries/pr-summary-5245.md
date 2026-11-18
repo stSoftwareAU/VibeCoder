@@ -68,9 +68,13 @@ flowchart TD
   - `repairPlan resolves podman on a macOS host without starting a runtime
     process`;
   - `fakeContainer's Chromium check reaches its spawn seam on a macOS host`;
-  - `the Linux preload pins a deno run child and its own deno run children`,
-    which asserts that both the child and the grandchild report `linux` and run
-    with the preload's `PinnedCommand`.
+  - `the Linux preload pins a deno run child and its own deno run children`. It
+    writes a scratch preload into a temp dir that sets `Deno.build.os` to
+    `darwin` and forwards itself to `deno run` children. It starts the outer
+    script with that preload followed by `linux_host_platform_preload.ts`, and
+    asserts that the child and the grandchild each print `Deno.build.os` as
+    `linux`. Only the Linux preload can produce that output, so the test passes
+    or fails on the same thing on Linux and macOS hosts.
 - Issue numbers this diff cites: #5245 (Babysitter unit tests reach the real
   container-runtime probe and fail on macOS (11 tests in the 5105 and 4738
   files)). This summary also names #5088 (recovery_authority_4417_test fails on
@@ -98,8 +102,12 @@ flowchart TD
     `tests/plan_coverage_repair_test.ts` passed: 215 passed, 0 failed.
   - Under the simulated-macOS preload, the 5105 and 4738 Chromium files passed
     (36 passed, 0 failed), and the new guard file passed too.
-- The propagation test went red when the preload's `Deno.Command` wrapper was
-  removed: it printed `linux Command` twice instead of `linux PinnedCommand`.
+- The propagation test went red in two mutations of
+  `linux_host_platform_preload.ts`. With its forwarding to `deno run` children
+  disabled, it printed `linux` then `darwin`. With the platform pin removed, it
+  printed `darwin` twice. The test passed again once the preload was restored.
+- After the propagation test was rewritten, the new guard file, the 5105 file
+  and the 4738 Chromium file passed together: 39 passed, 0 failed.
 - `./quality.sh` on the final code: every stage passed except `deno tests`,
   which ran 35157 passed and 1 failed. The failure is
   `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`, which could not
