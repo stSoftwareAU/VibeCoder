@@ -1,125 +1,93 @@
 ## Summary
 
-Bakes the official AWS Emulator into the Linux worker image and adds
-`aws-emulator-run`, one helper that runs a repository's test command against a
-private, throwaway emulator as the unprivileged `agent` account.
+Follow-up to PR #5214, which baked the AWS Emulator 1.0.385, AWS CLI 2.40.3 and
+the `aws-emulator-run` helper into the worker image. This PR fixes the two
+defects the last run recorded against that delivery:
 
-- **New toolchains** in `container/tools.json`, each with its own fragment and
-  checksum-verified versioned URL:
-  - `aws-emulator` 1.0.385-1, the prebuilt Debian package, extracted to
-    `/opt/aws-emulator` (fragment `container/toolchains/aws-emulator.sh`);
-  - `aws-cli` 2.40.3, which the smoke test uses (fragment
-    `container/toolchains/aws-cli.sh`).
-- **New helper** `container/aws-emulator-run.sh`, installed as
-  `/usr/local/bin/aws-emulator-run`.
-- **`container/Containerfile`** installs both toolchains, sets
-  `EMULATOR_TELEMETRY=off`, and runs
-  `runuser -u agent -- aws-emulator-run
-  --smoke` at build time. The helper is committed mode 0755 and the
-  Containerfile `chmod 0755`s the installed copy, so the `agent` account can
-  execute it (the first build failed with `Permission denied` on a 0644 copy).
-- **Docs:** `docs/CONTAINER-IMAGE.md` documents the contract.
+- **JVM test on an image with no JDK.**
+  `aws-emulator-run: JVM options cannot
+  override or leak the generated identity`
+  failed with `java: command not
+  found` when run as `agent` on the worker
+  image, which has no `java`.
+  - The test is not skipped anywhere. Its first step now asserts that a `java`
+    is on `/usr/bin:/bin` and, when none is, fails with a message naming the
+    missing JDK instead of the shell's `java: command not found`.
+  - A new JVM-free test checks the same scrub on every image:
+    `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS` and `JDK_JAVA_OPTIONS` are replaced
+    before COMMAND runs.
+- **Failure reason named the wrong cause.** When the emulator was killed from
+  outside, the `FAILED:` line quoted only log lines (the telemetry notice).
+  `container/aws-emulator-run.sh` now reaps the dead emulator and puts its exit
+  status first: `exit status N`, or `killed by signal K (NAME)`. The log lines
+  follow after `emulator log:`. This applies to an early exit and to a stop
+  while COMMAND runs; exit codes are unchanged (5).
+- `docs/CONTAINER-IMAGE.md` documents the new failure-line shape.
 
-Floci is untouched. Part of #5109.
+This head's helper was run as `agent` against the real emulator on arm64 under
+Apple Containers (see Test Plan). An amd64 run of this head is left to the PR's
+Container Build job.
+
+Part of #5109.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The helper runs the prebuilt server package. Compiling the emulator into each
-  Rust suite would need about 100 GB of build space (upstream README).
-- One helper owns start, readiness, isolation and cleanup, so repository scripts
-  need nothing beyond `aws-emulator-run -- <command>`.
+- The last run left one red lifecycle test and a misleading failure reason; both
+  are fixed here rather than redoing the delivered runtime.
+- A JDK-dependent test cannot be the only check of the `JAVA_*` scrub on an
+  image without a JDK, so the scrub gets a JVM-free test; the real-JVM test is
+  never skipped: where no JDK is provisioned it fails loudly, naming the JDK.
 
 ### Essential Design Decisions
 
-- **Ports and state:** the emulator starts as
-  `aws-emulator -b 127.0.0.1 -p 0 -t off -a on` under `env -i` (only `PATH`, a
-  private `HOME`, `LANG` and `EMULATOR_TELEMETRY=off`). Its state is a 0700
-  `mktemp -d` under `TMPDIR`, so two runs never share a port, keys or CA, and
-  only `TMPDIR` must be writable.
-- **Identity check:** readiness requires the published files and `ok` from
-  `/__admin/health`. curl must verify TLS against that run's own `ca.pem`, which
-  only that run's emulator can satisfy.
-- **COMMAND's environment:** COMMAND loses every `AWS_*` and
-  `ECS_CONTAINER_METADATA_URI*` variable. It gets the generated credentials,
-  config, endpoint, region and certificate trust: `AWS_CA_BUNDLE`,
-  `NODE_EXTRA_CA_CERTS` and the JVM trust store. A client that ignores the
-  endpoint can only present emulator keys, which real AWS rejects. There is no
-  fallback to AWS or Floci.
-- **Refusals and exit codes:** root and `vibe` are always refused (exit 3).
-  `AWS_EMULATOR_RUN_REFUSED_USERS` only adds names. Helper failures exit 4 or 5
-  with a redacted cause line from the emulator's log. COMMAND's code is
-  propagated, and `--timeout` gives 124.
-- **Deviation:** the stripped-Containerfile cap
-  (`worker/deno/lib/containerfile_strip.ts`) rises from 14,600 to 14,750 bytes.
-  The base was 70 bytes under the cap and this change adds about 158. 14,750
-  bytes is still about 250 escaped characters below the measured Apple
-  `container` failure.
+- The exit status comes from `wait` on the helper's own child, called in the
+  parent shell (not in `$(...)`), which then clears `EMU_PID` so the cleanup
+  trap never signals a reused pid.
+- A status above 128 is reported as a signal only when `kill -l` names it;
+  otherwise it is reported as a plain exit status, so an emulator exiting 200 is
+  not called "killed by signal 72".
+- A readiness timeout names no status, because the emulator is still running.
 
 ### Undiscoverable Facts
 
-- This container's egress proxy refuses `downloads.aws.com`,
-  `awscli.amazonaws.com` and `docs.aws.amazon.com`. The pins were therefore
-  resolved by a temporary scratch workflow on GitHub-hosted `ubuntu-24.04` and
-  `ubuntu-24.04-arm` runners, and that branch has since been deleted. Only the
-  flat `LTS/aws-emulator_<version>-<rev>_<arch>.deb` path is downloadable;
-  `LTS/<version>/…` returns 403.
-- Upstream behaviour comes from the `aws/aws-emulator` source
-  (`vendor/server/src/lib.rs`, `request_authentication.rs`) and from real runs:
-  - the per-run files under `$HOME/.aws/emulator/<port>/`;
-  - `-p 0` choosing a free port;
-  - `GET /__admin/health` returning `ok`;
-  - account `000000000000`;
-  - SIGTERM removing the files but not their directories.
+- This host (aarch64, the full worker image) reports `aws-emulator --version` →
+  `Version: 1.0.385` and `aws --version` → `aws-cli/2.40.3 … aarch64`.
+- The last run (worker comment on #5109, host GRQ-23, arm64 under Apple
+  Containers, as `agent`) observed: the CLI smoke and an SDK write-read-delete
+  passing, two concurrent runs passing, a mid-run kill giving exit 5 within 2 s,
+  `vibe` refused with 3, no Docker socket or container runtime, and `agent`
+  unable to read `/home/vibe`. Its commits were never pushed.
+- This run (host GRQ-25, aarch64, Apple Containers: kernel cmdline
+  `init=/sbin/vminitd`, `console=hvc0`) could reach `agent` through
+  `sudo -n -u agent`. As `agent` it had `CapEff: 0000000000000000`, no Docker,
+  containerd or Podman socket, no `docker`/`podman`/`nerdctl`/`ctr`/`container`/
+  `runc` binary, no `AWS_*`/`GH_*`/`GITHUB_TOKEN` in its environment, and
+  `ls /home/vibe` → `Permission denied`.
+- The full image installed on this host carries the pre-change helper, so the
+  real-emulator runs below used this head's `container/aws-emulator-run.sh`,
+  copied to a scratch dir that `agent` can read, together with the image's
+  `aws-emulator` 1.0.385 and `aws` 2.40.3.
+- PR #5214's `container-build / container` job (run 43961750300, amd64) passed;
+  it runs the build-time `runuser -u agent -- aws-emulator-run --smoke`.
 
 ## Evidence
 
 Backend/container only; no UI file touched.
 
 ```mermaid
-sequenceDiagram
-    participant T as test script (agent)
-    participant H as aws-emulator-run
-    participant E as aws-emulator (loopback, -p 0)
-    T->>H: aws-emulator-run -- cmd
-    H->>H: refuse root/vibe, mktemp state
-    H->>E: env -i start, -t off -a on
-    E-->>H: writes config, credentials, ca.pem
-    H->>E: GET /__admin/health (TLS vs this run's CA)
-    H->>T: exec cmd with scrubbed AWS env
-    T-->>H: exit code
-    H->>E: TERM, wait, KILL, then rm -rf state
+flowchart LR
+    D[emulator gone] --> W[wait on EMU_PID]
+    W -->|status <= 128| X["exit status N"]
+    W -->|status > 128, kill -l names it| S["killed by signal K (NAME)"]
+    W -->|status > 128, no name| X
+    X --> F["FAILED: … : status; emulator log: …"]
+    S --> F
 ```
 
-Real runtime evidence comes from GitHub Actions run 43873721374 at helper commit
-`ff8c03f3`; the later commit only changed test fixtures. Each runner built a
-minimal image from this branch's own fragments, `tools.json` and helper, on the
-pinned `ruby:3.4-trixie` base. The checks ran as uid 1001 `agent`, under
-`--read-only --network none --cap-drop ALL`:
-
-- **amd64 and arm64 both:**
-  - the build installed `aws-cli 2.40.3` and `aws-emulator 1.0.385`;
-  - the build-time `runuser -u agent -- aws-emulator-run --smoke` passed;
-  - `aws-emulator --version` gave `Version: 1.0.385`.
-- **At run time, on both:**
-  - `--smoke` printed `smoke passed`;
-  - two simultaneous runs got separate ports and state dirs, and each created
-    the same bucket name;
-  - `exit 7` propagated, SIGTERM gave `143` with no leftover files or processes,
-    and `--timeout 3` gave `124`;
-  - killing the emulator mid-run gave `5`, and an unwritable `TMPDIR` gave `5`;
-  - root and `vibe` (even with an empty override) were refused with `3`;
-  - hostile `AWS_PROFILE`, `AWS_ACCESS_KEY_ID` and `AWS_ENDPOINT_URL_S3` were
-    replaced by the generated values.
-- **Checksums:** recorded from both runners' downloads and re-verified by each
-  fragment's `sha256sum -c` in the build above.
-
-Issue numbers this diff cites:
-
-- #5109: Container: add the official AWS Emulator with an isolated test runner.
-- #5110, #5111 and #5112 are the issue's planned follow-on migration issues. The
-  docs name them only as planned.
+Issue numbers this diff cites: #5109 (Container: add the official AWS Emulator
+with an isolated test runner).
 
 ## Acceptance Criteria
 
@@ -127,143 +95,154 @@ Issue numbers this diff cites:
 
 - **partial** — Built amd64 and arm64 images report the pinned version and
   complete an SDK/CLI write-read-delete smoke test through the HTTPS endpoint as
-  `agent`. — evidence: `container/Containerfile` build-time smoke; scratch runs
-  on amd64 and arm64 above — reviewer: partial — reason: proven on minimal
-  images built from these fragments, not yet on the full worker image (Container
-  Build runs on the PR, amd64 only); the smoke uses the CLI, not an SDK
+  `agent`. — evidence: arm64: `sudo -n -u agent -H <this head's helper> --smoke`
+  with the full image's emulator 1.0.385 and CLI 2.40.3 →
+  `smoke passed: Version: 1.0.385`, exit 0 (STS identity, create-bucket, put,
+  get + `cmp`, delete over the run's HTTPS endpoint); amd64:
+  `container/Containerfile` build-time
+  `runuser -u agent -- aws-emulator-run
+  --smoke`, run by Container Build —
+  reviewer: partial — reason: no image is built from this head on either
+  architecture yet, and this head's amd64 Container Build has not run (the last
+  amd64 pass was PR #5214's head)
 - **met** — The smoke test uses generated emulator credentials and verified TLS,
   with telemetry disabled and no real AWS credentials. — evidence:
-  `container/aws-emulator-run.sh`;
-  `worker/deno/tests/aws_emulator_run_5109_test.ts::happy path`; real
-  `--network none` runs — reviewer: met
+  `container/aws-emulator-run.sh` (`env -i … -t off -a on`, `apply_test_env`,
+  `--smoke` checks STS account `000000000000`);
+  `worker/deno/tests/aws_emulator_run_5109_test.ts::aws-emulator-run: happy
+  path scrubs the environment and verifies health`,
+  `…: health not verified
+  against this run's CA exits 5`,
+  `…: inherited JVM option variables are
+  replaced before COMMAND runs` —
+  reviewer: met
 - **met** — Two runs are isolated; failure/termination releases processes and
   temporary state. A stopped/unready emulator returns a nonzero result within
   the deadline. — evidence: `worker/deno/tests/aws_emulator_run_5109_test.ts`
-  (concurrent rendezvous, SIGTERM, hang, crash, wrong-ca, die-after-ready); real
-  runs above — reviewer: partial — reason: the reviewer judged from the diff
-  alone; the later fixes add mid-run stop detection and bounded probes, and the
-  real runs show isolation and cleanup on both architectures
-- **partial** — The normal Apple Containers launch contract needs no nested
-  runtime, host socket, extra privilege or access to the worker's credentials. —
-  evidence: no launch flag changed; `vibe` always refused; read-only,
-  no-capability runs above — reviewer: partial — reason: not run on an Apple
-  Containers host in this run
+  (`an emulator killed while COMMAND runs names the signal`,
+  `an emulator that
+  stops while COMMAND runs exits 5`, concurrent and SIGTERM
+  cases) — reviewer: met
+- **met** — The normal Apple Containers launch contract needs no nested runtime,
+  host socket, extra privilege or access to the worker's credentials. —
+  evidence: run as `agent` under Apple Containers on GRQ-25 (Undiscoverable
+  Facts): no runtime socket or binary, `CapEff` 0, no credential variables,
+  `/home/vibe` unreadable, and the real smoke passed; no launch flag, mount or
+  privilege changed in this diff — reviewer: met
 - **met** — Existing Floci users continue to work while dependent migration work
-  lands. — evidence: `container/Containerfile` keeps `floci` in the install
-  list; `container/toolchains/floci.sh` unchanged — reviewer: met
+  lands. — evidence: `container/toolchains/floci.sh` and the `floci` manifest
+  entry untouched — reviewer: met
 - **partial** — Relevant manifest/self-check and lifecycle tests pass; record
   real image/runtime evidence rather than claiming that a mocked installer
   proves availability. Use existing unattended verification paths for any
-  architecture unavailable on the implementing host. — evidence: `./quality.sh`
-  passed; the real runs above — reviewer: partial — reason: the full worker
-  image build (Container Build) has not run yet, and no arm64 full-image build
-  exists in CI
-- **unrequested** — `CONTAINERFILE_SIZE_CAP_BYTES` raised to 14,750 — reviewer:
-  unrequested — reason: needed to fit the required install lines; headroom under
-  the measured failure recorded in the comment
-- **unrequested** — image-wide `EMULATOR_TELEMETRY=off` ENV — reviewer:
-  unrequested — reason: also keeps telemetry off when `aws-emulator` is run
-  directly; it is not an AWS credential or endpoint variable
+  architecture unavailable on the implementing host. — evidence:
+  `worker/deno/tests/aws_emulator_run_5109_test.ts` as `agent` on this JDK-less
+  host: `FAILED | 21 passed | 1 failed | 1 ignored`, the one failure being the
+  real-JVM test failing loudly on the missing JDK (Test Plan); real-emulator
+  runs as `agent` on arm64 (Test Plan); amd64 left to Container Build —
+  reviewer: partial — reason: the unattended amd64 path (Container Build) has
+  not run on this head, and the real-JVM test cannot pass on this host (it
+  passes only where a JDK is provisioned, such as the CI integration tests job)
+- **unrequested** — the `FAILED:` line now names the emulator's exit status or
+  signal — reviewer: unrequested — reason: the last run recorded that a killed
+  emulator's failure line quoted the telemetry notice instead of the cause; the
+  guidelines require a failure reason to name the cause
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — refusal of `vibe` could be disabled via
-  `AWS_EMULATOR_RUN_REFUSED_USERS` — evidence: `container/aws-emulator-run.sh` —
-  reason: fixed in this diff (now additive only)
-- **violation** — readiness timeout did not quote the emulator's cause;
-  early-exit tail unredacted — evidence: `container/aws-emulator-run.sh` —
-  reason: fixed in this diff (redacted cause on both paths)
-- **violation** — `kill_tree` signalled pids from an earlier `ps` sweep —
-  evidence: `container/aws-emulator-run.sh` — reason: fixed in this diff (only
-  direct children; timeout's process group stops the tree)
-- **violation** — test signalled reaped pids — evidence:
-  `worker/deno/tests/aws_emulator_run_5109_test.ts` — reason: fixed in this diff
-  (`ps -p` command-line check, no signal)
-- **violation** — concurrency proven with `sleep 1` — evidence:
-  `worker/deno/tests/aws_emulator_run_5109_test.ts` — reason: fixed in this diff
-  (rendezvous on ready files)
-- **violation** — fake ignored `-t`/`-a` values, test asserted argv text —
-  evidence: `worker/deno/tests/aws_emulator_run_5109_test.ts` — reason: fixed in
-  this diff (fake applies the real precedence; test asserts telemetry=off,
-  auth=on)
-- **violation** — "Nine consequences" count stale — evidence:
-  `docs/CONTAINER.md` — reason: fixed in this diff
-- **clean** — fragments fail loud and verify checksums with no `latest` URL;
-  supply-chain pins; image-hash and integration manifests; dependency inventory;
-  no hidden files staged. Review-enforced rules checked: Australian English, a
-  unit test inheriting the host's state, macOS shell compatibility,
-  process-group signals, dummy and "how" tests.
+- **violation** — changed early-exit call site not reached by a status assertion
+  — evidence: `container/aws-emulator-run.sh:317` — reason: fixed in this diff
+  (shared `fail_emulator_gone`; early-exit test asserts
+  `emulator exited early: exit status 1;`)
+- **violation** — `exit status 1` assertion also matched `1x`/`127` — evidence:
+  `worker/deno/tests/aws_emulator_run_5109_test.ts:791` — reason: fixed in this
+  diff (terminator pinned)
+- **violation** — signal branch's named and fallback outcomes not asserted —
+  evidence: `container/aws-emulator-run.sh:212` — reason: fixed in this diff
+  (assert `killed by signal 9 (KILL)`; the unnamed case now reports
+  `exit status N`, covered by the exit-200 test)
+- **violation** — real-JVM test skipped on a host without a JDK — evidence:
+  `worker/deno/tests/aws_emulator_run_5109_test.ts:898` — reason: fixed in this
+  diff (the skip is removed; a missing JDK now fails the test with a message
+  naming the prerequisite)
+- **clean** — fail-loud cause naming and redaction, cleanup after reap, macOS
+  bash 3.2 portability, no shared `/tmp` paths, no dummy or "how" tests, skip
+  carries a reason, docs match the code, Australian English; review-enforced
+  rules checked: documentation-drift tests (not applicable), check where you
+  insert (compliant)
 
 ## Test Plan
 
-- Added `worker/deno/tests/aws_emulator_run_5109_test.ts`, an integration suite
-  listed in `worker/deno/lib/integration_test_manifest.ts`.
-  - It drives the real helper with a python+openssl fake emulator. The fake
-    mirrors the observed file layout, TLS health, `-t`/`-a` precedence and
-    SIGTERM cleanup.
-  - Cases: happy path with a hostile environment, exit propagation, not ready,
-    early exit with a redacted cause, wrong CA, emulator dying mid-run,
-    concurrent rendezvous, SIGTERM, `--timeout` 124, missing runtime, usage,
-    refusal, and smoke pass and fail.
-  - As `vibe`: 2 passed, 13 ignored, because the helper refuses the worker
-    account by design.
-  - As `agent` (`sudo -n -u agent`): 14 passed, 1 ignored (the vibe-only case).
-- `worker/deno/tests/toolchain_selfcheck_test.ts`: added `aws-cli` and
-  `aws-emulator` version-output fixtures. No existing assertion was changed or
-  removed.
-- `container_manifest_test.ts`, `containerfile_strip_test.ts`,
-  `supply_chain_gate_test.ts` and `integration_test_manifest_test.ts` pass.
-- `./quality.sh < /dev/null` gave `Result: PASSED (with skipped checks)` on the
-  final tree. The first run failed semgrep on two key-shaped test literals,
-  which are now composed at run time.
+- `worker/deno/tests/aws_emulator_run_5109_test.ts`:
+  - Added
+    `aws-emulator-run: inherited JVM option variables are replaced before
+    COMMAND runs`
+    (green on base by design: the scrub is unchanged; it fails if the unset loop
+    is removed).
+  - Added
+    `aws-emulator-run: an emulator killed while COMMAND runs names the
+    signal`
+    and
+    `aws-emulator-run: an emulator exit code above 128 with no
+    signal name is reported as an exit status`
+    (both red on base, which printed no status).
+  - Edited `aws-emulator-run: an emulator that stops while COMMAND runs exits 5`
+    and the early-exit crash test: added status assertions only; no assertion
+    removed. The die-after-ready fake can now exit with a code read from
+    `rec/exit-code` (default 1, as before).
+  - `aws-emulator-run: JVM options cannot override or leak the generated
+    identity`:
+    never skipped (no `ignore` condition added). It gains one leading assertion
+    that `java` is on `/usr/bin:/bin`, with a message naming the missing JDK;
+    the rest of the body is unchanged, so nothing is weakened.
+- As `vibe` (the real task): `ok | 2 passed | 0 failed | 21 ignored` — the
+  helper refuses `vibe` by design.
+- As `agent` (`sudo -n -u agent -H`), with this head's helper and the test file
+  unmodified, copied to a scratch dir (no network, so the Deno cache was copied
+  too): `FAILED | 21 passed | 1 failed | 1 ignored`. The ignored case is the
+  `vibe`-refusal case (not running as `vibe`). The failure is the real-JVM case,
+  which fails with the JDK-naming assertion because this host has no `java`; on
+  the base it failed here with `java: command not found`.
+- Real emulator, as `agent`, arm64 full image, this head's helper:
+  - `--smoke` → `emulator ready on https://127.0.0.1:<port>`,
+    `smoke passed: Version: 1.0.385`, exit 0, in about 5 s.
+  - Two concurrent `--smoke` runs → both exit 0, on different ports and state
+    dirs.
+  - COMMAND kills the real emulator (`pkill -KILL`) mid-run → exit 5 after 1759
+    ms, with
+    `FAILED: emulator stopped while COMMAND ran: killed by signal
+    9 (KILL); emulator log: …`.
+    No `/tmp/aws-emulator-run.*` dir or emulator process was left.
+  - As `vibe` → `FAILED: refusing to run as account 'vibe'`, exit 3.
+- `bash -n` and `shellcheck` on `container/aws-emulator-run.sh`: clean.
+- `./quality.sh < /dev/null` on the final code: every stage passed except
+  `deno tests`, with 35119 passed and 1 failed:
+  `tests/pr_summary_ci_workflow_3768_test.ts`
+  (`dns error: failed to lookup
+  address information` fetching
+  `registry.npmjs.org/minimist`). That test does not touch this diff; this
+  container has no DNS for the npm registry.
+- The post-result call site (`command-result` written, then the emulator found
+  dead) shares `fail_emulator_gone` with the tested sites but has no test of its
+  own: staging it needs the emulator to die in the window between COMMAND
+  writing its result and the 0.1 s poll, which is a race.
 
 Not done or not checked:
 
-- The full worker image has not been built in this run. Container Build will do
-  that on the PR, for amd64 only.
-- No full-image arm64 build or Apple Containers launch has been run.
-- The smoke is CLI-only.
-- The "stopped mid-run" cause line can pick the telemetry notice, which contains
-  "error", instead of a more useful line.
-- The PKCS#12 trust store was not exercised with a real JVM.
-
-## Review repair validation
-
-The helper now retains a setsid command supervisor until cleanup, including
-when the direct command exits before its background children. Cleanup sends
-TERM to the owned process group and escalates to KILL after one second. The
-supervisor retains the group identity until that cleanup; command deadlines
-return 124 and helper termination returns 143 even for TERM-resistant commands.
-All three inherited JVM option variables are cleared before setting this run's
-trust store. A real JVM regression rejects inherited credential properties and
-checks that a synthetic secret never appears in captured output.
-
-The background-child regression failed on the previous implementation. The
-integration suite now passes 17 cases; the one worker-account-only case is
-inapplicable when running as agent. Coverage includes resistant-command timeout
-and helper termination, direct-command exit 7 with a remaining child, state
-removal, JVM identity isolation, and existing TLS/readiness/concurrency cases.
-The previous process-cleanup acceptance claim is now supported by these cases.
-The registration helper is not a dummy test: Deno executes its supplied
-callbacks, which assert observable results. No test assertion was removed.
-Full-image and Apple Containers evidence remains partial as recorded above.
-Local full quality checks remain blocked by JSR dependency downloads.
-
-## Startup and stdin review repair
-
-COMMAND explicitly inherits stdin at the inner asynchronous launch. A new
-piped-script regression failed with exit 0 before the fix and now returns the
-script's exact output and exit 7. The optional pre-start version probe is
-removed, so a TERM-resistant version command cannot prevent the readiness
-budget from starting. A regression supplies that stalled version implementation
-and verifies command completion plus process/state cleanup.
-
-The canonical runtime and lifecycle contract now describes required setsid,
-retained process groups, bounded cleanup and replacement of inherited JVM
-options. The real helper suite passes 19 tests; its refused-account case is
-ignored for the ordinary account used here. The reported no-assertion location
-is the test registration wrapper, whose supplied test bodies assert outcomes;
-it is not an empty test. Full container/Apple runtime evidence remains partial
-as already documented.
+- No amd64 run of this head yet. The PR's Container Build job is the unattended
+  path for it; it runs the build-time smoke as `agent`.
+- No full image was rebuilt from this head. The arm64 runs used the installed
+  image's emulator and CLI with this head's helper.
+- Coverage carry-over: the edited test only drives `bash` subprocesses, so
+  `deno coverage` finds no covered TypeScript file and fails with
+  `No covered
+  files included in the report`. No carried TypeScript line
+  exists. The gate's skip setting lives in the operator's `.config.json`, which
+  is outside this repo.
+- The real-JVM test
+  (`JVM options cannot override or leak the generated
+  identity`) was not run
+  green here: this host has no JDK. It runs in the PR's `integration tests` CI
+  job, where a JDK is present.

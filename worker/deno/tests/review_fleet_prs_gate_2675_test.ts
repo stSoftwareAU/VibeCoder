@@ -94,6 +94,40 @@ Deno.test("noTestAdded: fleet code without a test is flagged; with a test, docs-
   );
 });
 
+Deno.test("isTestPath: shell and PowerShell test_ scripts are tests (Issue #5126)", () => {
+  assertEquals(isTestPath("tools/test_example.sh"), true);
+  assertEquals(isTestPath("tools/test_example.ps1"), true);
+  assertEquals(isTestPath("tools/example.sh"), false);
+  assertEquals(isTestPath("tools/example.ps1"), false);
+  assertEquals(isTestPath("tools/contest_example.sh"), false);
+  assertEquals(isTestPath("tools/test_dir/example.sh"), false);
+});
+
+Deno.test("existingTestChanges: shell test scripts count as edited or removed tests (Issue #5126)", () => {
+  assertEquals(
+    existingTestChanges([
+      file("tools/test_edited.sh", "modified", 40, 6),
+      file("tools/test_gone.sh", "removed", 0, 30),
+      file("tools/example.sh", "modified", 5, 5),
+    ]),
+    { removed: ["tools/test_gone.sh"], edited: ["tools/test_edited.sh"] },
+  );
+});
+
+Deno.test("noTestAdded: a changed shell test script satisfies the test requirement (Issue #5126)", () => {
+  assertEquals(
+    noTestAdded([
+      file("tools/example.sh", "modified", 10, 2),
+      file("tools/test_example.sh", "modified", 8, 0),
+    ], "fleet"),
+    false,
+  );
+  assertEquals(
+    noTestAdded([file("tools/example.sh", "modified", 10, 2)], "fleet"),
+    true,
+  );
+});
+
 Deno.test("authorKind: Dependabot and the fleet accounts only", () => {
   const fleet = new Set(["stservice", "VibeCoderST"]);
   assertEquals(authorKind("app/dependabot", fleet, undefined), "dependabot");

@@ -48,15 +48,16 @@ const TRUSTED_ASSOCIATIONS: ReadonlySet<string> = new Set([
   "MEMBER",
   "COLLABORATOR",
 ]);
-// Test files across the fleet's languages: Deno/TS, JS, Python, Go, Rust
-// integration tests, Java/Kotlin. Inline Rust #[cfg(test)] modules cannot be
-// seen from a path; the model review checks those.
+// Test files across the fleet's languages: Deno/TS, JS, Python, shell,
+// PowerShell, Go, Rust integration tests, Java/Kotlin. Inline Rust
+// #[cfg(test)] modules cannot be seen from a path; the model review checks
+// those.
 const TEST_PATH_PATTERNS: RegExp[] = [
   /(^|\/)(tests?|__tests__|spec|specs)\//,
   /(^|\/)src\/test\//,
   /[._-](test|spec)\.[cm]?[jt]sx?$/,
   /_test\.(go|py|rs|sh|ps1)$/,
-  /(^|\/)test_[^/]+\.py$/,
+  /(^|\/)test_[^/]+\.(py|sh|ps1)$/,
   /\.(Tests?)\.ps1$/,
   /Test\.(java|kt)$/,
 ];
