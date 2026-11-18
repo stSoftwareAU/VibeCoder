@@ -32,6 +32,7 @@
  */
 
 import { parseClosureEntries } from "./acceptance_criteria_gate.ts";
+import { extractClosingIssueNumbers } from "./pr_body.ts";
 import { splitMarkdownCode } from "./markdown_code_spans.ts";
 
 /** Longest criterion text quoted back in a comment or PR note. */
@@ -192,6 +193,32 @@ export function extractPartOfIssueNumbers(prBody: string): number[] {
     }
   }
   return [...numbers];
+}
+
+/**
+ * Whether a merged PR names `issueNumber` only as `Part of #N`: a `Part of`
+ * reference names it and no closing keyword does (Issue #5135). The PR left
+ * that issue unfinished on purpose, so neither the merged-PR closers nor the
+ * claim scan may close or block it on the strength of its `(Issue #N)` title.
+ * A closing keyword naming the issue still wins.
+ */
+export function namesIssueOnlyAsPartOf(
+  refs: { closingRefs?: readonly number[]; partOfRefs?: readonly number[] },
+  issueNumber: number,
+): boolean {
+  return (refs.partOfRefs ?? []).includes(issueNumber) &&
+    !(refs.closingRefs ?? []).includes(issueNumber);
+}
+
+/** {@link namesIssueOnlyAsPartOf} read straight from a merged PR body (Issue #5135). */
+export function bodyNamesIssueOnlyAsPartOf(
+  prBody: string,
+  issueNumber: number,
+): boolean {
+  return namesIssueOnlyAsPartOf({
+    closingRefs: extractClosingIssueNumbers(prBody),
+    partOfRefs: extractPartOfIssueNumbers(prBody),
+  }, issueNumber);
 }
 
 /** Whether the closure block requires withholding the issue close. */
