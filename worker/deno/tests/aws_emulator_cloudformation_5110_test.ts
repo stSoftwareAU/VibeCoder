@@ -258,6 +258,26 @@ exit 255
   },
 );
 
+Deno.test(
+  "aws-emulator-cloudformation 5110: an aws CLI that succeeds with no data fails the run on its first data assertion",
+  async () => {
+    await withSandbox(async (sb) => {
+      await writeFake(sb, "aws", "exit 0\n");
+      const r = await runScript(
+        sb,
+        `${sb.bin}:${SYSTEM_PATH}`,
+        insideEnv(sb, "https://127.0.0.1:45871"),
+      );
+      assertEquals(r.code, 1, r.output);
+      assertStringIncludes(r.output, "::error::SSM round trip value");
+      assert(
+        !r.output.includes("PASS"),
+        `an empty response must not be reported as a pass:\n${r.output}`,
+      );
+    });
+  },
+);
+
 // The real end-to-end run. As with the 5109 suite, the helper refuses the
 // worker account `vibe` and uid 0 by design, so this case is ignored for both
 // and runs in CI as an ordinary user.
