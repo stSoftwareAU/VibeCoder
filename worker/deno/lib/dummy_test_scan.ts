@@ -23,7 +23,10 @@
  * scan never guesses at lines it cannot see. A callback passed by name
  * (`Deno.test("x", check)`, `fn: check`), or through a registration helper's
  * callback parameter, is judged by the body of the function it names; one the
- * diff cannot resolve is a note, never a finding. String and comment contents
+ * diff cannot resolve is a note, never a finding. An inline test body that
+ * calls a parameter of the enclosing helper, and does not assert enough by
+ * itself, is judged at each call of that helper (the helper's own assertions
+ * count), and is a note when no call is in view. String and comment contents
  * are masked before any pattern runs, so an assertion named inside a fixture
  * string does not count. Every pattern is linear (no nested quantifiers).
  *
@@ -609,6 +612,91 @@ function calleesIn(body: string, lang: Lang): string[] {
   return [...out];
 }
 
+/** What a body's calls add: the assertions of the functions it calls. */
+interface Delegation {
+  out: Strength[];
+  /** A call out of view in an edited file: it may assert, so a note. */
+  unseen: boolean;
+}
+
+const NONE: Delegation = { out: [], unseen: false };
+const NO_SKIP: ReadonlySet<string> = new Set();
+
+/**
+ * What the calls in `body` add: the assertions of each function it calls that
+ * is defined in view, one level deep and then one more. A callee named in
+ * `skip` is ignored here (a parameter the caller judges at its own call
+ * sites); a call out of view is unseen in an edited file.
+ */
+function delegatedAssertions(
+  body: string,
+  lang: Lang,
+  defs: Map<string, string | null>,
+  isNew: boolean,
+  depth: number,
+  skip: ReadonlySet<string>,
+): Delegation {
+  const out: Strength[] = [];
+  let unseen = false;
+  for (const name of calleesIn(body, lang)) {
+    if (skip.has(name)) continue;
+    const helper = defs.get(name);
+    if (helper === undefined || helper === null) {
+      if (!isNew || helper === null) unseen = true;
+      continue;
+    }
+    out.push(...assertionsIn(helper, lang));
+    if (depth < 2) {
+      const deeper = delegatedAssertions(
+        helper,
+        lang,
+        defs,
+        isNew,
+        depth + 1,
+        NO_SKIP,
+      );
+      out.push(...deeper.out);
+      unseen ||= deeper.unseen;
+    }
+  }
+  return { out, unseen };
+}
+
+/** A registration helper's callback positions one test registration passes. */
+interface Registration {
+  indices: number[];
+  /** The wrapper's own assertions, judged with each call of the helper. */
+  wrapper: Delegation;
+}
+
+/** An inline test body that calls a parameter of an enclosing helper. */
+interface Candidate {
+  h: number;
+  file: string;
+  isNew: boolean;
+  open: number;
+  close: number;
+  /** Per helper: the positions of the parameters the body calls. */
+  byHelper: Map<string, { indices: number[]; names: Set<string> }>;
+}
+
+/**
+ * Add a registration to a helper's list. A pass-through registration (wrapper
+ * NONE) at a position already listed is not added twice, so a helper with many
+ * registrations costs one judgement per call.
+ */
+function addRegistration(
+  regs: Map<string, Registration[]>,
+  helper: string,
+  reg: Registration,
+): void {
+  const list = regs.get(helper) ?? [];
+  const listed = reg.wrapper === NONE &&
+    list.some((r) => r.wrapper === NONE && r.indices[0] === reg.indices[0]);
+  if (!listed) list.push(reg);
+  regs.set(helper, list);
+}
+
 /** Longest return-type annotation the body search steps over. */
 const MAX_RETURN_TYPE_CHARS = 2000;
 
@@ -932,7 +1020,10 @@ function problemFor(rule: DummyTestRule): string {
  * helper's assertions; in an edited file a call out of view makes it a note.
  * A callback registered by name, or through a registration helper's callback
  * parameter (judged at each call of that helper), is judged by the function it
- * names; a callback the diff cannot resolve is a note.
+ * names; a callback the diff cannot resolve is a note. An inline test body that
+ * calls a parameter of the enclosing helper, and does not assert enough by
+ * itself, is judged at each call of that helper, with the wrapper's own
+ * assertions counted; with no call in view it is a note.
  */
 export function scanDummyTests(diff: string): DummyTestScan {
   hunkBrackets = null;
@@ -961,8 +1052,15 @@ export function scanDummyTests(diff: string): DummyTestScan {
 
   const hunks = parseHunks(diff);
   const definitions = new Map<string, Map<string, string | null>>();
-  // Per file: a registration helper's name to the position of its callback.
-  const registrars = new Map<string, Map<string, number>>();
+  // Per file: a registration helper's name to its registrations, each with
+  // the callback positions it passes and the wrapper's own assertions
+  // (Issue #5233).
+  const registrars = new Map<string, Map<string, Registration[]>>();
+  // Inline test bodies that call a helper's parameter, judged after the first
+  // pass; those whose own assertions do not stand alone are deferred to the
+  // helper's calls, keyed `${hunk}:${open}` to the helpers they are judged by.
+  const candidates: Candidate[] = [];
+  const deferredRegs = new Map<string, string[]>();
   // Each hunk is masked and indexed once; the second pass reuses both, so
   // its bracket lookups hit the same table.
   const maskedByHunk: string[] = [];
@@ -980,22 +1078,84 @@ export function scanDummyTests(diff: string): DummyTestScan {
     definitionsIn(masked, lang, defs);
     definitions.set(hunk.file, defs);
     if (lang === "ts") {
-      const regs = registrars.get(hunk.file) ?? new Map<string, number>();
+      const regs = registrars.get(hunk.file) ??
+        new Map<string, Registration[]>();
       const testFile = TEST_PATH.test(hunk.file);
       for (const m of masked.matchAll(TS_TEST_START)) {
         if (!m[1]!.startsWith("Deno.") && !testFile) continue;
+        if (m[1]!.includes("describe")) continue;
         const open = (m.index ?? 0) + m[0].length - 1;
         const cb = callbackName(masked, open);
-        const reg = cb === null ? null : registrarOf(scope, masked, open, cb);
-        if (reg !== null) regs.set(reg.helper, reg.index);
+        if (cb === null) {
+          // An inline body may call a parameter of the helper it sits in.
+          const close = closingBracket(masked, open);
+          if (close < 0) continue;
+          const byHelper: Candidate["byHelper"] = new Map();
+          for (const name of calleesIn(masked.slice(open, close + 1), "ts")) {
+            const hit = registrarOf(scope, masked, open, name);
+            if (hit === null) continue;
+            const entry = byHelper.get(hit.helper) ??
+              { indices: [], names: new Set<string>() };
+            entry.indices.push(hit.index);
+            entry.names.add(name);
+            byHelper.set(hit.helper, entry);
+          }
+          if (byHelper.size > 0) {
+            candidates.push({
+              h,
+              file: hunk.file,
+              isNew: hunk.isNew,
+              open,
+              close,
+              byHelper,
+            });
+          }
+          continue;
+        }
+        const reg = registrarOf(scope, masked, open, cb);
+        if (reg !== null) {
+          addRegistration(regs, reg.helper, {
+            indices: [reg.index],
+            wrapper: NONE,
+          });
+        }
       }
       registrars.set(hunk.file, regs);
     }
   }
 
-  // Registrations whose callback is a helper's parameter: each one needs a
-  // call of that helper in view, or it is a note at its registration.
-  const pending: Array<{ file: string; line: number; helper: string }> = [];
+  // A candidate whose own assertions do not stand alone is judged at each call
+  // of the helper it calls, with its own assertions counted (Issue #5233). The
+  // definitions of every file are complete here, so the lookup is whole.
+  for (const c of candidates) {
+    const body = maskedByHunk[c.h]!.slice(c.open, c.close + 1);
+    const skip = new Set<string>();
+    for (const entry of c.byHelper.values()) {
+      for (const name of entry.names) skip.add(name);
+    }
+    const deleg = delegatedAssertions(
+      body,
+      "ts",
+      definitions.get(c.file)!,
+      c.isNew,
+      1,
+      skip,
+    );
+    const own = [...assertionsIn(body, "ts"), ...deleg.out];
+    if (own.length > 0 && !own.every((s) => s === "weak")) continue;
+    const wrapper: Delegation = { out: own, unseen: deleg.unseen };
+    const regs = registrars.get(c.file) ?? new Map<string, Registration[]>();
+    registrars.set(c.file, regs);
+    for (const [helper, entry] of c.byHelper) {
+      addRegistration(regs, helper, { indices: entry.indices, wrapper });
+    }
+    deferredRegs.set(`${c.h}:${c.open}`, [...c.byHelper.keys()]);
+  }
+
+  // Registrations whose callback is a helper's parameter, or whose body calls
+  // one: each needs a call of one of its helpers in view, or it is a note at
+  // its registration.
+  const pending: Array<{ file: string; line: number; helpers: string[] }> = [];
   const called = new Map<string, Set<string>>();
 
   for (const [h, hunk] of hunks.entries()) {
@@ -1005,29 +1165,6 @@ export function scanDummyTests(diff: string): DummyTestScan {
     const scope = scopeByHunk[h]!;
     scanHunk(masked);
     const defs = definitions.get(hunk.file)!;
-    // What a body's calls add: the helpers' own assertions, one level deep
-    // and then one more; a call out of view in an edited file is unseen.
-    const delegated = (
-      body: string,
-      depth: number,
-    ): { out: Strength[]; unseen: boolean } => {
-      const out: Strength[] = [];
-      let unseen = false;
-      for (const name of calleesIn(body, lang)) {
-        const helper = defs.get(name);
-        if (helper === undefined || helper === null) {
-          if (!hunk.isNew || helper === null) unseen = true;
-          continue;
-        }
-        out.push(...assertionsIn(helper, lang));
-        if (depth < 2) {
-          const deeper = delegated(helper, depth + 1);
-          out.push(...deeper.out);
-          unseen ||= deeper.unseen;
-        }
-      }
-      return { out, unseen };
-    };
     const testFile = TEST_PATH.test(hunk.file);
     const starts: number[] = [];
     let offset = 0;
@@ -1043,7 +1180,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
       bodyStart: number,
       bodyEnd: number,
       lastLine: number,
-      extraStrong: boolean,
+      extra: Delegation,
       callback: string | null,
     ) => {
       const span = hunk.lines.slice(declLine, lastLine + 1);
@@ -1067,11 +1204,18 @@ export function scanDummyTests(diff: string): DummyTestScan {
         body = named;
       }
       const found = assertionsIn(body, lang);
-      if (extraStrong) found.push("strong");
-      const helpers = delegated(body, 1);
+      found.push(...extra.out);
+      const helpers = delegatedAssertions(
+        body,
+        lang,
+        defs,
+        hunk.isNew,
+        1,
+        NO_SKIP,
+      );
       found.push(...helpers.out);
       if (found.length === 0) {
-        if (helpers.unseen) note(file, line, "unseen");
+        if (helpers.unseen || extra.unseen) note(file, line, "unseen");
         else add(file, line, "no-assertion");
       } else if (found.every((s) => s === "weak")) {
         add(file, line, "success-only");
@@ -1111,7 +1255,16 @@ export function scanDummyTests(diff: string): DummyTestScan {
         if (open < 0) continue;
         const close = closingBracket(masked, open);
         const last = close < 0 ? hunk.lines.length - 1 : lineAt(index, close);
-        judge(first, fnLine, open, close, last, shouldPanic, null);
+        const panic: Delegation = { out: ["strong"], unseen: false };
+        judge(
+          first,
+          fnLine,
+          open,
+          close,
+          last,
+          shouldPanic ? panic : NONE,
+          null,
+        );
       }
     } else {
       for (const m of masked.matchAll(TS_TEST_START)) {
@@ -1144,16 +1297,18 @@ export function scanDummyTests(diff: string): DummyTestScan {
         if (skipToken) continue; // a skipped test is judged by the rule above
         const cb = callbackName(masked, open);
         const reg = cb === null ? null : registrarOf(scope, masked, open, cb);
-        if (reg !== null) {
-          // The callback is a helper's parameter: its calls are judged.
+        const deferred = deferredRegs.get(`${h}:${open}`);
+        if (reg !== null || deferred !== undefined) {
+          // The callback is a helper's parameter, or the body calls one: each
+          // call of that helper is judged.
           if (hunk.lines.slice(declLine, last + 1).some((l) => l.added)) {
             pending.push({
               file: hunk.file,
               line: decl.line,
-              helper: reg.helper,
+              helpers: reg !== null ? [reg.helper] : deferred!,
             });
           }
-        } else judge(declLine, declLine, open, close, last, false, cb);
+        } else judge(declLine, declLine, open, close, last, NONE, cb);
       }
       if (testFile) {
         hunk.lines.forEach((l, k) => {
@@ -1168,8 +1323,8 @@ export function scanDummyTests(diff: string): DummyTestScan {
         called.set(hunk.file, calls);
         for (const m of masked.matchAll(CALL_NAME)) {
           const helper = m[1]!;
-          const paramAt = regs.get(helper);
-          if (paramAt === undefined) continue;
+          const list = regs.get(helper);
+          if (list === undefined) continue;
           const at = m.index ?? 0;
           if (FUNCTION_HEAD.test(masked.slice(Math.max(0, at - 40), at))) {
             continue;
@@ -1179,28 +1334,40 @@ export function scanDummyTests(diff: string): DummyTestScan {
           const declLine = lineAt(index, open);
           const close = closingBracket(masked, open);
           const last = close < 0 ? hunk.lines.length - 1 : lineAt(index, close);
-          const arg = flatArgs(masked, open)?.[paramAt]?.flat;
-          if (arg === undefined) {
-            if (hunk.lines.slice(declLine, last + 1).some((l) => l.added)) {
-              note(hunk.file, hunk.lines[declLine]!.line, "unseen");
+          const inView = hunk.lines.slice(declLine, last + 1).some((l) =>
+            l.added
+          );
+          const args = flatArgs(masked, open);
+          for (const reg of list) {
+            const picked = reg.indices.map((k) => args?.[k]?.flat);
+            if (picked.some((arg) => arg === undefined)) {
+              if (inView) note(hunk.file, hunk.lines[declLine]!.line, "unseen");
+            } else if (picked.length === 1) {
+              const arg = picked[0]!;
+              judge(
+                declLine,
+                declLine,
+                open,
+                close,
+                last,
+                reg.wrapper,
+                REF.test(arg) ? arg : null,
+              );
+            } else if (picked.some((arg) => REF.test(arg!))) {
+              // Several callbacks, one named: not resolved here, so a note.
+              if (inView) note(hunk.file, hunk.lines[declLine]!.line, "unseen");
+            } else {
+              judge(declLine, declLine, open, close, last, reg.wrapper, null);
             }
-          } else {
-            judge(
-              declLine,
-              declLine,
-              open,
-              close,
-              last,
-              false,
-              REF.test(arg) ? arg : null,
-            );
           }
         }
       }
     }
   }
   for (const p of pending) {
-    if (!called.get(p.file)?.has(p.helper)) note(p.file, p.line, "unseen");
+    if (!p.helpers.some((helper) => called.get(p.file)?.has(helper))) {
+      note(p.file, p.line, "unseen");
+    }
   }
   hunkBrackets = null;
   return { findings, notes };
