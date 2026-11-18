@@ -5604,7 +5604,10 @@ gates do (see that bullet):
      `.markdownlint.*`), using the repo's `node_modules/.bin/markdownlint-cli2`
      first, else the one on `PATH`, run with `--no-globs` so the config's
      `globs` do not add files beyond the pushed paths (the config's rules and
-     `ignores` still apply) (Issue #5238);
+     `ignores` still apply) (Issue #5238). The negated `globs` entries (`!…`
+     or `#…`) of the root `.markdownlint-cli2.jsonc` or `.yaml` config are
+     passed on the command line too, so a path the config excludes stays
+     excluded; a `.cjs` or `.mjs` config's globs are not read;
    - `cspell` on changed `.md`, `.markdown`, `.html`, `.js`, `.ts`, `.css` and
      `.sh` files (the Spelling workflow's glob) when the repo tracks a cspell
      config and its own CI runs cspell: a tracked workflow under
