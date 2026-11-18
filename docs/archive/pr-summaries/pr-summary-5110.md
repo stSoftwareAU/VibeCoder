@@ -186,10 +186,20 @@ flowchart LR
 - `worker/deno/tests/supply_chain_gate_test.ts`: passes after regenerating
   `docs/audits/dependency-inventory.md`.
 - The real emulator run is in Evidence.
-- `./quality.sh`: the first full run failed `deno tests` on two cases.
-  - The stale dependency inventory is fixed.
-  - `pr_summary_ci_workflow_3768_test.ts` failed with a DNS error fetching
-    `registry.npmjs.org`, which is environmental.
+- `./quality.sh` ran twice. Every stage passed except `deno tests`
+  (`config integration` and `checkov` were skipped).
+  - First run: two failures. The stale dependency inventory is fixed.
+  - Second run: 35117 passed, 2 failed.
+    `worker/deno/tests/best_practices_template_test.ts` ("AWS-emulator
+    pre-check skips filing and logs why") expected "floci" in the log line.
+    The log line is fixed and the test now passes when run on its own.
+  - Both runs: `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` failed
+    with `dns error: failed to lookup address information` fetching
+    `registry.npmjs.org`. This is an environmental network fault, not this
+    change.
+  - The full gate was not re-run after the log fix, for lack of run budget.
+
+<!-- vibe-quality-gate-skipped reason="final full re-run skipped for budget after a one-line log-string fix; the affected test passes when run on its own; the remaining failure is a DNS fault fetching npm" -->
 
 Not done: the script was not run as `agent` in a fresh container. CI has not run
 on this branch yet. CI's `aws` CLI is not pinned to the container's 2.40.3.

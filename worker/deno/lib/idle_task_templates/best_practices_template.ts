@@ -1155,7 +1155,7 @@ export function createBestPracticesTemplate(
         );
       } else if (aws.emulatorConfigured) {
         logger.info(
-          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — a workflow runs Floci or the official AWS Emulator`,
+          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — a workflow runs floci/floci or the official AWS Emulator`,
         );
       } else if (
         await hasAwsEmulatorWaiver(awsRepoPath, aws.awsEvidence, blameFileFn)
