@@ -19,6 +19,7 @@ import {
   packageJsonUsesAws,
   pomXmlUsesAws,
   requirementsUsesAws,
+  workflowRunsAwsEmulator,
   workflowRunsFloci,
 } from "../lib/aws_emulator_in_ci_check.ts";
 import { parse as parseYaml } from "@std/yaml/parse";
@@ -734,4 +735,121 @@ Deno.test("workflowRunsFloci - no jobs does not throw and returns false", () => 
   assertEquals(workflowRunsFloci({}), false);
   assertEquals(workflowRunsFloci(null), false);
   assertEquals(workflowRunsFloci("not a doc"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Official AWS Emulator (Issue #5110) — workflowRunsAwsEmulator
+// ---------------------------------------------------------------------------
+
+Deno.test("workflowRunsAwsEmulator - step runs pinned install fragment via sudo env", () => {
+  const doc = parseYaml(
+    `jobs:
+  test:
+    steps:
+      - run: sudo env X=1 bash container/toolchains/aws-emulator.sh
+`,
+  );
+  assert(workflowRunsAwsEmulator(doc));
+});
+
+Deno.test("workflowRunsAwsEmulator - step runs aws-emulator-run wrapper", () => {
+  const doc = parseYaml(
+    `jobs:
+  test:
+    steps:
+      - run: aws-emulator-run -- ./t.sh
+`,
+  );
+  assert(workflowRunsAwsEmulator(doc));
+});
+
+Deno.test("workflowRunsAwsEmulator - path ending in aws-emulator-run in command position counts", () => {
+  const doc = parseYaml(
+    `jobs:
+  test:
+    steps:
+      - run: /usr/local/bin/aws-emulator-run ./t.sh
+`,
+  );
+  assert(workflowRunsAwsEmulator(doc));
+});
+
+Deno.test("workflowRunsAwsEmulator - real .github/workflows/aws-emulator.yml counts", async () => {
+  const text = await Deno.readTextFile(
+    new URL("../../../.github/workflows/aws-emulator.yml", import.meta.url),
+  );
+  assert(workflowRunsAwsEmulator(parseYaml(text)));
+});
+
+Deno.test("workflowRunsAwsEmulator - echo aws-emulator-run does not count", () => {
+  const doc = parseYaml(
+    `jobs:
+  test:
+    steps:
+      - run: echo aws-emulator-run
+`,
+  );
+  assertEquals(workflowRunsAwsEmulator(doc), false);
+});
+
+Deno.test("workflowRunsAwsEmulator - comment line naming aws-emulator-run does not count", () => {
+  const doc = parseYaml(
+    `jobs:
+  test:
+    steps:
+      - run: |
+          # aws-emulator-run
+          echo hi
+`,
+  );
+  assertEquals(workflowRunsAwsEmulator(doc), false);
+});
+
+Deno.test("workflowRunsAwsEmulator - step name only does not count", () => {
+  const doc = parseYaml(
+    `jobs:
+  test:
+    steps:
+      - name: aws-emulator-run
+        run: echo hi
+`,
+  );
+  assertEquals(workflowRunsAwsEmulator(doc), false);
+});
+
+Deno.test("workflowRunsAwsEmulator - no jobs does not throw and returns false", () => {
+  assertEquals(workflowRunsAwsEmulator({}), false);
+  assertEquals(workflowRunsAwsEmulator(null), false);
+  assertEquals(workflowRunsAwsEmulator("not a doc"), false);
+});
+
+Deno.test("checkAwsEmulatorInCI - CloudFormation template with AWS Emulator workflow, then without it", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(
+      root,
+      "infra/cloudformation/bucket.yaml",
+      `AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+`,
+    );
+    const workflowPath = ".github/workflows/aws-emulator.yml";
+    const workflowText = await Deno.readTextFile(
+      new URL("../../../" + workflowPath, import.meta.url),
+    );
+    await writeFile(root, workflowPath, workflowText);
+
+    const withWorkflow = await checkAwsEmulatorInCI(root);
+    assertEquals(withWorkflow.usesAws, true);
+    assertEquals(withWorkflow.emulatorConfigured, true);
+
+    await Deno.remove(`${root}/${workflowPath}`);
+    const withoutWorkflow = await checkAwsEmulatorInCI(root);
+    assertEquals(withoutWorkflow.usesAws, true);
+    assertEquals(withoutWorkflow.emulatorConfigured, false);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });

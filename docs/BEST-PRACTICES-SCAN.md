@@ -342,9 +342,14 @@ below rather than the LLM-only checks above.
 `boto3`/`botocore`/`aiobotocore` in `requirements*.txt`, a
 CloudFormation template, or any `.tf` file.
 
-**Pass condition.** Any GitHub Actions workflow runs the `floci/floci`
-image — as a service container, a job container, a `docker://` step,
-or a `docker run` step.
+**Pass condition.** Any GitHub Actions workflow runs an emulator: the
+`floci/floci` image — as a service container, a job container, a
+`docker://` step, or a `docker run` step — or the official AWS Emulator,
+via a `run:` step whose command word is `aws-emulator-run` (or a path
+ending `/aws-emulator-run`), or that runs the pinned install fragment
+`container/toolchains/aws-emulator.sh`, directly or via `bash`/`sh`.
+An `echo aws-emulator-run`, a comment, or a mention in a string does not
+count.
 
 **No finding is filed** when the repo does not use AWS, when no
 workflow loaded (status unknown — the same fail-safe reasoning as the
