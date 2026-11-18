@@ -168,6 +168,7 @@ fi
 
 STATE=""
 EMU_PID=""
+EMU_EXIT_NOTE=""
 CMD_PID=""
 STARTED=0
 CLEANUP_FAILED=0
@@ -191,6 +192,33 @@ emulator_cause() {
         joined="${joined:+${joined} | }${line}"
     done <<<"${picked}"
     printf '%s' "${joined:0:600}"
+}
+
+# Once the emulator has died, sets EMU_EXIT_NOTE to `exit status N` or
+# `killed by signal K (NAME)` after reaping it, and clears EMU_PID so the
+# cleanup trap never signals a reused pid. Leaves EMU_EXIT_NOTE empty while the
+# emulator still runs. It must not be called inside $(...): the reap and the
+# EMU_PID / EMU_EXIT_NOTE updates would be lost with the subshell.
+emulator_exit_status() {
+    local st=0 sig name=""
+    EMU_EXIT_NOTE=""
+    [[ -n "${EMU_PID}" ]] || return 0
+    if kill -0 "${EMU_PID}" 2>/dev/null; then
+        return 0
+    fi
+    wait "${EMU_PID}" 2>/dev/null || st=$?
+    EMU_PID=""
+    if [[ ${st} -le 128 ]]; then
+        EMU_EXIT_NOTE="exit status ${st}"
+    else
+        sig=$((st - 128))
+        name="$(kill -l "${sig}" 2>/dev/null || true)"
+        if [[ -n "${name}" ]]; then
+            EMU_EXIT_NOTE="killed by signal ${sig} (${name})"
+        else
+            EMU_EXIT_NOTE="killed by signal ${sig}"
+        fi
+    fi
 }
 
 # shellcheck disable=SC2329 # reached via trap or recursion
@@ -277,7 +305,9 @@ reason="no port directory under ${STATE}/home/.aws/emulator"
 deadline=$((SECONDS + READY_TIMEOUT))
 while :; do
     if ! kill -0 "${EMU_PID}" 2>/dev/null; then
-        fail "emulator exited early: $(emulator_cause)"
+        emulator_exit_status
+        cause="$(emulator_cause)"
+        fail "emulator exited early${EMU_EXIT_NOTE:+: ${EMU_EXIT_NOTE}}${cause:+; emulator log: ${cause}}"
         EMU_PID=""
         exit 5
     fi
@@ -380,7 +410,9 @@ deadline=$((SECONDS + RUN_TIMEOUT))
 rc=0
 while [[ ! -f "${STATE}/command-result" ]]; do
     if ! kill -0 "${EMU_PID}" 2>/dev/null; then
-        fail "emulator stopped while COMMAND ran: $(emulator_cause)"
+        emulator_exit_status
+        cause="$(emulator_cause)"
+        fail "emulator stopped while COMMAND ran${EMU_EXIT_NOTE:+: ${EMU_EXIT_NOTE}}${cause:+; emulator log: ${cause}}"
         exit 5
     fi
     if ! kill -0 "${CMD_PID}" 2>/dev/null; then
@@ -394,7 +426,9 @@ while [[ ! -f "${STATE}/command-result" ]]; do
 done
 read -r rc < "${STATE}/command-result"
 if ! kill -0 "${EMU_PID}" 2>/dev/null; then
-    fail "emulator stopped while COMMAND ran: $(emulator_cause)"
+    emulator_exit_status
+    cause="$(emulator_cause)"
+    fail "emulator stopped while COMMAND ran${EMU_EXIT_NOTE:+: ${EMU_EXIT_NOTE}}${cause:+; emulator log: ${cause}}"
     rc=5
 fi
 exit "${rc}"

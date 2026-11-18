@@ -650,6 +650,14 @@ const HAS_TIMEOUT = ["timeout", "gtimeout"].some((name) =>
   }).outputSync().success
 );
 
+const HAS_JAVA = new Deno.Command("sh", {
+  args: ["-c", "command -v java"],
+  env: { PATH: SYSTEM_PATH },
+  clearEnv: true,
+  stdout: "null",
+  stderr: "null",
+}).outputSync().success;
+
 testAsOrdinaryUser(
   "aws-emulator-run: SIGTERM stops the command, the emulator and the state dir",
   async () => {
@@ -776,6 +784,30 @@ testAsOrdinaryUser(
         "[aws-emulator-run] FAILED: emulator stopped while COMMAND ran:",
       );
       assertStringIncludes(r.stderr, "worker thread died");
+      assertStringIncludes(r.stderr, "exit status 1");
+      await assertCleanedUp(fx);
+    });
+  },
+);
+
+testAsOrdinaryUser(
+  "aws-emulator-run: an emulator killed while COMMAND runs names the signal",
+  async () => {
+    await withFixture("normal", {}, async (fx) => {
+      const r = await runHelper(fx, [
+        "--ready-timeout",
+        "30",
+        "--",
+        "bash",
+        "-c",
+        `kill -KILL "$(cat "${fx.rec}/pid")"; sleep 2`,
+      ]);
+      assertEquals(r.code, 5, r.stderr);
+      assertStringIncludes(
+        r.stderr,
+        "[aws-emulator-run] FAILED: emulator stopped while COMMAND ran:",
+      );
+      assertStringIncludes(r.stderr, "killed by signal 9");
       await assertCleanedUp(fx);
     });
   },
@@ -829,6 +861,41 @@ testAsOrdinaryUser(
       assertEquals((r.stdout + r.stderr).includes(secret), false);
       assertEquals(r.code, 0, r.stderr);
       assertStringIncludes(r.stdout, "EMULATOR");
+      await assertCleanedUp(fx);
+    });
+  },
+  !HAS_JAVA,
+); // no JDK on PATH: the JVM-free case below still checks the scrub
+
+testAsOrdinaryUser(
+  "aws-emulator-run: inherited JVM option variables are replaced before COMMAND runs",
+  async () => {
+    await withFixture("normal", {}, async (fx) => {
+      const secret = "synthetic-" + "credential-canary";
+      const r = await runHelper(
+        fx,
+        [
+          "--",
+          "bash",
+          "-c",
+          `printf "tool=%s\\n" "\${JAVA_TOOL_OPTIONS-}"; printf "underscore=%s\\n" "\${_JAVA_OPTIONS-unset}"; printf "jdk=%s\\n" "\${JDK_JAVA_OPTIONS-unset}"`,
+        ],
+        {
+          JAVA_TOOL_OPTIONS: `-Daws.secretAccessKey=${secret}`,
+          _JAVA_OPTIONS: `-Daws.accessKeyId=caller`,
+          JDK_JAVA_OPTIONS: `-Daws.secretAccessKey=${secret}`,
+        },
+      );
+      assertEquals((r.stdout + r.stderr).includes(secret), false);
+      assertEquals(r.code, 0, r.stderr);
+      assertStringIncludes(r.stdout, "underscore=unset");
+      assertStringIncludes(r.stdout, "jdk=unset");
+      const toolLine = r.stdout.split("\n").find((line) =>
+        line.startsWith("tool=")
+      ) ?? "";
+      assertStringIncludes(toolLine, "-Djavax.net.ssl.trustStore=");
+      assertStringIncludes(toolLine, "truststore.p12");
+      assertStringIncludes(toolLine, "-Djavax.net.ssl.trustStoreType=PKCS12");
       await assertCleanedUp(fx);
     });
   },
