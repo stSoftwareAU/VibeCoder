@@ -199,6 +199,12 @@ function visitReleaseAge(
   }
   if (typeof node !== "object" || node === null) return;
   const record = node as Record<string, unknown>;
+  if (Object.hasOwn(record, "stabilityDays")) {
+    problems.push(`${path || "top-level"}.stabilityDays is a deprecated alias for minimumReleaseAge; remove it and use a validated minimumReleaseAge instead`);
+  }
+  if (PACKAGE_RULE_PATH.test(path) && Object.hasOwn(record, "packageRules")) {
+    problems.push(`${path}.packageRules nests package rules; Renovate merges parent age and child package names, which can widen a first-party exemption — flatten the rules explicitly`);
+  }
   if (Object.hasOwn(record, "minimumReleaseAge")) {
     checkReleaseAge(record, path, problems);
   }
