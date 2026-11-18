@@ -2258,7 +2258,9 @@ watchdog_reap_on_deadline() {
     fi
     waited=$((SECONDS - started))
   done
-  kill -0 "${client_pid}" 2>/dev/null || return 0
+  if [[ -z "${early_reap_unfinished}" ]]; then
+    kill -0 "${client_pid}" 2>/dev/null || return 0
+  fi
 
   local reap_reason
   if [[ -n "${early_reap_unfinished}" ]]; then
@@ -2398,9 +2400,14 @@ HOST_DISK_REFRESH_PID=$!
 status=0
 wait_for_child || status=$?
 
-# The client is gone, so the watchdog has nothing left to guard, and the
-# host-disk refresher (Issue #1691) nobody left to read for.
-kill "${WATCHDOG_PID}" 2>/dev/null || true
+# A reap marker authorises cleanup independently of client liveness. The
+# reaper can kill the client before finishing its bounded helper cleanup.
+# Keep that watchdog alive until cleanup finishes; otherwise stop idle polling.
+if [[ -s "${WEDGE_MARKER}" ]]; then
+  wait "${WATCHDOG_PID}" 2>/dev/null || true
+else
+  kill "${WATCHDOG_PID}" 2>/dev/null || true
+fi
 kill "${HOST_DISK_REFRESH_PID}" 2>/dev/null || true
 
 # The capture is only evidence once the copier has drained the client's stderr,
