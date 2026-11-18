@@ -258,8 +258,8 @@ function pushedBranches(refs: readonly PrePushRef[]): string[] | undefined {
  * checkout. Sorted and unique. `includeDeleted` retains all touched paths
  * (unfiltered by the working tree) for configuration invalidation; callers
  * must filter execution targets separately. It is also the list the CI cargo
- * trigger uses (Issue #5169), so a deleted Rust-relevant path still runs CI's
- * cargo checks.
+ * and cargo-deny triggers use (Issue #5169), so a deleted or renamed-away
+ * Rust-relevant path or cargo-deny input still runs those checks.
  *
  * `baseRef` widens the range to everything the branch has ahead of that ref,
  * including commits a WIP checkpoint already pushed (Issue #3689). It must be
@@ -285,8 +285,9 @@ export async function listPushedFiles(
       "-z",
       "--format=",
       // A rename is listed under its new name only by default, which hides
-      // a renamed-away `.rs` or `clippy.toml` from the CI cargo trigger, so
-      // the deleted-path list reports both sides (Issue #5169).
+      // a renamed-away `.rs`, `clippy.toml` or `deny.toml` from the CI cargo
+      // and cargo-deny triggers, so the deleted-path list reports both sides
+      // (Issue #5169).
       ...(includeDeleted ? ["--no-renames"] : ["--diff-filter=d"]),
       ...refs.map((r) => r.localSha),
       "--not",

@@ -6121,6 +6121,8 @@ for (
   Deno.test(`runPrePushGate: a push that only changes a root ${name} runs the sub-directory CI clippy, and a failing clippy blocks it (Issue #5169)`, async () => {
     const { root, clone, stdin } = await makeRepoWithFiles({ [file]: text });
     try {
+      // The crate directory exists on disk, but is not part of the pushed range.
+      await Deno.mkdir(`${clone}/rust`);
       const passed: RanCall[] = [];
       const ok = await gateRust(
         clone,
