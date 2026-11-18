@@ -1,0 +1,12 @@
+{
+  "issue": 5161,
+  "chunk": "top-up-5161",
+  "title": "top-up: early silent-guest reap",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5161",
+  "definition": "modules added for reaping a silent, unanswering guest before the watchdog deadline: guest_silence_watch.ts (#5161)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/guest_silence_watch.ts"
+  ],
+  "sweptAt": "ba053841a745e3fd21498fd573a4e984af053d16"
+}
