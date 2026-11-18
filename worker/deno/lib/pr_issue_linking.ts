@@ -39,7 +39,10 @@ import {
 import { defaultLogger } from "./logger.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { isDefinitiveNotFound } from "./github_not_found.ts";
-import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
+import {
+  findMissingCriteria,
+  namesIssueOnlyAsPartOf,
+} from "./missing_criterion_close_guard.ts";
 
 /** Build a canonical PR URL for the given repo and PR number. */
 function buildPrUrl(repo: string, prNumber: number): string {
@@ -971,7 +974,8 @@ export async function closeIssuesForMergedPrs(
       // and, since Issue #1528, the body's closing keywords — the reference
       // GitHub itself honours on the default branch and ignores on a
       // milestone branch, which left four milestone sub-issues open and the
-      // rollup held shut.
+      // rollup held shut. The title does not decide alone: a body naming the
+      // issue only as `Part of #N` holds it open below (Issue #5135).
       const issueResult = extractIssueNumberFromPrTitle(pr.title);
       const issueNumbers = [
         ...new Set([
@@ -1112,6 +1116,16 @@ export async function closeIssuesForMergedPrs(
               `[close-merged-pr] ${repo}#${issueNumber}: PR #${pr.number} ` +
                 `marks ${missing.length} criteria partial or missing — left queued ` +
                 `for completion (Issue #3177): ${missing.join("; ")}`,
+            );
+            continue;
+          }
+
+          // Issue #5135: the merged body names this issue only as `Part of #N`, so
+          // the PR left it unfinished on purpose; the `(Issue #N)` title must not
+          // close it. Same hold as an unmet criterion: labels kept, marked processed.
+          if (namesIssueOnlyAsPartOf(pr, issueNumber)) {
+            options?.logFn?.(
+              `[close-merged-pr] ${repo}#${issueNumber}: PR #${pr.number} names the issue only as \`Part of #${issueNumber}\` with no closing keyword — left open and queued for completion (Issue #5135)`,
             );
             continue;
           }
