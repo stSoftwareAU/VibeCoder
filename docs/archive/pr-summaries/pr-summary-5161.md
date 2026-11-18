@@ -148,7 +148,8 @@ flowchart TD
       removed: the verdict is still asserted to be the host-disk-below-floor
       reason, and a probe blocked on the scan still resolves the guard instead.
       The `docs/audits/lib-sweep-coverage/top-up-5161.json` `sweptAt` is the
-      `origin/main` merge-base (not a branch commit), which `sweep-drift` checks.
+      `origin/main` merge-base (not a branch commit), which `sweep-drift`
+      checks.
 - The answering-guest launcher test is expected to pass on base too: it pins
   that a guest that answers is not reaped early.
 - No assertion was removed from any existing test. The stub runtime's new
