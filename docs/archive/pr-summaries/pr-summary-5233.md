@@ -32,6 +32,10 @@ reviewer note on its `Deno.test` line. Closes #5233.
 - A wrapper that calls several parameters is judged on the whole call, so a
   plain setup callback beside an asserting test callback is not refused; if one
   of several callbacks is passed by name, the call is a note.
+- A skipped inline test (`Deno.test.ignore`, `it.skip`, `test.todo`, `xit`, ...)
+  is never a candidate: the scan never judges a skipped test (it is held to the
+  `ignored-without-reason` rule instead), so its helper's calls are not judged
+  either. The first and second passes share one `isSkipToken` predicate.
 - Assumption: a parameter call inside an inline body is treated as a callback
   whatever the parameter's type, as the issue suggests; a non-callback parameter
   passed by name resolves to nothing in view and becomes a note, never a
@@ -67,7 +71,8 @@ flowchart TD
   lists; inline bodies are collected as candidates in the first pass and decided
   once every file's definitions are known; `judge` takes the wrapper's
   `Delegation` in place of the old `extraStrong` flag (Rust `#[should_panic]`
-  passes a strong one).
+  passes a strong one). `isSkipToken` replaces the second pass's inline skip
+  regex and keeps skipped inline bodies out of the candidates.
 - Doc comments updated: the module header, `scanDummyTests`, and the
   `registrars` and `pending` comments. `CODING-STANDARDS.md` (**Dummy tests and
   "how" tests are refused**, the scan paragraph) gains one sentence on the new
@@ -80,7 +85,7 @@ flowchart TD
 
 ## Test Plan
 
-Seven tests added to `worker/deno/tests/dummy_test_scan_5016_test.ts`, all named
+Eight tests added to `worker/deno/tests/dummy_test_scan_5016_test.ts`, all named
 `(Issue #5233)`; no existing test was edited or removed:
 
 - `an inline test body calling a helper's callback is accepted when the call asserts`
@@ -96,27 +101,36 @@ Seven tests added to `worker/deno/tests/dummy_test_scan_5016_test.ts`, all named
   passes.
 - `a helper calling two callbacks is judged as a whole at each call` — a plain
   setup callback beside an asserting one is accepted.
+- `a helper whose inline test is skipped with a reason is not judged at its calls`
+  — a `Deno.test.ignore` with a reason comment and an inline body calling `fn`:
+  no finding at its assertion-free call, no note. Added after the pre-PR
+  verifier's finding; before the `isSkipToken` check it failed with
+  `[no-assertion, 8]`.
 - `in an edited file, an assertion-free call of a helper whose body calls an out-of-view setup is a note`
   — note at the call line (10), no finding.
 
-Red before the fix: against the unfixed `dummy_test_scan.ts`, the file ran 52
-passed / 6 failed — the issue's source gave `[no-assertion, 2]`, and cases 2, 3,
-5, 6 and 7 failed as described; case 4 passed on base, as a control should.
+Red before the fix (the first seven tests): against the unfixed
+`dummy_test_scan.ts`, the file ran 52 passed / 6 failed — the issue's source
+gave `[no-assertion, 2]`, and cases 2, 3, 5, 6 and 7 failed as described; case 4
+passed on base, as a control should.
 
 Results on the final head:
 
 - `deno test --allow-all tests/dummy_test_scan_5016_test.ts tests/dummy_test_scan_wiring_5016_test.ts tests/capability_security_review_4366_test.ts`
-  (from `worker/deno`): 70 passed, 0 failed.
-- `./quality.sh`: every stage passed except `deno tests`, where the one failure
-  was `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` —
+  (from `worker/deno`): 71 passed, 0 failed. `deno fmt`, `deno lint` and
+  `deno check` are clean on the two changed files.
+- `./quality.sh` (run on the head before the `isSkipToken` fix, not re-run after
+  it; the worker re-runs the gate): every stage passed except `deno tests`,
+  where the one failure was
+  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` —
   `error sending request for url (https://registry.npmjs.org/mdurl/-/mdurl-1.0.1.tgz) ... dns error: failed to lookup address information`.
   The container has no DNS, and that test fails the same way on its own; it does
   not touch the scan. The parallel pass otherwise ran 35133 tests and passed
   them.
 - The gate skipped its serial pass after that failure, so the 40 serial files
   (`PARALLEL_UNSAFE_TEST_FILES`, which includes
-  `worker/deno/tests/dummy_test_scan_5016_test.ts`) were run directly: 943
-  passed, 0 failed, 1 ignored.
+  `worker/deno/tests/dummy_test_scan_5016_test.ts`) were run directly on that
+  same earlier head: 943 passed, 0 failed, 1 ignored.
 
 Callers checked: `scanDummyTests` keeps its signature; its users
 (`worker/deno/lib/pre_pr_verifier.ts`,

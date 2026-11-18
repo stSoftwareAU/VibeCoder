@@ -954,6 +954,11 @@ const RUST_TEST_ATTR = /#\[\s*(?:[A-Za-z_]\w*::)*test\b[^\]\n]*\]/g;
 const TS_TEST_START =
   /(?:^|[^\w$.])(Deno\.test(?:\.ignore|\.only)?|it(?:\.skip|\.only|\.todo)?|test(?:\.skip|\.only|\.todo)?|xit|xtest|describe\.skip|xdescribe)\s*\(/g;
 
+/** Whether a {@link TS_TEST_START} token registers a skipped test. */
+function isSkipToken(token: string): boolean {
+  return /\.(?:ignore|skip|todo)$|^x/.test(token);
+}
+
 interface LineIndex {
   starts: number[];
 }
@@ -1087,7 +1092,9 @@ export function scanDummyTests(diff: string): DummyTestScan {
         const open = (m.index ?? 0) + m[0].length - 1;
         const cb = callbackName(masked, open);
         if (cb === null) {
-          // An inline body may call a parameter of the helper it sits in.
+          // An inline body may call a parameter of the helper it sits in. A
+          // skipped test is never judged, so neither are its helper's calls.
+          if (isSkipToken(m[1]!)) continue;
           const close = closingBracket(masked, open);
           if (close < 0) continue;
           const byHelper: Candidate["byHelper"] = new Map();
@@ -1275,7 +1282,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
         const decl = hunk.lines[declLine]!;
         const close = closingBracket(masked, open);
         const last = close < 0 ? hunk.lines.length - 1 : lineAt(index, close);
-        const skipToken = /\.(?:ignore|skip|todo)$|^x/.test(token);
+        const skipToken = isSkipToken(token);
         if (
           skipToken && decl.added &&
           !hasReasonComment(hunk.lines, maskedLines, declLine)

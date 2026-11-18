@@ -877,6 +877,26 @@ withSetup("a", async () => {
   assertEquals(scan.notes, []);
 });
 
+Deno.test("a helper whose inline test is skipped with a reason is not judged at its calls (Issue #5233)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `function withFixture(name: string, fn: (f: number) => Promise<void>) {
+  // Needs a live database; enabled again in #9999.
+  Deno.test.ignore(name, async () => {
+    const f = await setup();
+    await fn(f);
+  });
+}
+withFixture("b", async (f) => {
+  await Promise.resolve(f);
+});
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+});
+
 Deno.test("in an edited file, an assertion-free call of a helper whose body calls an out-of-view setup is a note (Issue #5233)", () => {
   const file = "tests/fixture_test.ts";
   // Non-async callbacks: an `async (` in a body is itself an out-of-view
