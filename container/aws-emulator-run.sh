@@ -194,11 +194,12 @@ emulator_cause() {
     printf '%s' "${joined:0:600}"
 }
 
-# Once the emulator has died, sets EMU_EXIT_NOTE to `exit status N` or
-# `killed by signal K (NAME)` after reaping it, and clears EMU_PID so the
-# cleanup trap never signals a reused pid. Leaves EMU_EXIT_NOTE empty while the
-# emulator still runs. It must not be called inside $(...): the reap and the
-# EMU_PID / EMU_EXIT_NOTE updates would be lost with the subshell.
+# Once the emulator has died, sets EMU_EXIT_NOTE after reaping it: `killed by
+# signal K (NAME)` when a status above 128 names signal K = status - 128, else
+# `exit status N`. Clears EMU_PID so the cleanup trap never signals a reused pid.
+# Leaves EMU_EXIT_NOTE empty while the emulator still runs. It must not be
+# called inside $(...): the reap and the EMU_PID / EMU_EXIT_NOTE updates would
+# be lost with the subshell.
 emulator_exit_status() {
     local st=0 sig name=""
     EMU_EXIT_NOTE=""
@@ -208,17 +209,25 @@ emulator_exit_status() {
     fi
     wait "${EMU_PID}" 2>/dev/null || st=$?
     EMU_PID=""
-    if [[ ${st} -le 128 ]]; then
-        EMU_EXIT_NOTE="exit status ${st}"
-    else
+    if [[ ${st} -gt 128 ]]; then
         sig=$((st - 128))
         name="$(kill -l "${sig}" 2>/dev/null || true)"
         if [[ -n "${name}" ]]; then
             EMU_EXIT_NOTE="killed by signal ${sig} (${name})"
-        else
-            EMU_EXIT_NOTE="killed by signal ${sig}"
+            return 0
         fi
     fi
+    EMU_EXIT_NOTE="exit status ${st}"
+}
+
+# Reports that the emulator has died, with the message prefix $1. Call it
+# directly, never inside $(...), so emulator_exit_status can reap the emulator
+# in this shell.
+fail_emulator_gone() {
+    local cause
+    emulator_exit_status
+    cause="$(emulator_cause)"
+    fail "$1${EMU_EXIT_NOTE:+: ${EMU_EXIT_NOTE}}${cause:+; emulator log: ${cause}}"
 }
 
 # shellcheck disable=SC2329 # reached via trap or recursion
@@ -305,10 +314,7 @@ reason="no port directory under ${STATE}/home/.aws/emulator"
 deadline=$((SECONDS + READY_TIMEOUT))
 while :; do
     if ! kill -0 "${EMU_PID}" 2>/dev/null; then
-        emulator_exit_status
-        cause="$(emulator_cause)"
-        fail "emulator exited early${EMU_EXIT_NOTE:+: ${EMU_EXIT_NOTE}}${cause:+; emulator log: ${cause}}"
-        EMU_PID=""
+        fail_emulator_gone "emulator exited early"
         exit 5
     fi
     candidates=()
@@ -410,9 +416,7 @@ deadline=$((SECONDS + RUN_TIMEOUT))
 rc=0
 while [[ ! -f "${STATE}/command-result" ]]; do
     if ! kill -0 "${EMU_PID}" 2>/dev/null; then
-        emulator_exit_status
-        cause="$(emulator_cause)"
-        fail "emulator stopped while COMMAND ran${EMU_EXIT_NOTE:+: ${EMU_EXIT_NOTE}}${cause:+; emulator log: ${cause}}"
+        fail_emulator_gone "emulator stopped while COMMAND ran"
         exit 5
     fi
     if ! kill -0 "${CMD_PID}" 2>/dev/null; then
@@ -426,9 +430,7 @@ while [[ ! -f "${STATE}/command-result" ]]; do
 done
 read -r rc < "${STATE}/command-result"
 if ! kill -0 "${EMU_PID}" 2>/dev/null; then
-    emulator_exit_status
-    cause="$(emulator_cause)"
-    fail "emulator stopped while COMMAND ran${EMU_EXIT_NOTE:+: ${EMU_EXIT_NOTE}}${cause:+; emulator log: ${cause}}"
+    fail_emulator_gone "emulator stopped while COMMAND ran"
     rc=5
 fi
 exit "${rc}"

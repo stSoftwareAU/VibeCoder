@@ -199,7 +199,8 @@ if MODE == "die-after-ready":
         time.sleep(0.1)
     sys.stderr.write("emulator fatal error: worker thread died\\n")
     sys.stderr.flush()
-    sys.exit(1)
+    code_file = os.path.join(REC, "exit-code")
+    sys.exit(int(open(code_file).read()) if os.path.exists(code_file) else 1)
 server.serve_forever()
 `;
 }
@@ -494,6 +495,7 @@ testAsOrdinaryUser(
       assertEquals(r.code, 5, r.stderr);
       assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
       assertStringIncludes(r.stderr, "Address in use");
+      assertStringIncludes(r.stderr, "emulator exited early: exit status 1;");
       assertEquals(
         r.stderr.includes(FAKE_SECRET),
         false,
@@ -657,6 +659,8 @@ const HAS_JAVA = new Deno.Command("sh", {
   stdout: "null",
   stderr: "null",
 }).outputSync().success;
+// CI runners carry a JDK, so there a missing java fails the test loudly instead of skipping it.
+const REQUIRE_JAVA = Deno.env.get("GITHUB_ACTIONS") === "true";
 
 testAsOrdinaryUser(
   "aws-emulator-run: SIGTERM stops the command, the emulator and the state dir",
@@ -784,7 +788,7 @@ testAsOrdinaryUser(
         "[aws-emulator-run] FAILED: emulator stopped while COMMAND ran:",
       );
       assertStringIncludes(r.stderr, "worker thread died");
-      assertStringIncludes(r.stderr, "exit status 1");
+      assertStringIncludes(r.stderr, "exit status 1;");
       await assertCleanedUp(fx);
     });
   },
@@ -807,7 +811,30 @@ testAsOrdinaryUser(
         r.stderr,
         "[aws-emulator-run] FAILED: emulator stopped while COMMAND ran:",
       );
-      assertStringIncludes(r.stderr, "killed by signal 9");
+      assertStringIncludes(r.stderr, "killed by signal 9 (KILL);");
+      await assertCleanedUp(fx);
+    });
+  },
+);
+
+testAsOrdinaryUser(
+  "aws-emulator-run: an emulator exit code above 128 with no signal name is reported as an exit status",
+  async () => {
+    await withFixture("die-after-ready", {}, async (fx) => {
+      const r = await runHelper(fx, [
+        "--ready-timeout",
+        "30",
+        "--",
+        "bash",
+        "-c",
+        `printf 200 > "${fx.rec}/exit-code"; touch "${fx.rec}/stop-now"; sleep 2`,
+      ]);
+      assertEquals(r.code, 5, r.stderr);
+      assertStringIncludes(
+        r.stderr,
+        "emulator stopped while COMMAND ran: exit status 200;",
+      );
+      assertEquals(r.stderr.includes("killed by signal"), false);
       await assertCleanedUp(fx);
     });
   },
@@ -864,8 +891,8 @@ testAsOrdinaryUser(
       await assertCleanedUp(fx);
     });
   },
-  !HAS_JAVA,
-); // no JDK on PATH: the JVM-free case below still checks the scrub
+  !HAS_JAVA && !REQUIRE_JAVA,
+); // skipped off CI without a JDK on PATH; the JVM-free case below still checks the scrub
 
 testAsOrdinaryUser(
   "aws-emulator-run: inherited JVM option variables are replaced before COMMAND runs",
