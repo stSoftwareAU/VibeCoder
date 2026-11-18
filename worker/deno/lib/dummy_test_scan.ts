@@ -26,7 +26,8 @@
  * diff cannot resolve is a note, never a finding. An inline test body that
  * calls a parameter of the enclosing helper, and does not assert enough by
  * itself, is judged at each call of that helper (the helper's own assertions
- * count), and is a note when no call is in view. String and comment contents
+ * count, and only the callback arguments that registration invokes), and is a
+ * note when no call is in view. String and comment contents
  * are masked before any pattern runs, so an assertion named inside a fixture
  * string does not count. Every pattern is linear (no nested quantifiers).
  *

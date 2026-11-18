@@ -4,9 +4,10 @@
 
 The dummy-test scan no longer refuses a fixture wrapper whose inline `Deno.test`
 body calls the enclosing helper's callback parameter. Such a body, when it does
-not assert enough by itself, is now judged at each call of the helper, with the
-wrapper's own assertions counted; with no call of the helper in view it is a
-reviewer note on its `Deno.test` line. Closes #5233.
+not assert enough by itself, is now judged at each call of the helper, on only
+the callback arguments that registration invokes plus the wrapper's own
+assertions; with no call of the helper in view it is a reviewer note on its
+`Deno.test` line. Closes #5233.
 
 ## Spec
 
@@ -142,21 +143,22 @@ passed on base, as a control should.
 
 Results on the final head:
 
-- `deno test --allow-all tests/dummy_test_scan_5016_test.ts tests/dummy_test_scan_wiring_5016_test.ts tests/capability_security_review_4366_test.ts`
-  (from `worker/deno`): 75 passed, 0 failed. `deno fmt`, `deno lint` and
-  `deno check` are clean on the two changed files.
+- Re-run on the head with `deno test --allow-all <file>` from `worker/deno`:
+  `worker/deno/tests/dummy_test_scan_5016_test.ts` (63 tests at head, 0 failed),
+  `worker/deno/tests/dummy_test_scan_wiring_5016_test.ts` (3 tests at head, 0
+  failed) and `worker/deno/tests/capability_security_review_4366_test.ts` (9
+  tests at head, 0 failed). `deno fmt`, `deno lint` and `deno check` were clean
+  on the two changed code files.
 - `./quality.sh` (run on the head before the `isSkipToken` fix, not re-run after
   it; the worker re-runs the gate): every stage passed except `deno tests`,
-  where the one failure was
-  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` —
-  `error sending request for url (https://registry.npmjs.org/mdurl/-/mdurl-1.0.1.tgz) ... dns error: failed to lookup address information`.
+  where the one failure was a test that fetches from the npm registry
+  (`error sending request for url (https://registry.npmjs.org/mdurl/-/mdurl-1.0.1.tgz) ... dns error: failed to lookup address information`).
   The container has no DNS, and that test fails the same way on its own; it does
   not touch the scan. The parallel pass otherwise ran 35133 tests and passed
   them.
 - The gate skipped its serial pass after that failure, so the 40 serial files
-  (`PARALLEL_UNSAFE_TEST_FILES`, which includes
-  `worker/deno/tests/dummy_test_scan_5016_test.ts`) were run directly on that
-  same earlier head: 943 passed, 0 failed, 1 ignored.
+  (`PARALLEL_UNSAFE_TEST_FILES`, which include the scan's own test file above)
+  were run directly on that same earlier head: 943 passed, 0 failed, 1 ignored.
 
 Callers checked: `scanDummyTests` keeps its signature; its users
 (`worker/deno/lib/pre_pr_verifier.ts`,
