@@ -716,6 +716,110 @@ Deno.test("run.sh - reaps a container that outlives the watchdog deadline", asyn
   }
 });
 
+Deno.test("run.sh - reaps a silent guest that stops answering before the watchdog deadline (Issue #5161)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "900",
+    STUB_KILL_EXIT: "1",
+    STUB_EXEC_EXIT: "1",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "120",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "1",
+    VIBE_GUEST_SILENCE_SECONDS: "1",
+  });
+  try {
+    await Deno.mkdir(harness.logDir, { recursive: true });
+    const log = `${harness.logDir}/worker-1.log`;
+    await Deno.writeTextFile(log, "last line before the guest wedged\n");
+    const past = new Date(Date.now() - 10 * 60 * 1000);
+    await Deno.utime(log, past, past);
+
+    const outcome = await runLauncher(harness);
+    assertEquals(
+      outcome.code,
+      CONTAINER_WEDGED_EXIT_STATUS,
+      outcome.stderr,
+    );
+    assertStringIncludes(outcome.stderr, "stopped answering");
+
+    const args = await recorded(harness, "run");
+    assert(args, "the container never started");
+    const name = args[args.indexOf("--name") + 1]!;
+    const killed = await recorded(harness, "kill");
+    assert(killed, `the silent guest was never killed: ${outcome.stderr}`);
+    assertEquals(killed, ["kill", name]);
+
+    // The deadline path writes a different reason, so this proves the early
+    // path did the reaping.
+    const records = await hardKillRecords(
+      harness.logDir,
+      `hard-kill-${name}-`,
+    );
+    assertEquals(records.length, 1, outcome.stderr);
+    const evidence: Record<string, unknown> = JSON.parse(
+      await Deno.readTextFile(records[0]!),
+    );
+    assert(
+      /^the launcher's watchdog found the guest silent for \d+s and not answering$/
+        .test(String(evidence.reason)),
+      `unexpected reason: ${String(evidence.reason)}`,
+    );
+    assertEquals(evidence.trigger, "watchdog");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a silent guest that still answers is left to the deadline (Issue #5161)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "900",
+    STUB_KILL_EXIT: "1",
+    STUB_EXEC_EXIT: "0",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "6",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "1",
+    VIBE_GUEST_SILENCE_SECONDS: "1",
+  });
+  try {
+    await Deno.mkdir(harness.logDir, { recursive: true });
+    const log = `${harness.logDir}/worker-1.log`;
+    await Deno.writeTextFile(log, "last line before the silence\n");
+    const past = new Date(Date.now() - 10 * 60 * 1000);
+    await Deno.utime(log, past, past);
+
+    const outcome = await runLauncher(harness);
+    assertEquals(
+      outcome.code,
+      CONTAINER_WEDGED_EXIT_STATUS,
+      outcome.stderr,
+    );
+    assertEquals(
+      outcome.stderr.includes("stopped answering"),
+      false,
+      "an answering guest must not be reaped early",
+    );
+
+    const args = await recorded(harness, "run");
+    assert(args, "the container never started");
+    const name = args[args.indexOf("--name") + 1]!;
+    const records = await hardKillRecords(
+      harness.logDir,
+      `hard-kill-${name}-`,
+    );
+    assertEquals(records.length, 1, outcome.stderr);
+    const evidence: Record<string, unknown> = JSON.parse(
+      await Deno.readTextFile(records[0]!),
+    );
+    assertEquals(
+      evidence.reason,
+      "the launcher's 6s watchdog deadline expired",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 Deno.test("run.sh - a healthy run is never reaped", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",

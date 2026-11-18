@@ -218,14 +218,25 @@ launch.
 
 A container VM can wedge: `<runtime> exec` hangs, nothing new appears in
 `${LOG_DIR}/worker.log`, and the host-side `container run` client never exits.
-The launcher no longer waits on it for ever — past the plan's watchdog deadline
-it kills the container, SIGKILLs the host-side client and runtime helper if the
+The launcher no longer waits on it for ever — at the latest past the plan's
+watchdog deadline (or earlier, see below) it kills the container, SIGKILLs the host-side client and runtime helper if the
 record survives that, and exits `87`:
 
 ```text
 [run.sh] watchdog: vibe-coder-66770 is still running after 11400s - reaping it
 Error: container vibe-coder-66770 wedged past the 11400s watchdog deadline and was reaped - exiting 87 so the next cycle runs
 ```
+
+Before the deadline, `run.sh` checks every `VIBE_GUEST_SILENCE_CHECK_SECONDS`
+(default 300) whether the worker log has been silent for
+`VIBE_GUEST_SILENCE_SECONDS` (default 900, `0` turns it off). Only if so does it
+probe the guest with `container exec <name> true` twice (30 seconds each). When
+neither probe answers it reaps the container early, with the same evidence
+capture and exit `87`, and the filed issue's Reason line reads "The launcher's
+watchdog found the guest silent and not answering its exec probe." A guest that
+answers is never reaped early, however long the log is silent. This is `run.sh`
+only: `run.ps1` keeps the deadline alone (it also captures no hard-kill
+evidence). Issue #5161.
 
 Nothing to do by hand: the next cycle launches a fresh container, and any
 leftover `vibe-coder-*` container is reaped before it. On `run.sh`, the reap

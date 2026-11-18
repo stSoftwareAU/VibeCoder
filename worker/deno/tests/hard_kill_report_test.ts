@@ -1563,3 +1563,42 @@ Deno.test("hardKillLastStep names each setup step from its start line, past the 
     "unknown",
   );
 });
+
+// ---------------------------------------------------------------------------
+// The early guest-silence reap (Issue #5161).
+// ---------------------------------------------------------------------------
+
+const SILENCE_REASON =
+  "the launcher's watchdog found the guest silent for 1200s and not answering";
+
+Deno.test("Issue #5161: a guest-silence reason parses, publishes its own reason and keeps the watchdog class", () => {
+  const ev = makeEvidence({ reason: SILENCE_REASON });
+  const parsed = parseHardKillEvidence(json(ev));
+  assertEquals(parsed.reason, SILENCE_REASON);
+  const sig = hardKillSignature(parsed);
+  assertEquals(sig.failureClass, "hard-kill-watchdog-execute");
+  const body = formatHardKillBody(parsed, sig);
+  assertStringIncludes(
+    body,
+    "**Reason:** The launcher's watchdog found the guest silent and not answering its exec probe.",
+  );
+  assertEquals(body.includes("deadline expired"), false);
+  assertEquals(body.includes("1200s"), false);
+});
+
+Deno.test("Issue #5161: the deadline reason still publishes the deadline wording", () => {
+  const ev = makeEvidence();
+  const body = formatHardKillBody(ev, hardKillSignature(ev));
+  assertStringIncludes(
+    body,
+    "**Reason:** The launcher's watchdog deadline expired.",
+  );
+});
+
+Deno.test("Issue #5161: an invented guest-silence reason is rejected", () => {
+  const ev = makeEvidence({
+    reason:
+      "the launcher's watchdog found the guest silent for 9s and quoting rm -rf",
+  });
+  assertThrowsWith(() => parseHardKillEvidence(json(ev)), '"reason"');
+});

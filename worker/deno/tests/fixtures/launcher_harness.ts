@@ -249,6 +249,11 @@ case "\${sub}" in
   stop)
     exit 0
     ;;
+  exec)
+    # The guest-answering probe of the early silent-guest check (Issue #5161):
+    # a wedged guest does not answer, so a test sets STUB_EXEC_EXIT non-zero.
+    exit "\${STUB_EXEC_EXIT:-0}"
+    ;;
   kill)
     # The wedge the watchdog exists for: the runtime cannot reap its own
     # container, exactly as observed on host-23 (Issue #4173).
