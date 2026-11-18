@@ -77,9 +77,11 @@ the repo; the Phase 2 audit then opens each one and confirms the quarantine
 rules:
 
 - **Renovate** — `renovate.json`, `.github/renovate.json`, `renovate.json5`.
-  Looks for a top-level `minimumReleaseAge` (or its legacy alias
-  `stabilityDays`) of at least `VIBE_BUMP_QUARANTINE_HOURS` hours, written as a
-  string such as `"24 hours"`. A first-party `packageRules` entry with
+  Looks for a top-level `minimumReleaseAge` of at least
+  `VIBE_BUMP_QUARANTINE_HOURS` hours, written as a string such as `"24 hours"`.
+  The deprecated alias `stabilityDays` is not accepted: the supply-chain gate
+  refuses it, because Renovate migrates it into `minimumReleaseAge` (0 becomes
+  `null`) at any depth. A first-party `packageRules` entry with
   `"minimumReleaseAge": null` is valid only where the repo manages a matching
   `stSoftwareAU` package. `null` is the no-wait value; `"0"` is read as `null`
   by Renovate 42.19.5 and later, but the blocking Semgrep rule reports it; a

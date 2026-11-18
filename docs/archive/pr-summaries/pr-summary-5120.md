@@ -21,7 +21,11 @@ Semgrep's `p/default` rule does not report it. `false` is refused everywhere.
   Renovate applies as no quarantine) is refused as unreadable and `"1.5 M"` as
   1.5 minutes. A lifting rule that also carries `matchPackagePrefixes`,
   `packagePatterns` or `packageNames` is refused, because Renovate merges those
-  into `matchPackageNames`.
+  into `matchPackageNames`. It also refuses the deprecated `stabilityDays` key
+  at any depth (Renovate migrates `stabilityDays: 0` to
+  `minimumReleaseAge: null`) and a `packageRules` entry that nests its own
+  `packageRules` (Renovate merges the parent's age with the child's package
+  names, so a first-party parent could exempt an external child).
 - **Local Semgrep stage**: prints a remedy for
   `renovate-missing-minimum-release-age`. It contradicts the rule's own advice
   to write `false`.
@@ -230,7 +234,8 @@ never inspects `cargo install`.
 
 ## Test Plan
 
-- Added `worker/deno/tests/renovate_release_age_test.ts`, 39 tests covering:
+- Added `worker/deno/tests/renovate_release_age_test.ts`, 42 tests at head
+  covering:
   - the five fixtures;
   - the first-party matcher, accepted and refused;
   - type, floor and category refusals, each with an accepted control;
@@ -240,7 +245,14 @@ never inspects `cargo install`.
     `evaluateRenovatePolicy` with an accepted control;
   - the legacy `matchPackagePrefixes` / `packagePatterns` / `packageNames` keys,
     each refused on a lifting rule with the accepted control;
-  - the Deno and Renovate scope twin.
+  - the Deno and Renovate scope twin;
+  - `stabilityDays` at a `packageRules` entry and in a category, refused with
+    an accepted `"24 hours"` control;
+  - a first-party rule nesting `packageRules`, refused with an accepted
+    un-nested control;
+  - mixed lists: first-party plus `actions/checkout` in `matchPackageNames`, and
+    first-party `matchPackageNames` plus a third-party `matchPackagePatterns`,
+    each refused as not first-party beside the accepted single-entry control.
 - Added `worker/deno/tests/semgrep_check_test.ts`:
   - `runSemgrepCheck - FAILED naming the Renovate release-age remedy (Issue #5120)`;
   - `runSemgrepCheck - a finding from an unrelated rule omits the Renovate remedy`.
@@ -276,10 +288,12 @@ never inspects `cargo install`.
 - Twinned copies found:
   - the Deno `INTERNAL_SCOPE_EXCLUDES` and the Renovate first-party prefixes,
     now pinned by test;
-  - the security-scan prompt and `docs/SECURITY-SCAN.md`, both updated.
+  - the security-scan prompt and `docs/SECURITY-SCAN.md`, both updated; both
+    previously accepted `stabilityDays` as a legacy alias and now say the gate
+    refuses it, as `docs/SUPPLY-CHAIN-GATE.md` does.
 - Results on the final head:
   - `deno task test tests/renovate_release_age_test.ts tests/supply_chain_gate_test.ts tests/renovate_config_test.ts tests/deno_minimum_dependency_age_test.ts`:
-    100 passed, 0 failed.
+    103 passed, 0 failed.
   - `tests/semgrep_check_test.ts`: 31 passed.
 - `./quality.sh`:
   - passes every stage except deno tests, including semgrep, completeness,

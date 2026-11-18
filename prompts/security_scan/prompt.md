@@ -603,9 +603,10 @@ than duplicating it here.
   Inspect each configuration in turn:
 
   - **Renovate** (`renovate.json`, `.github/renovate.json`,
-    `renovate.json5`): confirm a top-level `minimumReleaseAge` (or its
-    legacy alias `stabilityDays`) is a string of at least
-    `VIBE_BUMP_QUARANTINE_HOURS` hours, e.g. `"24 hours"`. Only where the
+    `renovate.json5`): confirm a top-level `minimumReleaseAge` (never the
+    deprecated `stabilityDays`, which the supply-chain gate refuses) is a
+    string of at least `VIBE_BUMP_QUARANTINE_HOURS` hours, e.g.
+    `"24 hours"`. Only where the
     config manages a matching internal package (e.g. a
     `uses: stSoftwareAU/<repo>` action) should a `packageRules` entry set
     `"minimumReleaseAge": null` for it; its `matchPackageNames` must list
