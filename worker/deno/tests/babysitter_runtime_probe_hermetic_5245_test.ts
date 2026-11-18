@@ -5,7 +5,7 @@
  * the host OS. These tests simulate a macOS host and fail if any runtime
  * process is constructed, or if the fixture plan cannot resolve its runtime.
  */
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { checkBabysitterContainerChromium } from "../lib/fleet_babysitter_container.ts";
 import {
   fakeContainer,
@@ -35,7 +35,9 @@ function simulateMacHost(attempts: string[]): () => void {
       const name = String(command).split("/").pop()!;
       // The plan builder's best-effort `version --format` query is caught and
       // is not the detection probe this guard is about, so it is tolerated.
-      const versionQuery = options?.args?.[0] === "version";
+      const versionQuery = options?.args?.length === 3 &&
+        options.args[0] === "version" && options.args[1] === "--format" &&
+        options.args[2] === "{{.Server.Version}}";
       if (["container", "docker", "podman"].includes(name) && !versionQuery) {
         attempts.push(name);
         throw new Error(`unit test reached the real runtime: ${name}`);
@@ -171,5 +173,36 @@ console.log(new TextDecoder().decode(out.stdout).trim());
     assertEquals(result.value.stdout.trim(), "linux\nlinux");
   } finally {
     await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runtime guard refuses detection probes and permits only version metadata", async () => {
+  const dir = await Deno.makeTempDir();
+  const attempts: string[] = [];
+  let restore = () => {};
+  try {
+    for (const name of ["docker", "podman"]) {
+      await Deno.writeTextFile(
+        `${dir}/${name}`,
+        "#!/bin/sh\nprintf 'fixture-version'\n",
+      );
+      await Deno.chmod(`${dir}/${name}`, 0o700);
+    }
+    restore = simulateMacHost(attempts);
+    for (const name of ["docker", "podman"]) {
+      assertThrows(
+        () => new Deno.Command(`${dir}/${name}`, { args: ["version"] }),
+        Error,
+        "unit test reached the real runtime",
+      );
+      const result = await new Deno.Command(`${dir}/${name}`, {
+        args: ["version", "--format", "{{.Server.Version}}"],
+      }).output();
+      assertEquals(new TextDecoder().decode(result.stdout), "fixture-version");
+    }
+    assertEquals(attempts, ["docker", "podman"]);
+  } finally {
+    restore();
+    await Deno.remove(dir, { recursive: true });
   }
 });
