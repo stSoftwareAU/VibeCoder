@@ -46,7 +46,9 @@
  *    is accounted for and its serial pass ran.
  * 2. Then runs the CI cargo checks (Issue #4630): the `cargo clippy` and
  *    test-target `cargo test --no-run` commands the repo's pull-request
- *    workflows run, for each crate directory a pushed Rust file touches. Only
+ *    workflows run, for each crate directory a pushed Rust file in or below it
+ *    touches, or a pushed Rust config file (manifest, lock, toolchain pin or
+ *    clippy config) in it or an ancestor directory touches. Only
  *    when the push changes a Rust-relevant file, and only after a probe that
  *    the Rust toolchain runs here. Where cargo is not a rustup proxy and
  *    refuses a `+toolchain` word, the probe and the commands run without it
@@ -1221,8 +1223,10 @@ function plannedUnitTestFiles(
  * integration suites like CI's shards are not run here.
  *
  * `ciCargo` (Issue #4630) is the CI cargo scan. Each of its checks is planned,
- * after the cargo fmt check, when the push changes a Rust-relevant file under
- * the check's working directory (`.` is anywhere). Absent means no CI cargo
+ * after the cargo fmt check, when the push changes a Rust-relevant file in or
+ * below the check's working directory (`.` is anywhere), or a
+ * `RUST_CONFIG_NAMES` file (a manifest, lock, toolchain pin or clippy config)
+ * in an ancestor of it ({@link governsCargoDir}). Absent means no CI cargo
  * checks are planned. Only `runPrePushGate` supplies it, and only when its
  * caller passes `findCiCargo` (see the module header).
  */

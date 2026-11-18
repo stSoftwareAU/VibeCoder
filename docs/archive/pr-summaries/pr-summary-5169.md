@@ -182,6 +182,11 @@ because the failing jobs are private.
   `docs/archive/`) and `README.md` for `Rust-relevant`, `cargo input`,
   `cargo-deny` and `cargo deny` found no other sentence about when these checks
   trigger. `markdownlint-cli2` on the two docs reports 0 issues.
+- Source doc comments: after PR #5263 review, I updated the
+  `planChangedFileChecks` doc comment and item 2 of the `pre_push_gate.ts`
+  module header to state the ancestor-config rule. A grep for `Rust-relevant`
+  and `under the check` over `worker/deno/lib/` on the final head found no other
+  sentence that still gives the under-directory-only rule.
 - `./quality.sh < /dev/null` on the final code: every stage passed except
   `deno tests` (35130 passed, 1 failed). The failure is
   `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` ("PR summary CI task
