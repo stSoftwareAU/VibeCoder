@@ -138,8 +138,8 @@ flowchart TD
   new second parameter is optional. The deadline path in `run.sh` and
   `container-reap` behaves as before.
 - Branch outcomes: disabled, listing failure, no log, under threshold, a probe
-  answering, and all probes failing (`guest_silence_watch_test.ts`; the listing
-  failure goes through the shared `bounded` helper). For the launcher: exit 3
+  answering, all probes failing, and a probe that throws
+  (`guest_silence_watch_test.ts`). For the launcher: exit 3
   keeps waiting (answering-guest test), and a written marker means an early
   reap (silent-guest test). Any other exit with no marker logs a warning and
   keeps the deadline; no test reaches that path.
