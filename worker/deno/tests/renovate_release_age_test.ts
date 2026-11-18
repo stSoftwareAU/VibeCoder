@@ -510,10 +510,10 @@ Deno.test("renovate release-age - legacy stabilityDays cannot bypass quarantine"
 });
 
 Deno.test("renovate release-age - nested packageRules cannot widen parent exemption", () => {
-  const control = withRule({ matchPackageNames: ["/^stSoftwareAU\\\\//"], minimumReleaseAge: null });
+  const control = withRule({ matchPackageNames: ["stSoftwareAU/internal"], minimumReleaseAge: null });
   assertEquals(evaluateRenovatePolicy("renovate.json", control), []);
   assertRefused(evaluateRenovatePolicy("renovate.json", withRule({
-    matchPackageNames: ["/^stSoftwareAU\\\\//"], minimumReleaseAge: null,
+    matchPackageNames: ["stSoftwareAU/internal"], minimumReleaseAge: null,
     packageRules: [{ matchPackageNames: ["actions/checkout"] }],
   })), "nests package rules");
 });
