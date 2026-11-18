@@ -17,9 +17,10 @@
  *       evidence directory has been silent for VIBE_GUEST_SILENCE_SECONDS
  *       (default 900; 0 disables) AND consecutive `exec` probes fail. Then
  *       write `container_silent` to the wedge marker (when given) and reap as
- *       for the deadline, with a reason saying the guest was silent. When the
- *       guest is not wedged, nothing is killed or written and the command
- *       exits with GUEST_ANSWERING_EXIT (3).
+ *       for the deadline, with a reason saying the guest was silent. The marker
+ *       records that decision, not a finished reap: the exit status says
+ *       whether the reap completed. When the guest is not wedged, nothing is
+ *       killed or written and the command exits with GUEST_ANSWERING_EXIT (3).
  *
  *   --stale --max-age-seconds <n> [--exclude <container>] [--refuse-live]
  *       Pre-launch reaper: reap every `vibe-coder-*` container older than the

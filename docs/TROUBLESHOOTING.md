@@ -234,7 +234,7 @@ probe the guest with `container exec <name> true` twice (30 seconds each). When
 neither probe answers it reaps the container early, with the same evidence
 capture and exit `87`, and the filed issue's Reason line reads "The launcher's
 watchdog found the guest silent and not answering its exec probe." A guest that
-answers is never reaped early, however long the log is silent. This is `run.sh`
+answers is never reaped early, however long the log is silent. If the early reap is cut short after it decided to reap (for example its evidence capture crosses the deadline), the watchdog completes the reap with the ordinary reaper rather than trusting the decision. This is `run.sh`
 only: `run.ps1` keeps the deadline alone (it also captures no hard-kill
 evidence). Issue #5161.
 

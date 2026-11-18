@@ -2177,6 +2177,10 @@ refresh_host_disk_while_running() {
 # the reason. Before the deadline it also runs the early silent-guest check
 # (Issue #5161): the reaper itself decides whether the log is silent and the
 # guest has stopped answering, and reaps (writing its own marker) only then.
+# That marker records the decision, not a finished reap: when the early command
+# exits non-zero after writing it (cut short by the remaining-deadline bound,
+# or the container survived), this watchdog completes the reap below instead
+# of trusting the marker.
 # shellcheck disable=SC2317,SC2329
 watchdog_reap_on_deadline() {
   # Runs only as a background job, so it drops the launcher's EXIT trap for its
@@ -2199,6 +2203,7 @@ watchdog_reap_on_deadline() {
   local last_check=$SECONDS
   local remaining check_budget
   local check_status
+  local early_reap_unfinished=""
   while ((waited < WATCHDOG_SECONDS)); do
     kill -0 "${client_pid}" 2>/dev/null || return 0
     # The sleep's own streams are detached: when this watchdog is stopped after
@@ -2230,10 +2235,21 @@ watchdog_reap_on_deadline() {
         --wedge-marker "${WEDGE_MARKER}" \
         </dev/null >&2 || check_status=$?
       if [[ -s "${WEDGE_MARKER}" ]]; then
-        echo "[run.sh] watchdog: ${CONTAINER_NAME} stopped answering after" \
-          "its log went silent - reaped it early (Issue #5161)" >&2
-        kill -KILL "${client_pid}" 2>/dev/null || true
-        return 0
+        if ((check_status == 0)); then
+          echo "[run.sh] watchdog: ${CONTAINER_NAME} stopped answering after" \
+            "its log went silent - reaped it early (Issue #5161)" >&2
+          kill -KILL "${client_pid}" 2>/dev/null || true
+          return 0
+        fi
+        # The marker only records the decision to reap: the command writes it
+        # before the evidence capture and the kill. A non-zero status means the
+        # reap was cut short (the remaining-deadline bound) or left the
+        # container standing, so finish it below with a full cleanup budget.
+        early_reap_unfinished=${check_status}
+        echo "[run.sh] warning: the early reap of ${CONTAINER_NAME} exited" \
+          "${check_status} before it finished - completing it now" \
+          "(Issue #5161)" >&2
+        break
       elif ((check_status != GUEST_ANSWERING_EXIT)); then
         echo "[run.sh] warning: the early silent-guest check exited" \
           "${check_status} without reaping ${CONTAINER_NAME}; the" \
@@ -2244,9 +2260,16 @@ watchdog_reap_on_deadline() {
   done
   kill -0 "${client_pid}" 2>/dev/null || return 0
 
-  echo "[run.sh] watchdog: ${CONTAINER_NAME} is still running after" \
-    "${WATCHDOG_SECONDS}s - reaping it (Issue #4173)" >&2
-  printf 'container_wedged\n' >"${WEDGE_MARKER}"
+  local reap_reason
+  if [[ -n "${early_reap_unfinished}" ]]; then
+    # The marker already names the reason (container_silent): keep it.
+    reap_reason="the launcher's early silent-guest reap exited ${early_reap_unfinished} before it finished"
+  else
+    echo "[run.sh] watchdog: ${CONTAINER_NAME} is still running after" \
+      "${WATCHDOG_SECONDS}s - reaping it (Issue #4173)" >&2
+    printf 'container_wedged\n' >"${WEDGE_MARKER}"
+    reap_reason="the launcher's ${WATCHDOG_SECONDS}s watchdog deadline expired"
+  fi
 
   # Issue #4253: the reaper writes hard-kill evidence into the worker log
   # directory before it kills anything. Capture is best-effort and bounded, so
@@ -2258,7 +2281,7 @@ watchdog_reap_on_deadline() {
     --runtime "${RUNTIME}" \
     --name "${CONTAINER_NAME}" \
     --client-pid "${client_pid}" \
-    --reason "the launcher's ${WATCHDOG_SECONDS}s watchdog deadline expired" \
+    --reason "${reap_reason}" \
     --evidence-dir "${RUN_CORE_LOG_DIR}" \
     </dev/null >&2; then
     echo "[run.sh] warning: the container reaper did not clear" \

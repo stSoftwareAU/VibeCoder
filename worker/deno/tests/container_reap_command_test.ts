@@ -121,22 +121,30 @@ Deno.test("container-reap - without --evidence-dir no evidence file is written",
   }
 });
 
-/** Recording seams for the --if-silent mode (Issue #5161): nothing real runs. */
-function silenceDeps(guestAnswers: boolean): {
+/**
+ * Stateful seams for the --if-silent mode (Issue #5161): nothing real runs.
+ *
+ * The fake runtime keeps a table of running containers: `kill` removes the
+ * named one and the listing reports what is left, so a test reads the state a
+ * reap leaves behind rather than which calls were made.
+ */
+function silenceDeps(guestAnswers: boolean, container: string): {
   deps: ReapDeps;
-  runtimeCalls: string[][];
-  evidenceCalls: string[][];
+  running: Set<string>;
   writes: Map<string, string>;
 } {
-  const runtimeCalls: string[][] = [];
-  const evidenceCalls: string[][] = [];
+  const running = new Set([container]);
   const writes = new Map<string, string>();
   const deps: ReapDeps = {
     runtimeExecutable: "container",
     listArgs: ["ps", "--format", "json"],
     runRuntime: (args) => {
-      runtimeCalls.push([...args]);
-      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+      if (args[0] === "kill") running.delete(args[1] ?? "");
+      return Promise.resolve({
+        code: 0,
+        stdout: args[0] === "ps" ? [...running].join("\n") : "",
+        stderr: "",
+      });
     },
     listProcesses: () => Promise.resolve([]),
     killProcess: () => true,
@@ -147,8 +155,8 @@ function silenceDeps(guestAnswers: boolean): {
     log: () => {},
     evidence: {
       runRuntime: (args) => {
-        evidenceCalls.push([...args]);
-        const probe = args[0] === "exec" && args[2] === "true";
+        const probe = args[0] === "exec" && args[2] === "true" &&
+          running.has(args[1] ?? "");
         return Promise.resolve(
           probe && guestAnswers
             ? { code: 0, stdout: "", stderr: "" }
@@ -169,11 +177,11 @@ function silenceDeps(guestAnswers: boolean): {
       }),
     },
   };
-  return { deps, runtimeCalls, evidenceCalls, writes };
+  return { deps, running, writes };
 }
 
-Deno.test("container-reap --if-silent - an answering guest exits 3 and kills and writes nothing", async () => {
-  const { deps, runtimeCalls, writes } = silenceDeps(true);
+Deno.test("container-reap --if-silent - an answering guest exits 3, stays running and writes nothing", async () => {
+  const { deps, running, writes } = silenceDeps(true, "vibe-coder-1");
   const result = await reap({
     runtime: "container",
     name: "vibe-coder-1",
@@ -184,12 +192,12 @@ Deno.test("container-reap --if-silent - an answering guest exits 3 and kills and
   assertEquals(result.success, true);
   assertEquals(result.exitCode, GUEST_ANSWERING_EXIT);
   assertEquals(result.data?.reaped, []);
-  assertEquals(runtimeCalls, []);
+  assertEquals([...running], ["vibe-coder-1"]);
   assertEquals(writes.size, 0);
 });
 
 Deno.test("container-reap --if-silent - a silent, non-answering guest is marked and reaped with the silence reason", async () => {
-  const { deps, runtimeCalls, writes } = silenceDeps(false);
+  const { deps, running, writes } = silenceDeps(false, "vibe-coder-1");
   const result = await reap({
     runtime: "container",
     name: "vibe-coder-1",
@@ -201,12 +209,8 @@ Deno.test("container-reap --if-silent - a silent, non-answering guest is marked 
   assertEquals(result.exitCode, undefined);
   assertEquals(result.success, true);
   assertEquals(writes.get("/logs/marker"), "container_silent\n");
-  assertEquals(
-    runtimeCalls.some((call) =>
-      call[0] === "kill" && call[1] === "vibe-coder-1"
-    ),
-    true,
-  );
+  assertEquals([...running], []);
+  assertEquals(result.data?.reaped[0]?.reaped, true);
   const file = [...writes.keys()].find((path) =>
     /\/hard-kill-vibe-coder-1-\d+\.json$/.test(path)
   );
@@ -223,7 +227,7 @@ Deno.test("container-reap --if-silent - a silent, non-answering guest is marked 
 });
 
 Deno.test("container-reap --if-silent - without --evidence-dir is refused", async () => {
-  const { deps, runtimeCalls } = silenceDeps(false);
+  const { deps, running } = silenceDeps(false, "vibe-coder-1");
   const result = await reap({
     runtime: "container",
     name: "vibe-coder-1",
@@ -231,5 +235,5 @@ Deno.test("container-reap --if-silent - without --evidence-dir is refused", asyn
   }, { deps });
   assertEquals(result.success, false);
   assertStringIncludes(result.message, "--evidence-dir");
-  assertEquals(runtimeCalls, []);
+  assertEquals([...running], ["vibe-coder-1"]);
 });

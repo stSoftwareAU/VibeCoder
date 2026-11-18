@@ -617,6 +617,20 @@ async function hardKillRecords(dir: string, prefix: string): Promise<string[]> {
   return found.sort();
 }
 
+/** True while the stub runtime still holds the container (Issue #5161). */
+async function containerExists(
+  harness: { recordDir: string },
+  name: string,
+): Promise<boolean> {
+  try {
+    await Deno.stat(`${harness.recordDir}/containers/${name}`);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
 Deno.test("run.sh - reaps a container that outlives the watchdog deadline", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
@@ -720,7 +734,6 @@ Deno.test("run.sh - reaps a silent guest that stops answering before the watchdo
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
     STUB_RUN_SLEEP: "900",
-    STUB_KILL_EXIT: "1",
     STUB_EXEC_EXIT: "1",
     VIBE_CONTAINER_WATCHDOG_SECONDS: "120",
     VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
@@ -746,9 +759,11 @@ Deno.test("run.sh - reaps a silent guest that stops answering before the watchdo
     const args = await recorded(harness, "run");
     assert(args, "the container never started");
     const name = args[args.indexOf("--name") + 1]!;
-    const killed = await recorded(harness, "kill");
-    assert(killed, `the silent guest was never killed: ${outcome.stderr}`);
-    assertEquals(killed, ["kill", name]);
+    assertEquals(
+      await containerExists(harness, name),
+      false,
+      `the silent guest is still in the runtime's table: ${outcome.stderr}`,
+    );
 
     // The deadline path writes a different reason, so this proves the early
     // path did the reaping.
@@ -766,6 +781,64 @@ Deno.test("run.sh - reaps a silent guest that stops answering before the watchdo
       `unexpected reason: ${String(evidence.reason)}`,
     );
     assertEquals(evidence.trigger, "watchdog");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - an early reap cut short by the deadline is finished, not trusted (Issue #5161)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "900",
+    STUB_EXEC_EXIT: "1",
+    // The first evidence read stalls past the early command's remaining-deadline
+    // bound; the probes fail at once, so the reap is already authorised.
+    STUB_LOGS_FIRST_SLEEP: "30",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "8",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "1",
+    VIBE_GUEST_SILENCE_SECONDS: "1",
+  });
+  try {
+    await Deno.mkdir(harness.logDir, { recursive: true });
+    const log = `${harness.logDir}/worker-1.log`;
+    await Deno.writeTextFile(log, "last line before the guest wedged\n");
+    const past = new Date(Date.now() - 10 * 60 * 1000);
+    await Deno.utime(log, past, past);
+
+    const outcome = await runLauncher(harness);
+    assertEquals(
+      outcome.code,
+      CONTAINER_WEDGED_EXIT_STATUS,
+      outcome.stderr,
+    );
+    assertStringIncludes(outcome.stderr, "before it finished");
+
+    const args = await recorded(harness, "run");
+    assert(args, "the container never started");
+    const name = args[args.indexOf("--name") + 1]!;
+    assertEquals(
+      await containerExists(harness, name),
+      false,
+      `the interrupted early reap left the container standing: ${outcome.stderr}`,
+    );
+
+    // The reap that finished the job wrote the only evidence record: the
+    // interrupted early command died inside its capture, before writing one.
+    const records = await hardKillRecords(
+      harness.logDir,
+      `hard-kill-${name}-`,
+    );
+    assertEquals(records.length, 1, outcome.stderr);
+    const evidence: Record<string, unknown> = JSON.parse(
+      await Deno.readTextFile(records[0]!),
+    );
+    assert(
+      /^the launcher's early silent-guest reap exited \d+ before it finished$/
+        .test(String(evidence.reason)),
+      `unexpected reason: ${String(evidence.reason)}`,
+    );
   } finally {
     await harness.cleanup();
   }
@@ -801,6 +874,11 @@ Deno.test("run.sh - a silent guest that still answers is left to the deadline (I
       outcome.stderr.includes("stopped answering"),
       false,
       "an answering guest must not be reaped early",
+    );
+    assertStringIncludes(
+      outcome.stderr,
+      "without reaping",
+      "the early check was cut short and said so",
     );
 
     const args = await recorded(harness, "run");
