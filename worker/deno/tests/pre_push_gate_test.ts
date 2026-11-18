@@ -1072,21 +1072,19 @@ Deno.test(
         `${clone}/.markdownlint-cli2.jsonc`,
         '{ "globs": ["**/*.md"] }\n',
       );
-      await Deno.writeTextFile(`${clone}/other.md`, "#Bad\n");
-      await git(clone, "add", "-A");
+      await git(clone, "add", ".markdownlint-cli2.jsonc");
       await git(clone, "commit", "-qm", "init");
-      // --no-verify: the run's own pre-push hook (core.hooksPath) would refuse
-      // this fixture push of the violating other.md. The gate under test is
-      // invoked directly by runPrePushGate below.
-      await git(clone, "push", "-q", "--no-verify", "origin", "HEAD:main");
+      await git(clone, "push", "-q", "origin", "HEAD:main");
       const pushed = await git(clone, "rev-parse", "HEAD");
+      // Untracked, so only the config glob can reach it; the push never sees it.
+      await Deno.writeTextFile(`${clone}/other.md`, "#Bad\n");
       await Deno.mkdir(`${clone}/.git/graft`, { recursive: true });
       await Deno.writeTextFile(
         `${clone}/.git/graft/card.md`,
         "# Card\n\nVec<u64> <b>x</b>\n",
       );
       await Deno.writeTextFile(`${clone}/good.md`, "# Good\n\nText.\n");
-      await git(clone, "add", "-A");
+      await git(clone, "add", "good.md");
       await git(clone, "commit", "-qm", "good docs");
       const tip = await git(clone, "rev-parse", "HEAD");
       const runGate = (sha: string) =>
@@ -1106,7 +1104,7 @@ Deno.test(
       );
 
       await Deno.writeTextFile(`${clone}/bad.md`, "#Bad\n");
-      await git(clone, "add", "-A");
+      await git(clone, "add", "bad.md");
       await git(clone, "commit", "-qm", "bad docs");
       const badTip = await git(clone, "rev-parse", "HEAD");
       const blocked = await runGate(badTip);
