@@ -257,18 +257,14 @@ function pushedBranches(refs: readonly PrePushRef[]): string[] | undefined {
  * symlinked parent directory are skipped too, since they resolve outside the
  * checkout. Sorted and unique. `includeDeleted` retains all touched paths
  * (unfiltered by the working tree) for configuration invalidation; callers
- * must filter execution targets separately.
+ * must filter execution targets separately. It is also the list the CI cargo
+ * trigger uses (Issue #5169), so a deleted Rust-relevant path still runs CI's
+ * cargo checks.
  *
  * `baseRef` widens the range to everything the branch has ahead of that ref,
  * including commits a WIP checkpoint already pushed (Issue #3689). It must be
  * a ref the caller resolved itself; a value git could read as an option is
  * refused.
- *
- * `containToCheckout` (default true) is the symlinked-parent skip above. The CI
- * cargo planner passes false: it must still see a Rust file reached through a
- * symlinked crate directory, so the working-directory containment check can
- * refuse it as an infrastructure fault instead of the file being dropped
- * unseen (Issue #4630).
  */
 export async function listPushedFiles(
   refs: PrePushRef[],
@@ -276,7 +272,6 @@ export async function listPushedFiles(
   git: PrePushGit,
   baseRef?: string,
   includeDeleted = false,
-  containToCheckout = true,
 ): Promise<Result<string[], string>> {
   if (refs.length === 0) return { ok: true, value: [] };
   if (baseRef !== undefined && (baseRef === "" || baseRef.startsWith("-"))) {
@@ -289,7 +284,10 @@ export async function listPushedFiles(
       "--name-only",
       "-z",
       "--format=",
-      ...(includeDeleted ? [] : ["--diff-filter=d"]),
+      // A rename is listed under its new name only by default, which hides
+      // a renamed-away `.rs` or `clippy.toml` from the CI cargo trigger, so
+      // the deleted-path list reports both sides (Issue #5169).
+      ...(includeDeleted ? ["--no-renames"] : ["--diff-filter=d"]),
       ...refs.map((r) => r.localSha),
       "--not",
       baseRef ?? "--remotes",
@@ -330,7 +328,6 @@ export async function listPushedFiles(
       // A symlinked parent directory (`dir -> /elsewhere`) makes `dir/file`
       // resolve outside the checkout even though its own lstat is a file.
       if (
-        containToCheckout &&
         (await Deno.realPath(`${cwd}/${name}`)) !== `${realCwd}/${name}`
       ) {
         continue;
@@ -1246,9 +1243,9 @@ export function planChangedFileChecks(
     ciCargo?: CiCargoScan;
     /**
      * The changed files the CI cargo checks are planned from. Defaults to
-     * `changed`; the gate passes the list that keeps a file reached through a
-     * symlinked parent directory, so a crate directory that resolves outside the
-     * checkout is refused rather than skipped (Issue #4630).
+     * `changed`; the gate passes the list that keeps deleted paths and files
+     * under a symlinked parent directory, so a crate directory that resolves
+     * outside the checkout is refused rather than skipped (Issue #4630).
      */
     cargoChanged?: string[];
     shellcheckPolicy?: ShellcheckPolicy | null;
@@ -2965,17 +2962,10 @@ export async function runPrePushGate(opts: {
     opts.baseRef,
   );
   if (!contained.ok) return infrastructureFail(contained.error);
-  const uncontained = await listPushedFiles(
-    refs.value,
-    opts.cwd,
-    git,
-    opts.baseRef,
-    false,
-    false,
-  );
-  if (!uncontained.ok) return infrastructureFail(uncontained.error);
   const formatterCandidates = contained.value;
-  const ciCargoPaths = uncontained.value;
+  // The unfiltered touched list: it keeps deleted paths (Issue #5169) and files
+  // under a symlinked crate directory (Issue #4630).
+  const ciCargoPaths = touched.value;
 
   const lsFiles = await git(["ls-files", "-z"], opts.cwd);
   if (lsFiles.code !== 0) {
@@ -3022,9 +3012,9 @@ export async function runPrePushGate(opts: {
     cspellBinary = await find(opts.cwd);
   }
 
-  // The CI cargo scan is read only when a Rust-relevant file changed. A command
-  // the scan cannot reproduce fails the push before anything runs, so it is
-  // never dropped from the checked set without a word.
+  // The CI cargo scan is read only when a Rust-relevant file changed or was
+  // deleted. A command the scan cannot reproduce fails the push before
+  // anything runs, so it is never dropped from the checked set without a word.
   let ciCargo: CiCargoScan | undefined;
   if (opts.findCiCargo && ciCargoPaths.some(isRustRelevant)) {
     const scan = await opts.findCiCargo(opts.cwd, tracked);

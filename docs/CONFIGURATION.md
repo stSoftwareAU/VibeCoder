@@ -3079,11 +3079,11 @@ A fleet babysitter repair is gated inside its container before it reports
 ready (`repairChecksWithCiCargo`): the unit tests selected for its uncommitted
 changes, markdownlint when configured, the ShellCheck policy, the cargo-deny
 gate, the repo CI's cargo clippy and test-target compile when a Rust-relevant
-file changed, `deno fmt --check` on the changed files it covers (Issue #5169)
-and the gitleaks secret scan (Issue #5121) run there, but no other formatter
-check, and no linter other than CI's cargo clippy (Issue #4930). Its `.git` is read-only,
-so its cargo checks have no PR-base comparison and a failing CI cargo check
-always blocks the repair (see
+file changed or was deleted, `deno fmt --check` on the changed files it covers
+(Issue #5169) and the gitleaks secret scan (Issue #5121) run there, but no
+other formatter check, and no linter other than CI's cargo clippy
+(Issue #4930). Its `.git` is read-only, so its cargo checks have no PR-base
+comparison and a failing CI cargo check always blocks the repair (see
 [babysitter container repairs](workflows/fleet-pr-babysitter.md#container-repairs)).
 Custom PR prompts use the agent's pre-push hook, which runs changed-file checks
 and configured pre-flight commands when the agent pushes; the worker verifies
@@ -5484,8 +5484,8 @@ gates do (see that bullet):
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
    - **CI's cargo clippy and test-target compile** (Issue #4630), when the push
-     changes a Rust-relevant file (a `.rs` file, `Cargo.toml`, `Cargo.lock`,
-     `rust-toolchain` or `rust-toolchain.toml`, `clippy.toml` or
+     changes or deletes a Rust-relevant file (a `.rs` file, `Cargo.toml`,
+     `Cargo.lock`, `rust-toolchain` or `rust-toolchain.toml`, `clippy.toml` or
      `.clippy.toml`) in a directory the repo's CI runs cargo in. These run in
      the worker's own gates (Step 1b, the completion gate and the repair
      processors' repair-with-CI-cargo spec) and in the agent's own pre-push hook: before
