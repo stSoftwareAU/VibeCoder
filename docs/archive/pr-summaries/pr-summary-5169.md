@@ -2,8 +2,8 @@
 
 ## Summary
 
-Closes two more pre-push gate bypasses that the stsoftware-pr-reviewer
-reported on #5169 while reviewing PR #5257:
+Closes two more pre-push gate bypasses that the stsoftware-pr-reviewer reported
+on #5169 while reviewing PR #5257:
 
 - **cargo deny for deleted inputs.** `runPrePushGate` now decides the cargo-deny
   trigger from the touched list (`touched.value`), which keeps deleted paths and
@@ -17,9 +17,9 @@ reported on #5169 while reviewing PR #5257:
   cargo check when a Rust config file (`RUST_CONFIG_NAMES`: `Cargo.toml`,
   `Cargo.lock`, `rust-toolchain`, `rust-toolchain.toml`, `clippy.toml`,
   `.clippy.toml`) changes in an ancestor of the check's working directory, not
-  only under it. A root toolchain pin or workspace `Cargo.lock` change
-  therefore runs CI's `cargo clippy` for a `rust/` working directory. A `.rs`
-  file still counts only under the working directory.
+  only under it. A root toolchain pin or workspace `Cargo.lock` change therefore
+  runs CI's `cargo clippy` for a `rust/` working directory. A `.rs` file still
+  counts only under the working directory.
 
 Parts of the issue are still not done (listed under Acceptance Criteria). Part
 of #5169.
@@ -32,16 +32,16 @@ of #5169.
   as the issue requires ("Do not create parallel language-specific gates").
 - rustup reads `rust-toolchain(.toml)` from parent directories, clippy reads
   `clippy.toml` from parent directories, and a workspace's `Cargo.toml` and
-  `Cargo.lock` sit above its member crates. A change to any of them changes
-  what CI's cargo command in a sub-directory builds.
+  `Cargo.lock` sit above its member crates. A change to any of them changes what
+  CI's cargo command in a sub-directory builds.
 
 ### Essential Design Decisions
 
 - `governsCargoDir(path, dir)` in `worker/deno/lib/pre_push_gate.ts` is the one
-  rule. A Rust-relevant path under `dir` (or any path when `dir` is `.`)
-  counts, and a `RUST_CONFIG_NAMES` file in a strict ancestor of `dir` counts.
-  The ancestor test compares whole path segments, so `rusty/Cargo.lock` does
-  not govern `rust`.
+  rule. A Rust-relevant path under `dir` (or any path when `dir` is `.`) counts,
+  and a `RUST_CONFIG_NAMES` file in a strict ancestor of `dir` counts. The
+  ancestor test compares whole path segments, so `rusty/Cargo.lock` does not
+  govern `rust`.
 - Any ancestor config counts, even a root `Cargo.toml` that is not a workspace
   of the sub-directory crate. That can cost an extra clippy run, which is
   accepted because the rule fails closed.
@@ -50,9 +50,9 @@ of #5169.
 
 ### Undiscoverable Facts
 
-- PRs #5252 and #5257 (both merged) delivered the babysitter tree gate's CI cargo
-  and `deno fmt --check` checks, and the deleted- and renamed-path CI cargo
-  trigger. This branch builds on `main` at 5c3a5a837.
+- PRs #5252 and #5257 (both merged) delivered the babysitter tree gate's CI
+  cargo and `deno fmt --check` checks, and the deleted- and renamed-path CI
+  cargo trigger. This branch builds on `main` at 5c3a5a837.
 
 ## Evidence
 
@@ -84,9 +84,9 @@ flowchart LR
   ShellCheck bypass was found. Every push path runs the repo's ShellCheck
   policy, and #5151's failing jobs are private, so they could not be diagnosed.
 - **missing** — "A disk/resource deferral must retain WIP and resume
-  automatically, not publish unvalidated work as passed" — reason: the
-  milestone merge-only sync (Issue #4326) still pushes a cargo-only merge with
-  an `UNGATED:` note under disk pressure. This PR does not change that path.
+  automatically, not publish unvalidated work as passed" — reason: the milestone
+  merge-only sync (Issue #4326) still pushes a cargo-only merge with an
+  `UNGATED:` note under disk pressure. This PR does not change that path.
 - **missing** — "cargo llvm-cov" — reason: the gates run CI's test-target
   compile, but no gate measures the line-coverage threshold, and
   `cargo-llvm-cov` is not installed in the worker container.
@@ -111,15 +111,16 @@ flowchart LR
     root `build.rs` plan nothing.
   - `runPrePushGate: a push that only changes a root rust-toolchain.toml runs the sub-directory CI clippy, and a failing clippy blocks it (Issue #5169)`,
     and the same for a root `Cargo.lock`. The passing run executes exactly
-    `[CLIPPY_CMD]`, and a failing clippy blocks with a `PreFlightGateError`
-    that is not infrastructure.
+    `[CLIPPY_CMD]`, and a failing clippy blocks with a `PreFlightGateError` that
+    is not infrastructure.
   - `runPrePushGate: a push that only changes a sibling directory's tools/Cargo.lock runs no CI clippy for rust (Issue #5169)`
     and `… a root .rs file build.rs …` (the controls).
 - No existing test was edited, and no assertion was removed.
 - `deno task test:unit tests/pre_push_gate_test.ts tests/pre_push_gate_cargo_deny_test.ts tests/babysitter_tree_gate_test.ts`
-  (from `worker/deno`, on the final code): 285 passed, 0 failed. `deno fmt
-  --check`, `deno lint` and `deno check` on the three changed code files are
-  clean.
+  (from `worker/deno`, on the final code): 285 passed, 0 failed.
+  `deno fmt
+  --check`, `deno lint` and `deno check` on the three changed code
+  files are clean.
 - Docs: in `docs/CONFIGURATION.md`, I read and updated the "push guarantee"
   paragraph, the repair-processor paragraph, the "CI's cargo clippy and
   test-target compile" bullet and the `cargo deny` bullet. In
@@ -132,6 +133,6 @@ flowchart LR
   `deno tests` (35130 passed, 1 failed). The failure is
   `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` ("PR summary CI task
   runs git with restricted environment permissions"). It needs
-  `registry.npmjs.org` ("dns error: failed to lookup address information"),
-  and this container has no network. Because of that failure the serial test
-  pass did not run.
+  `registry.npmjs.org` ("dns error: failed to lookup address information"), and
+  this container has no network. Because of that failure the serial test pass
+  did not run.
