@@ -1,0 +1,12 @@
+{
+  "issue": 5120,
+  "chunk": "top-up-5120",
+  "title": "top-up: Renovate release-age policy",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5120",
+  "definition": "Read a Renovate config's minimumReleaseAge the way Renovate does: duration parsing, first-party package-pattern scoping, and the walk that reports boolean ages, sub-24h windows and exemptions not scoped to stSoftwareAU names.",
+  "status": "claimed",
+  "sweptAt": "c9b90a7801328d8531f52717be4d5f1b8931f66f",
+  "paths": [
+    "worker/deno/lib/renovate_release_age.ts"
+  ]
+}
