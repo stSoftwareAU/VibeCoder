@@ -458,6 +458,10 @@ Deno.test("integration: a CI scan the worker could not produce refuses a Rust pu
     assertEquals(await remoteHead(fx.remote), "");
 
     // Positive control: the refusal is the unverifiable scan, not the push.
+    // The docs commit replaces the unpushed Rust commit so the pushed range
+    // touches no Rust path (Issue #5169).
+    const unborn = await run("git", ["update-ref", "-d", "HEAD"], fx.clone);
+    assertEquals(unborn.code, 0, unborn.stderr);
     await Deno.remove(`${fx.clone}/src`, { recursive: true });
     await Deno.remove(`${fx.clone}/Cargo.toml`);
     await Deno.writeTextFile(`${fx.clone}/notes.txt`, "x\n");
