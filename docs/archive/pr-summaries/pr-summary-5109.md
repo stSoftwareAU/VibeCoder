@@ -4,9 +4,12 @@ Follow-up to PR #5214, which baked the AWS Emulator 1.0.385, AWS CLI 2.40.3 and
 the `aws-emulator-run` helper into the worker image. This PR fixes the two
 defects the last run recorded against that delivery:
 
-- **JVM test on an image with no JDK.** `aws-emulator-run: JVM options cannot
-  override or leak the generated identity` failed with `java: command not
-  found` when run as `agent` on the worker image, which has no `java`.
+- **JVM test on an image with no JDK.**
+  `aws-emulator-run: JVM options cannot
+  override or leak the generated identity`
+  failed with `java: command not
+  found` when run as `agent` on the worker
+  image, which has no `java`.
   - Off CI, it is now skipped only when no `java` is on `/usr/bin:/bin`.
   - On GitHub Actions (`GITHUB_ACTIONS=true`) a missing JDK still fails it
     loudly.
@@ -22,14 +25,15 @@ defects the last run recorded against that delivery:
 - `docs/CONTAINER-IMAGE.md` documents the new failure-line shape.
 
 Full-image evidence is still short of the criteria (see Acceptance Criteria).
+
 Part of #5109.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The last run left one red lifecycle test and a misleading failure reason;
-  both are fixed here rather than redoing the delivered runtime.
+- The last run left one red lifecycle test and a misleading failure reason; both
+  are fixed here rather than redoing the delivered runtime.
 - A JDK-dependent test cannot be the only check of the `JAVA_*` scrub on an
   image without a JDK, so the scrub gets a JVM-free test; the real-JVM test
   stays loud wherever a JDK is expected (CI).
@@ -40,14 +44,14 @@ Part of #5109.
   parent shell (not in `$(...)`), which then clears `EMU_PID` so the cleanup
   trap never signals a reused pid.
 - A status above 128 is reported as a signal only when `kill -l` names it;
-  otherwise it is reported as a plain exit status, so an emulator exiting 200
-  is not called "killed by signal 72".
+  otherwise it is reported as a plain exit status, so an emulator exiting 200 is
+  not called "killed by signal 72".
 - A readiness timeout names no status, because the emulator is still running.
 
 ### Undiscoverable Facts
 
-- This host (aarch64, the full worker image) reports `aws-emulator --version`
-  → `Version: 1.0.385` and `aws --version` → `aws-cli/2.40.3 … aarch64`.
+- This host (aarch64, the full worker image) reports `aws-emulator --version` →
+  `Version: 1.0.385` and `aws --version` → `aws-cli/2.40.3 … aarch64`.
 - The last run (worker comment on #5109, host GRQ-23, arm64 under Apple
   Containers, as `agent`) observed: the CLI smoke and an SDK write-read-delete
   passing, two concurrent runs passing, a mid-run kill giving exit 5 within 2 s,
@@ -83,18 +87,21 @@ with an isolated test runner).
   `runuser -u agent -- aws-emulator-run --smoke`; this host's arm64 full image
   reports `Version: 1.0.385` — reviewer: partial — reason: the helper this PR
   changes has not yet run in a full-image build; Container Build re-runs the
-  build-time smoke on this PR (amd64), and no CI path builds the full arm64 image
+  build-time smoke on this PR (amd64), and no CI path builds the full arm64
+  image
 - **met** — The smoke test uses generated emulator credentials and verified TLS,
   with telemetry disabled and no real AWS credentials. — evidence:
   `container/aws-emulator-run.sh` (`env -i … -t off -a on`, `apply_test_env`);
   `worker/deno/tests/aws_emulator_run_5109_test.ts::aws-emulator-run: inherited
-  JVM option variables are replaced before COMMAND runs` — reviewer: met
+  JVM option variables are replaced before COMMAND runs`
+  — reviewer: met
 - **met** — Two runs are isolated; failure/termination releases processes and
   temporary state. A stopped/unready emulator returns a nonzero result within
   the deadline. — evidence: `worker/deno/tests/aws_emulator_run_5109_test.ts`
-  (`an emulator killed while COMMAND runs names the signal`, `an emulator that
-  stops while COMMAND runs exits 5`, concurrent and SIGTERM cases) — reviewer:
-  met
+  (`an emulator killed while COMMAND runs names the signal`,
+  `an emulator that
+  stops while COMMAND runs exits 5`, concurrent and SIGTERM
+  cases) — reviewer: met
 - **partial** — The normal Apple Containers launch contract needs no nested
   runtime, host socket, extra privilege or access to the worker's credentials. —
   evidence: no launch flag, mount or privilege changed — reviewer: partial —
@@ -114,16 +121,16 @@ with an isolated test runner).
   on one unrelated network-dependent test
 - **unrequested** — the `FAILED:` line now names the emulator's exit status or
   signal — reviewer: unrequested — reason: the last run recorded that a killed
-  emulator's failure line quoted the telemetry notice instead of the cause;
-  the guidelines require a failure reason to name the cause
+  emulator's failure line quoted the telemetry notice instead of the cause; the
+  guidelines require a failure reason to name the cause
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — changed early-exit call site not reached by a status
-  assertion — evidence: `container/aws-emulator-run.sh:308` — reason: fixed in
-  this diff (shared `fail_emulator_gone`; early-exit test asserts
+- **violation** — changed early-exit call site not reached by a status assertion
+  — evidence: `container/aws-emulator-run.sh:308` — reason: fixed in this diff
+  (shared `fail_emulator_gone`; early-exit test asserts
   `emulator exited early: exit status 1;`)
 - **violation** — `exit status 1` assertion also matched `1x`/`127` — evidence:
   `worker/deno/tests/aws_emulator_run_5109_test.ts:787` — reason: fixed in this
@@ -145,30 +152,38 @@ with an isolated test runner).
 ## Test Plan
 
 - `worker/deno/tests/aws_emulator_run_5109_test.ts`:
-  - Added `aws-emulator-run: inherited JVM option variables are replaced before
-    COMMAND runs` (green on base by design: the scrub is unchanged; it fails if
-    the unset loop is removed).
-  - Added `aws-emulator-run: an emulator killed while COMMAND runs names the
-    signal` and `aws-emulator-run: an emulator exit code above 128 with no
-    signal name is reported as an exit status` (both red on base, which printed
-    no status).
+  - Added
+    `aws-emulator-run: inherited JVM option variables are replaced before
+    COMMAND runs`
+    (green on base by design: the scrub is unchanged; it fails if the unset loop
+    is removed).
+  - Added
+    `aws-emulator-run: an emulator killed while COMMAND runs names the
+    signal`
+    and
+    `aws-emulator-run: an emulator exit code above 128 with no
+    signal name is reported as an exit status`
+    (both red on base, which printed no status).
   - Edited `aws-emulator-run: an emulator that stops while COMMAND runs exits 5`
     and the early-exit crash test: added status assertions only; no assertion
     removed. The die-after-ready fake can now exit with a code read from
     `rec/exit-code` (default 1, as before).
   - `aws-emulator-run: JVM options cannot override or leak the generated
-    identity`: body unchanged; ignored only when no `java` is on `/usr/bin:/bin`
-    and `GITHUB_ACTIONS` is not `true`.
-- As `vibe` (the real task): `ok | 2 passed | 0 failed | 21 ignored` — the helper
-  refuses `vibe` by design. Scratch copy with that refusal lifted (deleted
-  afterwards): `ok | 21 passed | 0 failed | 2 ignored` (the vibe-refusal case
-  and the JVM case, no JDK here).
+    identity`:
+    body unchanged; ignored only when no `java` is on `/usr/bin:/bin` and
+    `GITHUB_ACTIONS` is not `true`.
+- As `vibe` (the real task): `ok | 2 passed | 0 failed | 21 ignored` — the
+  helper refuses `vibe` by design. Scratch copy with that refusal lifted
+  (deleted afterwards): `ok | 21 passed | 0 failed | 2 ignored` (the
+  vibe-refusal case and the JVM case, no JDK here).
 - `bash -n` and `shellcheck` on `container/aws-emulator-run.sh`: clean.
 - `./quality.sh < /dev/null` on the final code: every stage passed except
   `deno tests`, with 35119 passed and 1 failed:
-  `tests/pr_summary_ci_workflow_3768_test.ts` (`dns error: failed to lookup
-  address information` fetching `registry.npmjs.org/minimist`). That test does
-  not touch this diff; this container has no DNS for the npm registry.
+  `tests/pr_summary_ci_workflow_3768_test.ts`
+  (`dns error: failed to lookup
+  address information` fetching
+  `registry.npmjs.org/minimist`). That test does not touch this diff; this
+  container has no DNS for the npm registry.
 - The post-result call site (`command-result` written, then the emulator found
   dead) shares `fail_emulator_gone` with the tested sites but has no test of its
   own: staging it needs the emulator to die in the window between COMMAND
