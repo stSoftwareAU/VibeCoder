@@ -75,9 +75,12 @@ flowchart TD
   - `Closes #N` beside `Part of #N` closes it;
   - a body that names the issue nowhere closes it;
   - `Part of` for a different issue does not hold this one;
-  - an old `prs_merged_any` cache entry without `partOfRefs` is not served, so a
-    live listing happens and the issue stays open;
-  - `fetchMergedPRsAnyAuthor` carries `partOfRefs` from the body.
+  - an old `prs_merged_any` cache entry without `partOfRefs` cannot close the
+    issue: it stays open with no `issue edit` call;
+  - `fetchMergedPRsAnyAuthor` ignores that old entry and carries `partOfRefs`
+    from the body.
+- The tests check outcomes only. They do not count how many times `gh` was
+  called.
 - The same file's
   `findExistingPrForIssue - a merged Part of-only PR does not
   suppress the remaining work (cache=false/true)`
@@ -104,6 +107,10 @@ flowchart TD
     `findExistingPrForIssue` cases.
 
   The cases expected to stay green were green.
+- After the call-count assertions were removed, the four changed lib files were
+  reverted to base and the file was run again with `--no-check`. 6 passed and 8
+  failed, the same 8 tests as before. Restoring the head code turned all 14
+  green.
 - After the fix, from `worker/deno`, `deno task test:unit` passed 1221 tests
   with 0 failures. It covered:
   - `tests/part_of_only_close_5135_test.ts`

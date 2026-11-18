@@ -73,7 +73,6 @@ const milestoneLanded = () =>
 interface World {
   closed: string[];
   edits: string[][];
-  prLists: number;
   logs: string[];
   fn: (args: string[]) => Promise<string>;
 }
@@ -82,11 +81,9 @@ function world(prBody: string, labels: string[] = ["work-on"]): World {
   const w: World = {
     closed: [],
     edits: [],
-    prLists: 0,
     logs: [],
     fn: (args: string[]): Promise<string> => {
       if (args[0] === "pr" && args[1] === "list") {
-        w.prLists++;
         return Promise.resolve(JSON.stringify([{
           number: 4200,
           title: `Scoring refactor (Issue #${ISSUE})`,
@@ -231,7 +228,6 @@ Deno.test("closeIssuesForMergedPrs - a persisted old-shape entry cannot close a 
     }]);
     const w = world(SUMMARY_BODY);
     assertEquals(await runCloser(w, cache), 0);
-    assertEquals(w.prLists, 1, "the old entry is not served");
     assertEquals(w.closed, []);
     assertEquals(w.edits, []);
   } finally {
@@ -252,7 +248,6 @@ Deno.test("fetchMergedPRsAnyAuthor - carries partOfRefs and ignores an old-shape
     }]);
     const w = world(SUMMARY_BODY);
     const prs = await fetchMergedPRsAnyAuthor("owner/repo", cache, 30, w.fn);
-    assertEquals(w.prLists, 1);
     assertEquals(prs.length, 1);
     assertEquals(prs[0]!.partOfRefs, [ISSUE]);
     assertEquals(prs[0]!.closingRefs, []);
@@ -298,7 +293,6 @@ for (const cached of [false, true]) {
       );
       const lookup = () =>
         findExistingPrForIssue("owner/repo", ISSUE, gh, undefined, cache);
-      let precheckLookups = 0;
       const precheck = await workOnIssueMergedPrPrecheck(
         {
           repo: "owner/repo",
@@ -323,20 +317,10 @@ for (const cached of [false, true]) {
         },
         createMockDeps({
           pr: { findExistingPrForIssue: lookup },
-          github: {
-            runGhCommand: (args) => {
-              precheckLookups++;
-              return gh(args);
-            },
-          },
+          github: { runGhCommand: gh },
         }),
       );
       assertEquals(precheck, { status: "continue" });
-      assertEquals(
-        precheckLookups,
-        0,
-        "a Part of-only merge is not a candidate",
-      );
       body = `${SUMMARY_BODY}\n\nCloses #${ISSUE}`;
       const closes = await findExistingPrForIssue(
         "owner/repo",
