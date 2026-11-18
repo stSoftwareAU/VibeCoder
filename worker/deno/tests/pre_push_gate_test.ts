@@ -2430,11 +2430,13 @@ function gateRust(
 
 /**
  * A repo whose `files` are committed and pushed to origin, then one local
- * commit that only deletes `deletePath` (Issue #5169).
+ * commit that only deletes `deletePath` — or, given `renameTo`, only renames
+ * it there (Issue #5169).
  */
 async function makeRepoDeleting(
   files: Record<string, string>,
   deletePath: string,
+  renameTo?: string,
 ): Promise<{ root: string; clone: string; stdin: string }> {
   const root = await Deno.makeTempDir({ prefix: "vibe-pp-del-" });
   const remote = `${root}/remote.git`;
@@ -2451,7 +2453,8 @@ async function makeRepoDeleting(
   await git(clone, "add", ".");
   await git(clone, "commit", "-qm", "init");
   await git(clone, "push", "-q", "--no-verify", "origin", "HEAD:main");
-  await git(clone, "rm", "-q", deletePath);
+  if (renameTo === undefined) await git(clone, "rm", "-q", deletePath);
+  else await git(clone, "mv", deletePath, renameTo);
   await git(clone, "commit", "-qm", "delete");
   const sha = await git(clone, "rev-parse", "HEAD");
   return {
@@ -2529,6 +2532,69 @@ Deno.test("runPrePushGate: a push that only deletes clippy.toml runs CI's clippy
     );
     assert(result.ok, result.ok ? "" : result.error.message);
     assertEquals(ciRuns(calls).map((c) => c.command), [CLIPPY_CMD]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+for (
+  const [from, to] of [
+    ["rust/src/helper.rs", "rust/src/helper.rs.disabled"],
+    ["rust/clippy.toml", "rust/clippy.toml.bak"],
+  ] as const
+) {
+  Deno.test(`runPrePushGate: a push that only renames ${from} to a non-Rust name runs CI's clippy, and a failing clippy blocks it (Issue #5169)`, async () => {
+    const { root, clone, stdin } = await makeRepoDeleting(
+      DELETION_FILES_5169,
+      from,
+      to,
+    );
+    try {
+      const calls: RanCall[] = [];
+      const result = await gateRust(
+        clone,
+        stdin,
+        scriptedRunner(
+          (command) =>
+            command === CLIPPY_CMD
+              ? { code: 101, stderr: "error[E0583]: file not found\n" }
+              : {},
+          calls,
+        ),
+      );
+      assert(!result.ok);
+      assert(result.error instanceof PreFlightGateError);
+      assert(!(result.error instanceof PrePushGateInfrastructureError));
+      assertEquals(result.error.command, CLIPPY_CMD);
+      assertEquals(ciRuns(calls).map((c) => c.command), [CLIPPY_CMD]);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  });
+}
+
+Deno.test("runPrePushGate: a push that only renames a non-Rust file runs no CI cargo and never reads the scan (Issue #5169)", async () => {
+  const { root, clone, stdin } = await makeRepoDeleting(
+    DELETION_FILES_5169,
+    "rust/NOTES.md",
+    "rust/README.txt",
+  );
+  try {
+    const calls: RanCall[] = [];
+    let scans = 0;
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: scriptedRunner(() => ({}), calls),
+      findCiCargo: () => {
+        scans++;
+        return Promise.resolve(scanOf(CLIPPY_CHECK));
+      },
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(ciRuns(calls), []);
+    assertEquals(scans, 0);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

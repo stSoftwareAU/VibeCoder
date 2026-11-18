@@ -284,7 +284,10 @@ export async function listPushedFiles(
       "--name-only",
       "-z",
       "--format=",
-      ...(includeDeleted ? [] : ["--diff-filter=d"]),
+      // A rename is listed under its new name only by default, which hides
+      // a renamed-away `.rs` or `clippy.toml` from the CI cargo trigger, so
+      // the deleted-path list reports both sides (Issue #5169).
+      ...(includeDeleted ? ["--no-renames"] : ["--diff-filter=d"]),
       ...refs.map((r) => r.localSha),
       "--not",
       baseRef ?? "--remotes",

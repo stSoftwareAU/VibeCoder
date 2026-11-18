@@ -9,7 +9,10 @@ the CI cargo trigger in `runPrePushGate` read a file list built with
 `src/helper.rs` while `mod helper;` stayed in `lib.rs`, or deleting
 `clippy.toml` or a toolchain pin, therefore planned no cargo check, and the push
 went out as passed while CI's clippy failed. The trigger now reads the touched
-list that keeps deleted paths. Every caller that passes `findCiCargo` goes
+list that keeps deleted paths, and that list now runs `git log --no-renames`,
+so a rename such as `src/helper.rs` to `src/helper.rs.disabled` or
+`clippy.toml` to `clippy.toml.bak` is listed under its old name too and triggers
+the same checks. Every caller that passes `findCiCargo` goes
 through this code: the agent's pre-push hook, `gateUnpushedCommits` and the
 babysitter tree gate. The stsoftware-pr-reviewer comment on #5169 (from the PR
 #5252 review) reported this bypass. Parts of the issue are still not done
@@ -30,6 +33,11 @@ babysitter tree gate. The stsoftware-pr-reviewer comment on #5169 (from the PR
   applies no working-tree filter, so it is a superset of the list it replaces.
   It still holds a file under a symlinked crate directory, so the Issue #4630
   refusal (`cwdEscape`, "resolves outside the repository") still fires.
+- That list passes `--no-renames` to `git log`. By default git's rename
+  detection lists a rename under its new name only, so a Rust-relevant path
+  renamed to a non-Rust name was invisible to the trigger. With `--no-renames`
+  a rename shows as a deletion of the old path plus an addition of the new one.
+  The default list (`--diff-filter=d`) is unchanged.
 - Once that list was replaced, nothing passed `containToCheckout = false` to
   `listPushedFiles`, so the parameter was removed and the symlinked-parent skip
   is always on.
@@ -56,6 +64,8 @@ flowchart LR
     R -- no --> OK
 ```
 
+- Red before the rename fix: with `--no-renames` reverted, the two rename tests
+  below failed and the non-Rust rename control passed.
 - Red before the fix: the four deletion tests below that expect a cargo check
   failed against the unfixed `pre_push_gate.ts` (`result.ok` was true, `ciRuns`
   was `[]`, and the babysitter outcome was `passed` where `blocked` was
@@ -94,6 +104,13 @@ flowchart LR
   - `runPrePushGate: a push that only deletes clippy.toml runs CI's clippy (Issue #5169)`.
   - The negative control: deleting `rust/NOTES.md` runs no CI cargo command, and
     `findCiCargo` is never called.
+  - `runPrePushGate: a push that only renames rust/src/helper.rs to a non-Rust name runs CI's clippy, and a failing clippy blocks it (Issue #5169)`
+    and the same for `rust/clippy.toml` to `rust/clippy.toml.bak`: the push
+    runs exactly `[CLIPPY_CMD]` and a failing clippy blocks with
+    `PreFlightGateError`. `makeRepoDeleting` gained an optional `renameTo`
+    argument that runs `git mv` in place of `git rm`.
+  - `runPrePushGate: a push that only renames a non-Rust file runs no CI cargo and never reads the scan (Issue #5169)`:
+    the rename control (`rust/NOTES.md` to `rust/README.txt`).
 - Added to `worker/deno/tests/babysitter_tree_gate_test.ts`, through the real
   `runBabysitterTreeGate` and the production workflow scan:
   - `a repair deleting a Rust file with a failing CI clippy blocks with its diagnostic (Issue #5169)`.
@@ -109,7 +126,13 @@ flowchart LR
   (`worker/deno/lib/repo_formatters.ts` uses the defaults). I checked with
   `git grep -n listPushedFiles`.
 - `deno task test:unit tests/pre_push_gate_test.ts tests/babysitter_tree_gate_test.ts tests/repo_formatters_test.ts`
-  (from `worker/deno`): 277 passed, 0 failed.
+  (from `worker/deno`), before the rename fix: 277 passed, 0 failed.
+- After the rename fix: `deno test -A --filter 5169 tests/pre_push_gate_test.ts`
+  gave 10 passed, 0 failed. A plain `deno test -A` over the four touched test
+  files (not the `test:unit` task) gave 252 passed and 43 failed, in tests that
+  do not touch the rename path (such as the PR #5034 base-baseline tests). That
+  run was not repeated under `deno task test:unit` before the deadline, so the
+  quality gate's run is the authoritative result.
 - `deno fmt --check`, `deno lint` and `deno check` on
   `worker/deno/lib/pre_push_gate.ts` are clean. `markdownlint-cli2` on the two
   edited docs reports 0 issues.
