@@ -497,3 +497,34 @@ Deno.test("renovate release-age - a missing, null or blank top-level age yields 
     );
   }
 });
+
+Deno.test("renovate release-age - legacy stabilityDays cannot bypass quarantine", () => {
+  const control = withRule({ matchPackageNames: ["actions/checkout"], minimumReleaseAge: "24 hours" });
+  assertEquals(evaluateRenovatePolicy("renovate.json", control), []);
+  for (const config of [
+    withRule({ matchPackageNames: ["actions/checkout"], stabilityDays: 0 }),
+    policy({ "github-actions": { stabilityDays: 0 } }),
+  ]) {
+    assertRefused(evaluateRenovatePolicy("renovate.json", config), "stabilityDays");
+  }
+});
+
+Deno.test("renovate release-age - nested packageRules cannot widen parent exemption", () => {
+  const control = withRule({ matchPackageNames: ["/^stSoftwareAU\\\\//"], minimumReleaseAge: null });
+  assertEquals(evaluateRenovatePolicy("renovate.json", control), []);
+  assertRefused(evaluateRenovatePolicy("renovate.json", withRule({
+    matchPackageNames: ["/^stSoftwareAU\\\\//"], minimumReleaseAge: null,
+    packageRules: [{ matchPackageNames: ["actions/checkout"] }],
+  })), "nests package rules");
+});
+
+Deno.test("renovate release-age - mixed first-party and external matchers are refused", () => {
+  const control = withRule({ matchPackageNames: ["stSoftwareAU/internal"], minimumReleaseAge: null });
+  assertEquals(evaluateRenovatePolicy("renovate.json", control), []);
+  for (const rule of [
+    { matchPackageNames: ["stSoftwareAU/internal", "actions/checkout"], minimumReleaseAge: null },
+    { matchPackageNames: ["stSoftwareAU/internal"], matchPackagePatterns: ["^actions/"], minimumReleaseAge: null },
+  ]) {
+    assertRefused(evaluateRenovatePolicy("renovate.json", withRule(rule)), "not first-party");
+  }
+});
