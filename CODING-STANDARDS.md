@@ -42,7 +42,8 @@ those properties. Emulator tests must not fall back to real AWS.
 
 Apply this policy to new or materially changed AWS behaviour, with existing
 regression tests retained. Do not add unrelated test-discovery campaigns.
-#5109 delivered the runtime and #5110 delivers VibeCoder's own reference CI path (`infra/cloudformation/test-aws-emulator.sh`); #5111 owns
+Issue #5109 delivered the runtime and #5110 delivers VibeCoder's own
+reference CI path (`infra/cloudformation/test-aws-emulator.sh`); #5111 owns
 effective implementation/reviewer prompt wiring and #5112 owns detector
 migration. Enforce the new runtime requirement after its availability and
 reference CI path are verified, not merely because this policy is documented.
