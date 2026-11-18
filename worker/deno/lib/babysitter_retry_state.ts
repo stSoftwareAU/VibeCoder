@@ -411,8 +411,8 @@ export function buildBabysitterAttemptMarker(
 }
 
 /**
- * The attempt record's one visible line. A marker-only body renders as a
- * blank comment (Issue #1659).
+ * The attempt record's one visible line: a marker-only body would render as
+ * a blank comment.
  */
 export const BABYSITTER_ATTEMPT_RECORD_LINE = "Babysitter repair recorded.";
 
