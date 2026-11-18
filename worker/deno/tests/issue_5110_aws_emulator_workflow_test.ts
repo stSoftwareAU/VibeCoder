@@ -237,6 +237,27 @@ Deno.test("(d) refuses a missing runner-script path", () => {
   );
 });
 
+Deno.test("(d) refuses a missing CloudFormation template path", () => {
+  expectFindings(
+    mutate(["      - 'infra/cloudformation/**'\n", ""]),
+    ["[triggers] on.pull_request.paths must include infra/cloudformation/**"],
+  );
+});
+
+Deno.test("(d) refuses a missing workflow self-path", () => {
+  expectFindings(
+    mutate(["      - '.github/workflows/aws-emulator.yml'\n", ""]),
+    ["[triggers] on.pull_request.paths must include .github/workflows/aws-emulator.yml"],
+  );
+});
+
+Deno.test("(d) refuses a missing toolchain-script path", () => {
+  expectFindings(
+    mutate(["      - 'container/toolchains/aws-emulator.sh'\n", ""]),
+    ["[triggers] on.pull_request.paths must include container/toolchains/aws-emulator.sh"],
+  );
+});
+
 // (e) least-privilege token.
 
 Deno.test("(e) refuses permissions.contents: write", () => {

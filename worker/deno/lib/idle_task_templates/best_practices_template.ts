@@ -33,7 +33,7 @@
  *   - **AWS-emulator pre-check (Issue #3368).** Runs on every bucket
  *     (unlike the linter pre-check, which is language-targeted): calls
  *     `checkAwsEmulatorInCI()` and, when the repo uses AWS, a workflow
- *     loaded, and no workflow runs `floci/floci`, files a
+ *     loaded, and no workflow runs Floci or the official AWS Emulator, files a
  *     `BP-AWS-EMULATOR-MISSING` finding as a standalone `best-practices`
  *     issue at `severity:medium`. A `# best-practice-ignore:
  *     BP-AWS-EMULATOR-MISSING — …` marker in a loaded workflow or in one
@@ -1155,7 +1155,7 @@ export function createBestPracticesTemplate(
         );
       } else if (aws.emulatorConfigured) {
         logger.info(
-          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — a workflow runs floci/floci`,
+          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — a workflow runs Floci or the official AWS Emulator`,
         );
       } else if (
         await hasAwsEmulatorWaiver(awsRepoPath, aws.awsEvidence, blameFileFn)

@@ -1994,12 +1994,15 @@ Deno.test("planChangedFileChecks: a changed CloudFormation template plans no clo
     [
       "infra/cloudformation/linux-verification-host.yaml",
       "infra/cloudformation/other.yaml",
+      "README.md",
     ],
     [
+      ".markdownlint-cli2.jsonc",
+      "infra/cloudformation/test-floci.sh",
       "infra/cloudformation/test-aws-emulator.sh",
       "infra/cloudformation/linux-verification-host.yaml",
     ],
-    { repoRoot: "/repo", markdownlintBinary: null },
+    { repoRoot: "/repo", markdownlintBinary: "/repo/node_modules/.bin/mdl" },
   );
   assert(result.ok);
   assertEquals(
@@ -2008,6 +2011,12 @@ Deno.test("planChangedFileChecks: a changed CloudFormation template plans no clo
       c.command.includes("test-aws-emulator")
     ),
     [],
+  );
+  // Positive control: the same call still plans markdownlint for the changed .md.
+  assert(
+    result.value.some((c) =>
+      c.command === "'/repo/node_modules/.bin/mdl' 'README.md'"
+    ),
   );
 });
 

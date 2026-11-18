@@ -3,7 +3,7 @@
   "chunk": "top-up-3369",
   "title": "top-up: Floci CloudFormation CI workflow check",
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3369",
-  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: aws_emulator_workflow_check.ts (#3369, renamed from floci_workflow_check.ts by #5110)",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: aws_emulator_workflow_check.ts (#3369, replaced floci_workflow_check.ts with different invariants by #5110)",
   "status": "claimed",
   "paths": [
     "worker/deno/lib/aws_emulator_workflow_check.ts"

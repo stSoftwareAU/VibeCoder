@@ -24,8 +24,10 @@
 #     "UNSUPPORTED OPERATION: <op>: <cause>". Any other unexpected AWS failure
 #     fails with its first cause line.
 #   * Every stack and seeded parameter is removed, and removal is asserted. An
-#     early exit still attempts the stack delete without masking the original
-#     exit status.
+#     early exit still attempts the stack and seeded-parameter deletes without
+#     masking the original exit status.
+#   * A reproduced gap prints an UNSUPPORTED line, which is not counted as a
+#     pass; "all N assertions passed" counts real assertions only.
 #
 # Exit: 0 every assertion passed; 1 an assertion or AWS call failed; 2 refused
 # (endpoint is not a loopback emulator, or CA bundle missing); 4 aws-emulator-run
@@ -56,6 +58,7 @@ RUN_OUT=""
 PHYS=""
 PASS_COUNT=0
 EXERCISED=0
+PROPERTY_CHECKED=" "
 GONE_VPC=""
 GONE_ROLE=""
 
@@ -69,6 +72,11 @@ die() {
 pass() {
     PASS_COUNT=$((PASS_COUNT + 1))
     echo "PASS: $*"
+}
+
+# Records that the property checks of the current template cover logical id $1.
+property_checked() {
+    PROPERTY_CHECKED="${PROPERTY_CHECKED}$1 "
 }
 
 # --- Outside the emulator: re-exec under aws-emulator-run --------------------
@@ -100,6 +108,10 @@ on_exit() {
     if [[ "${STACK_DELETED}" -eq 0 && -n "${STACK_NAME}" ]]; then
         # Early exit: attempt the delete only. Its outcome must not mask rc.
         aws cloudformation delete-stack --stack-name "${STACK_NAME}" > /dev/null 2>&1 || true
+    fi
+    if [[ -n "${SEEDED_AMI_PARAM}" ]]; then
+        # Early exit: attempt the seeded parameter delete only. Must not mask rc.
+        aws ssm delete-parameter --name "${SEEDED_AMI_PARAM}" > /dev/null 2>&1 || true
     fi
     rm -rf "${WORK}"
     exit "${rc}"
@@ -256,10 +268,19 @@ check_linux_verification_host() {
         --query 'Subnets[0].MapPublicIpOnLaunch' --output text
     assert_eq "PublicSubnet MapPublicIpOnLaunch" "True" "${RUN_OUT}"
 
-    physical_id "${stack}" PublicRouteTable
-    rtb="${PHYS}"
     physical_id "${stack}" InternetGateway
     igw="${PHYS}"
+    # Covers the gateway's attachment too: VpcGatewayAttachment has no other
+    # property of its own. The first attachment is the stack's VPC.
+    run_aws "ec2 describe-internet-gateways" ec2 describe-internet-gateways \
+        --internet-gateway-ids "${igw}" \
+        --query 'InternetGateways[0].Attachments[0].[VpcId,State]' --output text
+    read -r igw_vpc igw_state <<< "${RUN_OUT}" || true
+    assert_eq "InternetGateway attachment VpcId" "${vpc}" "${igw_vpc:-}"
+    assert_eq "VpcGatewayAttachment State" "available" "${igw_state:-}"
+
+    physical_id "${stack}" PublicRouteTable
+    rtb="${PHYS}"
     # The JMESPath filter uses backticks, which must not expand in bash.
     # shellcheck disable=SC2016
     run_aws "ec2 describe-route-tables (default route)" ec2 describe-route-tables \
@@ -301,6 +322,18 @@ check_linux_verification_host() {
         --instance-profile-name "${profile}" --query 'InstanceProfile.Roles[].RoleName' --output text
     assert_eq "HostInstanceProfile role" "${role}" "${RUN_OUT}"
 
+    # Every resource whose properties are asserted above.
+    property_checked VerificationVpc
+    property_checked PublicSubnet
+    property_checked PublicRouteTable
+    property_checked DefaultEgressRoute
+    property_checked PublicSubnetRouteTableAssociation
+    property_checked InternetGateway
+    property_checked VpcGatewayAttachment
+    property_checked HostSecurityGroup
+    property_checked HostRole
+    property_checked HostInstanceProfile
+
     GONE_VPC="${vpc}"
     GONE_ROLE="${role}"
 }
@@ -336,7 +369,7 @@ deploy_and_check() {
     local create=()
     local lid rtype rstatus rreason rows seen expected_id entry e_tpl e_lid
     local gap g_type g_expect stack_status expected_status
-    local gap_count=0 gap_total=0 complete=0
+    local gap_count=0 gap_total=0 complete=0 complete_ids=" " checked_lid props=0
     echo "=== ${name} (stack ${stack}) ==="
 
     params="$(ssm_parameters "${template}")"
@@ -389,12 +422,13 @@ deploy_and_check() {
                 die 1 "gap changed: update KNOWN_GAPS: ${lid} (${rtype}) is ${rstatus} with reason '${rreason}', expected ${g_type} CREATE_FAILED with '${g_expect}'"
             fi
             gap_count=$((gap_count + 1))
-            pass "gap reproduced: ${lid} CREATE_FAILED (${g_expect})"
+            echo "UNSUPPORTED (gap reproduced, not proven): ${lid} CREATE_FAILED (${g_expect})"
         else
             if [[ "${rstatus}" != "CREATE_COMPLETE" ]]; then
                 die 1 "${lid} (${rtype}) is ${rstatus}: ${rreason}"
             fi
             complete=$((complete + 1))
+            complete_ids="${complete_ids}${lid} "
         fi
     done <<< "${rows}"
 
@@ -423,14 +457,21 @@ deploy_and_check() {
         die 1 "stack ${stack} is ${stack_status}, expected CREATE_COMPLETE"
     fi
     pass "stack ${stack} ${stack_status}: ${complete} resources CREATE_COMPLETE, ${gap_count} named gap(s)"
-    EXERCISED=$((EXERCISED + complete))
 
     GONE_VPC=""
     GONE_ROLE=""
+    PROPERTY_CHECKED=" "
     case "${name}" in
         linux-verification-host.yaml) check_linux_verification_host "${stack}" ;;
         *) die 1 "no property checks for ${name}; add them" ;;
     esac
+    # Only resources with a property assertion count as "properties checked".
+    for checked_lid in ${complete_ids}; do
+        if [[ "${PROPERTY_CHECKED}" == *" ${checked_lid} "* ]]; then
+            props=$((props + 1))
+        fi
+    done
+    EXERCISED=$((EXERCISED + props))
 
     delete_stack_and_assert "${stack}"
 }
@@ -480,6 +521,9 @@ for template in "${templates[@]}"; do
     deploy_and_check "${template}"
 done
 run_aws "ssm delete-parameter (seeded AMI id)" ssm delete-parameter --name "${SEEDED_AMI_PARAM}"
+expect_aws_error "SSM get-parameter after delete (seeded AMI id)" "ParameterNotFound" \
+    ssm get-parameter --name "${SEEDED_AMI_PARAM}"
+SEEDED_AMI_PARAM=""
 
 echo "all ${PASS_COUNT} assertions passed"
 echo "exercised: ${EXERCISED} resources (properties checked)"

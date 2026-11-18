@@ -282,7 +282,19 @@ Deno.test({
       assertStringIncludes(r.output, "all ");
       assertStringIncludes(
         r.output,
+        "PASS: SSM get-parameter after delete (seeded AMI id): ParameterNotFound (as expected)",
+      );
+      assertStringIncludes(
+        r.output,
         "exercised: 10 resources (properties checked)",
+      );
+      assertStringIncludes(
+        r.output,
+        "UNSUPPORTED (gap reproduced, not proven): VerificationHost CREATE_FAILED",
+      );
+      assert(
+        !r.output.includes("PASS: gap reproduced"),
+        `a reproduced gap must not be reported as a pass:\n${r.output}`,
       );
       assertStringIncludes(
         r.output,

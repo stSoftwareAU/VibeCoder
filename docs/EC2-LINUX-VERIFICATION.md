@@ -64,7 +64,7 @@ flowchart LR
 | Resource type | Result | Notes |
 | --- | --- | --- |
 | `AWS::EC2::VPC` | Created, properties checked | |
-| `AWS::EC2::InternetGateway`, `AWS::EC2::VPCGatewayAttachment` | Created, properties checked | |
+| `AWS::EC2::InternetGateway`, `AWS::EC2::VPCGatewayAttachment` | Created, properties checked | The gateway's attachment VpcId and State are checked through `describe-internet-gateways` |
 | `AWS::EC2::Subnet`, `AWS::EC2::RouteTable`, `AWS::EC2::Route`, `AWS::EC2::SubnetRouteTableAssociation` | Created, properties checked | |
 | `AWS::EC2::SecurityGroup` | Created, properties checked | Egress descriptions must not contain em dashes (see below) |
 | `AWS::IAM::Role`, `AWS::IAM::InstanceProfile` | Created, properties checked | Permissions are not proven (real AWS only) |
