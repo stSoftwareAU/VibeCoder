@@ -76,13 +76,24 @@ Issue numbers this PR cites:
     input 100 and cached 150 give 0 and 150. It failed against the unfixed
     adapter.
 - Edited expectations. Each still discriminates, because the old value is the
-  double-counted one and no assertion was removed:
+  double-counted one and no assertion was removed. The governing issue is #5125
+  (`work-on` label added by the trusted maintainer `nleck` on 2026-11-13); each
+  edit follows its text verbatim:
   - `worker/deno/tests/codex_output_adapter_1695_test.ts`: 18342 is now 2342,
     and 9100 is now 1100. `cacheReadTokens` and `outputTokens` are unchanged.
+    Requirement: "In `usageFrom`, set `inputTokens` to
+    `max(0, input_tokens - cached_input_tokens)` and keep `cacheReadTokens` as
+    the cached count." Obsolete: the double-counted `inputTokens` (full Codex
+    input). Remaining: `cacheReadTokens` and `outputTokens`. Covering test:
+    `worker/deno/tests/codex_output_adapter_1695_test.ts::codex adapter - cached input is not counted again as uncached input (Issue #5125)`.
   - `worker/deno/tests/provider_token_usage_test.ts` Codex case: 1200 is now
-    300.
+    300. Requirement: "Update the expected values in the tests that pin the old
+    figures". Obsolete: `inputTokens` 1200. Remaining: the other three counters,
+    `usageUnknown` and `warning`.
   - `worker/deno/tests/review_fleet_prs_run_cost_test.ts` gpt-5 case:
-    `0.0369375` is now `0.0169375`.
+    `0.0369375` is now `0.0169375`. Requirement: "The correct figure is 2,342 x
+    $1.25 + 16,000 x $0.125." Obsolete: the double-charged cost. Remaining:
+    `models`, non-null `usd` and `apiEquivalent`.
 - `deno test -A` over the 14 test files touching token usage or Codex output
   (`codex_output_adapter_1695`, `provider_token_usage`,
   `review_fleet_prs_run_cost`, `cost_estimate`, `token_usage`,
@@ -91,9 +102,9 @@ Issue numbers this PR cites:
   `orchestration_3642_gate`, `batch_api`, `callback_schema_compat`, all under
   `worker/deno/tests/`): 443 passed, 0 failed. `deno fmt`, `deno lint` and
   `deno check` were clean on the four changed TypeScript files.
-- `./quality.sh` on the head (`445cbda30`): `Result: FAILED`. Every stage passed
-  except `deno tests`, which gave 35,122 passed, 1 failed and 5 ignored. The one
-  failure is
+- `./quality.sh` on the PR head before the review-fix push: `Result: FAILED`.
+  Every stage passed except `deno tests`, which gave 35,122 passed, 1 failed and
+  5 ignored. The one failure is
   `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts::PR summary CI task runs git with restricted environment permissions`,
   which quotes `error: Failed caching npm package 'entities@3.0.1'` and
   `dns error: failed to lookup address information: Temporary failure in name resolution`
