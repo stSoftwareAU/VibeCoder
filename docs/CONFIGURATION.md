@@ -3069,7 +3069,8 @@ before creating the PR. A CI fix attempts that gate when Claude leaves
 uncommitted changes after its attempt, then runs configured pre-flight commands
 before the worker push; with no such changes and no pre-flight commands, it runs
 only the repair checks before that push: the ShellCheck publication check, the
-CI cargo-deny check when the pushed paths include a cargo input, the
+CI cargo-deny check when the pushed paths, including deleted and renamed-away
+ones, include a cargo input (Issue #5169), the
 dependency-selected unit tests and configured markdownlint for the pushed paths
 (Issue #4930), and the changed-file `deno fmt --check` (Issue #5169). PR feedback and spelling fixes do not run the full
 gate before the worker push. Configured pre-flight commands also enable
@@ -5287,7 +5288,7 @@ PR-feedback repair processors pass the repair-with-CI-cargo spec
 (`REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT`) when the repo has no pre-flight
 commands (Issue #4630), so their repair pushes run only the repo
 CI's cargo clippy and test-target compile, the ShellCheck policy
-(Issue #4631), cargo deny for changed cargo inputs (Issue #4626) and the
+(Issue #4631), cargo deny for changed, deleted or renamed-away cargo inputs (Issue #4626) and the
 pushed paths' `deno test` and markdownlint checks (Issue #4930) and their
 `deno fmt --check` (Issue #5169), through Step 1b, and not the other
 changed-file checks listed below. Repos with
@@ -5484,9 +5485,13 @@ gates do (see that bullet):
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
    - **CI's cargo clippy and test-target compile** (Issue #4630), when the push
-     changes or deletes a Rust-relevant file (a `.rs` file, `Cargo.toml`,
-     `Cargo.lock`, `rust-toolchain` or `rust-toolchain.toml`, `clippy.toml` or
-     `.clippy.toml`) in a directory the repo's CI runs cargo in. These run in
+     changes, deletes or renames away a Rust-relevant file (a `.rs` file,
+     `Cargo.toml`, `Cargo.lock`, `rust-toolchain` or `rust-toolchain.toml`,
+     `clippy.toml` or `.clippy.toml`) for a directory the repo's CI runs cargo
+     in. A `.rs` file counts only in or below that directory; a config file
+     counts in, below or above it, because rustup reads the toolchain pin and
+     clippy its config from parent directories and a workspace's `Cargo.toml`
+     and `Cargo.lock` sit above its member crates (Issue #5169). These run in
      the worker's own gates (Step 1b, the completion gate and the repair
      processors' repair-with-CI-cargo spec) and in the agent's own pre-push hook: before
      the agent runs, the worker scans the workflows and writes the derived
@@ -5616,9 +5621,9 @@ gates do (see that bullet):
    - **`cargo deny`** (Issue #4626), for the whole-branch completion check.
      Intermediate push hooks and the repair spec (`repairChecksWithCiCargo`,
      used by the CI-fix, PR-feedback, spelling and merge-conflict repairs and
-     the babysitter's tree gate) run it when pushed changes include a `Cargo.toml`,
-     `Cargo.lock`, `deny.toml`, `.deny.toml`, `.cargo/config.toml` or
-     `.cargo/deny.toml`. It reads the repo's own `.github/workflows/*.yml` and
+     the babysitter's tree gate) run it when pushed changes add, change, delete or
+     rename away a `Cargo.toml`, `Cargo.lock`, `deny.toml`, `.deny.toml`,
+     `.cargo/config.toml` or `.cargo/deny.toml` (Issue #5169). It reads the repo's own `.github/workflows/*.yml` and
      `*.yaml` files for each `run:` step whose command is `cargo deny` with a
      `check` argument, and for each `EmbarkStudios/cargo-deny-action` step,
      whose inputs (with the action's own defaults) give the argv the action

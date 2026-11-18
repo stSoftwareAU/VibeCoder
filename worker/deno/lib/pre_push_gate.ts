@@ -46,7 +46,9 @@
  *    is accounted for and its serial pass ran.
  * 2. Then runs the CI cargo checks (Issue #4630): the `cargo clippy` and
  *    test-target `cargo test --no-run` commands the repo's pull-request
- *    workflows run, for each crate directory a pushed Rust file touches. Only
+ *    workflows run, for each crate directory a pushed Rust file in or below it
+ *    touches, or a pushed Rust config file (manifest, lock, toolchain pin or
+ *    clippy config) in it or an ancestor directory touches. Only
  *    when the push changes a Rust-relevant file, and only after a probe that
  *    the Rust toolchain runs here. Where cargo is not a rustup proxy and
  *    refuses a `+toolchain` word, the probe and the commands run without it
@@ -258,8 +260,8 @@ function pushedBranches(refs: readonly PrePushRef[]): string[] | undefined {
  * checkout. Sorted and unique. `includeDeleted` retains all touched paths
  * (unfiltered by the working tree) for configuration invalidation; callers
  * must filter execution targets separately. It is also the list the CI cargo
- * trigger uses (Issue #5169), so a deleted Rust-relevant path still runs CI's
- * cargo checks.
+ * and cargo-deny triggers use (Issue #5169), so a deleted or renamed-away
+ * Rust-relevant path or cargo-deny input still runs those checks.
  *
  * `baseRef` widens the range to everything the branch has ahead of that ref,
  * including commits a WIP checkpoint already pushed (Issue #3689). It must be
@@ -285,8 +287,9 @@ export async function listPushedFiles(
       "-z",
       "--format=",
       // A rename is listed under its new name only by default, which hides
-      // a renamed-away `.rs` or `clippy.toml` from the CI cargo trigger, so
-      // the deleted-path list reports both sides (Issue #5169).
+      // a renamed-away `.rs`, `clippy.toml` or `deny.toml` from the CI cargo
+      // and cargo-deny triggers, so the deleted-path list reports both sides
+      // (Issue #5169).
       ...(includeDeleted ? ["--no-renames"] : ["--diff-filter=d"]),
       ...refs.map((r) => r.localSha),
       "--not",
@@ -1057,6 +1060,7 @@ function quoteForTokeniser(value: string): string | null {
 /**
  * Whether a changed path can change what a CI cargo command builds or checks:
  * a `.rs` file, a cargo manifest or lock, a toolchain pin, or a clippy config.
+ * The config names also apply from an ancestor directory ({@link governsCargoDir}).
  * The same set gates whether the CI cargo checks are read at all.
  */
 const RUST_CONFIG_NAMES = [
@@ -1071,6 +1075,22 @@ const RUST_CONFIG_NAMES = [
 function isRustRelevant(path: string): boolean {
   if (hasExtension(path, [".rs"])) return true;
   return RUST_CONFIG_NAMES.includes(path.slice(path.lastIndexOf("/") + 1));
+}
+
+/**
+ * Whether a changed path governs a CI cargo check run in `dir` (normalised: "."
+ * or a slash-joined relative path). A Rust-relevant file under `dir` does; so
+ * does a config file in an ancestor of `dir`, because rustup and clippy read
+ * `rust-toolchain` and `clippy.toml` from parent directories and a workspace's
+ * `Cargo.toml` and `Cargo.lock` sit above its member crates. A `.rs` file in an
+ * ancestor does not (Issue #5169).
+ */
+function governsCargoDir(path: string, dir: string): boolean {
+  if (!isRustRelevant(path)) return false;
+  if (dir === "." || path.startsWith(`${dir}/`)) return true;
+  const slash = path.lastIndexOf("/");
+  if (!RUST_CONFIG_NAMES.includes(path.slice(slash + 1))) return false;
+  return slash < 0 || dir.startsWith(`${path.slice(0, slash)}/`);
 }
 
 /**
@@ -1203,8 +1223,10 @@ function plannedUnitTestFiles(
  * integration suites like CI's shards are not run here.
  *
  * `ciCargo` (Issue #4630) is the CI cargo scan. Each of its checks is planned,
- * after the cargo fmt check, when the push changes a Rust-relevant file under
- * the check's working directory (`.` is anywhere). Absent means no CI cargo
+ * after the cargo fmt check, when the push changes a Rust-relevant file in or
+ * below the check's working directory (`.` is anywhere), or a
+ * `RUST_CONFIG_NAMES` file (a manifest, lock, toolchain pin or clippy config)
+ * in an ancestor of it ({@link governsCargoDir}). Absent means no CI cargo
  * checks are planned. Only `runPrePushGate` supplies it, and only when its
  * caller passes `findCiCargo` (see the module header).
  */
@@ -1470,9 +1492,7 @@ export function planChangedFileChecks(
   const cargoChanged = opts.cargoChanged ?? changed;
   for (const check of cargoCheckOrder(opts.ciCargo?.checks ?? [])) {
     const dir = check.workingDirectory;
-    const touched = cargoChanged.some((p) =>
-      isRustRelevant(p) && (dir === "." || p.startsWith(`${dir}/`))
-    );
+    const touched = cargoChanged.some((p) => governsCargoDir(p, dir));
     if (!touched) continue;
     const command = argvCommand(check.argv);
     if (!command.ok) return command;
@@ -3225,7 +3245,8 @@ export async function runPrePushGate(opts: {
 
   const cargoDeny = await runCargoDenyGate({
     cwd: opts.cwd,
-    changed: contained.value,
+    // Deleted and renamed-away inputs change CI's cargo-deny result (Issue #5169).
+    changed: touched.value,
     always: !opts.repairChecksWithCiCargo &&
       opts.baseRef !== undefined,
     // The touched paths decide a workflow's `paths` filter only over the whole

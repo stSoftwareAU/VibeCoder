@@ -2192,6 +2192,26 @@ Deno.test("planChangedFileChecks: a changed .rs plans the CI clippy with its arg
   assertEquals(tokeniseCommand(CLIPPY_CMD), CLIPPY_ARGV);
 });
 
+Deno.test("planChangedFileChecks: Rust config in an ancestor of the CI working directory plans the check, a look-alike prefix does not (Issue #5169)", () => {
+  const plan = (dir: string, changed: string[]) => {
+    const result = planChangedFileChecks(changed, changed, {
+      repoRoot: "/r",
+      markdownlintBinary: null,
+      ciCargo: scanOf({ ...CLIPPY_CHECK, workingDirectory: dir }),
+    });
+    assert(result.ok);
+    return result.value.filter((c) => c.cargo !== undefined).map((c) =>
+      c.label
+    );
+  };
+  assertEquals(plan("rust", ["rust-toolchain.toml"]), ["cargo clippy (rust)"]);
+  assertEquals(plan("rust/crates/a", ["rust/Cargo.lock"]), [
+    "cargo clippy (rust/crates/a)",
+  ]);
+  assertEquals(plan("rust", ["rusty/Cargo.lock"]), []);
+  assertEquals(plan("rust", ["build.rs"]), []);
+});
+
 Deno.test("planChangedFileChecks: the CI cargo checks come after cargo fmt", () => {
   const result = planChangedFileChecks(
     ["rust/src/lib.rs"],
@@ -6087,3 +6107,72 @@ Deno.test("runPrePushGate: a 400-file test:unit block still names the failing te
     await Deno.remove(root, { recursive: true });
   }
 });
+
+for (
+  const [name, file, text] of [
+    [
+      "rust-toolchain.toml",
+      "rust-toolchain.toml",
+      '[toolchain]\nchannel = "1.80"\n',
+    ],
+    ["Cargo.lock", "Cargo.lock", "version = 4\n"],
+  ] as const
+) {
+  Deno.test(`runPrePushGate: a push that only changes a root ${name} runs the sub-directory CI clippy, and a failing clippy blocks it (Issue #5169)`, async () => {
+    const { root, clone, stdin } = await makeRepoWithFiles({ [file]: text });
+    try {
+      // The crate directory exists on disk, but is not part of the pushed range.
+      await Deno.mkdir(`${clone}/rust`);
+      const passed: RanCall[] = [];
+      const ok = await gateRust(
+        clone,
+        stdin,
+        scriptedRunner(() => ({}), passed),
+      );
+      assert(ok.ok, ok.ok ? "" : ok.error.message);
+      assertEquals(ciRuns(passed).map((c) => c.command), [CLIPPY_CMD]);
+
+      const calls: RanCall[] = [];
+      const result = await gateRust(
+        clone,
+        stdin,
+        scriptedRunner(
+          (command) =>
+            command === CLIPPY_CMD
+              ? { code: 101, stderr: "error: clippy failed\n" }
+              : {},
+          calls,
+        ),
+      );
+      assert(!result.ok);
+      assert(result.error instanceof PreFlightGateError);
+      assert(!(result.error instanceof PrePushGateInfrastructureError));
+      assertEquals(result.error.command, CLIPPY_CMD);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  });
+}
+
+for (
+  const [name, file] of [
+    ["a sibling directory's tools/Cargo.lock", "tools/Cargo.lock"],
+    ["a root .rs file build.rs", "build.rs"],
+  ] as const
+) {
+  Deno.test(`runPrePushGate: a push that only changes ${name} runs no CI clippy for rust (Issue #5169)`, async () => {
+    const { root, clone, stdin } = await makeRepoWithFiles({ [file]: "x\n" });
+    try {
+      const calls: RanCall[] = [];
+      const result = await gateRust(
+        clone,
+        stdin,
+        scriptedRunner(() => ({}), calls),
+      );
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assertEquals(ciRuns(calls), []);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  });
+}
