@@ -246,8 +246,8 @@ never inspects `cargo install`.
   - the legacy `matchPackagePrefixes` / `packagePatterns` / `packageNames` keys,
     each refused on a lifting rule with the accepted control;
   - the Deno and Renovate scope twin;
-  - `stabilityDays` at a `packageRules` entry and in a category, refused with
-    an accepted `"24 hours"` control;
+  - `stabilityDays` at a `packageRules` entry and in a category, refused with an
+    accepted `"24 hours"` control;
   - a first-party rule nesting `packageRules`, refused with an accepted
     un-nested control;
   - mixed lists: first-party plus `actions/checkout` in `matchPackageNames`, and
