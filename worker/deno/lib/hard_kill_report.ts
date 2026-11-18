@@ -81,18 +81,11 @@ export const HARD_KILL_ARCHIVE_DIR = "hard-kill-archive";
  */
 const PHASE_NAME = /^[a-z][a-z0-9_]{0,39}$/;
 
-/** The reason the early guest-silence reap writes (Issue #5161). */
-const GUEST_SILENT_REASON =
-  /^the launcher's watchdog found the guest silent for [0-9]{1,10}s and not answering$/;
-
 /** Fixed public explanations; never publish the evidence file's free text. */
-function publicReason(trigger: string, reason: string): string {
-  if (trigger !== "watchdog") {
-    return "The pre-launch scan reaped a stale container.";
-  }
-  return GUEST_SILENT_REASON.test(reason)
-    ? "The launcher's watchdog found the guest silent and not answering its exec probe."
-    : "The launcher's watchdog deadline expired.";
+function publicReason(trigger: string): string {
+  return trigger === "watchdog"
+    ? "The launcher's watchdog deadline expired."
+    : "The pre-launch scan reaped a stale container.";
 }
 
 /** Cap on text scanned for an `owner/repo#N` reference (ReDoS guard). */
@@ -359,11 +352,7 @@ export function parseHardKillEvidence(text: string): HardKillEvidence {
   fact(
     "reason",
     trigger === "watchdog"
-      ? new RegExp(
-        `${
-          /^the launcher's (?:[0-9]{1,10}s )?watchdog deadline expired$/.source
-        }|${GUEST_SILENT_REASON.source}`,
-      )
+      ? /^the launcher's (?:[0-9]{1,10}s )?watchdog deadline expired$/
       : /^pre-launch scan found (?:no live launcher process for it|it [0-9]{1,10}s old, past the [0-9]{1,10}s deadline)$/,
   );
   const lastLogTimestamp = fact(
@@ -522,7 +511,7 @@ export function formatHardKillBody(
       hardKillLastStep(evidence)
     }\` (the wedge is in or after this step)`,
     `**Trigger:** ${inlineText(evidence.trigger, 100)}`,
-    `**Reason:** ${publicReason(evidence.trigger, evidence.reason)}`,
+    `**Reason:** ${publicReason(evidence.trigger)}`,
     `**Captured at:** ${inlineText(evidence.capturedAt, 100)}`,
     `**Last log time:** ${inlineText(evidence.lastLogTimestamp, 100)}`,
     `**Silent before capture:** ${hardKillSilentFor(evidence)}`,

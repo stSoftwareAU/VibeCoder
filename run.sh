@@ -45,9 +45,6 @@ set -euo pipefail
 #              this launcher - and loop.sh behind it - for three hours on
 #              host-23. The wait now runs under the plan's `watchdog` deadline,
 #              and a stale worker container is reaped before the launch.
-# Issue #5161: An early check beside that deadline: a guest whose worker log
-#              has gone silent and whose `container exec` no longer answers is
-#              reaped well before the deadline (VIBE_GUEST_SILENCE_CHECK_SECONDS).
 # Issue #512:  The worker checkout is updated here, on the host, before the
 #              launch plan is built - the prerequisite for mounting it
 #              read-only (Issue #509). A failed update is a warning, never a
@@ -2127,20 +2124,6 @@ write_host_disk_reading
 # worker/deno/lib/container_watchdog.ts by the launcher tests (Issue #4173).
 CONTAINER_WEDGED_EXIT_STATUS=87
 
-# Early wedge check (Issue #5161). Every this-many seconds the watchdog asks
-# `container-reap --if-silent` whether the worker log has been silent long
-# enough (VIBE_GUEST_SILENCE_SECONDS, read by the command) and the guest has
-# stopped answering `exec`; if so it is reaped well before the deadline. 0
-# turns the early check off.
-GUEST_SILENCE_CHECK_SECONDS="${VIBE_GUEST_SILENCE_CHECK_SECONDS:-300}"
-if ! [[ "${GUEST_SILENCE_CHECK_SECONDS}" =~ ^[0-9]+$ ]]; then
-  GUEST_SILENCE_CHECK_SECONDS=300
-fi
-# Status `container-reap --if-silent` exits with when it did nothing (disabled,
-# not silent, no log, or the guest answered). Kept in step with
-# GUEST_ANSWERING_EXIT in worker/deno/lib/guest_silence_watch.ts.
-GUEST_ANSWERING_EXIT=3
-
 # How often the attached launcher hands the running worker a fresh host-disk
 # reading (Issue #1691). Five minutes matches the scheduler tick the worker's
 # fifteen-minute adoption window was sized for; the override exists for the
@@ -2174,9 +2157,7 @@ refresh_host_disk_while_running() {
 # the client and the runtime helper process holding the VM. Runs as a child of
 # this shell so the wait below is untouched - `wait` still reports the client's
 # own status - and writes the marker before reaping so the exit status can name
-# the reason. Before the deadline it also runs the early silent-guest check
-# (Issue #5161): the reaper itself decides whether the log is silent and the
-# guest has stopped answering, and reaps (writing its own marker) only then.
+# the reason.
 # shellcheck disable=SC2317,SC2329
 watchdog_reap_on_deadline() {
   # Runs only as a background job, so it drops the launcher's EXIT trap for its
@@ -2189,13 +2170,8 @@ watchdog_reap_on_deadline() {
   if ((WATCHDOG_SECONDS < poll)); then
     poll=1
   fi
-  if ((GUEST_SILENCE_CHECK_SECONDS > 0 && GUEST_SILENCE_CHECK_SECONDS < poll)); then
-    poll=1
-  fi
 
   local waited=0
-  local since_check=0
-  local check_status
   while ((waited < WATCHDOG_SECONDS)); do
     kill -0 "${client_pid}" 2>/dev/null || return 0
     # The sleep's own streams are detached: when this watchdog is stopped after
@@ -2203,34 +2179,6 @@ watchdog_reap_on_deadline() {
     # open and stall whoever is reading it.
     sleep "${poll}" >/dev/null 2>&1
     waited=$((waited + poll))
-    since_check=$((since_check + poll))
-    if ((GUEST_SILENCE_CHECK_SECONDS > 0 &&
-      since_check >= GUEST_SILENCE_CHECK_SECONDS)) &&
-      kill -0 "${client_pid}" 2>/dev/null; then
-      since_check=0
-      check_status=0
-      bounded 300 "${DENO_CMD}" run \
-        --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
-        --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \
-        "${BASE_DIR}/worker/deno/mod.ts" container-reap \
-        --runtime "${RUNTIME}" \
-        --name "${CONTAINER_NAME}" \
-        --client-pid "${client_pid}" \
-        --evidence-dir "${RUN_CORE_LOG_DIR}" \
-        --if-silent \
-        --wedge-marker "${WEDGE_MARKER}" \
-        </dev/null >&2 || check_status=$?
-      if [[ -s "${WEDGE_MARKER}" ]]; then
-        echo "[run.sh] watchdog: ${CONTAINER_NAME} stopped answering after" \
-          "its log went silent - reaped it early (Issue #5161)" >&2
-        kill -KILL "${client_pid}" 2>/dev/null || true
-        return 0
-      elif ((check_status != GUEST_ANSWERING_EXIT)); then
-        echo "[run.sh] warning: the early silent-guest check exited" \
-          "${check_status} without reaping ${CONTAINER_NAME}; the" \
-          "deadline still stands (Issue #5161)" >&2
-      fi
-    fi
   done
   kill -0 "${client_pid}" 2>/dev/null || return 0
 
@@ -2402,16 +2350,9 @@ if [[ -n "${RUN_LOG}" ]]; then
 fi
 
 if [[ -s "${WEDGE_MARKER}" ]]; then
-  if [[ "$(cat "${WEDGE_MARKER}")" == "container_silent" ]]; then
-    echo "Error: container ${CONTAINER_NAME} stopped answering (its worker" \
-      "log went silent and container exec did not answer) and was reaped" \
-      "early - exiting ${CONTAINER_WEDGED_EXIT_STATUS} so the next cycle" \
-      "runs (Issue #5161)" >&2
-  else
-    echo "Error: container ${CONTAINER_NAME} wedged past the" \
-      "${WATCHDOG_SECONDS}s watchdog deadline and was reaped - exiting" \
-      "${CONTAINER_WEDGED_EXIT_STATUS} so the next cycle runs (Issue #4173)" >&2
-  fi
+  echo "Error: container ${CONTAINER_NAME} wedged past the" \
+    "${WATCHDOG_SECONDS}s watchdog deadline and was reaped - exiting" \
+    "${CONTAINER_WEDGED_EXIT_STATUS} so the next cycle runs (Issue #4173)" >&2
   status="${CONTAINER_WEDGED_EXIT_STATUS}"
 fi
 

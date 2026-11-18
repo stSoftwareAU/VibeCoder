@@ -12,15 +12,6 @@
  *       the runtime helper holding it, so the launcher — and the supervisor
  *       behind it — is freed. Without --evidence-dir no evidence is captured.
  *
- *   --name <container> --if-silent --evidence-dir /path [--wedge-marker /path]
- *       The early reap (Issue #5161). Reap only when the worker log in the
- *       evidence directory has been silent for VIBE_GUEST_SILENCE_SECONDS
- *       (default 900; 0 disables) AND consecutive `exec` probes fail. Then
- *       write `container_silent` to the wedge marker (when given) and reap as
- *       for the deadline, with a reason saying the guest was silent. When the
- *       guest is not wedged, nothing is killed or written and the command
- *       exits with GUEST_ANSWERING_EXIT (3).
- *
  *   --stale --max-age-seconds <n> [--exclude <container>] [--refuse-live]
  *       Pre-launch reaper: reap every `vibe-coder-*` container older than the
  *       deadline, or whose launcher process is gone (which is also how a wedge
@@ -40,17 +31,10 @@
 
 import type { Command, CommandResult } from "../types.ts";
 import {
-  checkGuestSilence,
-  GUEST_ANSWERING_EXIT,
-  guestSilenceReason,
-  resolveGuestSilenceSeconds,
-} from "../lib/guest_silence_watch.ts";
-import {
   createReapDeps,
   dialectForExecutable,
   listLiveWorkerContainers,
   type LiveWorkerContainer,
-  type ReapDeps,
   type ReapResult,
   reapStaleContainers,
   reapWedgedContainer,
@@ -64,9 +48,6 @@ import {
  * this number; keep it stable.
  */
 export const ANOTHER_WORKER_RUNNING_EXIT = 4;
-
-/** What the wedge marker holds when the early reap fires (Issue #5161). */
-const WEDGE_MARKER_TEXT = "container_silent\n";
 
 function optionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -102,7 +83,6 @@ export const containerReapCommand: Command = {
 /** Do the work. Separated so the tests can call it without the registry. */
 export async function reap(
   args: Record<string, unknown>,
-  overrides: { deps?: ReapDeps } = {},
 ): Promise<CommandResult<ContainerReapResult>> {
   const runtime = optionalString(args["runtime"]);
   if (!runtime) {
@@ -127,24 +107,9 @@ export async function reap(
   const workDir = optionalString(args["work-dir"]) ??
     Deno.env.get("WORK_DIR") ?? Deno.env.get("HOME") ?? "";
 
-  const ifSilent = args["if-silent"] === true;
-  const evidenceDirArg = optionalString(args["evidence-dir"]);
-  if (ifSilent && (!containerName || stale)) {
-    return {
-      success: false,
-      message: "container-reap --if-silent requires --name <container>",
-    };
-  }
-  if (ifSilent && !evidenceDirArg) {
-    return {
-      success: false,
-      message: "container-reap --if-silent requires --evidence-dir <path>",
-    };
-  }
-
-  let deps: ReapDeps;
+  let deps;
   try {
-    deps = overrides.deps ?? createReapDeps({
+    deps = createReapDeps({
       runtime,
       listArgs: dialectForExecutable(runtime).listArgs,
       workDir,
@@ -156,38 +121,6 @@ export async function reap(
   const graceSeconds = optionalNumber(args["grace-seconds"]) ??
     resolveGraceSeconds((name) => Deno.env.get(name));
   const results: ReapResult[] = [];
-
-  let reapReason = optionalString(args["reason"]) ??
-    "the launcher's watchdog deadline expired";
-  if (ifSilent && containerName && evidenceDirArg) {
-    const verdict = await checkGuestSilence(deps.evidence, {
-      containerName,
-      evidenceDir: evidenceDirArg,
-      silenceSeconds: resolveGuestSilenceSeconds((name) => Deno.env.get(name)),
-      nowMs: Date.now(),
-    });
-    if (!verdict.wedged) {
-      return {
-        success: true,
-        exitCode: GUEST_ANSWERING_EXIT,
-        message: verdict.detail,
-        data: { reaped: [] },
-      };
-    }
-    reapReason = guestSilenceReason(verdict.silentSeconds);
-    const marker = optionalString(args["wedge-marker"]);
-    if (marker) {
-      try {
-        await deps.evidence.writeFile(marker, WEDGE_MARKER_TEXT);
-      } catch (error) {
-        console.error(
-          `[container-reap] could not write the wedge marker ${marker}: ${
-            (error as Error).message
-          }`,
-        );
-      }
-    }
-  }
 
   try {
     if (stale) {
@@ -216,7 +149,8 @@ export async function reap(
           containerName,
           ...(clientPid !== undefined && clientPid > 0 ? { clientPid } : {}),
           ...(graceSeconds !== undefined ? { graceSeconds } : {}),
-          reason: reapReason,
+          reason: optionalString(args["reason"]) ??
+            "the launcher's watchdog deadline expired",
           trigger: "watchdog",
           ...(evidenceDir ? { evidenceDir } : {}),
         }),
