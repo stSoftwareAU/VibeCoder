@@ -86,4 +86,27 @@ flowchart TD
   Both failures were
   `ContainerRuntimeUnavailableError: No supported container runtime is available on darwin`,
   thrown from `repairPlan`.
-- RESULTS_BELOW
+- After the fix, from `worker/deno`:
+  - `deno test --allow-all` on the new guard file,
+    `tests/babysitter_host_disk_admission_5105_test.ts`,
+    `tests/fleet_babysitter_chromium_check_4738_test.ts`,
+    `tests/fleet_babysitter_container_4738_test.ts`,
+    `tests/recovery_authority_4417_test.ts`,
+    `tests/babysitter_fix_orchestration_test.ts`,
+    `tests/fleet_babysitter_app_test.ts` and
+    `tests/plan_coverage_repair_test.ts` passed: 215 passed, 0 failed.
+  - Under the simulated-macOS preload, the 5105 and 4738 Chromium files passed
+    (36 passed, 0 failed), and the new guard file passed too.
+- The propagation test went red when the preload's `Deno.Command` wrapper was
+  removed: it printed `linux Command` twice instead of `linux PinnedCommand`.
+- `./quality.sh` on the final code: every stage passed except `deno tests`,
+  which ran 35157 passed and 1 failed. The failure is
+  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`, which could not
+  download `commonmark` from npm ("dns error: failed to lookup address
+  information"). That is environmental, and this diff does not touch it.
+- No existing assertion was removed or changed. The only edit to an existing
+  test adds a `--preload` argument to the supervisor run in
+  `worker/deno/tests/fleet_babysitter_chromium_check_4738_test.ts`.
+- Not verified on a real macOS host. The pinned child runs with
+  `Deno.build.os` set to `linux` on a macOS host, and only the simulation above
+  shows that path.
