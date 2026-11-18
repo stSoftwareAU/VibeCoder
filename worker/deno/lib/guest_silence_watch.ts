@@ -77,6 +77,8 @@ export interface GuestSilenceOptions {
   silenceSeconds: number;
   /** The current time, in milliseconds since the epoch. */
   nowMs: number;
+  /** Fresh clock for the post-probe check; defaults to Date.now. */
+  now?: () => number;
   /** Consecutive failed probes needed; defaults to {@link GUEST_SILENCE_PROBES}. */
   probes?: number;
   /** Bound on one probe; defaults to {@link GUEST_SILENCE_PROBE_TIMEOUT_MS}. */
@@ -156,6 +158,27 @@ export async function checkGuestSilence(
       };
     }
     lastCause = probe.ok ? `exit ${probe.value.code}` : probe.cause;
+  }
+  const fresh = await bounded(
+    seams,
+    () => seams.listLogFiles(options.evidenceDir),
+    LIST_TIMEOUT_MS,
+  );
+  const latest = fresh.ok
+    ? newestMatching(fresh.value, WORKER_LOG_RE)
+    : undefined;
+  const age = latest
+    ? ((options.now ?? Date.now)() - latest.mtimeMs) / 1000
+    : null;
+  if (
+    !latest || age === null || !Number.isFinite(age) ||
+    latest.mtimeMs > newest.mtimeMs || age < options.silenceSeconds
+  ) {
+    return {
+      wedged: false,
+      silentSeconds: age,
+      detail: "worker logging resumed or fresh silence evidence is unavailable",
+    };
   }
   return {
     wedged: true,

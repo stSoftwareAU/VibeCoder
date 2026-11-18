@@ -2193,23 +2193,32 @@ watchdog_reap_on_deadline() {
     poll=1
   fi
 
+  local started=$SECONDS
   local waited=0
   local since_check=0
+  local last_check=$SECONDS
+  local remaining check_budget
   local check_status
   while ((waited < WATCHDOG_SECONDS)); do
     kill -0 "${client_pid}" 2>/dev/null || return 0
     # The sleep's own streams are detached: when this watchdog is stopped after
     # a clean run, an orphaned sleep must not hold the launcher's stdout pipe
     # open and stall whoever is reading it.
+    remaining=$((WATCHDOG_SECONDS - (SECONDS - started)))
+    ((remaining < poll)) && poll=$remaining
+    ((poll > 0)) || break
     sleep "${poll}" >/dev/null 2>&1
-    waited=$((waited + poll))
-    since_check=$((since_check + poll))
-    if ((GUEST_SILENCE_CHECK_SECONDS > 0 &&
+    waited=$((SECONDS - started))
+    ((waited < WATCHDOG_SECONDS)) || break
+    since_check=$((SECONDS - last_check))
+    if [[ -n "${TIMEOUT_CMD}" ]] && ((GUEST_SILENCE_CHECK_SECONDS > 0 &&
       since_check >= GUEST_SILENCE_CHECK_SECONDS)) &&
       kill -0 "${client_pid}" 2>/dev/null; then
-      since_check=0
+      last_check=$SECONDS
       check_status=0
-      bounded 300 "${DENO_CMD}" run \
+      check_budget=$((WATCHDOG_SECONDS - waited))
+      ((check_budget > 300)) && check_budget=300
+      bounded "${check_budget}" "${DENO_CMD}" run \
         --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
         --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \
         "${BASE_DIR}/worker/deno/mod.ts" container-reap \
@@ -2231,6 +2240,7 @@ watchdog_reap_on_deadline() {
           "deadline still stands (Issue #5161)" >&2
       fi
     fi
+    waited=$((SECONDS - started))
   done
   kill -0 "${client_pid}" 2>/dev/null || return 0
 

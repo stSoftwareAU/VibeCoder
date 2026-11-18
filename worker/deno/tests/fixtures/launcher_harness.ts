@@ -149,6 +149,7 @@ printf '%s\\0' "\$@" > "\${record_dir}/\${sub}.args"
 # Which step ran before which is behaviour too (Issue #492): the per-command
 # .args files cannot answer it, so keep an ordered log beside them.
 printf '%s\\n' "\${sub}" >> "\${record_dir}/order.log"
+date +%s > "\${record_dir}/\${sub}.started"
 # Stall one sub-command (\`run\` unless \`STUB_READY_DELAY_SUB\` names another)
 # between its readiness record and the work it gates (Issue #668). A CI runner
 # carrying four shards deschedules this stub for exactly this long, so a test
@@ -252,6 +253,7 @@ case "\${sub}" in
   exec)
     # The guest-answering probe of the early silent-guest check (Issue #5161):
     # a wedged guest does not answer, so a test sets STUB_EXEC_EXIT non-zero.
+    sleep "\${STUB_EXEC_SLEEP:-0}"
     exit "\${STUB_EXEC_EXIT:-0}"
     ;;
   kill)

@@ -724,6 +724,7 @@ Deno.test("run.sh - reaps a silent guest that stops answering before the watchdo
     STUB_EXEC_EXIT: "1",
     VIBE_CONTAINER_WATCHDOG_SECONDS: "120",
     VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
     VIBE_GUEST_SILENCE_CHECK_SECONDS: "1",
     VIBE_GUEST_SILENCE_SECONDS: "1",
   });
@@ -776,8 +777,10 @@ Deno.test("run.sh - a silent guest that still answers is left to the deadline (I
     STUB_RUN_SLEEP: "900",
     STUB_KILL_EXIT: "1",
     STUB_EXEC_EXIT: "0",
+    STUB_EXEC_SLEEP: "2",
     VIBE_CONTAINER_WATCHDOG_SECONDS: "6",
     VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
     VIBE_GUEST_SILENCE_CHECK_SECONDS: "1",
     VIBE_GUEST_SILENCE_SECONDS: "1",
   });
@@ -810,6 +813,14 @@ Deno.test("run.sh - a silent guest that still answers is left to the deadline (I
     assertEquals(records.length, 1, outcome.stderr);
     const evidence: Record<string, unknown> = JSON.parse(
       await Deno.readTextFile(records[0]!),
+    );
+    const runtimeStarted = Number(
+      await Deno.readTextFile(`${harness.recordDir}/run.started`),
+    );
+    const reapStarted = Date.parse(String(evidence.capturedAt)) / 1000;
+    assert(
+      reapStarted - runtimeStarted < 10,
+      "slow probes extended the six-second watchdog deadline",
     );
     assertEquals(
       evidence.reason,

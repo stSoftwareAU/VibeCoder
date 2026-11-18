@@ -180,3 +180,25 @@ flowchart TD
 - `run.ps1` hosts get no early reap.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## Review fixes and validation
+
+The watchdog now measures elapsed time, including probe commands, and bounds each
+early check by the remaining deadline budget. Without a host timeout command it
+skips early checks. A fresh worker-log listing and fresh clock reading after the
+failed probes prevent reaping a guest that resumed logging; unavailable fresh
+evidence also retains the guest. Updated the resilience documentation.
+
+Replaced probe call-count/order assertions with outcome assertions. Added resumed
+logging and unavailable-fresh-evidence regressions. The launcher fixture can delay
+exec responses and records runtime-start timestamps; the answering-guest test
+asserts deadline evidence capture starts within ten seconds of runtime start for
+a six-second deadline. This excludes unrelated setup and cleanup overhead.
+The two watchdog fixtures disable the unrelated host disk floor to reach the
+watchdog on small test hosts.
+
+Validation: 10 guest-silence tests and both Issue #5161 launcher tests pass.
+Restoring the original run.sh makes the delayed-answering regression fail on
+its deadline assertion. Shell syntax and diff whitespace checks pass.
+Local runs used temporary dependency mappings and --no-check; those environment
+changes are not committed. Hosted CI must validate the normal dependency setup.
