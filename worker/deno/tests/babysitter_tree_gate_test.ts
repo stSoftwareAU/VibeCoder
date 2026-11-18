@@ -339,7 +339,106 @@ async function realGate(
   }
 }
 
-Deno.test("an uncommitted new test file that fails blocks, naming the failing command, with no formatter or linter run (#4930)", async () => {
+// Issue #5169: the babysitter repair runs the repo CI's cargo clippy and
+// test-target compile, read by the production workflow scan (no `findCiCargo`
+// is injected here).
+
+const CI_CLIPPY_COMMAND_5169 = "cargo clippy --all-targets -- -D warnings";
+
+const CI_CLIPPY_WORKFLOW_5169 = [
+  "name: CI",
+  "on:",
+  "  pull_request:",
+  "jobs:",
+  "  rust:",
+  "    runs-on: ubuntu-latest",
+  "    steps:",
+  `      - run: ${CI_CLIPPY_COMMAND_5169}`,
+  "",
+].join("\n");
+
+/** Commits and pushes a Rust crate with a CI clippy workflow, then edits `editPath`. */
+async function cargoFixtureEdit(clone: string, editPath: string) {
+  await Deno.mkdir(`${clone}/src`, { recursive: true });
+  await Deno.mkdir(`${clone}/.github/workflows`, { recursive: true });
+  await Deno.writeTextFile(
+    `${clone}/Cargo.toml`,
+    '[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n',
+  );
+  await Deno.writeTextFile(
+    `${clone}/src/lib.rs`,
+    "pub fn value() -> u8 {\n    1\n}\n",
+  );
+  await Deno.writeTextFile(`${clone}/NOTES.md`, "# Notes\n");
+  await Deno.writeTextFile(
+    `${clone}/.github/workflows/ci.yml`,
+    CI_CLIPPY_WORKFLOW_5169,
+  );
+  await git(clone, "add", "-A");
+  await git(clone, "commit", "-q", "-m", "add crate");
+  await git(clone, "push", "-q", "--no-verify", "origin", "HEAD:main");
+  await Deno.writeTextFile(
+    `${clone}/${editPath}`,
+    editPath === "src/lib.rs"
+      ? "pub fn value() -> u8 {\n    2\n}\n"
+      : "# Notes\n\nMore.\n",
+  );
+}
+
+async function cargoGate(clone: string, clippyCode: number) {
+  return runBabysitterTreeGate(clone, "main", {
+    findMarkdownlint: () => Promise.resolve("/fake/markdownlint"),
+    gitleaks: PASSING_GITLEAKS,
+    runner: (command) => {
+      const isClippy = command === CI_CLIPPY_COMMAND_5169;
+      const isProbe = command.includes("--version");
+      return Promise.resolve({
+        started: true,
+        code: isClippy ? clippyCode : 0,
+        stdout: isProbe ? "cargo 1.80.0\n" : "",
+        stderr: isClippy && clippyCode !== 0
+          ? "error: length comparison to zero\n  --> src/lib.rs:2:5\n  = note: `-D clippy::len_zero` implied by `-D warnings`\n"
+          : "",
+      });
+    },
+  });
+}
+
+Deno.test("a repair changing a Rust file with a failing CI clippy blocks with its diagnostic (Issue #5169)", async () => {
+  await agentClone(
+    (clone) => cargoFixtureEdit(clone, "src/lib.rs"),
+    async (clone) => {
+      const outcome = await cargoGate(clone, 101);
+      assertEquals(outcome.kind, "blocked");
+      assertStringIncludes(
+        (outcome as { message: string }).message,
+        "length comparison to zero",
+      );
+    },
+  );
+});
+
+Deno.test("a repair changing a Rust file with a passing CI clippy passes (Issue #5169)", async () => {
+  await agentClone(
+    (clone) => cargoFixtureEdit(clone, "src/lib.rs"),
+    async (clone) => {
+      const outcome = await cargoGate(clone, 0);
+      assertEquals(outcome.kind, "passed");
+    },
+  );
+});
+
+Deno.test("a repair changing only a non-Rust file passes even when clippy would fail (Issue #5169)", async () => {
+  await agentClone(
+    (clone) => cargoFixtureEdit(clone, "NOTES.md"),
+    async (clone) => {
+      const outcome = await cargoGate(clone, 101);
+      assertEquals(outcome.kind, "passed");
+    },
+  );
+});
+
+Deno.test("a failing uncommitted test blocks the repair and names the test file (#4930, #5169)", async () => {
   await agentClone(
     (clone) =>
       Deno.writeTextFile(
@@ -347,7 +446,7 @@ Deno.test("an uncommitted new test file that fails blocks, naming the failing co
         "export {};\n",
       ),
     async (clone) => {
-      const { outcome, commands } = await realGate(clone, "main", () => ({
+      const { outcome } = await realGate(clone, "main", () => ({
         code: 1,
         stderr: "new works => ./tests/new_test.ts:3:6\n",
       }));
@@ -356,14 +455,6 @@ Deno.test("an uncommitted new test file that fails blocks, naming the failing co
       assertStringIncludes(
         (outcome as { message: string }).message,
         "tests/new_test.ts",
-      );
-      assert(
-        commands.some((c) => c.startsWith("deno task test:unit")),
-        `the unit tests ran: ${commands}`,
-      );
-      assertEquals(
-        commands.filter((c) => /deno (fmt|lint)/.test(c)),
-        [],
       );
     },
   );
@@ -997,6 +1088,10 @@ for (const config of ["deno.json", "deno.jsonc"]) {
       assertEquals(allowed, {
         kind: "passed",
         checksRun: [
+          // The changed-file `deno fmt --check` the repair gate keeps (#5169).
+          config === "deno.json"
+            ? "deno fmt --check --permit-no-files 'lib/foo.ts'"
+            : "deno fmt --check --permit-no-files 'deno.jsonc' 'lib/foo.ts'",
           config === "deno.json"
             ? "deno task test:unit 'tests/foo_test.ts'"
             : "deno task test:unit",
@@ -1038,7 +1133,11 @@ Deno.test("an unreadable primary Deno config cannot fall through to a secondary 
     };
     assertEquals(await runBabysitterTreeGate(clone, "main", deps), {
       kind: "passed",
-      checksRun: ["deno task test:unit", "gitleaks"],
+      checksRun: [
+        "deno fmt --check --permit-no-files 'deno.jsonc' 'lib/foo.ts'",
+        "deno task test:unit",
+        "gitleaks",
+      ],
     });
 
     await Deno.remove(path);
@@ -1053,7 +1152,11 @@ Deno.test("an unreadable primary Deno config cannot fall through to a secondary 
     await Deno.writeTextFile(path, valid);
     assertEquals(await runBabysitterTreeGate(clone, "main", deps), {
       kind: "passed",
-      checksRun: ["deno task test:unit", "gitleaks"],
+      checksRun: [
+        "deno fmt --check --permit-no-files 'deno.jsonc' 'lib/foo.ts'",
+        "deno task test:unit",
+        "gitleaks",
+      ],
     });
   });
 });

@@ -202,7 +202,9 @@ Publication paths and where the scan runs: the issue completion gate and the
 other `./quality.sh` callers run the stage above through `runQualityGate`. A
 fleet babysitter repair does not: `babysitter-repair` gates a `BABYSITTER_READY`
 response with `runBabysitterTreeGate` (`babysitter_tree_gate.ts`), which runs
-the pre-push gate over the repair's uncommitted tree. That gate also runs
+the pre-push gate over the repair's uncommitted tree, including the repo CI's
+cargo clippy and test-target compile and `deno fmt --check` on the changed files
+(Issue #5169). That gate also runs
 `runGitleaksTreeCheck` (same module, same pinned CLI, config and redaction)
 once the other checks pass: the branch's commit range
 `<merge-base with origin/<base branch>>..HEAD`, resolved read-only because the
