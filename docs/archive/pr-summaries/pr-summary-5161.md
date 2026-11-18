@@ -44,6 +44,10 @@ answers is never reaped early. Closes #5161.
 - `container-reap` writes the wedge marker (`container_silent`) before it kills
   anything, as the deadline path already does. Once the client dies, the
   launcher reads the marker and still exits `87`.
+- `VIBE_GUEST_SILENCE_SECONDS` is registered as a `switch`, like
+  `VIBE_HOST_DISK_REFRESH_SECONDS`, and not as an `operator_config` setting:
+  `0` turns the early reap off and tests shorten it. The `operator_config` count
+  is capped, so registering it there would fail the cap test.
 - This change is in `run.sh` only. `run.ps1`'s watchdog is unchanged, and it
   already captures no hard-kill evidence (it passes no `--evidence-dir`), so it
   has no worker-log view to check silence against.
@@ -128,6 +132,15 @@ flowchart TD
       file) gave 122 passed, 0 failed.
 - [x] `deno fmt --check`, `deno lint` and `deno check` pass on the changed TS
       files. `bash -n run.sh` and `shellcheck run.sh` are clean.
+- [x] `./quality.sh` on the final code: every stage passed except `deno tests`.
+      Its one failure is `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`,
+      which could not download `commonmark` from the npm registry ("dns error:
+      failed to lookup address information: Temporary failure in name
+      resolution"). The failure is environmental and that test is not touched
+      here. The completeness stage passes after two declarations:
+      `VIBE_GUEST_SILENCE_SECONDS` is registered in
+      `worker/deno/lib/vibe_env_registry.ts` with role `switch`, and the new
+      module is claimed by `docs/audits/lib-sweep-coverage/top-up-5161.json`.
 - The answering-guest launcher test is expected to pass on base too: it pins
   that a guest that answers is not reaped early.
 - No assertion was removed from any existing test. The stub runtime's new
