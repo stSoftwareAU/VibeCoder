@@ -283,10 +283,11 @@ emulator's own cause: the log lines matching `error`, `failed`, `panic`,
 `refus`, `denied`, `cannot`, `unable` or `in use`, or the last 3 lines when none
 match. Credential values and emulator key ids are masked as `<redacted>`. This
 applies both to an early exit and to a readiness timeout. Once the emulator has
-exited, early or while COMMAND runs, the line first names its exit status:
-`exit status N`, or `killed by signal K (NAME)` when a signal ended it. The log
-lines follow after `emulator log:`. A readiness timeout names no status, because
-the emulator is still running. When the emulator stops while COMMAND runs, the helper reports `emulator stopped while COMMAND
+exited, early or while COMMAND runs, the line first names its status:
+`exit status N`, or `killed by signal K (NAME)` when a named signal ended it.
+The log lines follow after `emulator log:`. A readiness timeout names no
+status, because the emulator is still running. When the emulator stops while
+COMMAND runs, the helper reports `emulator stopped while COMMAND
 ran` and exits 5, even when COMMAND exited 0.
 
 ```mermaid

@@ -811,7 +811,11 @@ testAsOrdinaryUser(
         r.stderr,
         "[aws-emulator-run] FAILED: emulator stopped while COMMAND ran:",
       );
-      assertStringIncludes(r.stderr, "killed by signal 9 (KILL);");
+      // The fake logs nothing, so no `; emulator log:` suffix follows the status.
+      assertStringIncludes(
+        r.stderr,
+        "emulator stopped while COMMAND ran: killed by signal 9 (KILL)\n",
+      );
       await assertCleanedUp(fx);
     });
   },
