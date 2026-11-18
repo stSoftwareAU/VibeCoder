@@ -3363,8 +3363,8 @@ const LISTS_DIRECTORY =
  * imports (relative `.ts` specifier) a tracked file that does; a test is
  * selected when it is a seed or imports one, directly or transitively. A module
  * that reaches a listing only through another non-test module is not followed,
- * so CI's shards stay the backstop. A tracked file that cannot be read is
- * skipped.
+ * so CI's shards stay the backstop. A tracked `.ts` file that cannot be read
+ * counts as listing a directory (fails closed).
  */
 export async function loadDirectoryListingTests(
   repoRoot: string,
@@ -3375,17 +3375,21 @@ export async function loadDirectoryListingTests(
   for (const root of roots) {
     const prefix = root === "." ? "" : `${root}/`;
     const texts = new Map<string, string>();
+    const unreadable = new Set<string>();
     for (const path of tracked) {
       if (!path.startsWith(prefix) || !path.endsWith(".ts")) continue;
       try {
         texts.set(path, await readRepoFile(repoRoot, path));
       } catch {
-        continue; // Deleted, a symlink or unreadable: nothing to run.
+        unreadable.add(path); // Fails closed: it may list a directory.
+        texts.set(path, "");
       }
     }
-    const lists = (path: string) => LISTS_DIRECTORY.test(texts.get(path) ?? "");
+    const lists = (path: string) =>
+      unreadable.has(path) || LISTS_DIRECTORY.test(texts.get(path) ?? "");
     const importers = new Map<string, string[]>();
     const seeds: string[] = [];
+    // SIMPLE-ON-PURPOSE: one import hop from the test tree, fine while listers are imported directly — upgrade when a listing test is missed through a second non-test module
     for (const [path, text] of texts) {
       const imports = relativeTsSpecifiers(text).map((s) =>
         resolveSpecifier(path, s)

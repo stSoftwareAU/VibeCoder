@@ -6097,6 +6097,32 @@ Deno.test("loadDirectoryListingTests: a test that lists a directory, or imports 
   }
 });
 
+Deno.test("loadDirectoryListingTests: an unreadable tracked module counts as listing a directory, so its importer runs (Issue #5169)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/worker/deno/tests`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/worker/deno/tests/missing_user_test.ts`,
+      'import { m } from "../lib/missing.ts";\nm;\n',
+    );
+    await Deno.writeTextFile(
+      `${dir}/worker/deno/tests/plain_test.ts`,
+      "export {};\n",
+    );
+    // lib/missing.ts is tracked but absent from disk, so it cannot be read.
+    assertEquals(
+      await loadDirectoryListingTests(dir, [
+        "worker/deno/tests/missing_user_test.ts",
+        "worker/deno/tests/plain_test.ts",
+        "worker/deno/lib/missing.ts",
+      ], ["worker/deno"]),
+      { "worker/deno": ["tests/missing_user_test.ts"] },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 /** The `test:unit` commands the gate runs for a push made by `edit` after `base`. */
 async function unitCommandsAfterBase(
   base: (clone: string) => Promise<void>,
@@ -6158,7 +6184,7 @@ Deno.test("runPrePushGate: a push that only adds a test file also runs the tests
   );
 });
 
-Deno.test("runPrePushGate: a push that adds or deletes a source runs the tests whose imported module walks a directory (Issue #5169)", async () => {
+Deno.test("runPrePushGate: a push that adds, deletes or renames a source runs the tests whose imported module walks a directory (Issue #5169)", async () => {
   const base = async (c: string) => {
     await Deno.writeTextFile(
       `${c}/worker/deno/lib/coverage.ts`,
@@ -6175,8 +6201,10 @@ Deno.test("runPrePushGate: a push that adds or deletes a source runs the tests w
       "export const n = 1;\n",
     );
   const deletes = (c: string) => Deno.remove(`${c}/worker/deno/lib/foo.ts`);
-  // A source added or deleted beside the walker selects its test; neither names it.
-  for (const edit of [adds, deletes]) {
+  const renames = (c: string) =>
+    Deno.rename(`${c}/worker/deno/lib/foo.ts`, `${c}/worker/deno/lib/bar.ts`);
+  // A source added, deleted or renamed beside the walker selects its test; neither names it.
+  for (const edit of [adds, deletes, renames]) {
     assertEquals(
       await unitCommandsAfterBase(base, edit),
       ["deno task test:unit 'tests/coverage_test.ts'"],

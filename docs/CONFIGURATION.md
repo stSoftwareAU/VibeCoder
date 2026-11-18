@@ -5431,7 +5431,8 @@ gates do (see that bullet):
      directory that does. A file lists a directory when its text calls
      `Deno.readDir`, `Deno.readDirSync`, `walk`, `walkSync`, `expandGlob` or
      `expandGlobSync`, or quotes `ls-files`; as a text match, a comment that
-     spells such a call also selects. A module that reaches a listing only
+     spells such a call also selects, and so does a tracked `.ts` file that
+     cannot be read (it fails closed). A module that reaches a listing only
      through another non-test module is not followed, so such a test can still
      be missed. A push that only modifies existing files selects none of these
      tests. A data file read
