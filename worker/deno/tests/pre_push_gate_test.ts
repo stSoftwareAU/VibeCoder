@@ -5950,7 +5950,7 @@ Deno.test("needsFullUnitSuite: prompts, deno.json, deno.jsonc and deno.lock of t
 /** The `test:unit` commands a push editing `lib/foo.ts` runs under `denoJson`. */
 async function unitCommandsForFooEdit(
   denoJson: Record<string, unknown>,
-): Promise<Awaited<ReturnType<typeof runPrePushGate>>> {
+): Promise<string[]> {
   const { root, clone, stdin } = await makeUnitTestRepo(
     (c) =>
       Deno.writeTextFile(
