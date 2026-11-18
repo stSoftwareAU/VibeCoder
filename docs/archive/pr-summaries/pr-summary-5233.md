@@ -29,9 +29,15 @@ reviewer note on its `Deno.test` line. Closes #5233.
 - A wrapper with only success-only assertions, or with an out-of-view call in an
   edited file, carries those into each call's judgement (`success-only`, or a
   note instead of `no-assertion`).
-- A wrapper that calls several parameters is judged on the whole call, so a
-  plain setup callback beside an asserting test callback is not refused; if one
-  of several callbacks is passed by name, the call is a note.
+- Each registration is judged only on the callback arguments it invokes (plus
+  the wrapper's own assertions), never on the whole helper call: a helper that
+  registers two separate tests (`first()`, `second()`) judges each test by its
+  own argument, so one asserting callback cannot exempt an assertion-free or
+  success-only one, and an assertion in an unused argument counts for nothing
+  (PR #5269 review). A wrapper whose one test invokes several parameters is
+  judged on those arguments together, so a plain setup callback beside an
+  asserting test callback is not refused; if one of several callbacks is passed
+  by name, the call is a note.
 - A skipped inline test (`Deno.test.ignore`, `it.skip`, `test.todo`, `xit`, ...)
   is never a candidate: the scan never judges a skipped test (it is held to the
   `ignored-without-reason` rule instead), so its helper's calls are not judged
@@ -85,8 +91,9 @@ flowchart TD
 
 ## Test Plan
 
-Eight tests added to `worker/deno/tests/dummy_test_scan_5016_test.ts`, all named
-`(Issue #5233)`; no existing test was edited or removed:
+Twelve tests added to `worker/deno/tests/dummy_test_scan_5016_test.ts` (eight
+named `(Issue #5233)`, four named `(PR #5269 review)`); no existing test was
+edited or removed:
 
 - `an inline test body calling a helper's callback is accepted when the call asserts`
   — the issue's exact source: no finding, no note.
@@ -109,6 +116,25 @@ Eight tests added to `worker/deno/tests/dummy_test_scan_5016_test.ts`, all named
 - `in an edited file, an assertion-free call of a helper whose body calls an out-of-view setup is a note`
   — note at the call line (10), no finding.
 
+The four `(PR #5269 review)` tests, each with one registration helper that
+registers separate tests per callback argument (`pair`, `run`):
+
+- `a helper registering two tests judges each test by its own callback only` —
+  one asserting callback and one assertion-free: `[no-assertion, 9]`.
+- `a success-only callback is not exempted by another registration's strong assertion`
+  — `[success-only, 9]`.
+- `a helper registering two tests accepts a call where each callback asserts` —
+  no finding (positive control).
+- `an assertion in a callback no registered test invokes does not satisfy the test`
+  — the test invokes only `used`; the asserting `unused` argument does not
+  exempt it: `[no-assertion, 6]`. The existing
+  `a helper calling two callbacks is judged as a whole at each call` still
+  passes, preserving the one-test-invokes-both case.
+
+Red before the review fix: against the earlier `dummy_test_scan.ts` (commit
+`4618f7e92`), the three finding-expecting `(PR #5269 review)` tests failed; the
+positive control passed.
+
 Red before the fix (the first seven tests): against the unfixed
 `dummy_test_scan.ts`, the file ran 52 passed / 6 failed — the issue's source
 gave `[no-assertion, 2]`, and cases 2, 3, 5, 6 and 7 failed as described; case 4
@@ -117,7 +143,7 @@ passed on base, as a control should.
 Results on the final head:
 
 - `deno test --allow-all tests/dummy_test_scan_5016_test.ts tests/dummy_test_scan_wiring_5016_test.ts tests/capability_security_review_4366_test.ts`
-  (from `worker/deno`): 71 passed, 0 failed. `deno fmt`, `deno lint` and
+  (from `worker/deno`): 75 passed, 0 failed. `deno fmt`, `deno lint` and
   `deno check` are clean on the two changed files.
 - `./quality.sh` (run on the head before the `isSkipToken` fix, not re-run after
   it; the worker re-runs the gate): every stage passed except `deno tests`,

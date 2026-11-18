@@ -877,6 +877,74 @@ withSetup("a", async () => {
   assertEquals(scan.notes, []);
 });
 
+const PAIR =
+  `function pair(name: string, first: () => void, second: () => void) {
+  Deno.test(name + " first", () => {
+    first();
+  });
+  Deno.test(name + " second", () => {
+    second();
+  });
+}
+`;
+
+Deno.test("a helper registering two tests judges each test by its own callback only (PR #5269 review)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `${PAIR}pair("p", () => {
+  assertEquals(result(), 1);
+}, () => {
+  doWork();
+});
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 9]]);
+});
+
+Deno.test("a success-only callback is not exempted by another registration's strong assertion (PR #5269 review)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `${PAIR}pair("p", () => {
+  assertEquals(result(), 1);
+}, () => {
+  assertExists(result());
+});
+`,
+  );
+  assertEquals(rules(diff), [["success-only", 9]]);
+});
+
+Deno.test("a helper registering two tests accepts a call where each callback asserts (PR #5269 review)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `${PAIR}pair("p", () => {
+  assertEquals(result(), 1);
+}, () => {
+  assertEquals(result(), 2);
+});
+`,
+  );
+  assertEquals(rules(diff), []);
+});
+
+Deno.test("an assertion in a callback no registered test invokes does not satisfy the test (PR #5269 review)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `function run(name: string, used: () => void, unused: () => void) {
+  Deno.test(name, () => {
+    used();
+  });
+}
+run("p", () => {
+  doWork();
+}, () => {
+  assertEquals(result(), 1);
+});
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 6]]);
+});
+
 Deno.test("a helper whose inline test is skipped with a reason is not judged at its calls (Issue #5233)", () => {
   const diff = added(
     "tests/fixture_test.ts",

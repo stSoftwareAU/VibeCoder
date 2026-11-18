@@ -362,33 +362,47 @@ function inlineFunction(arg: string): boolean {
  * The top-level arguments of the call whose bracket is at `open`, whitespace
  * removed, with each nested bracket group collapsed to its two brackets
  * (`() => {}`). Groups are stepped over by their closing offset, so the cost is
- * the call's own level, not everything nested inside it (PR #5232). Null when
+ * the call's own level, not everything nested inside it (PR #5232). `start` and
+ * `end` are the offsets of the argument's first and last character. Null when
  * the call does not close in view.
  */
 function flatArgs(
   masked: string,
   open: number,
-): Array<{ flat: string; groups: number[] }> | null {
+):
+  | Array<{ flat: string; groups: number[]; start: number; end: number }>
+  | null {
   const close = closingBracket(masked, open);
   if (close < 0) return null;
-  const out: Array<{ flat: string; groups: number[] }> = [];
+  const out: Array<
+    { flat: string; groups: number[]; start: number; end: number }
+  > = [];
   let flat = "";
   let groups: number[] = [];
+  let start = -1;
+  let end = -1;
   const flush = () => {
-    if (flat !== "") out.push({ flat, groups });
+    if (flat !== "") out.push({ flat, groups, start, end });
     flat = "";
     groups = [];
+    start = -1;
   };
   for (let k = open + 1; k < close; k++) {
     const ch = masked[k]!;
     if (ch === "(" || ch === "{" || ch === "[") {
-      const end = closingBracket(masked, k);
-      if (end < 0 || end > close) return null;
-      flat += ch + masked[end];
+      const stop = closingBracket(masked, k);
+      if (stop < 0 || stop > close) return null;
+      if (start < 0) start = k;
+      flat += ch + masked[stop];
       groups.push(k);
-      k = end;
+      k = stop;
+      end = k;
     } else if (ch === ",") flush();
-    else if (!/\s/.test(ch)) flat += ch;
+    else if (!/\s/.test(ch)) {
+      if (start < 0) start = k;
+      flat += ch;
+      end = k;
+    }
   }
   flush();
   return out;
@@ -1028,7 +1042,8 @@ function problemFor(rule: DummyTestRule): string {
  * names; a callback the diff cannot resolve is a note. An inline test body that
  * calls a parameter of the enclosing helper, and does not assert enough by
  * itself, is judged at each call of that helper, with the wrapper's own
- * assertions counted; with no call in view it is a note.
+ * assertions counted and only the callback arguments that registration invokes
+ * (not another registration's); with no call in view it is a note.
  */
 export function scanDummyTests(diff: string): DummyTestScan {
   hunkBrackets = null;
@@ -1189,6 +1204,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
       lastLine: number,
       extra: Delegation,
       callback: string | null,
+      spans: Array<[number, number]> | null = null,
     ) => {
       const span = hunk.lines.slice(declLine, lastLine + 1);
       if (!span.some((l) => l.added)) return;
@@ -1200,7 +1216,11 @@ export function scanDummyTests(diff: string): DummyTestScan {
       if (bodyEnd < 0) return; // body runs past the hunk: not judged
       const file = hunk.file;
       const line = hunk.lines[reportLine]!.line;
-      let body = masked.slice(bodyStart, bodyEnd + 1);
+      // A registration's own callback arguments: another registration's
+      // arguments of the same helper call are not this test's body.
+      let body = spans === null
+        ? masked.slice(bodyStart, bodyEnd + 1)
+        : spans.map(([a, b]) => masked.slice(a, b + 1)).join("\n");
       if (callback !== null) {
         // A callback passed by name is judged by the function it names.
         const named = namedCallbackBody(scope, masked, callback, bodyStart);
@@ -1346,7 +1366,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
           );
           const args = flatArgs(masked, open);
           for (const reg of list) {
-            const picked = reg.indices.map((k) => args?.[k]?.flat);
+            const picked = reg.indices.map((k) => args?.[k]);
             if (picked.some((arg) => arg === undefined)) {
               if (inView) note(hunk.file, hunk.lines[declLine]!.line, "unseen");
             } else if (picked.length === 1) {
@@ -1358,13 +1378,24 @@ export function scanDummyTests(diff: string): DummyTestScan {
                 close,
                 last,
                 reg.wrapper,
-                REF.test(arg) ? arg : null,
+                REF.test(arg.flat) ? arg.flat : null,
+                [[arg.start, arg.end]],
               );
-            } else if (picked.some((arg) => REF.test(arg!))) {
+            } else if (picked.some((arg) => REF.test(arg!.flat))) {
               // Several callbacks, one named: not resolved here, so a note.
               if (inView) note(hunk.file, hunk.lines[declLine]!.line, "unseen");
             } else {
-              judge(declLine, declLine, open, close, last, reg.wrapper, null);
+              // One registered test invokes all of them: judged together.
+              judge(
+                declLine,
+                declLine,
+                open,
+                close,
+                last,
+                reg.wrapper,
+                null,
+                picked.map((arg): [number, number] => [arg!.start, arg!.end]),
+              );
             }
           }
         }
