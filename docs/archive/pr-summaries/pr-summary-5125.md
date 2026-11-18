@@ -1,0 +1,105 @@
+## Summary
+
+Codex reports `cached_input_tokens` as part of `input_tokens`. `usageFrom` in
+`worker/deno/lib/codex_output_adapter.ts` copied `input_tokens` straight into
+`inputTokens`, so the pricing path charged every cached token twice: once at
+the full input rate and once at the cached rate. `usageFrom` now sets
+`inputTokens` to input less cached (never below 0), and `cacheReadTokens`
+stays the cached count. Closes #5125.
+
+## Spec
+
+### Intent and Rationale
+
+- The shared `TokenUsage.inputTokens` already means uncached input: Claude
+  reports it that way, and the Gemini decoder already subtracts its cached
+  count. Correcting the Codex adapter makes every reader agree without
+  touching the pricing code.
+
+### Essential Design Decisions
+
+- The subtraction is clamped at 0, so a malformed event whose cached count
+  exceeds its input can never produce a negative token count or cost.
+- No reader of `inputTokens` needed the full Codex input count. Totals,
+  callback telemetry and cache-rate telemetry
+  (`worker/deno/lib/run_callback_telemetry.ts`,
+  `worker/deno/lib/prompt_cache_telemetry.ts`) and the banded-rate prompt
+  size in `ratesFor` (`worker/deno/lib/token_usage.ts`) all add
+  `inputTokens` and `cacheReadTokens` together, so the fix also stops those
+  from counting the cached prefix twice. The Codex context budget
+  (`worker/deno/lib/codex_budget.ts`) reads its own rollout files, not this
+  adapter.
+
+### Undiscoverable Facts
+
+- The subset relation comes from Codex's own figures in
+  `worker/deno/tests/fixtures/agent_output/codex-0.147.0-legacy-envelope.jsonl`:
+  `input_tokens` 9100, `cached_input_tokens` 8000, `output_tokens` 430,
+  `total_tokens` 9530. 9530 is input plus output; the cached count is not
+  added again.
+
+## Evidence
+
+Backend only; no UI file touched.
+
+- Worked example from the issue (gpt-5, 18,342 input of which 16,000 cached,
+  1,201 output). The estimate drops from $0.0369375 to $0.0169375
+  (2,342 × 1.25 + 1,201 × 10 + 16,000 × 0.125, per million), pinned by
+  `worker/deno/tests/review_fleet_prs_run_cost_test.ts::attemptCost prices a Codex attempt on gpt-5 from its turn.completed usage, not the Claude result path`.
+- `docs/MODEL-AND-CACHING.md`, Token Extraction section, Codex bullet: now
+  states the input-less-cached mapping.
+
+```mermaid
+flowchart LR
+    A["Codex usage: input_tokens 18,342 (incl. 16,000 cached)"] --> B["usageFrom"]
+    B --> C["inputTokens 2,342"]
+    B --> D["cacheReadTokens 16,000"]
+    C --> E["estimateRunCost: input rate"]
+    D --> F["estimateRunCost: cached rate"]
+```
+
+Issue numbers this PR cites:
+
+- #5125: Codex cost estimates charge cached input tokens twice (`usageFrom` in
+  codex_output_adapter.ts).
+
+## Test Plan
+
+- Added to `worker/deno/tests/codex_output_adapter_1695_test.ts`:
+  - `codex adapter - cached input is not counted again as uncached input (Issue #5125)`:
+    input 1200 and cached 900 decode to `inputTokens` 300 and
+    `cacheReadTokens` 900. It failed against the unfixed adapter.
+  - `codex adapter - usage without cached_input_tokens keeps the whole input uncached (Issue #5125)`:
+    input 500 and no cached count give 500 and 0. It passes on both the base
+    and the fix, because it pins the case the fix must leave unchanged.
+  - `codex adapter - cached input above total input never yields negative uncached input (Issue #5125)`:
+    input 100 and cached 150 give 0 and 150. It failed against the unfixed
+    adapter.
+- Edited expectations. Each still discriminates, because the old value is the
+  double-counted one and no assertion was removed:
+  - `worker/deno/tests/codex_output_adapter_1695_test.ts`: 18342 is now
+    2342, and 9100 is now 1100. `cacheReadTokens` and `outputTokens` are
+    unchanged.
+  - `worker/deno/tests/provider_token_usage_test.ts` Codex case: 1200 is now
+    300.
+  - `worker/deno/tests/review_fleet_prs_run_cost_test.ts` gpt-5 case:
+    `0.0369375` is now `0.0169375`.
+- `deno test -A` over the 14 test files touching token usage or Codex output
+  (`codex_output_adapter_1695`, `provider_token_usage`,
+  `review_fleet_prs_run_cost`, `cost_estimate`, `token_usage`,
+  `agent_output_1695`, `agent_provider_per_invocation`, `credit_tracker`,
+  `issue_run_stats_comment`, `run_callbacks`, `unpriced_spend_3870`,
+  `orchestration_3642_gate`, `batch_api`, `callback_schema_compat`, all under
+  `worker/deno/tests/`): 443 passed, 0 failed. `deno fmt`, `deno lint` and
+  `deno check` were clean on the four changed TypeScript files.
+- `./quality.sh`: its first run was stopped by my 900 s bound before it
+  finished. Every stage that reported had passed, including semgrep,
+  gitleaks, markdownlint and mermaid. See the result below.
+
+<!-- vibe-quality-gate-skipped reason="the full gate did not finish inside the 900 s bound on this host; every stage that reported passed, and the worker re-runs the gate before the PR is raised" -->
+
+## Not done or not checked
+
+- The full `./quality.sh` did not complete in this run (see above).
+- `deno fmt --check docs/MODEL-AND-CACHING.md` already fails on the base
+  branch, on hunks unrelated to this change. The file was not reformatted.
