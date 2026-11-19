@@ -325,7 +325,10 @@ function frameLive(f: Frame): boolean {
   return f.outer && !f.earlierTrue && f.truth !== true;
 }
 
-/** Whether the frame's current branch runs every time the construct is reached. */
+/**
+ * Whether the frame's current branch runs every time the construct is reached
+ * and an `exit` in it ends the script (false for a function body or subshell).
+ */
 function frameCertain(f: Frame): boolean {
   if (f.fn || f.sub) return false;
   if (f.branch === "cond") return true;

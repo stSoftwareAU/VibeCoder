@@ -45,7 +45,8 @@ required check.
   through a repository script. Without this, VibeCoder would flag itself once
   `floci.yml` is gone. The invocation must be able to run: a job or step with a
   statically false `if:`, and a command after an unconditional `exit`, behind
-  `false &&` or `true ||`, after a chain that always reaches `exit`
+  `false &&` or `true ||` (a command, or a `{ }` group, one-line brace group,
+  `( )` subshell or `if` opened there), after a chain that always reaches `exit`
   (`true && exit 0`, `false || exit 0`) or after `set -n`, in a false
   `if`/`elif`/`else` branch or `while`/`until` body, in a function body or in a
   here-document, earns no credit, in the workflow and in the repository script
@@ -337,8 +338,8 @@ flowchart LR
 
 ## Test Plan
 
-- `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (new; 43 tests at
-  head).
+- `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (43 tests at
+  head; new file).
   - The real workflow has no findings.
   - Each invariant has a mutation, and so does each evasion: the `if false`
     wrapper, `exit 0`, `; true`, `&`, `| tee`, `&& echo`, and a commented-out
@@ -383,8 +384,8 @@ flowchart LR
 
   The ignored case is the real end-to-end run. It is skipped for `vibe` and
   root, and was run as `agent` in Evidence instead.
-- `worker/deno/tests/aws_emulator_in_ci_check_test.ts` (extended, additions
-  only; 162 tests at head). Coverage:
+- `worker/deno/tests/aws_emulator_in_ci_check_test.ts` (162 tests at head;
+  additions only to an existing file). Coverage:
   - runner text that cannot run earns no credit (19 not-credited cases: a step
     or job `if: false`, `${{ false }}` and `'0'`, a false or negated-true `if`,
     the `else` of `if true`, an `elif` after a taken branch, `while false`,
@@ -418,11 +419,11 @@ flowchart LR
   AWS Emulator script is never planned". It passes on the base by design,
   because it pins a deliberate absence.
 - On the head after the PR #5276 review fixes, run one file at a time (tests at
-  head, all passing unless noted): `aws_emulator_in_ci_check_test.ts` (162);
-  `issue_5110_aws_emulator_workflow_test.ts` (43);
-  `aws_emulator_cloudformation_5110_test.ts` (18: 17 pass, 1 ignored);
-  `checkov_workflow_test.ts` (20); `best_practices_template_test.ts` (69);
-  `lib_sweep_record_test.ts` (2); `lib_sweep_top_up_files_test.ts` (9).
+  head, all passing unless noted): `aws_emulator_in_ci_check_test.ts` (162 tests
+  at head); `issue_5110_aws_emulator_workflow_test.ts` (43 tests at head);
+  `aws_emulator_cloudformation_5110_test.ts` (18 tests at head: 17 pass, 1
+  ignored); `checkov_workflow_test.ts` (20); `best_practices_template_test.ts`
+  (69); `lib_sweep_record_test.ts` (2); `lib_sweep_top_up_files_test.ts` (9).
   `pre_push_gate_test.ts` was also run and 43 of its 213 tests fail; it imports
   none of the files this review touched, and its one test about this PR ("the
   AWS Emulator script is never planned") passes.
