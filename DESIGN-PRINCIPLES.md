@@ -17,96 +17,96 @@ canonical operator manual under [`docs/`](docs/) for the full detail.
 
 **The Vibe Coder exists to finish work, not to create work for humans.** The
 owner assigns a batch of issues and checks in a day or so later expecting every
-one of them done (owner, 23 October 2026). Applying `work-on` is the approval
-to complete that issue; nothing more from a person is needed or wanted.
+one of them done (owner, 23 October 2026). Applying `work-on` is the approval to
+complete that issue; nothing more from a person is needed or wanted.
 
 - **Only "done" is success.** A merged PR that meets every acceptance criterion
   is the only good outcome. Handing an issue back to a human (`needs-human`,
   "analysis-only" on an implementation issue, a request for a decision) or
   delivering only the easy parts is a **failure of the Vibe Coder**. It is
   counted and fixed as a defect, never treated as a resolution. The one narrow
-  exception is the worker's `negative-result` hand-off (Issue #4911): a no-change
-  run that recorded a negative result is a recorded result needing human review,
-  not a failure to complete.
+  exception is the worker's `negative-result` hand-off (Issue #4911): a
+  no-change run that recorded a negative result is a recorded result needing
+  human review, not a failure to complete.
 - **Finish in the PR, no follow-up tickets.** A run whose summary leaves a
-  criterion unmet is told so once, in the session, and goes back to finish
-  it. A criterion still unmet after that does not stop the PR: it is raised
-  and armed with that criterion named on it, and a `partial` or `missing`
-  entry makes the body `Part of #N`, so the issue stays open for the next run.
-  A run that runs out of time may push a **draft** PR marked `Part of #N` and
-  the worker carries on with the same issue automatically. It never files a new
-  issue for the remainder: a new issue needs a human to read and
-  approve it, and the original issue was already approved. "You ask for a
-  hamburger, you don't get two buns and a follow-up ticket for the patty."
+  criterion unmet is told so once, in the session, and goes back to finish it. A
+  criterion still unmet after that does not stop the PR: it is raised and armed
+  with that criterion named on it, and a `partial` or `missing` entry makes the
+  body `Part of #N`, so the issue stays open for the next run. A run that runs
+  out of time may push a **draft** PR marked `Part of #N` and the worker carries
+  on with the same issue automatically. It never files a new issue for the
+  remainder: a new issue needs a human to read and approve it, and the original
+  issue was already approved. "You ask for a hamburger, you don't get two buns
+  and a follow-up ticket for the patty."
 - **"Too large" is a planning defect, not an exit.** An approved issue,
   especially one grill-me or planning wrote, that cannot be completed is a bug
   in the Vibe Coder (owner, 24 October 2026). Planning and grill-me therefore
   write only criteria the implementing run can meet inside the repository, and
-  split anything bigger than one PR. A step only a person can take (a
-  production deploy, a reading days later) is recorded as an owner step, never
-  as a criterion. The issue run has no escape hatch: it finishes, or it ends on
-  one of the defined markers (already resolved, blocked on an open issue,
-  deferred for data, sent to planning) and is otherwise retried.
+  split anything bigger than one PR. A step only a person can take (a production
+  deploy, a reading days later) is recorded as an owner step, never as a
+  criterion. The issue run has no escape hatch: it finishes, or it ends on one
+  of the defined markers (already resolved, blocked on an open issue, deferred
+  for data, sent to planning) and is otherwise retried.
 - **A crash is not an answer.** A run that failed, made no model turn, or
-  stopped early is retried on the normal ladder. It is never read as "nothing
-  to do".
+  stopped early is retried on the normal ladder. It is never read as "nothing to
+  do".
 - **Every PR is armed for auto-merge.** A PR is armed when it is raised and
   stays armed (owner, 25 October 2026). It merges once it has an approving
   review and CI is green; nothing else holds it. The worker never disarms a PR
-  or skips arming it because of a finding or a label. A PR left unarmed does
-  not merge even after it is approved, and every late merge causes more
-  conflicts (Issue #4291).
-- **Requirements come from the owner.** A new gate, check, evidence
-  obligation or rule that can fail or hold back a run that delivered its issue
-  works against this principle. Fleet tooling (review learning, idle-task
-  audits) never invents one from its own findings. It proposes removing or
-  rewording guidance that causes mistakes, or files a worker defect.
-- **A failure is recorded, never parked.** Every failed run writes its
-  evidence on the issue and keeps `failed-once`, so the failure is visible and
-  countable. It is never relabelled as a hand-off, an analysis, or a partial
-  success. The worker never applies `failed` and never hands an issue to a
-  human after repeated failures (Issue #4158): the escalating cooldown
-  (2 h → 6 h → 24 h) paces the retries, at most one a day, and the issue stays
-  queued until it is done. An issue stuck in that loop is a Vibe Coder defect
-  to fix, not an issue to give up on.
+  or skips arming it because of a finding or a label. A PR left unarmed does not
+  merge even after it is approved, and every late merge causes more conflicts
+  (Issue #4291).
+- **Requirements come from the owner.** A new gate, check, evidence obligation
+  or rule that can fail or hold back a run that delivered its issue works
+  against this principle. Fleet tooling (review learning, idle-task audits)
+  never invents one from its own findings. It proposes removing or rewording
+  guidance that causes mistakes, or files a worker defect.
+- **A failure is recorded, never parked.** Every failed run writes its evidence
+  on the issue and keeps `failed-once`, so the failure is visible and countable.
+  It is never relabelled as a hand-off, an analysis, or a partial success. The
+  worker never applies `failed` and never hands an issue to a human after
+  repeated failures (Issue #4158): the escalating cooldown (2 h → 6 h → 24 h)
+  paces the retries, at most one a day, and the issue stays queued until it is
+  done. An issue stuck in that loop is a Vibe Coder defect to fix, not an issue
+  to give up on.
 
 ### Fully unattended operation and self-healing
 
 **VibeCoder must run fully automatically on unattended machines and self-heal
 without human intervention.** This is the owner's operating requirement,
 clarified on 19 October 2026. A person watching the run, answering a prompt,
-performing a supervised test or giving a routine manual sign-off is not part
-of the design.
+performing a supervised test or giving a routine manual sign-off is not part of
+the design.
 
 - **Detect, repair, verify and resume.** Detect failures, preserve useful work
   and diagnostics, identify the cause, apply a recovery within the worker's
   existing authority, verify the result and resume from durable progress.
   Recovery must cover the worker lifecycle as well as the code it produces.
-- **Retries must make progress.** Bound each attempt, back off where needed
-  and retain recovery state across restarts. Repeating the same failed setup
+- **Retries must make progress.** Bound each attempt, back off where needed and
+  retain recovery state across restarts. Repeating the same failed setup
   indefinitely is not self-healing. Diagnose persistent failures and choose
   another supported recovery or execution path while continuing independent
   eligible work.
-- **Do not turn routine failures into human work.** Infrastructure faults,
-  stale state, interrupted runs, CI failures and review rework need automated
-  recovery paths, not a terminal `needs-human` hand-off or a new issue whose
-  only action is to wait for a person. Required CI and code review remain
-  enforced through automation.
-- **Keep recovery inside the boundary.** Automation does not authorise
-  bypassing permissions, exposing credentials, weakening security or quality
-  gates, or discarding unmerged work. When an external dependency prevents
-  recovery, fail closed for the affected action, record the precise blocker
-  and arrange an automatic recheck and resumption; do not require an operator
-  to babysit it or report the attempt as successful.
+- **Do not turn routine failures into human work.** Infrastructure faults, stale
+  state, interrupted runs, CI failures and review rework need automated recovery
+  paths, not a terminal `needs-human` hand-off or a new issue whose only action
+  is to wait for a person. Required CI and code review remain enforced through
+  automation.
+- **Keep recovery inside the boundary.** Automation does not authorise bypassing
+  permissions, exposing credentials, weakening security or quality gates, or
+  discarding unmerged work. When an external dependency prevents recovery, fail
+  closed for the affected action, record the precise blocker and arrange an
+  automatic recheck and resumption; do not require an operator to babysit it or
+  report the attempt as successful.
 - **Validation must also be unattended.** Use automated checks in authorised,
-  disposable environments. Record unavailable coverage as not checked. Do
-  not prescribe a human-supervised escape test or treat closing that proposal
-  as proof that containment passed.
+  disposable environments. Record unavailable coverage as not checked. Do not
+  prescribe a human-supervised escape test or treat closing that proposal as
+  proof that containment passed.
 
 These are requirements for implementation and issue triage, not a claim that
 every existing recovery path already satisfies them. A gap needs a concrete
-automated remedy and observable recovery evidence. The rejected supervised
-test proposal is recorded in
+automated remedy and observable recovery evidence. The rejected supervised test
+proposal is recorded in
 [the containment analysis](docs/security/agent-containment-gap-analysis.md).
 
 ### Generous resources, strict boundary
@@ -115,34 +115,32 @@ The containment trade the operator has chosen is asymmetric, and every
 resourcing or isolation decision should follow it:
 
 - **The boundary is absolute.** The worker must never reach outside its own
-  little world — no host documents, no host credentials beyond the mounted
-  ones, no host filesystem browsing. The boundary is enforced at the
-  OS/container level ([Containment](docs/CONTAINMENT.md)), never by prompts or
-  policy alone. Working repositories should not even be visible on the host
-  (named volumes,): less cross-contamination between machine and
-  container is strictly better.
+  little world — no host documents, no host credentials beyond the mounted ones,
+  no host filesystem browsing. The boundary is enforced at the OS/container
+  level ([Containment](docs/CONTAINMENT.md)), never by prompts or policy alone.
+  Working repositories should not even be visible on the host (named volumes,):
+  less cross-contamination between machine and container is strictly better.
 - **Inside the boundary, the worker gets everything it wants.** Speed is the
-  priority. Container VMs are sized to the host (all memory minus an 8 GiB
-  host reserve, 8 GiB floor, no upper cap, near-all cores —,
-  ), and no
-  quota, size cap or conservative default should be added to memory, CPU or
-  disk. Do not trade throughput for a resource ceiling.
-- **Resource exhaustion (DoS) is explicitly out of scope.** Runaway loops are
-  an expected byproduct of code the worker is editing, and the existing run
+  priority. Container VMs are sized to the host (all memory minus an 8 GiB host
+  reserve, 8 GiB floor, no upper cap, near-all cores —, ), and no quota, size
+  cap or conservative default should be added to memory, CPU or disk. Do not
+  trade throughput for a resource ceiling.
+- **Resource exhaustion (DoS) is explicitly out of scope.** Runaway loops are an
+  expected byproduct of code the worker is editing, and the existing run
   timeouts already bound them. Review effort belongs on boundary questions —
   mounts, credentials, network — not on quota questions.
 
 **Rationale:** the fleet runs unattended; the risk that matters is escape
-(reading or mutating host data), not consumption. A worker starved of memory
-or I/O stalls the whole fleet silently (the overnight stall), which
-costs far more than any runaway cycle a timeout will reap anyway.
+(reading or mutating host data), not consumption. A worker starved of memory or
+I/O stalls the whole fleet silently (the overnight stall), which costs far more
+than any runaway cycle a timeout will reap anyway.
 
 ### Subscription quota first, metered API last
 
-Automatic routing spends fixed-price subscription quota first. Metered API
-spend is accepted as paid overflow in the reviewer round and the babysitter
-repair provider chooser. The worker's auto-mode selection waits by default; an
-explicit fallback can also select a metered provider.
+Automatic routing spends fixed-price subscription quota first. Metered API spend
+is accepted as paid overflow in the reviewer round and the babysitter repair
+provider chooser. The worker's auto-mode selection waits by default; an explicit
+fallback can also select a metered provider.
 
 - **Subscription quota is use-it-or-lose-it.** Claude, Codex and other
   fixed-price plans waste any unused quota, so automatic routing spends it
@@ -150,48 +148,48 @@ explicit fallback can also select a metered provider.
 - **DeepSeek is paid per call.** The owner prefers to avoid this spend. The two
   policies that permit metered overflow are reviewer rounds and the babysitter
   repair provider chooser: each selects DeepSeek only after every eligible
-  subscription has no budget. The babysitter chooser logs each ranked
-  provider, credential label and exclusion reason in
+  subscription has no budget. The babysitter chooser logs each ranked provider,
+  credential label and exclusion reason in
   `worker/deno/lib/babysitter_provider_choice.ts`. An operator who names
   DeepSeek explicitly as a provider is making a separate, deliberate choice,
   which is not overflow.
-- **Reviewer-round overflow.** Prefer **Fable → Astra → Opus → DeepSeek**.
-  Try Fable on every available Claude subscription once before Astra
-  (`gpt-6-astra`). A model-specific Fable cap triggers the chain without
-  marking the whole Claude subscription spent. Astra needs a credential
-  reachable inside the round, such as its own persistent Codex login
-  (Issue #5127). If Astra has no credential, executable or quota, try Opus across
-  the available Claude subscriptions, then DeepSeek as paid overflow. Fable
-  refusals do not exclude those subscriptions from Opus. Other failures stop
-  the round. The reviewer builds a separate image containing Claude and Codex
-  without adding worker credential mounts; its egress includes both providers. Implementation: `worker/deno/lib/review_round.ts`, launched
-  by `.claude/skills/review-fleet-prs/scripts/run.sh`.
+- **Reviewer-round overflow.** Prefer **Fable → Astra → Opus → DeepSeek**. Try
+  Fable on every available Claude subscription once before Astra
+  (`gpt-6-astra`). A model-specific Fable cap triggers the chain without marking
+  the whole Claude subscription spent. Astra needs a credential reachable inside
+  the round, such as its own persistent Codex login (Issue #5127). If Astra has
+  no credential, executable or quota, try Opus across the available Claude
+  subscriptions, then DeepSeek as paid overflow. Fable refusals do not exclude
+  those subscriptions from Opus. Other failures stop the round. The reviewer
+  builds a separate image containing Claude and Codex without adding worker
+  credential mounts; its egress includes both providers. Implementation:
+  `worker/deno/lib/review_round.ts`, launched by
+  `.claude/skills/review-fleet-prs/scripts/run.sh`.
 - **Fleet PR babysitter overflow.** The babysitter provider chooser prefers
   subscriptions and selects DeepSeek as logged overflow only when no eligible
-  subscription has budget. The chooser fails loudly when no DeepSeek
-  credential can be exported; it does not wait or run a host fallback.
-  The container's `babysitter-repair` command
-  (`worker/deno/commands/babysitter_repair.ts`, Issue #4768) calls
-  `chooseBabysitterProvider` and runs the repair session on the chosen
-  provider. The host babysitter's `fix()` launches that container for every
-  repair (Issue #4770), so the repair agent never runs on the host. Each
+  subscription has budget. The chooser fails loudly when no DeepSeek credential
+  can be exported; it does not wait or run a host fallback. The container's
+  `babysitter-repair` command (`worker/deno/commands/babysitter_repair.ts`,
+  Issue #4768) calls `chooseBabysitterProvider` and runs the repair session on
+  the chosen provider. The host babysitter's `fix()` launches that container for
+  every repair (Issue #4770), so the repair agent never runs on the host. Each
   automatic pass also proves Chromium starts in the planned image before PR
-  discovery and App authentication. Setup runs the check after its
-  runtime/image preflight, and `--check-container` exposes it for diagnosis.
-  The probe uses the plan's egress, has no host mounts and a 60-second deadline;
-  a failed automatic check follows the existing pass retry path. The
-  container receives a fresh snapshot copied from tracked worker checkout
-  paths and a scrubbed config; the clone's `.git` is mounted read-only. As
-  defence in depth, before publication the host still resets the local Git
-  config and uses hardened Git settings for publication commands.
+  discovery and App authentication. Setup runs the check after its runtime/image
+  preflight, and `--check-container` exposes it for diagnosis. The probe uses
+  the plan's egress, has no host mounts and a 60-second deadline; a failed
+  automatic check follows the existing pass retry path. The container receives a
+  fresh snapshot copied from tracked worker checkout paths and a scrubbed
+  config; the clone's `.git` is mounted read-only. As defence in depth, before
+  publication the host still resets the local Git config and uses hardened Git
+  settings for publication commands.
 - **The worker keeps its auto-mode wait policy.** When every eligible
   subscription is exhausted or unavailable, auto-mode selection waits for the
   subscription reset (`retryAt` from `selectAutomaticProvider` in
-  `worker/deno/lib/provider_auto_selection.ts`, when a reset time is known).
-  The worker does **not** overflow to a metered account from auto mode. An
-  operator can explicitly opt in to fallback providers, including metered
-  providers such as DeepSeek; that is a separate configured worker fallback.
-  See the [README auto-mode policy](README.md#-choose-your-coding-agent) and
+  `worker/deno/lib/provider_auto_selection.ts`, when a reset time is known). The
+  worker does **not** overflow to a metered account from auto mode. An operator
+  can explicitly opt in to fallback providers, including metered providers such
+  as DeepSeek; that is a separate configured worker fallback. See the
+  [README auto-mode policy](README.md#-choose-your-coding-agent) and
   [`agent_provider_mode` and `agent_provider_fallback` in the Configuration Reference](docs/CONFIGURATION.md#-configuration-defaults).
 - **Raising the DeepSeek API budget remains an owner action.** Nothing in the
   fleet raises it automatically.
@@ -205,9 +203,9 @@ fallback is a separate operator choice.
 
 **The invariant: every issue slot in the fleet is working an issue, at every
 moment. An idle slot is a fault to be diagnosed, not a resting state to be
-tolerated.** Idle tasks are the mechanism that *guarantees* the invariant —
-the fleet manufactures work when the queue cannot supply it — not an
-occasional fallback for a quiet day.
+tolerated.** Idle tasks are the mechanism that _guarantees_ the invariant — the
+fleet manufactures work when the queue cannot supply it — not an occasional
+fallback for a quiet day.
 
 That framing is the piece that has been missing, and it is why several
 throughput fixes read as complete while the fleet stayed idle: each was judged
@@ -240,92 +238,91 @@ flowchart TD
 
 A **work stream** is a merge target: a repository's default branch is one
 stream, and **each open milestone is another**. A repository with two open
-milestones therefore offers three streams and can have three issues in flight
-at once.
+milestones therefore offers three streams and can have three issues in flight at
+once.
 
 - **F2 — one issue in flight per work stream.** At most **one issue per work
   stream** at a time — one pull request per merge target. A handful of extras
-  arising from a race is acceptable and needs no fix. "One issue per
-  repository" is the **special case** of a repository with no open milestones,
-  not the general rule.
+  arising from a race is acceptable and needs no fix. "One issue per repository"
+  is the **special case** of a repository with no open milestones, not the
+  general rule.
 - **Why F2 exists, and the only reason it exists:** two pull requests aimed at
-  the *same* branch create merge hell and bury that branch's reviewers under a
-  flood of simultaneous pull requests. Two pull requests aimed at *different*
+  the _same_ branch create merge hell and bury that branch's reviewers under a
+  flood of simultaneous pull requests. Two pull requests aimed at _different_
   branches do neither, so they may run side by side. F2 is **not** a fairness
   device, **not** a priority mechanism, **not** a capacity or rate limit, and
-  **not** a load-shedding valve. It must never be offered as the explanation
-  for an under-occupied fleet: the answer to "that stream is taken" is always
-  "then take the next stream".
-- **F2a — milestone streams flow without waiting on review.** A milestone
-  branch carries **no approval gate** until the milestone completes and the
-  fleet merges it to the default branch. That is precisely why milestone work
-  parallelises: a milestone stream never stalls on a review gate mid-flight,
-  so adding milestones adds throughput rather than adding queue.
-- **F2b — `top-priority` and `work-on` never wait for a busy stream**
-  (Issue #2530). The fleet-wide one-run-per-stream lock — the rule that keeps a
+  **not** a load-shedding valve. It must never be offered as the explanation for
+  an under-occupied fleet: the answer to "that stream is taken" is always "then
+  take the next stream".
+- **F2a — milestone streams flow without waiting on review.** A milestone branch
+  carries **no approval gate** until the milestone completes and the fleet
+  merges it to the default branch. That is precisely why milestone work
+  parallelises: a milestone stream never stalls on a review gate mid-flight, so
+  adding milestones adds throughput rather than adding queue.
+- **F2b — `top-priority` and `work-on` never wait for a busy stream** (Issue
+  #2530). The fleet-wide one-run-per-stream lock — the rule that keeps a
   stream's **shared agent conversation** carrying one run at a time — now
-  applies to `low-priority` and `idle-task` alone. An issue a human has
-  labelled `top-priority` or `work-on` is claimed while another host is running
-  the same milestone stream and runs in its **own per-issue conversation**, so
-  the stream's transcript is still never shared by two runs: the second holder
+  applies to `low-priority` and `idle-task` alone. An issue a human has labelled
+  `top-priority` or `work-on` is claimed while another host is running the same
+  milestone stream and runs in its **own per-issue conversation**, so the
+  stream's transcript is still never shared by two runs: the second holder
   writes no stream session record and no `vibe-stream-holder` marker. Each host
   still takes one issue per `(repo, milestone)` at a time (the host-local
   in-flight registry is unchanged), so in-stream parallelism is bounded by the
   number of hosts — and until Issue #2532 relaxes discovery's fleet-wide
   milestone-occupancy filter for these tiers, the exception applies at claim
-  time only. F2a is what makes this safe —
-  a milestone branch carries no approval gate mid-flight, so a second pull
-  request on it buries no reviewer.
-- **F2c — a stream conversation belongs to the provider that created it**
-  (Issue #2638). A session's model ids, thinking blocks and size budget are
-  its creator's. The stream record keeps one session per provider, and each
-  entry records its creator. A run never resumes another provider's session and
-  never compacts one. It opens its own, and the skip is logged naming both
-  providers and the session id. The other provider's session is kept, so
-  switching back resumes it. An entry written before the creator was recorded
-  is presumed to be the configured preferred provider's (the repository's pin,
-  else `agent_provider`), never the pace fallback's.
-- **F3 — eight slots need eight work streams.** Because of F2, eight
-  concurrent issues require **eight work streams** with startable work — not
-  eight repositories. One repository with several open milestones can supply
-  several of the eight on its own. Two issues in flight in one repository, one
-  on a milestone stream and one on the default stream, is **correct**, not a
+  time only. F2a is what makes this safe — a milestone branch carries no
+  approval gate mid-flight, so a second pull request on it buries no reviewer.
+- **F2c — a stream conversation belongs to the provider that created it** (Issue
+  #2638). A session's model ids, thinking blocks and size budget are its
+  creator's. The stream record keeps one session per provider, and each entry
+  records its creator. A run never resumes another provider's session and never
+  compacts one. It opens its own, and the skip is logged naming both providers
+  and the session id. The other provider's session is kept, so switching back
+  resumes it. An entry written before the creator was recorded is presumed to be
+  the configured preferred provider's (the repository's pin, else
+  `agent_provider`), never the pace fallback's.
+- **F3 — eight slots need eight work streams.** Because of F2, eight concurrent
+  issues require **eight work streams** with startable work — not eight
+  repositories. One repository with several open milestones can supply several
+  of the eight on its own. Two issues in flight in one repository, one on a
+  milestone stream and one on the default stream, is **correct**, not a
   duplicate-work bug.
 - **F3a — opening a milestone is the operator's concurrency lever.** Opening a
-  milestone in a busy repository adds a parallel stream and therefore raises
-  the fleet's concurrency, with no code change required. Where the backlog is
-  deep and the streams are few, more milestones is the direct remedy.
+  milestone in a busy repository adds a parallel stream and therefore raises the
+  fleet's concurrency, with no code change required. Where the backlog is deep
+  and the streams are few, more milestones is the direct remedy.
 
 **Measured, September 2026 — where the streams actually are.** Eighteen
 repositories are monitored, and they supply the following streams:
 
-| Repository | Streams | Startable work |
-| --- | --- | --- |
-| `VibeCoder` | 1 default + 1 milestone = **2** | 25 issues waiting |
-| `NEAT-AI-Ockham` | 1 default = **1** | 6 issues waiting |
-| `GRQ` | 1 default + 1 milestone = **2** | 1 issue |
-| `GRQ-GTC` | 1 default = **1** | — |
-| `NEAT-AI` | 1 default + 2 milestones = **3** | — |
-| 13 others | 1 default each = **13** | — |
+| Repository       | Streams                          | Startable work    |
+| ---------------- | -------------------------------- | ----------------- |
+| `VibeCoder`      | 1 default + 1 milestone = **2**  | 25 issues waiting |
+| `NEAT-AI-Ockham` | 1 default = **1**                | 6 issues waiting  |
+| `GRQ`            | 1 default + 1 milestone = **2**  | 1 issue           |
+| `GRQ-GTC`        | 1 default = **1**                | —                 |
+| `NEAT-AI`        | 1 default + 2 milestones = **3** | —                 |
+| 13 others        | 1 default each = **13**          | —                 |
 
-Roughly **four** streams currently hold startable work, against **eight**
-slots. The gap is not a scheduling defect: the queue genuinely cannot supply
-eight streams' worth of labelled work. Under F7 that gap is exactly what idle
-tasks exist to close, which makes the idle-task cap — not the selection
-ladder — the binding constraint on fleet occupancy today.
+Roughly **four** streams currently hold startable work, against **eight** slots.
+The gap is not a scheduling defect: the queue genuinely cannot supply eight
+streams' worth of labelled work. Under F7 that gap is exactly what idle tasks
+exist to close, which makes the idle-task cap — not the selection ladder — the
+binding constraint on fleet occupancy today.
 
 #### Priority
 
 - **F4 — one order, fleet-wide.** `top-priority` > `work-on` > `low-priority`
   > `idle-task`, applied **across the whole fleet** rather than within a
-  repository. The next issue claimed is always the fleet's highest-tier
-  startable issue. After `top-priority` and before `work-on`, leftovers
-  that finish a **started, fleet-viable milestone** are lifted regardless
-  of their own tier (Issue #2009) so a long-lived milestone branch is
-  merged before another one is opened. `top-priority` remains first.
+  > repository. The next issue claimed is always the fleet's highest-tier
+  > startable issue. After `top-priority` and before `work-on`, leftovers that
+  > finish a **started, fleet-viable milestone** are lifted regardless of their
+  > own tier (Issue #2009) so a long-lived milestone branch is merged before
+  > another one is opened. `top-priority` remains first.
 - **F4a — `nice` orders repositories within a tier, never above one.** The
-  per-repo `nice` setting breaks ties **inside** a label tier. It never lifts
-  a repository above a tier nor holds one below it: a high-`nice` repository's
+  per-repo `nice` setting breaks ties **inside** a label tier. It never lifts a
+  repository above a tier nor holds one below it: a high-`nice` repository's
   `top-priority` issue still outranks every `work-on` issue anywhere in the
   fleet. Tier is the outer partition and `nice` the inner one — never the
   reverse.
@@ -333,35 +330,35 @@ ladder — the binding constraint on fleet occupancy today.
 #### What "startable" means
 
 - **F5 — work that cannot start now is not work.** An issue blocked by an open
-  pull request, already assigned to a Vibe Coder, or inside a cooldown window
-  is not startable, and **must not suppress anything**: it must not stop a
-  slot taking other work, and it must not stop an idle task being raised.
+  pull request, already assigned to a Vibe Coder, or inside a cooldown window is
+  not startable, and **must not suppress anything**: it must not stop a slot
+  taking other work, and it must not stop an idle task being raised.
 - **Why F5 matters:** a scan that counts blocked issues as work concludes the
   queue is full, declines to raise idle tasks, and parks slots in front of a
-  backlog none of them may touch. "No work" means *no startable work* and
+  backlog none of them may touch. "No work" means _no startable work_ and
   nothing else. Every count that feeds an idle decision must be a count of
   startable issues.
 - **F6 — a human never blocks the fleet.** A human assigning themselves an
   issue, opening a pull request, or taking a milestone blocks nothing. That
-  issue is simply not startable and the fleet moves to the next one. This is
-  the throughput reading of
+  issue is simply not startable and the fleet moves to the next one. This is the
+  throughput reading of
   [Locking and scheduling exist only between Vibe Coders](#locking-and-scheduling-exist-only-between-vibe-coders).
 
 #### Idle tasks — the mechanism that guarantees the invariant
 
-- **F7 — a slot with nothing to do raises work and works it.** When a slot
-  finds no startable work anywhere in the fleet, it raises an `idle-task`
-  issue in a monitored repository that has none, and works it. Raising is that
-  slot's own job; there is no separate sweeper it may wait on.
-- **F8 — at most one open idle task per repository.** The idle-task cap has
-  the same shape as F2 — one per merge target, applied to the default stream
-  an idle task is filed against — and emphatically **not** a fleet-wide cap of
-  one. Eighteen monitored repositories may therefore carry up to eighteen open
-  idle tasks. One open idle task anywhere must never stop another repository
-  being given one.
-- **F9 — raise enough to keep the coders busy, and no more.** Raise only as
-  many idle tasks as are needed to keep the Vibe Coders working, choosing
-  target repositories pseudo-randomly among those eligible under F8.
+- **F7 — a slot with nothing to do raises work and works it.** When a slot finds
+  no startable work anywhere in the fleet, it raises an `idle-task` issue in a
+  monitored repository that has none, and works it. Raising is that slot's own
+  job; there is no separate sweeper it may wait on.
+- **F8 — at most one open idle task per repository.** The idle-task cap has the
+  same shape as F2 — one per merge target, applied to the default stream an idle
+  task is filed against — and emphatically **not** a fleet-wide cap of one.
+  Eighteen monitored repositories may therefore carry up to eighteen open idle
+  tasks. One open idle task anywhere must never stop another repository being
+  given one.
+- **F9 — raise enough to keep the coders busy, and no more.** Raise only as many
+  idle tasks as are needed to keep the Vibe Coders working, choosing target
+  repositories pseudo-randomly among those eligible under F8.
 - **Why F9 has a ceiling:** the failure it avoids is the mirror image of F7's.
   Flooding the queue with more issues than the fleet can work buries the real
   backlog and swamps reviewers. The two rules bound correct behaviour from
@@ -370,16 +367,16 @@ ladder — the binding constraint on fleet occupancy today.
 
 #### Pull-request turnaround
 
-- **F10 — finish the pull request as fast as possible.** Under F2 the next
-  issue in a work stream cannot start until the current pull request lands, so
-  every minute a PR stays open is a minute that stream contributes nothing to
-  the eight. Turnaround is a throughput property, not a courtesy.
-- **F11 — auto-merge is set when the pull request is raised.** Every fleet
-  pull request is marked auto-merge **at raise time**, so an approved change
-  merges the moment it clears the quality gates without waiting for a second
-  visit from anyone. A pull request sitting clean and approved with auto-merge
-  unset is a fault of the same class as an idle slot, and the fleet has
-  already lost hours to exactly that.
+- **F10 — finish the pull request as fast as possible.** Under F2 the next issue
+  in a work stream cannot start until the current pull request lands, so every
+  minute a PR stays open is a minute that stream contributes nothing to the
+  eight. Turnaround is a throughput property, not a courtesy.
+- **F11 — auto-merge is set when the pull request is raised.** Every fleet pull
+  request is marked auto-merge **at raise time**, so an approved change merges
+  the moment it clears the quality gates without waiting for a second visit from
+  anyone. A pull request sitting clean and approved with auto-merge unset is a
+  fault of the same class as an idle slot, and the fleet has already lost hours
+  to exactly that.
 - **F10a — a busy repository's pull requests are never starved.** The
   maintenance lane needs a repository to itself, and a repository whose issue
   slots claim back-to-back is never idle. A refused pass servicing a PR
@@ -387,21 +384,20 @@ ladder — the binding constraint on fleet occupancy today.
   stream there and the lane wins it when the current holder releases. Only
   PR-servicing passes opt in — sync and self-heal defer without reserving — and
   only the PR that reserved it spends it (Issue #2793). Early release needs a
-  positive signal — the reserving PR closed or merged — never a pass that
-  merely skipped it (Issue #2795). The two-hour lapse is the backstop, so a
-  reservation cannot starve issue work.
-  See
+  positive signal — the reserving PR closed or merged — never a pass that merely
+  skipped it (Issue #2795). The two-hour lapse is the backstop, so a reservation
+  cannot starve issue work. See
   [Maintenance lane](docs/workflows/README.md#lane-reservation--a-busy-repository-cannot-starve-its-prs-issue-2789).
 
 #### Extension
 
-- **F12 — the operator extends their own container; the public repository
-  names nothing.** Any operator may add any tool they wish to their own
-  container. Correspondingly, **no tool, language or vendor name appears
-  anywhere in the public repository**, documentation included: capability is
-  described by what it does, never by what supplies it. (The operator may
-  relax the documentation half of this rule once the extension feature has
-  landed; the code half stands.)
+- **F12 — the operator extends their own container; the public repository names
+  nothing.** Any operator may add any tool they wish to their own container.
+  Correspondingly, **no tool, language or vendor name appears anywhere in the
+  public repository**, documentation included: capability is described by what
+  it does, never by what supplies it. (The operator may relax the documentation
+  half of this rule once the extension feature has landed; the code half
+  stands.)
 
 See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the
 idle-task operator manual,
@@ -422,25 +418,26 @@ text it used. Documentation refers to prompts by directory (e.g.
 
 Each monitored repository is **absolutely isolated**. Quality gates and their
 fixes are **per-repo**: every repository commits and owns its own gate script
-(the FLEET `quality/shellcheck.sh` / `quality/bash_syntax.sh` pattern). Do **not**
-propose a shared, cross-repo reusable GitHub Action — or any other cross-repo
-mechanism — to centralise a gate. Each repo's own CI is the enforcing gate on
-every PR; the Vibe Coder idle-task audit only **verifies presence** and files an
-issue in a repo that lacks a gate — it never centralises the gate itself. This
-does not contradict the internal `stSoftwareAU/*` dependency-fix rule:
-fixing a genuine root cause in a shared *dependency's* own repo is still correct;
-isolation forbids centralising a per-repo quality gate, not fixing a bug where it
-lives. Recorded for the worker in the `prompts/coding_guidelines/` template.
+(the FLEET `quality/shellcheck.sh` / `quality/bash_syntax.sh` pattern). Do
+**not** propose a shared, cross-repo reusable GitHub Action — or any other
+cross-repo mechanism — to centralise a gate. Each repo's own CI is the enforcing
+gate on every PR; the Vibe Coder idle-task audit only **verifies presence** and
+files an issue in a repo that lacks a gate — it never centralises the gate
+itself. This does not contradict the internal `stSoftwareAU/*` dependency-fix
+rule: fixing a genuine root cause in a shared _dependency's_ own repo is still
+correct; isolation forbids centralising a per-repo quality gate, not fixing a
+bug where it lives. Recorded for the worker in the `prompts/coding_guidelines/`
+template.
 
 ### Merge conflicts are the worker's to resolve — never a person's
 
 **The fleet tries to avoid merge conflicts; when one occurs anyway, the Vibe
 Coder handles it end to end. No path may hand a conflict to a human.**
 
-Avoidance comes first: every branch is brought forward onto its base before
-its PR is raised, and the milestone branch sync merges the default branch into
-every active milestone branch each cycle. When a conflict still occurs, the
-automatic ladder is the whole answer:
+Avoidance comes first: every branch is brought forward onto its base before its
+PR is raised, and the milestone branch sync merges the default branch into every
+active milestone branch each cycle. When a conflict still occurs, the automatic
+ladder is the whole answer:
 
 1. **Replay** — the PR's own commits are replayed onto the current base, so a
    rewritten or moved base is never read as a conflict in the change itself.
@@ -448,44 +445,42 @@ automatic ladder is the whole answer:
    answer (both sides only added to a ledger or manifest → union; a version the
    milestone already carries → ported; a test file resolves only when one side
    keeps every case and every line of the other).
-3. **The resolution agent** on the residue, bounded by the cycle's budget
-   (Issue #1778), and its merged tree verified with the repository's own check
-   before anything is pushed — a red tree is rolled back, never pushed.
-4. **Retry on the next cycle** within a bounded attempt budget — **two**
-   judged runs per conflict, PR branch and milestone branch alike, with no
-   wait between them (Issue #2305) — and when the budget is spent, **roll
-   back** the PRs that introduced the conflict and reopen their issues for the
-   fleet to redo (Issue #1781). A run the worker itself cuts short is not one
-   of the two: only a run that judged the conflict is charged. Neither is a run
-   the provider refused (a spent balance, a refused credential, a usage limit,
-   or a 429/5xx that outlasted its retries).
-   That is an outage, not a conflict: no fallback, no roll-back, and the branch
-   waits (Issue #2613).
+3. **The resolution agent** on the residue, bounded by the cycle's budget (Issue
+   #1778), and its merged tree verified with the repository's own check before
+   anything is pushed — a red tree is rolled back, never pushed.
+4. **Retry on the next cycle** within a bounded attempt budget — **two** judged
+   runs per conflict, PR branch and milestone branch alike, with no wait between
+   them (Issue #2305) — and when the budget is spent, **roll back** the PRs that
+   introduced the conflict and reopen their issues for the fleet to redo (Issue
+   #1781). A run the worker itself cuts short is not one of the two: only a run
+   that judged the conflict is charged. Neither is a run the provider refused (a
+   spent balance, a refused credential, a usage limit, or a 429/5xx that
+   outlasted its retries). That is an outage, not a conflict: no fallback, no
+   roll-back, and the branch waits (Issue #2613).
 5. **Flag the fallback, ask nobody** (Issues #2304, #2310, #2311). Every
    fallback files or appends exactly one `merge-fallback` issue — both spent
    runs, the conflicted files, what was reverted — and that flag is the only
    issue a conflict ever files, so the conflict that undid the work is written
    down where the next attempt can read it: both runs' analyses, their stage
    timings and hosts, the conflicted files, how far behind the base the branch
-   was and since when, and what was closed. The flag is filed in VibeCoder as
-   a worker failure, one issue per cause, never as a new issue in the
-   repository the conflict was in, and a private source is never named there
-   (Issue #4456). A conflicting PR whose originating issue cannot be found is
-   never closed and redone through a new issue: it stays open and the ladder
-   keeps working it. A milestone roll-back that
-   could not merge records the default-branch tip it answered for and is
-   offered its two runs again once that tip moves, so no conflict outcome
-   needs a person to release it. **There is no exception**: abandon-and-redo
-   has no cap on how many times an issue's PR is closed and re-raised, and
-   every redo starts on a fresh branch cut from the base branch's current
-   tip rather than the abandoned one, so a PR failing again is simply redone
-   again, never handed to a human (Issue #3033).
+   was and since when, and what was closed. The flag is filed in VibeCoder as a
+   worker failure, one issue per cause, never as a new issue in the repository
+   the conflict was in, and a private source is never named there (Issue #4456).
+   A conflicting PR whose originating issue cannot be found is never closed and
+   redone through a new issue: it stays open and the ladder keeps working it. A
+   milestone roll-back that could not merge records the default-branch tip it
+   answered for and is offered its two runs again once that tip moves, so no
+   conflict outcome needs a person to release it. **There is no exception**:
+   abandon-and-redo has no cap on how many times an issue's PR is closed and
+   re-raised, and every redo starts on a fresh branch cut from the base branch's
+   current tip rather than the abandoned one, so a PR failing again is simply
+   redone again, never handed to a human (Issue #3033).
 
 Every comment the sync or the conflict processor posts is a **record** of what
 the ladder did and will do next, on the thread as it stands. It never reopens a
-planning issue, never applies `needs-human` to a PR, and never asks a person to merge
-(Issues #2214, #2226, #2310, #2311) — a hand-applied `needs-human` is still
-honoured as a veto, because a human who labels a PR owns it, and the
+planning issue, never applies `needs-human` to a PR, and never asks a person to
+merge (Issues #2214, #2226, #2310, #2311) — a hand-applied `needs-human` is
+still honoured as a veto, because a human who labels a PR owns it, and the
 resolution processor's own last escalation was removed under the remaining
 sub-issue of #2298. The streak escalation that survives on the milestone path
 answers a **non-conflict** failure — a fetch, a push, an ordinary git error —
@@ -514,15 +509,15 @@ milestone-aware `checkRepoAvailability()` function, exposed via the
 ### Two axes of trust
 
 **Who may direct work, and whose input we act on, are different questions with
-different answers.** Conflating them is what produced Issues #1064, #1066
-and #1068 — one array (`allowed_authors`) answering three questions at once.
+different answers.** Conflating them is what produced Issues #1064, #1066 and
+#1068 — one array (`allowed_authors`) answering three questions at once.
 
-| Actor | May **direct** work (raise / label / schedule) | May **supply input** (test results, code reviews, PR comments) |
-| --- | --- | --- |
-| Human with write access, not a Vibe Coder | **yes** | yes |
-| Vibe Coder (`VibeCoderST`, `stservice`) | **no** | yes |
-| Known bot (`github-copilot[bot]`, `github-actions[bot]`) | **no** | yes |
-| Anyone else — the public, unknown bots | **no** | **no** |
+| Actor                                                    | May **direct** work (raise / label / schedule) | May **supply input** (test results, code reviews, PR comments) |
+| -------------------------------------------------------- | ---------------------------------------------- | -------------------------------------------------------------- |
+| Human with write access, not a Vibe Coder                | **yes**                                        | yes                                                            |
+| Vibe Coder (`VibeCoderST`, `stservice`)                  | **no**                                         | yes                                                            |
+| Known bot (`github-copilot[bot]`, `github-actions[bot]`) | **no**                                         | yes                                                            |
+| Anyone else — the public, unknown bots                   | **no**                                         | **no**                                                         |
 
 **Axis 1 — who may direct work.** Derived from repository permissions, never a
 hand-maintained allowlist:
@@ -533,44 +528,44 @@ mayDirectWork(repo, login) =
 ```
 
 On a public repository this is the security boundary: someone with no write
-access cannot direct the worker, whatever they write in an issue. The
-`!isBot` term is load-bearing on its own — a bot with write access must still
-not be able to schedule work, because write access alone does not confer the
-right to direct. Resolved every cycle by
-`resolveDerivedAuthors()` (`worker/deno/lib/derived_authors.ts`) per
-repository. A decision about one repository — a label adder, an edit to an
-approved body — reads that repository's own set through `trustedAuthorsFor()`
-(Issue #2734); only a genuinely fleet-wide decision reads the **intersection**
-across the monitored repos. Either way write access on one repo never confers
-trust on another. A host monitoring organisations whose writers share nobody
-folds the intersection to nothing: that is logged once at WARNING, naming the
-organisations, and each repository keeps working with its own writers.
+access cannot direct the worker, whatever they write in an issue. The `!isBot`
+term is load-bearing on its own — a bot with write access must still not be able
+to schedule work, because write access alone does not confer the right to
+direct. Resolved every cycle by `resolveDerivedAuthors()`
+(`worker/deno/lib/derived_authors.ts`) per repository. A decision about one
+repository — a label adder, an edit to an approved body — reads that
+repository's own set through `trustedAuthorsFor()` (Issue #2734); only a
+genuinely fleet-wide decision reads the **intersection** across the monitored
+repos. Either way write access on one repo never confers trust on another. A
+host monitoring organisations whose writers share nobody folds the intersection
+to nothing: that is logged once at WARNING, naming the organisations, and each
+repository keeps working with its own writers.
 
-**Axis 2 — whose input we act on.** An explicit *known* list, because "known"
-is precisely the property that cannot be derived from repository permissions:
-a GitHub App is not a collaborator at all, so a naive derived rule silently
-stops processing Copilot reviews and Actions results. It is axis 1 plus the
-Vibe Coder logins plus `authorized_commenters`.
+**Axis 2 — whose input we act on.** An explicit _known_ list, because "known" is
+precisely the property that cannot be derived from repository permissions: a
+GitHub App is not a collaborator at all, so a naive derived rule silently stops
+processing Copilot reviews and Actions results. It is axis 1 plus the Vibe Coder
+logins plus `authorized_commenters`.
 
 **The asymmetry is the point.** A Vibe Coder's or a known bot's review is
-accepted as input; neither may schedule or change work. Two mechanisms carry
-it and must survive any rewrite: `wasLabelAddedByAllowedAuthor()` treats any
-fleet login as an untrusted label applier (Issue #3416), and
+accepted as input; neither may schedule or change work. Two mechanisms carry it
+and must survive any rewrite: `wasLabelAddedByAllowedAuthor()` treats any fleet
+login as an untrusted label applier (Issue #3416), and
 `strip_untrusted_work_on.ts` flags a self-applied `work-on` with `needs-human`
 and comments once (Issue #3575), failing closed when the applier cannot be
 established or the trusted set is empty. It never removes `work-on`: that label
-records a human's decision, and a wrong trust verdict must not destroy it
-(Issue #2734).
+records a human's decision, and a wrong trust verdict must not destroy it (Issue
+#2734).
 
 **The fleet exclusion needs no configuration.** The Vibe Coder accounts hold
 repository write access by necessity — they push branches — so under a
-collaborator-derived rule they would otherwise become trusted, the exact
-inverse of the requirement. The exclusion therefore defaults from the fleet
-login list the configuration already carries (`service_accounts` and
-`fleet_pr_authors`, plus the host's own login); `exclusion_team` is an
-optional *additional* exclusion for org-team-based setups. A deployment that
-resolves an empty fleet login set **fails loudly at config load** rather than
-running with the workers trusted.
+collaborator-derived rule they would otherwise become trusted, the exact inverse
+of the requirement. The exclusion therefore defaults from the fleet login list
+the configuration already carries (`service_accounts` and `fleet_pr_authors`,
+plus the host's own login); `exclusion_team` is an optional _additional_
+exclusion for org-team-based setups. A deployment that resolves an empty fleet
+login set **fails loudly at config load** rather than running with the workers
+trusted.
 
 Trust starts **closed**: the construction-time snapshot is empty and is opened
 only by a successful resolve. A resolve failure skips the cycle rather than
@@ -584,17 +579,17 @@ Every mutual-exclusion guard in the worker — work-stream occupancy, open-PR
 blocking, claim-time re-checks — exists for one reason: to stop **two Vibe
 Coders** doing the same piece of work twice. None of them exists to make a Vibe
 Coder wait for a person. A human assigning themselves an issue, opening a PR, or
-taking a milestone must never stop a Vibe Coder picking up other work. The worker
-runs weekends and holidays; it works *alongside* the other developers, never
-behind them.
+taking a milestone must never stop a Vibe Coder picking up other work. The
+worker runs weekends and holidays; it works _alongside_ the other developers,
+never behind them.
 
 The rule has one operational consequence that every guard must obey: **the set
 of logins that can occupy or block is the fleet-identity set, never a permission
-set.** Concretely, the fleet is
-`resolveFleetMaintenanceAuthorSet()` (`worker/deno/lib/fleet_authors.ts`) —
-the host's own `github_user` plus `fleet_pr_authors` plus `service_accounts`.
-It is **never** `allowed_authors`, which answers a different question ("whose
-issues and labels may the worker act on?") and legitimately contains humans.
+set.** Concretely, the fleet is `resolveFleetMaintenanceAuthorSet()`
+(`worker/deno/lib/fleet_authors.ts`) — the host's own `github_user` plus
+`fleet_pr_authors` plus `service_accounts`. It is **never** `allowed_authors`,
+which answers a different question ("whose issues and labels may the worker act
+on?") and legitimately contains humans.
 
 Passing the permission list to a scheduling guard is how the rule gets broken
 silently, because on a correctly configured host the two lists overlap and the
@@ -605,10 +600,11 @@ parked the whole default-branch work stream for ~21 hours while unassigned
 
 ### One PR per work stream (serialised work)
 
-Opted-in repositories now use [completion-first admission](docs/workflows/issue-processing.md#completion-first-admission-issue-4942)
+Opted-in repositories now use
+[completion-first admission](docs/workflows/issue-processing.md#completion-first-admission-issue-4942)
 (Issue #4942): shared high/low watermarks count active claims and PRs, including
-human PR pressure and final milestone integration. At capacity, free issue
-slots work through the existing PR maintenance handlers. The legacy rule below
+human PR pressure and final milestone integration. At capacity, free issue slots
+work through the existing PR maintenance handlers. The legacy rule below
 continues for repositories without `completion_admission`.
 
 The worker serialises its work per work stream (each milestone is a work stream;
@@ -616,13 +612,12 @@ non-milestone issues share the default branch work stream). A milestone stream
 runs one PR at a time so each piece of work builds on the previous, and the
 milestone's single consolidation PR carries the automated review and CI gate.
 The default-branch stream is bounded by slots instead: the owner's rule
-(2026-09-26) is **one fleet
-PR per slot — multiple milestones mean multiple PRs** (Issue #2663). Every free
-slot can have its own default-branch PR in flight, up to `fleet_pr_slots`
-(default `8`; per repository in `repo_config`); only at that cap is a
-non-milestone issue held. Holding every non-milestone issue behind any single
-fleet PR serialised whole backlogs — GRQ-AutoTrader's 13 `work-on` issues waited
-three hours behind one PR.
+(2026-09-26) is **one fleet PR per slot — multiple milestones mean multiple
+PRs** (Issue #2663). Every free slot can have its own default-branch PR in
+flight, up to `fleet_pr_slots` (default `8`; per repository in `repo_config`);
+only at that cap is a non-milestone issue held. Holding every non-milestone
+issue behind any single fleet PR serialised whole backlogs — GRQ-AutoTrader's 13
+`work-on` issues waited three hours behind one PR.
 
 Human-assigned issues do **not** block any work stream — only a Vibe Coder's
 assignment counts as "occupied". The worker works weekends and holidays; it must
@@ -636,10 +631,10 @@ branch):**
    operates** already has an assigned issue in the same work stream.
    Fleet-aware: the match set is the current host's login plus the sibling
    logins in `fleet_pr_authors`/`service_accounts` — i.e.
-   `resolveFleetMaintenanceAuthorSet()`, the same push-capable set guard 2
-   uses — so a sibling host's assignment also occupies the work stream and a
-   second host will not start the same issue (the duplicate-PR root cause).
-   Human assignees never occupy: only Vibe Coders do.
+   `resolveFleetMaintenanceAuthorSet()`, the same push-capable set guard 2 uses
+   — so a sibling host's assignment also occupies the work stream and a second
+   host will not start the same issue (the duplicate-PR root cause). Human
+   assignees never occupy: only Vibe Coders do.
 
    The match set is deliberately **not** `config.allowedAuthors`. That is a
    permission list — whose issues and labels the worker may act on — and it
@@ -648,23 +643,23 @@ branch):**
    `pushCapableAuthors` so the permission list cannot be handed to it by habit.
 
    **Occupancy serialises `low-priority` and `idle-task` only** (Issues #2530,
-   #2532). `top-priority` and `work-on` are work a human has asked for *now*:
-   the claim joins a busy stream in its own fresh per-issue conversation, so
-   the configured-label and work-on collectors no longer refuse a candidate
-   for `milestone-occupied`, and the idle-decision census and the idle-detect
-   audit count such an issue under its tier rather than `stream_occupied`.
-   Treating the empty milestone as a stream was what inverted the ladder
-   fleet-wide: one fleet-assigned `low-priority` issue on the default branch
-   held every `top-priority` issue of that repository behind it. The lower
-   tiers still wait, and this **host's** own slots are still kept apart — by
-   the blank-stream lock (`worker/deno/lib/stream_lock.ts`) for no-milestone
-   issues and by `InFlightRepoRegistry` (`worker/deno/lib/in_flight_repos.ts`),
-   which holds one `(repo, milestone)` stream per slot, for milestone ones.
-   The fleet-wide stream lock of Issue #2334 is **not** that guard for these
-   two tiers: `claimIssue` is told the claim is shareable and proceeds. A
-   candidate the slot registry then refuses is held out of that slot's next
-   scan (`scanExcludedIssues`) until the sibling releases, so the refusal
-   costs one skipped candidate rather than a re-scan loop.
+   #2532). `top-priority` and `work-on` are work a human has asked for _now_:
+   the claim joins a busy stream in its own fresh per-issue conversation, so the
+   configured-label and work-on collectors no longer refuse a candidate for
+   `milestone-occupied`, and the idle-decision census and the idle-detect audit
+   count such an issue under its tier rather than `stream_occupied`. Treating
+   the empty milestone as a stream was what inverted the ladder fleet-wide: one
+   fleet-assigned `low-priority` issue on the default branch held every
+   `top-priority` issue of that repository behind it. The lower tiers still
+   wait, and this **host's** own slots are still kept apart — by the
+   blank-stream lock (`worker/deno/lib/stream_lock.ts`) for no-milestone issues
+   and by `InFlightRepoRegistry` (`worker/deno/lib/in_flight_repos.ts`), which
+   holds one `(repo, milestone)` stream per slot, for milestone ones. The
+   fleet-wide stream lock of Issue #2334 is **not** that guard for these two
+   tiers: `claimIssue` is told the claim is shareable and proceeds. A candidate
+   the slot registry then refuses is held out of that slot's next scan
+   (`scanExcludedIssues`) until the sibling releases, so the refusal costs one
+   skipped candidate rather than a re-scan loop.
 2. **PR blocking** (`getBlockingPRForIssue` in
    `worker/deno/lib/issue_query.ts`): a milestone issue is held while a
    **fleet** PR targets its milestone branch; a non-milestone issue is held only
@@ -674,9 +669,9 @@ branch):**
    an issue.
 
 Both guards therefore resolve the same set from the same helper. Together they
-bound the worker's in-flight work per work stream — one PR per milestone
-branch, one per slot on the default branch — while humans can assign issues
-freely without stalling the worker.
+bound the worker's in-flight work per work stream — one PR per milestone branch,
+one per slot on the default branch — while humans can assign issues freely
+without stalling the worker.
 
 ### One PR per issue across the fleet
 
@@ -686,12 +681,11 @@ authenticated as different GitHub accounts). Two failure modes were closed
 under:
 
 - **Mode A — concurrent cross-account.** Two hosts pass the discovery open-PR
-  guard before either PR exists, then both open one. Closed by the
-  **claim-time live re-check**: `claimIssue`
-  (`worker/deno/lib/claim_issue.ts`) re-checks fleet open PRs with a cache
-  bypass *after* winning the atomic claim and *before* any token work, aborting
-  with `reason: "fleet_pr_exists"` (comment removed, assignment released) if a
-  fleet PR already targets the work stream.
+  guard before either PR exists, then both open one. Closed by the **claim-time
+  live re-check**: `claimIssue` (`worker/deno/lib/claim_issue.ts`) re-checks
+  fleet open PRs with a cache bypass _after_ winning the atomic claim and
+  _before_ any token work, aborting with `reason: "fleet_pr_exists"` (comment
+  removed, assignment released) if a fleet PR already targets the work stream.
 - **Mode B — post-merge re-pickup.** A merged PR (sibling **or** same-account)
   is re-picked after the cooldown and a second PR is opened. Closed by the
   **permanent merged-lock**: `fetchRecentlyClosedPRsForFleet`
@@ -699,16 +693,16 @@ under:
   a closed-unmerged PR only blocks within the cooldown window (preserving the
   retry path).
 
-All guards resolve their fleet set through the single
-`resolveFleetAuthors` union (`worker/deno/lib/fleet_authors.ts`) of
-`github_user` + `allowed_authors` + `fleet_pr_authors`, so **every host's
-`allowed_authors` must list every fleet account**;
-`validateFleetConfig` (`worker/deno/lib/fleet_config_validation.ts`) fails loud
-on the blind-spot shape. A closed-unmerged retry reuses the deterministic branch
-. The **only** way an issue becomes eligible again after a merged PR is a
-human re-opening the issue or re-applying a discovery label — prevention only,
-no auto-close (multi-account operation retained). The fleet-wide regression
-suite lives in `worker/deno/tests/fleet_duplicate_prevention_test.ts`; see
+All guards resolve their fleet set through the single `resolveFleetAuthors`
+union (`worker/deno/lib/fleet_authors.ts`) of `github_user` +
+`allowed_authors` + `fleet_pr_authors`, so **every host's `allowed_authors` must
+list every fleet account**; `validateFleetConfig`
+(`worker/deno/lib/fleet_config_validation.ts`) fails loud on the blind-spot
+shape. A closed-unmerged retry reuses the deterministic branch . The **only**
+way an issue becomes eligible again after a merged PR is a human re-opening the
+issue or re-applying a discovery label — prevention only, no auto-close
+(multi-account operation retained). The fleet-wide regression suite lives in
+`worker/deno/tests/fleet_duplicate_prevention_test.ts`; see
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) and
 [`docs/DUPLICATE-PR-ROOT-CAUSE-3138.md`](docs/DUPLICATE-PR-ROOT-CAUSE-3138.md).
 
@@ -721,25 +715,25 @@ in the session: the unmet-criteria gate
 work. Since Issue #4234 that note is advice, so a criterion still unmet
 afterwards does not withhold the pull request. The PR is raised and armed, and
 the unmet criteria are named in one `## Notes for the reviewer` comment. A
-`partial` or `missing` entry makes the body `Part of #N`, so the issue stays open. The entry
-is read from the summary's own block, whatever heading the issue used, so an
-issue that states no criteria heading is held open the same way when the run
-leaves part of it undone (Issue #4477). No follow-up issue is ever filed for
-the remainder — the issue was approved to be
-done, and a new issue would need a human to read and approve it — and nothing
-is labelled `needs-human`. A run that **times out** keeps a draft `Part of #N`
-PR (`worker/deno/lib/draft_continuation_pr.ts`) that never holds its issue, so
-the next run resumes the branch. When that run completes, the draft is marked
-ready and squash auto-merge is armed, even if a criterion is still unmet; its
-body says `Closes #N` unless an entry is `partial` or `missing`, which keeps `Part of #N`. Whether
-the run was degraded changes none of this. See
+`partial` or `missing` entry makes the body `Part of #N`, so the issue stays
+open. The entry is read from the summary's own block, whatever heading the issue
+used, so an issue that states no criteria heading is held open the same way when
+the run leaves part of it undone (Issue #4477). No follow-up issue is ever filed
+for the remainder — the issue was approved to be done, and a new issue would
+need a human to read and approve it — and nothing is labelled `needs-human`. A
+run that **times out** keeps a draft `Part of #N` PR
+(`worker/deno/lib/draft_continuation_pr.ts`) that never holds its issue, so the
+next run resumes the branch. When that run completes, the draft is marked ready
+and squash auto-merge is armed, even if a criterion is still unmet; its body
+says `Closes #N` unless an entry is `partial` or `missing`, which keeps
+`Part of #N`. Whether the run was degraded changes none of this. See
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md#-a-summary-shortfall-after-the-pr-is-not-a-failed-run).
 
 ### Fleet-aware PR maintenance (`fleet_pr_authors`)
 
-The fleet runs across machines, each authenticated as a different GitHub
-account (e.g. `Vibecoderbot` on one host, `stsvcbot` on another). PR-feedback
-and CI-fix maintenance are scoped per-host by PR author (`listOpenPrs` →
+The fleet runs across machines, each authenticated as a different GitHub account
+(e.g. `Vibecoderbot` on one host, `stsvcbot` on another). PR-feedback and CI-fix
+maintenance are scoped per-host by PR author (`listOpenPrs` →
 `gh pr list --author <login>` in `worker/deno/lib/pr_maintenance.ts`). On its
 own this strands a milestone PR raised by a host that is then busy elsewhere or
 down: no peer host scans it, so a blocking CI failure (or a human "please fix"
@@ -764,8 +758,8 @@ in the target repository (`listBotPrs`). The third exists because a
 red quality check sat unattended; fork-headed bot PRs stay out, because the
 worker cannot push a fix to a fork it does not own. There is no per-repo opt-out
 key — `skip_auto_merge` still governs the merge step alone. The operator-facing
-statement is
-[`docs/HUMAN-PR-POLICY.md`](docs/HUMAN-PR-POLICY.md) → Bot-authored PRs.
+statement is [`docs/HUMAN-PR-POLICY.md`](docs/HUMAN-PR-POLICY.md) → Bot-authored
+PRs.
 
 #### One author set, checked every iteration
 
@@ -773,10 +767,9 @@ statement is
 in this repo". The issue-side blocking guard (`findOldestIssue` →
 `fetchOpenPRsForFleet`) resolves `resolveFleetPrAuthorSet()`; the PR-maintenance
 scans (`pr_maintenance.ts`) and the CI-nudge scan (`pr_ci_nudge_scan.ts`) act on
-the PRs they find and so resolve `resolveFleetMaintenanceAuthorSet()`
- — no module builds its own list. Two independently-maintained sets
-is precisely what let a
-fleet-authored PR block `work-on` issues while no scan ever fixed its CI,
+the PRs they find and so resolve `resolveFleetMaintenanceAuthorSet()` — no
+module builds its own list. Two independently-maintained sets is precisely what
+let a fleet-authored PR block `work-on` issues while no scan ever fixed its CI,
 answered its comments, or merged it.
 
 The invariant is self-checking, for the **fleet-authored** PRs both sides see:
@@ -784,12 +777,12 @@ The invariant is self-checking, for the **fleet-authored** PRs both sides see:
 > Every open fleet-authored PR `getBlockingPRForIssue()` can return must be
 > present in the PR-maintenance scan set.
 
-A human's `allowed_authors` PR sits deliberately outside that set since,
-and since the blocking guard does not wait behind it either — see below.
+A human's `allowed_authors` PR sits deliberately outside that set since, and
+since the blocking guard does not wait behind it either — see below.
 
 #### A human-authored PR never blocks issue pickup
 
-The guard used to defer to every PR the fleet *owned*, a set that includes the
+The guard used to defer to every PR the fleet _owned_, a set that includes the
 trusted humans in `allowed_authors`. One unrelated human PR therefore parked the
 whole repo's `work-on` queue, and after also stamped `needs-human` on the
 blocked issue and stood the worker down. The worker is meant to work alongside
@@ -799,17 +792,15 @@ the other developers, not wait on them.
 before matching branches: a human-authored PR is invisible to issue selection,
 so no issue is deferred, no `needs-human` is applied, and no comment is posted.
 The nudge-and-escalate path became unreachable and was retired with
-`escalate_human_blocking_pr.ts`. The / rule that the worker never
-claims, pushes to, comments on, or merges someone else's PR uninvited is
-unchanged.
+`escalate_human_blocking_pr.ts`. The / rule that the worker never claims, pushes
+to, comments on, or merges someone else's PR uninvited is unchanged.
 
-The fleet's own open PRs keep their per-stream limit — one per milestone
-branch, and one per slot on the default branch (`fleet_pr_slots`,
-Issue #2663) — so the worker never runs more of its own PRs into a work stream
-than it has slots to carry. Two
-inputs stay on the blocking side as a fail-safe, because authorship could not be
-established: a PR whose author was never stamped (a pre- cache entry), and
-an unresolved/empty push-capable set.
+The fleet's own open PRs keep their per-stream limit — one per milestone branch,
+and one per slot on the default branch (`fleet_pr_slots`, Issue #2663) — so the
+worker never runs more of its own PRs into a work stream than it has slots to
+carry. Two inputs stay on the blocking side as a fail-safe, because authorship
+could not be established: a PR whose author was never stamped (a pre- cache
+entry), and an unresolved/empty push-capable set.
 
 ```mermaid
 flowchart TD
@@ -838,43 +829,42 @@ flowchart LR
 `findOldestIssue` compares the two resolved sets once per iteration and emits a
 single `fleet-author-set-divergence` warning naming the missing authors when
 they differ — a warning only; the iteration always continues. The check is
-**intent-aware**: the invariant it asserts is not "the two sets
-are equal" but "the maintenance set is the fleet-owned set minus the trusted
-humans, and nothing else". `allowed_authors` is passed in as the expected delta
-and stays silent, so the two genuine hazards still read as alarms — a
-`fleet_pr_authors` sibling absent from the maintenance set, and a
-maintained login the blocking guard cannot see. A permanently-firing
-warning would be worse than none: it trains operators to ignore the line that
-exists to catch. Every blocking
+**intent-aware**: the invariant it asserts is not "the two sets are equal" but
+"the maintenance set is the fleet-owned set minus the trusted humans, and
+nothing else". `allowed_authors` is passed in as the expected delta and stays
+silent, so the two genuine hazards still read as alarms — a `fleet_pr_authors`
+sibling absent from the maintenance set, and a maintained login the blocking
+guard cannot see. A permanently-firing warning would be worse than none: it
+trains operators to ignore the line that exists to catch. Every blocking
 decision also emits `pr-blocks-work-on` with the PR number, author, base branch,
-the issues it deferred, and `in-maintenance-set`. A recurrence of the bug
-shows up as `in-maintenance-set=false` on a blocking PR, findable with a log
-grep rather than a code read.
+the issues it deferred, and `in-maintenance-set`. A recurrence of the bug shows
+up as `in-maintenance-set=false` on a blocking PR, findable with a log grep
+rather than a code read.
 
 #### Defer-to vs push-capable author sets
 
 "The fleet owns this PR" and "the fleet may push to this PR" are different
 questions, so `worker/deno/lib/fleet_authors.ts` exports one resolver for each:
 
-| Resolver                             | Members                                       | Answers                                                    |
-| ------------------------------------ | --------------------------------------------- | ---------------------------------------------------------- |
-| `resolveFleetPrAuthorSet()`          | host + `allowed_authors` + `fleet_pr_authors` | May I raise a duplicate PR, or must I wait behind this one? |
+| Resolver                             | Members                                       | Answers                                                                                                    |
+| ------------------------------------ | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `resolveFleetPrAuthorSet()`          | host + `allowed_authors` + `fleet_pr_authors` | May I raise a duplicate PR, or must I wait behind this one?                                                |
 | `resolveFleetMaintenanceAuthorSet()` | host + `fleet_pr_authors`                     | May I claim, push to, comment on, or auto-merge this PR? Is this work stream already held by a Vibe Coder? |
 
 `service_accounts` is unioned into the effective `fleet_pr_authors` at load, so
 both resolvers see it.
 
 The maintenance set is the **fleet-identity** set, and it is therefore also the
-set every *scheduling* guard resolves from — work-stream occupancy
-(`isMilestoneOccupied`) included. Scheduling exists only between Vibe Coders,
-so a scheduling guard must never be handed `allowed_authors`; see
+set every _scheduling_ guard resolves from — work-stream occupancy
+(`isMilestoneOccupied`) included. Scheduling exists only between Vibe Coders, so
+a scheduling guard must never be handed `allowed_authors`; see
 [Locking and scheduling exist only between Vibe Coders](#locking-and-scheduling-exist-only-between-vibe-coders).
 
-The maintenance set is always a **subset** of the fleet-owned set; that asymmetry
-is intended, not drift. `allowed_authors` is excluded from the maintenance set
-because a trusted human is trusted to _instruct_ the worker, not to have their PR
-taken over — the regression, where the maintenance scans inherited
-`allowed_authors` and adopted a human-authored PR. Since all five scan
+The maintenance set is always a **subset** of the fleet-owned set; that
+asymmetry is intended, not drift. `allowed_authors` is excluded from the
+maintenance set because a trusted human is trusted to _instruct_ the worker, not
+to have their PR taken over — the regression, where the maintenance scans
+inherited `allowed_authors` and adopted a human-authored PR. Since all five scan
 sites resolve the push-capable set (the four in `pr_maintenance.ts` plus
 `findPrsNeedingCiNudge`), so a human's login never reaches the `gh pr list`
 query; the blocking guard in `find_oldest_issue.ts` keeps the fleet-owned set,
@@ -892,12 +882,12 @@ the existing per-check retry cap. See
 **when explicitly invited**, and only then. `worker/deno/lib/pr_invitation.ts`
 is the pure predicate (`isPrInvited`), and `pr_invitation_lookup.ts` lists the
 open `allowed_authors` PRs each scan then admits from. Two signals count, both
-requiring a **trusted human** — a login in `allowed_authors` that is not a
-fleet account, so no worker can conscript itself:
+requiring a **trusted human** — a login in `allowed_authors` that is not a fleet
+account, so no worker can conscript itself:
 
 - **Label** — the PR carries `work-on` _and_ a trusted human applied it. The
-  adder comes from an exhaustive timeline read, never from label presence, so
-  an untrusted actor adding `work-on` admits nothing.
+  adder comes from an exhaustive timeline read, never from label presence, so an
+  untrusted actor adding `work-on` admits nothing.
 - **Mention** — a PR comment or review body from a trusted human that
   `@mentions` the host login or a configured fleet login. Only a real mention
   token counts: matches inside fenced code, inline code, or quoted (`>`) lines
@@ -929,19 +919,19 @@ flowchart TD
 
 #### One cross-scan suite enforces the invariant
 
- was introduced by a fix whose own tests all passed, because every
-test checked one scan site in isolation and none asserted the property that
-matters: _the worker never writes to a PR it was not invited to_.
+was introduced by a fix whose own tests all passed, because every test checked
+one scan site in isolation and none asserted the property that matters: _the
+worker never writes to a PR it was not invited to_.
 `worker/deno/tests/pr_uninvited_action_test.ts` asserts it once, for all six
 PR-touching entry points, against a single fixture repo carrying one PR per
 authorship class — fleet, sibling, uninvited human, invited human, and an
-unrelated third party. A recording `ghCommandFn` (plus the `git` and
-auto-merge recorders) captures every invocation, so a breach names the exact
-command rather than being inferred from a return value.
+unrelated third party. A recording `ghCommandFn` (plus the `git` and auto-merge
+recorders) captures every invocation, so a breach names the exact command rather
+than being inferred from a return value.
 
 The suite also carries a **drift guard**: it reads `pr_maintenance.ts` and
-`pr_ci_nudge_scan.ts` and fails if any push-capable scan resolves the
-defer-to set (`resolveFleetPrAuthorSet`), or lists open PRs without resolving
+`pr_ci_nudge_scan.ts` and fails if any push-capable scan resolves the defer-to
+set (`resolveFleetPrAuthorSet`), or lists open PRs without resolving
 `resolveFleetMaintenanceAuthorSet`. A sixth scan added later with the wrong
 resolver fails CI instead of shipping.
 
@@ -955,60 +945,81 @@ default `0` leaves a repo neither promoted nor demoted; non-integer / wrong-type
 values are guarded down to `0` by `getRepoNice()` in
 `worker/deno/lib/repo_config.ts`.
 
-- **Outermost grouping is the label tier; `nice` is the inner one
-  (Issue #1063).** `selectHighestPriority()` in
-  `worker/deno/lib/issue_priority.ts` walks the label ladder
-  (`top-priority` → close-out → `work-on` → self-diagnostic → `low-priority` →
-  `idle-task`) across the whole fleet and drains each tier everywhere before
-  reaching the next; only *within* a tier does it partition candidates by
-  resolved `nice` and take the lowest-`nice` group first. Close-out
-  (Issue #2009) is a band, not a `nice` partition: a leftover that finishes
-  a started, fleet-viable milestone is taken after `top-priority` and before
-  `work-on`, and `nice` does not demote it. A `nice: -20`
-  repo's `work-on` issue therefore does **not** outrank a `nice: -15` repo's
-  `top-priority` issue — the divergence from **F4a** reported on Issue #1063,
-  now closed. `orderCandidatesByNiceTier()` is unchanged: it orders a single
-  label stream (the label / planning scans), so its `nice` partition is
-  already inside a tier.
-- **Conflict redo substitutes within the chosen repo, after the ladder
-  (Issue #3034).** `selectHighestPriority()` runs the ladder above to pick a
-  repo exactly as described; once a repo is chosen, a merge-conflict redo
-  candidate in that repo (its restart marker author-checked, no open fleet PR,
-  no newer PR referencing it) is returned instead of the ladder's own pick for
-  that repo, ahead of `top-priority` and regardless of the redo's own pickup
-  label, and `selectFairWithinTier()` / `orderCandidatesByNiceTier()` apply the
-  same substitution.
+- **Outermost grouping is the label tier; `nice` is the inner one (Issue
+  #1063).** `selectHighestPriority()` in `worker/deno/lib/issue_priority.ts`
+  walks the label ladder (`top-priority` → close-out → `work-on` →
+  self-diagnostic → `low-priority` → `idle-task`) across the whole fleet and
+  drains each tier everywhere before reaching the next; only _within_ a tier
+  does it partition candidates by resolved `nice` and take the lowest-`nice`
+  group first. Close-out (Issue #2009) is a band, not a `nice` partition: a
+  leftover that finishes a started, fleet-viable milestone is taken after
+  `top-priority` and before `work-on`, and `nice` does not demote it. A
+  `nice: -20` repo's `work-on` issue therefore does **not** outrank a
+  `nice: -15` repo's `top-priority` issue — the divergence from **F4a** reported
+  on Issue #1063, now closed. `orderCandidatesByNiceTier()` is unchanged: it
+  orders a single label stream (the label / planning scans), so its `nice`
+  partition is already inside a tier.
+- **Conflict redo substitutes within the chosen repo, after the ladder (Issue
+  #3034).** `selectHighestPriority()` runs the ladder above to pick a repo
+  exactly as described; once a repo is chosen, a merge-conflict redo candidate
+  in that repo (its restart marker author-checked, no open fleet PR, no newer PR
+  referencing it) is returned instead of the ladder's own pick for that repo,
+  ahead of `top-priority` and regardless of the redo's own pickup label, and
+  `selectFairWithinTier()` / `orderCandidatesByNiceTier()` apply the same
+  substitution.
 - **Fair within a tier.** Among repos sharing one `nice` value,
   `selectFairWithinTier()` rotates fairly across equal repos (oldest-first
   within a repo, fair rotation across repos when a `randomFn` is injected), so a
   busy repo never starves its peers. With the default `nice: 0` everywhere this
   reduces to the prior oldest-first behaviour.
-- **The weekly Claude quota paces the bottom two tiers (Issue #1885).** Once
-  per scan cycle `selectHighestPriority()` is told whether the seven-day
+- **The weekly Claude quota paces the bottom two tiers (Issue #1885).** Once per
+  scan cycle `selectHighestPriority()` is told whether the seven-day
   subscription window is projected to run out before it resets
   (`used ÷ elapsed >= 1.0`, judged once 24 h of the window has elapsed —
   `claude_week_pace.ts`). While it is, `low-priority` and `idle-task` are
-  dropped from the ladder so the quota left goes to `top-priority` and
-  `work-on` work. Tiers 1, 2 and 2b are never gated, a claimed run always
-  finishes, and an unknown reading leaves every tier eligible: a failed probe
-  never refuses work. On a host with a credential pool "will not last" is
-  judged across **every** Claude credential (Issue #2647): the pool's summed
-  burn rate is walked forward through the reset times, and the gate engages
-  only if capacity reaches zero before a reopening refills it — one nearly
-  spent token beside a fresh one, or one about to reopen, keeps the backlog
-  running. See the
+  dropped from the ladder so the quota left goes to `top-priority` and `work-on`
+  work. Tiers 1, 2 and 2b are never gated, a claimed run always finishes, and an
+  unknown reading leaves every tier eligible: a failed probe never refuses work.
+  On a host with a credential pool "will not last" is judged across **every**
+  Claude credential (Issue #2647): the pool's summed burn rate is walked forward
+  through the reset times, and the gate engages only if capacity reaches zero
+  before a reopening refills it — one nearly spent token beside a fresh one, or
+  one about to reopen, keeps the backlog running. See the
   [issue-processing manual](docs/workflows/issue-processing.md#-weekly-claude-quota-pace-gate-tiers-3-and-4).
-- **The GitHub GraphQL quota parks the tail and defers the idle tier (Issue #3628).** Once per scan the worker probes the account's GraphQL quota with a free `{ rateLimit { … } }` query. Below `quota_poll_park_floor` (default 1500) repos with `nice >= quota_poll_park_nice` (default 99) are skipped whole for the cycle — no PR fetches, no timeline batch, no collectors — and below `quota_poll_idle_floor` (default 500) idle-task collection is deferred fleet-wide, the idle-task filer's repo walk included. Both boundaries are strict less-than, each cycle re-probes so recovery is automatic, floors of `0` disable a tier, and an unreadable quota defers nothing — the gate fails open. The scan-only shape matches the pace gate above: Priority 1.x in-flight maintenance is never reordered, and the idle-detect audit models both deferrals as the fleet's own deliberate refusals so neither parks into a `mis_classification` alert. See the [configuration manual](docs/CONFIGURATION.md#quota-poll-gate--park-the-tail-defer-the-idle-tier-issue-3628).
-- **Low-priority repos are polled less often, always (Issue #3667).** The quota gate only sees the hourly quota running low; the fleet's shared account kept tripping GitHub's burst limit with most of it unspent, because every Priority 1.x pass walked every monitored repo every cycle. Those passes now poll a repo every cycle at `nice <= 0`, every `poll_cadence_low_cycles` (3) cycles below `quota_poll_park_nice`, and every `poll_cadence_park_cycles` (10) at or above it. Upkeep slows, never stops — the Issue #2776 rule that in-flight work in a deprioritised repo must not rot still holds — first polls are staggered so the tier never bursts on one cycle, and a burst refusal holds due low-priority repos one more cycle, bounded at twice their cadence. See the [configuration manual](docs/CONFIGURATION.md#poll-cadence--poll-low-priority-repos-less-often-issue-3667).
+- **The GitHub GraphQL quota parks the tail and defers the idle tier (Issue
+  #3628).** Once per scan the worker probes the account's GraphQL quota with a
+  free `{ rateLimit { … } }` query. Below `quota_poll_park_floor` (default 1500)
+  repos with `nice >= quota_poll_park_nice` (default 99) are skipped whole for
+  the cycle — no PR fetches, no timeline batch, no collectors — and below
+  `quota_poll_idle_floor` (default 500) idle-task collection is deferred
+  fleet-wide, the idle-task filer's repo walk included. Both boundaries are
+  strict less-than, each cycle re-probes so recovery is automatic, floors of `0`
+  disable a tier, and an unreadable quota defers nothing — the gate fails open.
+  The scan-only shape matches the pace gate above: Priority 1.x in-flight
+  maintenance is never reordered, and the idle-detect audit models both
+  deferrals as the fleet's own deliberate refusals so neither parks into a
+  `mis_classification` alert. See the
+  [configuration manual](docs/CONFIGURATION.md#quota-poll-gate--park-the-tail-defer-the-idle-tier-issue-3628).
+- **Low-priority repos are polled less often, always (Issue #3667).** The quota
+  gate only sees the hourly quota running low; the fleet's shared account kept
+  tripping GitHub's burst limit with most of it unspent, because every Priority
+  1.x pass walked every monitored repo every cycle. Those passes now poll a repo
+  every cycle at `nice <= 0`, every `poll_cadence_low_cycles` (3) cycles below
+  `quota_poll_park_nice`, and every `poll_cadence_park_cycles` (10) at or above
+  it. Upkeep slows, never stops — the Issue #2776 rule that in-flight work in a
+  deprioritised repo must not rot still holds — first polls are staggered so the
+  tier never bursts on one cycle, and a burst refusal holds due low-priority
+  repos one more cycle, bounded at twice their cadence. See the
+  [configuration manual](docs/CONFIGURATION.md#poll-cadence--poll-low-priority-repos-less-often-issue-3667).
 - **New-work selection only.** The tiering gates the Priority 2 new-issue scan
   (`find_oldest_issue.ts`), the label scan (`find_issues_by_label.ts`), and the
   planning scan (`find_planning_issues.ts`). It does **not** reorder Priority
   1.x in-flight maintenance (PR feedback, CI fixes, revisions) — in-flight work
   is finished regardless of its repo's tier.
-- **Operator-side only.** `nice` lives in `.config.json` `repo_config`,
-  never in the target repo. `check-repo-availability` surfaces the resolved tier
-  in its structured `data.nice` and a ` [nice N]` message suffix (the
-  `AVAILABLE:` / `BUSY:` prefix is unchanged) for debugging.
+- **Operator-side only.** `nice` lives in `.config.json` `repo_config`, never in
+  the target repo. `check-repo-availability` surfaces the resolved tier in its
+  structured `data.nice` and a `[nice N]` message suffix (the `AVAILABLE:` /
+  `BUSY:` prefix is unchanged) for debugging.
 
 See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (Per-Repository
 Configuration) and
@@ -1022,59 +1033,55 @@ into a repository's default branch — never after. A post-merge failure is too
 late: the deploy/publish workflows have already fired. Enforcement is
 **dual-layer** and the default branch is **read-only**.
 
-- **Wall (GitHub repository rulesets).** Required status checks + strict
-  "branch up to date", configured at setup time per repo. **Classic** branch
-  protection is never written — GitHub has moved enforcement to
-  rulesets, and a repo already covered by a human- or org-managed ruleset is a
-  no-op. Required-check selection is visibility- and language-aware —
-  `getRequiredChecksForRepo()` in
+- **Wall (GitHub repository rulesets).** Required status checks + strict "branch
+  up to date", configured at setup time per repo. **Classic** branch protection
+  is never written — GitHub has moved enforcement to rulesets, and a repo
+  already covered by a human- or org-managed ruleset is a no-op. Required-check
+  selection is visibility- and language-aware — `getRequiredChecksForRepo()` in
   `worker/deno/lib/branch_protection_definitions.ts` never marks an
   unsatisfiable check (e.g. GHAS-only `dependency-review` on a private repo) as
   required — and its candidate contexts are intersected with the names the repo
   genuinely reports (`getReportedCheckNames()`), so a ghost context can never
-  block every merge. A default branch that takes **direct pushes** (a data
-  repo the fleet checks results in to, with no PR) is never locked: the
-  recent history is inspected first (`assessBranchPushPolicy()`), and a
-  direct-push or opted-out branch gets no ruleset. Removing protection needs
-  stronger evidence than declining to add it: the worker deletes its own stale
-  ruleset only for observed direct pushes or the admin-gated `direct-push`
-  topic, never for the `.vibe/no-default-branch-ruleset` marker file, which is
-  repository content anyone with write access can land.
+  block every merge. A default branch that takes **direct pushes** (a data repo
+  the fleet checks results in to, with no PR) is never locked: the recent
+  history is inspected first (`assessBranchPushPolicy()`), and a direct-push or
+  opted-out branch gets no ruleset. Removing protection needs stronger evidence
+  than declining to add it: the worker deletes its own stale ruleset only for
+  observed direct pushes or the admin-gated `direct-push` topic, never for the
+  `.vibe/no-default-branch-ruleset` marker file, which is repository content
+  anyone with write access can land.
 - **Backstop (worker pre-merge gate).** `enforcePreMergeRequirements()` in
   `worker/deno/lib/direct_merge.ts` re-fetches CI status and branch freshness at
   merge time inside `directMergePr()`; it refuses to merge unless CI is `passed`
   and `behindBy === 0`. Behind target → defer-and-retry: the PR is left open,
-  branch-update maintenance merges the target in (plain push, never forced),
-  CI re-runs, the next cycle re-evaluates.
-- **Only allowlisted verdicts are green.** `determineCiStatus`
-  passes a check run only when its conclusion is `success`, `skipped` or
-  `neutral`, and folds in GitHub's own `statusCheckRollup.state` (worse verdict
-  wins). Every other conclusion — `action_required`, `startup_failure`,
-  `stale`, or a value GitHub adds in future — fails closed instead of falling
-  through to `passed`.
-- **Zero checks is not green.** A head commit with no check runs
-  and no commit statuses reports `no_checks`, not `passed`, unless a failed
-  GitHub Actions suite applies (next bullet); the gate blocks and
-  the automated path escalates to a human. Only the explicit
-  `--allow-no-checks` operator override on `merge-if-checks-passed` relaxes it,
-  and that command is itself gated on the monitored-repo allowlist and PR
-  authorship.
+  branch-update maintenance merges the target in (plain push, never forced), CI
+  re-runs, the next cycle re-evaluates.
+- **Only allowlisted verdicts are green.** `determineCiStatus` passes a check
+  run only when its conclusion is `success`, `skipped` or `neutral`, and folds
+  in GitHub's own `statusCheckRollup.state` (worse verdict wins). Every other
+  conclusion — `action_required`, `startup_failure`, `stale`, or a value GitHub
+  adds in future — fails closed instead of falling through to `passed`.
+- **Zero checks is not green.** A head commit with no check runs and no commit
+  statuses reports `no_checks`, not `passed`, unless a failed GitHub Actions
+  suite applies (next bullet); the gate blocks and the automated path escalates
+  to a human. Only the explicit `--allow-no-checks` operator override on
+  `merge-if-checks-passed` relaxes it, and that command is itself gated on the
+  monitored-repo allowlist and PR authorship.
 - **A failed Actions suite is red even with no check run.** A completed
-  `github-actions` check suite with no check run of its own whose conclusion
-  is off the passing allowlist
-  (typically `startup_failure`, which creates no check run) makes
-  `determineCiStatus` return `failed`. This is checked before the `no_checks`
-  return, so the `--allow-no-checks` override never relaxes it. Suites from
-  other apps and unfinished suites are ignored. The suites come from GraphQL
-  `checkSuites` (REST fallback `commits/{sha}/check-suites`), and the review
-  gate skips such a PR as `ci-failed`.
-- **The merge is pinned to the checked commit.** The gate reports
-  the head SHA it read the checks for, and `directMergePr()` merges with
+  `github-actions` check suite with no check run of its own whose conclusion is
+  off the passing allowlist (typically `startup_failure`, which creates no check
+  run) makes `determineCiStatus` return `failed`. This is checked before the
+  `no_checks` return, so the `--allow-no-checks` override never relaxes it.
+  Suites from other apps and unfinished suites are ignored. The suites come from
+  GraphQL `checkSuites` (REST fallback `commits/{sha}/check-suites`), and the
+  review gate skips such a PR as `ci-failed`.
+- **The merge is pinned to the checked commit.** The gate reports the head SHA
+  it read the checks for, and `directMergePr()` merges with
   `gh pr merge --squash --match-head-commit <sha>`, or with `--merge` for a
-  milestone sync (Issue #1048) and for a same-repository `milestone-fix/**`
-  head that merges the default branch (Issue #3596), so a push landing between
-  the check read and the merge cannot be merged on unevaluated checks. A moved
-  head is a deferral (`head_moved`), a missing SHA is a refusal.
+  milestone sync (Issue #1048) and for a same-repository `milestone-fix/**` head
+  that merges the default branch (Issue #3596), so a push landing between the
+  check read and the merge cannot be merged on unevaluated checks. A moved head
+  is a deferral (`head_moved`), a missing SHA is a refusal.
 - **Read-only default branch.** No direct commits — no formatting, version, or
   dependency bumps land on default; every change rides a feature-branch PR.
   Enforced at the push choke-point by `assertPushTargetAllowed()` in
@@ -1086,29 +1093,29 @@ late: the deploy/publish workflows have already fired. Enforcement is
   template detects and files `BP-TRIGGER-*` findings rather than bulk-rewriting
   YAML — the fix rides a normal worker PR.
 - **No post-merge re-run of required checks** on the default branch.
-- **Hands-off landing, loud when blocked.** Merge-path precedence is
-  fixed — native auto-merge first, direct merge only when native auto-merge is
-  refused on an unprotected branch or switched off on the repository — so the
-  worker never races a repo's own `auto-merge.yml`. `handleMergeAttempt()` in
-  `worker/deno/lib/merge_block_escalation.ts` then acts on the outcome: a
-  behind branch is updated so its checks re-run, and a PR that cannot be landed
-  is logged and retried next cycle — never handed to a human with a comment or
-  `needs-human` (Issue #4304). A merge failure is never swallowed. Review requests stay informational; only branch protection can
-  require an approval.
+- **Hands-off landing, loud when blocked.** Merge-path precedence is fixed —
+  native auto-merge first, direct merge only when native auto-merge is refused
+  on an unprotected branch or switched off on the repository — so the worker
+  never races a repo's own `auto-merge.yml`. `handleMergeAttempt()` in
+  `worker/deno/lib/merge_block_escalation.ts` then acts on the outcome: a behind
+  branch is updated so its checks re-run, and a PR that cannot be landed is
+  logged and retried next cycle — never handed to a human with a comment or
+  `needs-human` (Issue #4304). A merge failure is never swallowed. Review
+  requests stay informational; only branch protection can require an approval.
 - **One approval before the default branch.** Setup's `repo-settings-harden`
-  makes every monitored repository's default branch require one approving
-  review (Issue #2680), so a fleet PR's armed auto-merge waits for the
+  makes every monitored repository's default branch require one approving review
+  (Issue #2680), so a fleet PR's armed auto-merge waits for the
   `/review-fleet-prs` skill or the owner instead of landing unreviewed.
-  Milestone branches carry no such rule, so child PRs still collect
-  hands-off. A default branch the fleet pushes to directly is never given a
-  pull_request rule — it would refuse every push — and is reported for the
-  owner instead. See [Repository settings hardening](docs/SETUP.md#repository-settings-hardening).
-- **The fleet needs no admin.** Setup allows merge commits on every
-  monitored repository and keeps the default branch squash-only through its
-  ruleset, so a milestone sync PR lands as a merge commit and converges
-  without an admin bypass (Issue #2690). Fleet accounts are held at write;
-  an organisation owner cannot be lowered per repository, so setup reports
-  it with the organisation setting to change and leaves membership alone.
+  Milestone branches carry no such rule, so child PRs still collect hands-off. A
+  default branch the fleet pushes to directly is never given a pull_request rule
+  — it would refuse every push — and is reported for the owner instead. See
+  [Repository settings hardening](docs/SETUP.md#repository-settings-hardening).
+- **The fleet needs no admin.** Setup allows merge commits on every monitored
+  repository and keeps the default branch squash-only through its ruleset, so a
+  milestone sync PR lands as a merge commit and converges without an admin
+  bypass (Issue #2690). Fleet accounts are held at write; an organisation owner
+  cannot be lowered per repository, so setup reports it with the organisation
+  setting to change and leaves membership alone.
 
 See [`docs/MERGE.md`](docs/MERGE.md) for the operator manual (the dual-layer
 flow diagram, visibility-aware required checks, defer-and-retry sequence,
@@ -1137,14 +1144,14 @@ to `git clone`.
 - **Belt-and-braces unshallow retry on the milestone sync** — even with
   `ensureHistoryDepth()` run first, `syncMilestoneBranchWithDefault()` in
   `worker/deno/lib/git_pull.ts` can still meet a `git merge` that refuses with
-  "refusing to merge unrelated histories" when the doubling steps stopped
-  short of the real merge base (Issue #2896). `mergeWithUnshallowRetry()` in
-  `worker/deno/lib/git_merge_unshallow_retry.ts` treats that specific refusal
-  on a shallow clone as the shallow-history artefact it is: it runs
+  "refusing to merge unrelated histories" when the doubling steps stopped short
+  of the real merge base (Issue #2896). `mergeWithUnshallowRetry()` in
+  `worker/deno/lib/git_merge_unshallow_retry.ts` treats that specific refusal on
+  a shallow clone as the shallow-history artefact it is: it runs
   `git fetch --unshallow origin` and retries the merge exactly once before
-  falling through to the ordinary conflict/non-conflict handling. A refusal
-  on a clone that is already full is left alone — that is a genuinely
-  unrelated history, not a depth problem.
+  falling through to the ordinary conflict/non-conflict handling. A refusal on a
+  clone that is already full is left alone — that is a genuinely unrelated
+  history, not a depth problem.
 
 **Implementation:** `buildShallowCloneArgs()` in
 `worker/deno/commands/git_operations.ts` produces the argument list for the
@@ -1157,8 +1164,8 @@ queries → merge default back in) against a local fixture.
 
 Each Priority 1.x handler's `execute()` in the main dispatch loop
 (`worker/deno/lib/run_core.ts`) is bounded by a watchdog so a hung `gh`/network
-call cannot freeze the whole loop and stall the fleet (the wedged-loop
-symptom — a `scan_cursor` frozen at Priority 1.8).
+call cannot freeze the whole loop and stall the fleet (the wedged-loop symptom —
+a `scan_cursor` frozen at Priority 1.8).
 
 - **Hard timeout** (`handlerTimeoutSeconds`, default 600s): on timeout the loop
   logs a `[watchdog]` line naming the priority + handler, abandons the handler,
@@ -1166,7 +1173,7 @@ symptom — a `scan_cursor` frozen at Priority 1.8).
 - **Soft warning** (`handlerSoftTimeoutSeconds`, default 120s): a handler that
   returns but exceeds this threshold emits a `[watchdog]` soft-warning so slow
   handlers stay visible in the logs.
-- **Agent floor** (Issue #62): a handler that keeps working *after* its agent
+- **Agent floor** (Issue #62): a handler that keeps working _after_ its agent
   returns declares a floor — the wrapped agent's own timeout plus a named tail
   allowance — and its budget is never smaller than that, whatever the cycle has
   left. Planning Mode's floor is `planningTimeout` (1800s) +
@@ -1181,10 +1188,10 @@ symptom — a `scan_cursor` frozen at Priority 1.8).
   retry ladders — never an issue slot's (`s1`/`s2`) run beside it. The scoped
   termination leaves the process-global terminating flag alone, so the slots
   keep launching. Only the run-ending cleanup still terminates every run.
-- **Progress re-arms the deadline** (Issue #2720): when the hard timeout
-  expires while the handler's own agent is still producing output (last tool
-  call or stdout chunk inside `progress_extension_stall_seconds`), the deadline
-  is re-armed by `progress_extension_grant_seconds` — the issue path's
+- **Progress re-arms the deadline** (Issue #2720): when the hard timeout expires
+  while the handler's own agent is still producing output (last tool call or
+  stdout chunk inside `progress_extension_stall_seconds`), the deadline is
+  re-armed by `progress_extension_grant_seconds` — the issue path's
   progress-extension policy and liveness rule, not a second one. An absolute
   ceiling bounds it: one default agent budget (`claude_timeout`, 3600s) from
   dispatch, never below the base hard timeout. A handler whose agent has
@@ -1206,9 +1213,9 @@ symptom — a `scan_cursor` frozen at Priority 1.8).
 `worker/deno/lib/run_core.ts` (`handlerHardTimeoutMs()` /
 `agentHandlerFloorMs()`). Tests: `tests/handler_watchdog_test.ts` (unit),
 `tests/run_core_watchdog_test.ts` (loop integration),
-`tests/agent_run_termination_test.ts` (agent-backed bounds and the agent
-floor) and `tests/handler_watchdog_scope_test.ts` (scoped termination, progress
-re-arm and ceiling).
+`tests/agent_run_termination_test.ts` (agent-backed bounds and the agent floor)
+and `tests/handler_watchdog_scope_test.ts` (scoped termination, progress re-arm
+and ceiling).
 
 ### Per-cycle stale-assignment recovery
 
@@ -1218,20 +1225,19 @@ rather than waiting for a worker restart.
 
 - **What runs per cycle.** `detectAssignedWithoutHeartbeat()` and
   `recoverStaleGithubAssignments()` (including the cross-account evidence rules
-  from) run via the `recoverStaleAssignments` dep, wired into the
-  main loop in `worker/deno/lib/run_core.ts` immediately **before** the priority
-  dispatch — so a just-freed issue is available to the same cycle's Priority 2
-  scan.
+  from) run via the `recoverStaleAssignments` dep, wired into the main loop in
+  `worker/deno/lib/run_core.ts` immediately **before** the priority dispatch —
+  so a just-freed issue is available to the same cycle's Priority 2 scan.
 - **No extra issue-list calls.** The scan reads through the iteration-scoped
-  `IssueCache` / `fetchAllIssues`: whichever of the recovery scan
-  and the Priority 2 scan runs first populates the shared `issues_all` cache and
-  the other reads through it, so a quiet cycle costs no extra issue-list API
-  call. Per-issue lookups (marker comments, PR linkage) run only for candidates
-  past the cheap `updatedAt` threshold pre-check.
+  `IssueCache` / `fetchAllIssues`: whichever of the recovery scan and the
+  Priority 2 scan runs first populates the shared `issues_all` cache and the
+  other reads through it, so a quiet cycle costs no extra issue-list API call.
+  Per-issue lookups (marker comments, PR linkage) run only for candidates past
+  the cheap `updatedAt` threshold pre-check.
 - **Best-effort, quiet no-op.** Any throw is caught and logged
   (`Stale-assignment recovery failed (continuing): <msg>`) and never aborts the
-  loop. A cycle that recovers nothing adds no extra log noise beyond the existing
-  `[recovery-decision]` telemetry.
+  loop. A cycle that recovers nothing adds no extra log noise beyond the
+  existing `[recovery-decision]` telemetry.
 - **Start-up preserved.** The start-up `recoverStuckIssues()` invocation is
   retained for local `.heartbeat_*` crash cleanup
   (`detectAndRecoverStuckHeartbeats`).
@@ -1268,69 +1274,71 @@ When a planning run creates **2+ sub-issues** and the parent issue has **no
 milestone of its own**, the worker auto-creates a GitHub milestone named
 `#<N> <short description>` (from the parent) and assigns every sub-issue it
 created to that milestone. Assigning the milestone opts the batch into the
-existing milestone-branch delivery workflow — sub-issue PRs auto-merge into
-a shared `milestone/<name>` branch and the default branch is only updated via the
+existing milestone-branch delivery workflow — sub-issue PRs auto-merge into a
+shared `milestone/<name>` branch and the default branch is only updated via the
 single final milestone PR.
 
 - **Always on, no opt-out.** A milestone can be detached manually if unwanted.
-- **Two gates.** Parent already has a milestone → keep the inheritance path
-  (no new milestone). Fewer than two sub-issues → no milestone.
-- **One milestone per file-area group (Issue #2175).** When the parent carries
-  a `## Milestones` table that the structural gate accepted (Issue #2172),
+- **Two gates.** Parent already has a milestone → keep the inheritance path (no
+  new milestone). Fewer than two sub-issues → no milestone.
+- **One milestone per file-area group (Issue #2175).** When the parent carries a
+  `## Milestones` table that the structural gate accepted (Issue #2172),
   `maybeCreatePlanningMilestone()` takes those groups and creates **one
-  milestone per group of two or more sub-issues** — `#<N> <area>: <short
-  description>` — assigning each sub-issue to its own group's milestone only.
-  A group of one sub-issue — or one whose `Milestone` cell is `—`, the table's
-  own way of saying "default branch" — gets no milestone and keeps the default
-  branch as its PR base. Why: a whole plan on one milestone branch serialises work that
-  touches unrelated file areas; splitting by area lets the fleet run the
-  streams in parallel without landing in merge hell. The four-milestone cap is
-  the gate's rule and is deliberately not re-implemented in the helper — one
-  rule, one place. With no groups the behaviour is unchanged: one milestone for
-  the plan.
+  milestone per group of two or more sub-issues** —
+  `#<N> <area>: <short
+  description>` — assigning each sub-issue to its own
+  group's milestone only. A group of one sub-issue — or one whose `Milestone`
+  cell is `—`, the table's own way of saying "default branch" — gets no
+  milestone and keeps the default branch as its PR base. Why: a whole plan on
+  one milestone branch serialises work that touches unrelated file areas;
+  splitting by area lets the fleet run the streams in parallel without landing
+  in merge hell. The four-milestone cap is the gate's rule and is deliberately
+  not re-implemented in the helper — one rule, one place. With no groups the
+  behaviour is unchanged: one milestone for the plan.
 - **Two rows on one file area share one milestone, and say so.** The gate
   permits file overlap between groups (planner judgement), but the sanitised
-  area *is* the milestone's identity — so two such rows resolve to one
-  milestone and one branch. That collision is warned about by area before any
-  API call rather than reported as two independent streams: a partial outcome
-  dressed as success is exactly what the fail-loud rule forbids.
+  area _is_ the milestone's identity — so two such rows resolve to one milestone
+  and one branch. That collision is warned about by area before any API call
+  rather than reported as two independent streams: a partial outcome dressed as
+  success is exactly what the fail-loud rule forbids.
 - **A group's identity is its marker, never a shared prefix.** A grouped
   milestone's marker carries the sanitised area
   (`<!-- planning-milestone parent="N" area="infra" -->`) and a grouped lookup
   stops at marker-then-exact-title. The legacy leading-`#<N>` match runs on the
   **ungrouped** path only and skips any description carrying an `area=` marker.
   Both restrictions exist for the same reason: every group's milestone of one
-  plan starts with the same `#<N>`, so a prefix match would let one group — or
-  a later ungrouped run — adopt a sibling's milestone and pile two streams of
-  work onto one branch.
+  plan starts with the same `#<N>`, so a prefix match would let one group — or a
+  later ungrouped run — adopt a sibling's milestone and pile two streams of work
+  onto one branch.
 - **Safe, short names (Issue #1690).** `buildPlanningMilestoneTitle()` is the
-  one helper that names a planning milestone. The title is `#<N> <short
-  description>`, at most `MAX_MILESTONE_TITLE_LENGTH` (60) characters
-  including the prefix, cut on a word boundary. The description is an
+  one helper that names a planning milestone. The title is
+  `#<N> <short
+  description>`, at most `MAX_MILESTONE_TITLE_LENGTH` (60)
+  characters including the prefix, cut on a word boundary. The description is an
   explicit short planning title when the caller has one, otherwise the parent
-  issue title reduced to an allowlist of letters, digits, spaces and
-  `- _ . , :` — quotes are dropped, and newlines, control characters, shell
-  metacharacters and glob characters all become spaces, so the title stays
-  workable in a terminal and in a `gh` search expression. Truncation cuts on
-  whole characters, so an astral-plane character is never split in half. The `#<N>` prefix is what makes it unambiguous: two
-  parents with near-identical titles cannot collide. Milestone #50 predates
-  this and copied a raw issue title verbatim
+  issue title reduced to an allowlist of letters, digits, spaces and `- _ . , :`
+  — quotes are dropped, and newlines, control characters, shell metacharacters
+  and glob characters all become spaces, so the title stays workable in a
+  terminal and in a `gh` search expression. Truncation cuts on whole characters,
+  so an astral-plane character is never split in half. The `#<N>` prefix is what
+  makes it unambiguous: two parents with near-identical titles cannot collide.
+  Milestone #50 predates this and copied a raw issue title verbatim
   (`#1653 The CLI now says "hit your session limit", which …`).
 - **Idempotent, and never renames.** An existing milestone is matched by the
-  structured `<!-- planning-milestone parent="N" -->` marker in its
-  description, then by exact title, then by a leading `#<N>` on the title — so
-  re-running planning on the same parent never duplicates it, a milestone
-  renamed in the UI is still found, and a legacy #50-style milestone is reused
-  **as it stands**. Nothing is renamed automatically: an in-flight milestone
-  branch is never disturbed, and sub-issues are assigned to the title the
-  milestone actually has.
-- **Native sub-issues are authoritative.** The sub-issue set is the
-  union of the parent's **native GitHub sub-issues** (the `sub_issues` API) and
-  the issue URLs text-extracted from Claude's output. Earlier the milestone
-  relied solely on text extraction, so when Claude printed the URLs in an
-  unexpected shape — or the run closed via a recovery path — the extracted set
-  fell below the two-sub-issue gate, no milestone was created, and the sub-issue
-  PRs targeted the default branch instead of the milestone feature branch. The
+  structured `<!-- planning-milestone parent="N" -->` marker in its description,
+  then by exact title, then by a leading `#<N>` on the title — so re-running
+  planning on the same parent never duplicates it, a milestone renamed in the UI
+  is still found, and a legacy #50-style milestone is reused **as it stands**.
+  Nothing is renamed automatically: an in-flight milestone branch is never
+  disturbed, and sub-issues are assigned to the title the milestone actually
+  has.
+- **Native sub-issues are authoritative.** The sub-issue set is the union of the
+  parent's **native GitHub sub-issues** (the `sub_issues` API) and the issue
+  URLs text-extracted from Claude's output. Earlier the milestone relied solely
+  on text extraction, so when Claude printed the URLs in an unexpected shape —
+  or the run closed via a recovery path — the extracted set fell below the
+  two-sub-issue gate, no milestone was created, and the sub-issue PRs targeted
+  the default branch instead of the milestone feature branch. The
   native-sub-issue fetch is best-effort: a fetch failure falls back to the
   text-extracted numbers.
 - **Best-effort.** Creation/assignment failures are logged and never abort
@@ -1343,8 +1351,8 @@ the groups from `runMilestoneGroupsGate()` in
 and `fetchNativeSubIssueNumbers()` in
 [`worker/deno/lib/native_sub_issues.ts`](worker/deno/lib/native_sub_issues.ts),
 called from the single `closePlanningIssue()` chokepoint in
-`worker/deno/lib/planning_processor.ts` (so every closure path — main, retry, and
-crash-recovery pre-checks — is covered). Tests:
+`worker/deno/lib/planning_processor.ts` (so every closure path — main, retry,
+and crash-recovery pre-checks — is covered). Tests:
 `tests/planning_milestone_test.ts`, `tests/native_sub_issues_test.ts`. See
 [`docs/workflows/planning-and-questions.md`](docs/workflows/planning-and-questions.md)
 → Auto-milestone for sub-issues.
@@ -1356,15 +1364,15 @@ Planning runs produce a stronger plan and surface silent model degradation.
 - **Two-stage self-critique.** A planning run is two sequential
   `phase: "planning"` Claude invocations: a **draft** turn (plan as text, no
   side effects) followed by a **critique → revise → execute** turn that embeds
-  the draft as a *sanitised* artefact (`sanitiseDelimiterPatterns`,), adversarially attacks it, revises once (single iteration, KISS), then
-  creates the sub-issues. The critique is never published; a draft failure or
-  empty draft falls back to the single-invocation flow, so the run is never
-  worse than before.
-- **Per-run stats.** Every planning run posts a model-usage block
-  on the parent issue — requested model, served model(s) (the per-response
-  `model` the API declares is the only observable source of truth,),
-  effort (verbatim, including `xhigh` from), token counts, turns, and
-  duration. Posting is non-fatal.
+  the draft as a _sanitised_ artefact (`sanitiseDelimiterPatterns`,),
+  adversarially attacks it, revises once (single iteration, KISS), then creates
+  the sub-issues. The critique is never published; a draft failure or empty
+  draft falls back to the single-invocation flow, so the run is never worse than
+  before.
+- **Per-run stats.** Every planning run posts a model-usage block on the parent
+  issue — requested model, served model(s) (the per-response `model` the API
+  declares is the only observable source of truth,), effort (verbatim, including
+  `xhigh` from), token counts, turns, and duration. Posting is non-fatal.
 - **Degradation verdict.** A run is degraded when any planning-phase response is
   served by a model failing a prefix/alias-aware match against the resolved
   planning model (the existing chain — env > `phase_model_overrides` > per-repo
@@ -1378,14 +1386,14 @@ Planning runs produce a stronger plan and surface silent model degradation.
   worker's "latest model of this tier" reference and the verdict names both the
   served and the current model. An operator who pinned an older generation is
   never flagged — they were served what they asked for.
-- **`degraded-model` label.** On a degraded run the worker applies
-  the non-reserved `degraded-model` label to the parent issue and every
-  sub-issue that run created. It is not in `RESERVED_LABELS`, so it survives
-  self-apply; the worker never removes it (a human clears it after triage).
-- **Grill-me extension.** The `grill_me` phase routes to the same
-  top tier as planning (Opus since #2560), so the stats/verdict helpers are phase-parametric
-  and grill-me reuses them — but applies `degraded-model` **on a degraded round**
-  only (a healthy interactive round is never labelled).
+- **`degraded-model` label.** On a degraded run the worker applies the
+  non-reserved `degraded-model` label to the parent issue and every sub-issue
+  that run created. It is not in `RESERVED_LABELS`, so it survives self-apply;
+  the worker never removes it (a human clears it after triage).
+- **Grill-me extension.** The `grill_me` phase routes to the same top tier as
+  planning (Opus since #2560), so the stats/verdict helpers are phase-parametric
+  and grill-me reuses them — but applies `degraded-model` **on a degraded
+  round** only (a healthy interactive round is never labelled).
 - **One stats comment per run.** Every run the worker completes on an issue
   reports what it cost — at PR-raise time for `work-on` (the merged PR closes
   the issue with no worker attached), and at the end of the round for the
@@ -1395,14 +1403,14 @@ Planning runs produce a stronger plan and surface silent model degradation.
   the second comment onward the block also carries the cumulative issue total.
   See
   [One cost/model stats comment per run](docs/MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run).
-- **Fable-unavailable auto-fallback + self-heal.** When Fable 5 is
-  globally unavailable (export-disabled / suspended / `403` / silently
-  substituted), the top-tier phases fall back to **Opus 4.8** for that run —
-  either via the in-run model-unavailable path (`detectModelUnavailable` →
-  `model_fallback.ts`) or the degraded served-model check — and are flagged with
-  the `degraded-model` label + stats comment. The substitution is **per-run**:
-  config keeps pointing at Fable, routing self-heals once Fable returns, and
-  there is no persistent "Fable down" switch. See
+- **Fable-unavailable auto-fallback + self-heal.** When Fable 5 is globally
+  unavailable (export-disabled / suspended / `403` / silently substituted), the
+  top-tier phases fall back to **Opus 4.8** for that run — either via the in-run
+  model-unavailable path (`detectModelUnavailable` → `model_fallback.ts`) or the
+  degraded served-model check — and are flagged with the `degraded-model`
+  label + stats comment. The substitution is **per-run**: config keeps pointing
+  at Fable, routing self-heals once Fable returns, and there is no persistent
+  "Fable down" switch. See
   [Fable-unavailable auto-fallback + self-heal](docs/MODEL-AND-CACHING.md#fable-unavailable-auto-fallback--self-heal).
 
 **Implementation:** `worker/deno/lib/planning_run_stats.ts` (stats + verdict),
@@ -1419,45 +1427,44 @@ container — a CI system, a toolchain for a language nobody here has thought
 about, a proprietary linter, a licensed analyser — **without forking this
 repository, and without any of it appearing in it**.
 
-That second half is the part that keeps being got wrong, so state it as a
-rule:
+That second half is the part that keeps being got wrong, so state it as a rule:
 
 > **Core provides extension points. It never records what is plugged into
 > them.**
 
-- **Any tool, language or vendor name in this repository is a defect.** Not
-  only in code — in prose, comments, examples, test fixtures, prompts and
+- **Any tool, language or vendor name in this repository is a defect.** Not only
+  in code — in prose, comments, examples, test fixtures, prompts and
   configuration keys too. If a sentence needs a real product name to be
   concrete, the sentence is wrong; write the mechanism instead.
 - **A list is the wrong shape by construction.** Enumerating what an operator
   might install cannot succeed: the next operator's tool is not on any list we
-  could write, and the moment one tool is named every other becomes
-  second-class and its owner has to send a pull request to be recognised.
-  There is no list of supported software here, and there is not meant to be
-  one. This applies to a denylist as forcefully as to an allowlist — a
-  denylist catches the tool somebody remembered, waves the next one through,
-  and writes the names into the tree while doing it.
+  could write, and the moment one tool is named every other becomes second-class
+  and its owner has to send a pull request to be recognised. There is no list of
+  supported software here, and there is not meant to be one. This applies to a
+  denylist as forcefully as to an allowlist — a denylist catches the tool
+  somebody remembered, waves the next one through, and writes the names into the
+  tree while doing it.
 - **The one exception is what this project itself runs on.** GitHub Actions is
-  named because it is *our* CI, not because it is an approved integration.
-  That is the whole of the exception, and it does not generalise.
+  named because it is _our_ CI, not because it is an approved integration. That
+  is the whole of the exception, and it does not generalise.
 - **A guard belongs on the property, not on the names.** Assert that core
   registers exactly the built-ins it ships, or that a surface bakes in no
-  artefact at all — assertions that are total over the tree and therefore
-  catch the vendor nobody anticipated
+  artefact at all — assertions that are total over the tree and therefore catch
+  the vendor nobody anticipated
   ([`ci_log_provider_core_only_test.ts`](worker/deno/tests/ci_log_provider_core_only_test.ts),
   [`private_extension_docs_test.ts`](worker/deno/tests/private_extension_docs_test.ts)).
 
 **The scar.** One deployment's CI integration arrived in the initial public
 export from the proving-ground tree, was documented in the CI-log extension
 point as "simply the first one" of several built-in providers, and then became
-structural when core started importing that module's fetch type — at which
-point the *generic* extension point could not compile without one particular
-vendor present. Every subsequent reader concluded, correctly from the code and
-wrongly about the intent, that it was core. It was invested in three separate
-times after it had already been scheduled for removal. None of those authors
-did anything unreasonable; the repository was telling them the wrong thing.
-Removing it took three commits, and only the first one — breaking the type
-dependency — was the actual fix.
+structural when core started importing that module's fetch type — at which point
+the _generic_ extension point could not compile without one particular vendor
+present. Every subsequent reader concluded, correctly from the code and wrongly
+about the intent, that it was core. It was invested in three separate times
+after it had already been scheduled for removal. None of those authors did
+anything unreasonable; the repository was telling them the wrong thing. Removing
+it took three commits, and only the first one — breaking the type dependency —
+was the actual fix.
 
 **The mechanism that makes this possible:**
 
@@ -1472,13 +1479,14 @@ dependency — was the actual fix.
   provider, rather than compiled in.
 - **[Private Extensions](docs/PRIVATE-EXTENSIONS.md)** — the procedure, end to
   end, and the honest record of what cannot be done yet.
-- **The extension points are additive-only.** Core updates itself on every
-  host within the hour; an operator's extension is reinstalled by a human, one
-  host at a time. A field removed or repurposed in an interface an extension
-  reads takes out the whole fleet until every host is touched, so the
-  interfaces only ever gain — see
+- **The extension points are additive-only.** Core updates itself on every host
+  within the hour; an operator's extension is reinstalled by a human, one host
+  at a time. A field removed or repurposed in an interface an extension reads
+  takes out the whole fleet until every host is touched, so the interfaces only
+  ever gain — see
   [Coding Standards](CODING-STANDARDS.md#a-contract-a-deployed-extension-reads-is-additive-only)
-  and the [callback contract's versioning rule](docs/CALLBACKS.md#versioning--the-contract-is-additive).
+  and the
+  [callback contract's versioning rule](docs/CALLBACKS.md#versioning--the-contract-is-additive).
 
 **Rationale:** the alternative is a repository that slowly accumulates one
 deployment's toolchain under the guise of examples, and an operator whose tool
@@ -1493,13 +1501,13 @@ attack/steering surface that would otherwise need its own protection. **Per-repo
 configuration lives operator-side only**, in `.config.json` `repo_config`, which
 already supports every field and takes precedence.
 
-The in-repo `.vibecoder.json` mechanism was removed: it let a
-cloned target repo self-declare `quality_command` (an arbitrary command the
-worker executes), `custom_instructions` (a prompt-injection channel into every
-Claude run), and the `skip_*` gate-weakening flags. The worker inherently
-executes repo code (quality scripts, tests), so this is defence-in-depth rather
-than a complete fix — but removing a gratuitous config surface when an
-operator-side equivalent already exists is the right default.
+The in-repo `.vibecoder.json` mechanism was removed: it let a cloned target repo
+self-declare `quality_command` (an arbitrary command the worker executes),
+`custom_instructions` (a prompt-injection channel into every Claude run), and
+the `skip_*` gate-weakening flags. The worker inherently executes repo code
+(quality scripts, tests), so this is defence-in-depth rather than a complete fix
+— but removing a gratuitous config surface when an operator-side equivalent
+already exists is the right default.
 
 - **No code path reads `.vibecoder.json`.** A leftover file at a repo root is
   ignored; `issue_worker.ts` logs one informative warning naming the
@@ -1520,14 +1528,15 @@ fleet-wide allowlist, unless the target repository's own tracked `.gitignore`
 already re-allows it (Issue #3296; secret patterns stay forbidden regardless).
 
 **Canonical allowlist** (the fleet-wide hidden paths that may always be
-tracked): `.gitignore`, `.gitattributes`, `.github/`, `.markdownlint-cli2.jsonc`.
+tracked): `.gitignore`, `.gitattributes`, `.github/`,
+`.markdownlint-cli2.jsonc`.
 
 **Canonical `.gitattributes` block.** Alongside the `.gitignore` block, the same
-enforcer writes a canonical `.gitattributes` block that pins line
-endings (LF for `*.sh`, `*.bash`, `*.py`, `*.yaml`, `*.yml`, `*.json`; CRLF for
-`*.bat` and `*.cmd`) and marks common binary assets (`*.png`, `*.pdf`, `*.zip`,
-fonts, etc.) so git never attempts line-ending conversion on them. The block is
-appended under a marker comment so any pre-existing repo-specific attributes are
+enforcer writes a canonical `.gitattributes` block that pins line endings (LF
+for `*.sh`, `*.bash`, `*.py`, `*.yaml`, `*.yml`, `*.json`; CRLF for `*.bat` and
+`*.cmd`) and marks common binary assets (`*.png`, `*.pdf`, `*.zip`, fonts, etc.)
+so git never attempts line-ending conversion on them. The block is appended
+under a marker comment so any pre-existing repo-specific attributes are
 preserved (merge, never clobber). The full pattern set lives in
 [`worker/deno/lib/gitignore_enforcer.ts`](worker/deno/lib/gitignore_enforcer.ts).
 
@@ -1537,22 +1546,21 @@ preserved (merge, never clobber). The full pattern set lives in
    (`prompts/coding_guidelines/`) instructs Claude to refuse to stage hidden
    files outside the allowlist and forbids `git add -f` to bypass `.gitignore`.
 2. **`.gitignore` + `.gitattributes` enforcer** —
-   `worker/deno/lib/gitignore_enforcer.ts` is the source
-   of truth for both canonical pattern sets. `setup.sh` runs `gitignore-sync`
-   once at setup time, walking every monitored repo cloned
-   under `WORK_DIR` and applying both the `.gitignore` block (via
-   `ensureGitignorePatterns()`) and the `.gitattributes` block (via
-   `ensureGitattributesPatterns()`). The per-iteration `setupRepo()` no longer
-   applies the patterns — running them on every clone/update was redundant (the
-   immediately-prior `git reset --hard
-   origin/<default>` wiped any
-   uncommitted patterns) and produced a noisy `[setup-repo] gitignore: ...` log
-   line each iteration. File changes ride along in the next normal worker PR for
-   the repo — no dedicated commit machinery, no findings issue.
-3. **Pre-commit gate** — blocks any commit that stages a forbidden
-   hidden path. It also accepts a hidden path outside the allowlist when the
-   target repository's own tracked, unmodified `.gitignore` re-allows it
-   (Issue #3296); the forbidden secret patterns stay refused regardless. See
+   `worker/deno/lib/gitignore_enforcer.ts` is the source of truth for both
+   canonical pattern sets. `setup.sh` runs `gitignore-sync` once at setup time,
+   walking every monitored repo cloned under `WORK_DIR` and applying both the
+   `.gitignore` block (via `ensureGitignorePatterns()`) and the `.gitattributes`
+   block (via `ensureGitattributesPatterns()`). The per-iteration `setupRepo()`
+   no longer applies the patterns — running them on every clone/update was
+   redundant (the immediately-prior `git reset --hard
+   origin/<default>` wiped
+   any uncommitted patterns) and produced a noisy `[setup-repo] gitignore: ...`
+   log line each iteration. File changes ride along in the next normal worker PR
+   for the repo — no dedicated commit machinery, no findings issue.
+3. **Pre-commit gate** — blocks any commit that stages a forbidden hidden path.
+   It also accepts a hidden path outside the allowlist when the target
+   repository's own tracked, unmodified `.gitignore` re-allows it (Issue #3296);
+   the forbidden secret patterns stay refused regardless. See
    [SECURITY.md](SECURITY.md) for the full rule.
 
 Bypassing any safeguard (`git commit --no-verify`, `git add -f`) is forbidden.
@@ -1562,20 +1570,21 @@ during normal work.
 
 ### Internal `stSoftwareAU/*` dependency fixes — fix the root cause cross-repo
 
-When a root cause lives in a **dependency** rather than the repo being worked on,
-the default is decided by the existing internal/external classification (a
+When a root cause lives in a **dependency** rather than the repo being worked
+on, the default is decided by the existing internal/external classification (a
 dependency whose source repo is under `stSoftwareAU/*` is **internal**;
-everything else is **external**), extended from *bumping* deps to *fixing their
-root causes*. This narrows the blanket escape hatch that previously let the
+everything else is **external**), extended from _bumping_ deps to _fixing their
+root causes_. This narrows the blanket escape hatch that previously let the
 worker defer internal-dependency fixes by filing follow-up issues.
 
 - **Internal `stSoftwareAU/*` dependency the worker can access → fix it
   cross-repo, in the same run.** Raise a PR in the dependency's own repo **and**
-  bring that fix into the consuming repo — no follow-up issue for the fix itself.
-  "Can access" means a reachable `stSoftwareAU/*` repo the worker can clone and
-  open a PR against; if unreachable, treat it as external (defer is then
-  legitimate). The rule is general to every internal dependency and **recurses to
-  transitive internal deps** — fix wherever the root cause actually lives.
+  bring that fix into the consuming repo — no follow-up issue for the fix
+  itself. "Can access" means a reachable `stSoftwareAU/*` repo the worker can
+  clone and open a PR against; if unreachable, treat it as external (defer is
+  then legitimate). The rule is general to every internal dependency and
+  **recurses to transitive internal deps** — fix wherever the root cause
+  actually lives.
 - **External (non-`stSoftwareAU/*`) dependency → work around it in the repo
   being worked on** — pin the last good version, replace the package, or vendor
   and patch it — and record the upstream defect in the PR summary. A cross-repo
@@ -1584,21 +1593,21 @@ worker defer internal-dependency fixes by filing follow-up issues.
   (Issue #4304).
 
 The behaviour lives in the `prompts/coding_guidelines/` internal-dependency
-section. The actual cross-repo PR plumbing, the one-follow-up
-dedup cap, and the release-gating boundary are sibling issues under parent.
+section. The actual cross-repo PR plumbing, the one-follow-up dedup cap, and the
+release-gating boundary are sibling issues under parent.
 
 ### Escape hatch for out-of-scope work
 
-The escape hatch was a hand-off: a run that judged its task out of scope
-filed a follow-up issue, posted one message naming it (mentioning
-`needs-human` if a person should triage) and exited. The shared
-`prompts/coding_guidelines/` and `prompts/pr_feedback/` no longer offer it
-(Issue #4304): the owner's rule (25 October 2026) is that the Vibe Coder never
-passes work back to a person and files no follow-up issues for leftover work.
-A PR-feedback run decides a product choice itself with the assumption stated,
-or rebuts a request with reasons; the issue run lost its hatch earlier
-(Issue #4227). The worker-side detection below stays as a defence, because a
-model can still write a hand-off message and file the issue it names.
+The escape hatch was a hand-off: a run that judged its task out of scope filed a
+follow-up issue, posted one message naming it (mentioning `needs-human` if a
+person should triage) and exited. The shared `prompts/coding_guidelines/` and
+`prompts/pr_feedback/` no longer offer it (Issue #4304): the owner's rule (25
+October 2026) is that the Vibe Coder never passes work back to a person and
+files no follow-up issues for leftover work. A PR-feedback run decides a product
+choice itself with the assumption stated, or rebuts a request with reasons; the
+issue run lost its hatch earlier (Issue #4227). The worker-side detection below
+stays as a defence, because a model can still write a hand-off message and file
+the issue it names.
 
 **Worker-side detection.** `worker/deno/lib/escape_hatch.ts` provides
 `detectEscapeHatch()`, which inspects the message body for a same-repo issue
@@ -1607,8 +1616,8 @@ issue`,
 `escape hatch`, etc.). When the escape hatch is detected,
 `pr_feedback_processor.ts` treats the run as a successful resolution: it posts
 Claude's own message as the PR reply (rather than the neutral "could not
-identify a code change" fallback), records the follow-up issue reference in
-the run summary log, and returns a summary of the form
+identify a code change" fallback), records the follow-up issue reference in the
+run summary log, and returns a summary of the form
 `PR #N feedback handed off via escape
 hatch (org/repo#NNN)`.
 
@@ -1616,50 +1625,49 @@ The relief valve only fires when both signals (issue link + follow-up wording)
 are present, so an incidental issue mention in a normal fix reply will not
 trigger it.
 
-**The hand-off needs an unforgeable signal, not just prose.** Both
-detection signals are model-authored text, and any actor whose content reaches
-the PR-feedback prompt can steer that text — so "tracked separately in #N",
-naming a real pre-existing issue, used to be accepted as a resolution.
+**The hand-off needs an unforgeable signal, not just prose.** Both detection
+signals are model-authored text, and any actor whose content reaches the
+PR-feedback prompt can steer that text — so "tracked separately in #N", naming a
+real pre-existing issue, used to be accepted as a resolution.
 `verifyFollowUpIssueExists()` (`worker/deno/lib/escape_hatch_verify.ts`) now
 requires GitHub's own record of the follow-up: it must **exist** and its
-**author** must be the worker's own login, a fleet sibling
-(`fleet_pr_authors`), or a trusted human (the derived collaborator set, or
-`authorized_commenters`) — the set resolved by
-`resolveTrustedFollowUpAuthors()` (`escape_hatch_trusted_authors.ts`). An issue
-filed by anyone else is rejected at ERROR and the run falls through to the
-ordinary reply path, so genuinely unresolved feedback still escalates. With no
-allowlist resolvable the gate fails **closed**: it cannot be applied, so the
-hand-off is not accepted. The one deliberate asymmetry survives — an
-inconclusive lookup (timeout, 5xx) still accepts, because turning a transient
-API error into a rejection would restore the retry loop the hatch exists to
-prevent. The same issue closed the upstream half: a `CHANGES_REQUESTED` review
-body is only fed into the feedback prompt when its author passes the
-`authorized_commenters` check that PR comments already applied.
+**author** must be the worker's own login, a fleet sibling (`fleet_pr_authors`),
+or a trusted human (the derived collaborator set, or `authorized_commenters`) —
+the set resolved by `resolveTrustedFollowUpAuthors()`
+(`escape_hatch_trusted_authors.ts`). An issue filed by anyone else is rejected
+at ERROR and the run falls through to the ordinary reply path, so genuinely
+unresolved feedback still escalates. With no allowlist resolvable the gate fails
+**closed**: it cannot be applied, so the hand-off is not accepted. The one
+deliberate asymmetry survives — an inconclusive lookup (timeout, 5xx) still
+accepts, because turning a transient API error into a rejection would restore
+the retry loop the hatch exists to prevent. The same issue closed the upstream
+half: a `CHANGES_REQUESTED` review body is only fed into the feedback prompt
+when its author passes the `authorized_commenters` check that PR comments
+already applied.
 
-**Reserved-label strip on the follow-up.** Claude builds the
-follow-up `gh issue create` itself, so the worker never gets to filter labels
-*before* creation. When the hatch is detected with a follow-up `issueRef`,
+**Reserved-label strip on the follow-up.** Claude builds the follow-up
+`gh issue create` itself, so the worker never gets to filter labels _before_
+creation. When the hatch is detected with a follow-up `issueRef`,
 `stripReservedLabelsFromFollowUp()`
-(`worker/deno/lib/escape_hatch_label_strip.ts`) parses the ref (same-repo
-`#NNN` or cross-repo `owner/repo#NNN`) and removes any `RESERVED_LABELS` member
-from that follow-up via the shared `stripReservedLabelsFromIssues` helper
- — one WARNING per removal, descriptive labels (`bug`,
-`enhancement`, …) preserved. The deliberate `escalateToHuman` add of
-`needs-human` to an *existing* issue is a separate,
-post-creation path on a different issue and is untouched.
+(`worker/deno/lib/escape_hatch_label_strip.ts`) parses the ref (same-repo `#NNN`
+or cross-repo `owner/repo#NNN`) and removes any `RESERVED_LABELS` member from
+that follow-up via the shared `stripReservedLabelsFromIssues` helper — one
+WARNING per removal, descriptive labels (`bug`, `enhancement`, …) preserved. The
+deliberate `escalateToHuman` add of `needs-human` to an _existing_ issue is a
+separate, post-creation path on a different issue and is untouched.
 
-**Every hand-off path runs the strip.** The hatch is offered to
-PR feedback, CI fix *and* issue work, but only `pr_feedback_processor.ts` called
-the strip, so the two paths that also drive `gh issue create` had no post-hoc
-guard. `stripReservedLabelsFromModelFollowUp()` is the message-level entry point
-the other two use: it runs `detectEscapeHatch` over Claude's own text
+**Every hand-off path runs the strip.** The hatch is offered to PR feedback, CI
+fix _and_ issue work, but only `pr_feedback_processor.ts` called the strip, so
+the two paths that also drive `gh issue create` had no post-hoc guard.
+`stripReservedLabelsFromModelFollowUp()` is the message-level entry point the
+other two use: it runs `detectEscapeHatch` over Claude's own text
 (`.pr_response_message` for CI fix, the run output for issue work) and then
-performs the same strip. A reference to the issue/PR the run is *working on* is
+performs the same strip. A reference to the issue/PR the run is _working on_ is
 a self-reference, not a follow-up, and is never stripped — the guard must not
 remove a human-applied `work-on` from live work.
 
-**A failed strip is loud, not a log line.** The strip still never
-throws — a hand-off is never turned into a failure — but it returns a
+**A failed strip is loud, not a log line.** The strip still never throws — a
+hand-off is never turned into a failure — but it returns a
 `Result<ReservedLabelStripSummary, ReservedLabelStripError>` instead of `void`.
 A failed removal is retried once (the strip re-reads labels each attempt, so it
 is idempotent) and, if it still fails, comes back as `ok: false` carrying the
@@ -1668,21 +1676,21 @@ exactly the state the guard exists to prevent, so it must never be reported as a
 clean run. A skip on the monitored-repo allowlist is a deliberate refusal, not a
 failure, and stays `ok`.
 
-**A reference that does not exist is validated, not retried.** The
-follow-up *number* is model-authored too, so it can name an issue that was
-never filed: a hand-off on NEAT-AI-Lamarck#187 named `#3952` — a number from
-another repo's series — and the worker took it at face value, spending two `gh`
-round-trips, a retry and an ERROR on an issue that cannot exist, while the real
-outcome (no follow-up was filed) was never stated. The label read that already
-precedes every mutation is the validation: when GitHub definitively reports the
-issue as absent — `isDefinitiveNotFound()`
-(`worker/deno/lib/github_not_found.ts`), which also recognises the GraphQL
-`Could not resolve to an issue or pull request` wording that carries neither
-"not found" nor "404" — the ref is recorded in `summary.unresolved` after **one
-WARNING** and is neither retried nor reported as a failure. The issue-work path
-turns it into a claim-release note via `describeUnresolvedFollowUp()`, so the
-release comment says `follow-up reference #3952 not found in this repo` and the
-agent's mistake is visible off the host's log.
+**A reference that does not exist is validated, not retried.** The follow-up
+_number_ is model-authored too, so it can name an issue that was never filed: a
+hand-off on NEAT-AI-Lamarck#187 named `#3952` — a number from another repo's
+series — and the worker took it at face value, spending two `gh` round-trips, a
+retry and an ERROR on an issue that cannot exist, while the real outcome (no
+follow-up was filed) was never stated. The label read that already precedes
+every mutation is the validation: when GitHub definitively reports the issue as
+absent — `isDefinitiveNotFound()` (`worker/deno/lib/github_not_found.ts`), which
+also recognises the GraphQL `Could not resolve to an issue or pull request`
+wording that carries neither "not found" nor "404" — the ref is recorded in
+`summary.unresolved` after **one WARNING** and is neither retried nor reported
+as a failure. The issue-work path turns it into a claim-release note via
+`describeUnresolvedFollowUp()`, so the release comment says
+`follow-up reference #3952 not found in this repo` and the agent's mistake is
+visible off the host's log.
 
 ```mermaid
 flowchart TD
@@ -1709,45 +1717,46 @@ repos via the idle-task framework:
 1. **Idle trigger** — after a scan cycle ends with no claimable work across
    every monitored repo, `run_core.ts` invokes the `maybe-file-idle-task` Deno
    command. The command takes a **per-repo wrapper census**
-   (`findOpenIdleTaskWrappers`): every monitored repo that already holds an
-   open `idle-task`-labelled issue is **subtracted from the candidate set**
-   rather than short-circuiting the whole run. The concurrency rule is one
-   issue in flight *per work stream*, which for idle work reads "at most one
-   open wrapper **per repository**" — not one across the fleet (Issue #1083).
-   Each exclusion is logged (`action=skipped reason=existing_wrapper_open
-   scope=repo`) naming the repo and the issue that held it: a slot that
-   declines to file must say so, because a silent refusal is how a fleet-wide
-   cap of one went unnoticed for a week. The census fails closed (Issue
-   #2750): a repo whose lookup fails is unknown, never clean, so it is
-   subtracted too (`reason=lookup_failed`), and a census that throws files
-   nothing that tick.
+   (`findOpenIdleTaskWrappers`): every monitored repo that already holds an open
+   `idle-task`-labelled issue is **subtracted from the candidate set** rather
+   than short-circuiting the whole run. The concurrency rule is one issue in
+   flight _per work stream_, which for idle work reads "at most one open wrapper
+   **per repository**" — not one across the fleet (Issue #1083). Each exclusion
+   is logged (`action=skipped reason=existing_wrapper_open
+   scope=repo`)
+   naming the repo and the issue that held it: a slot that declines to file must
+   say so, because a silent refusal is how a fleet-wide cap of one went
+   unnoticed for a week. The census fails closed (Issue #2750): a repo whose
+   lookup fails is unknown, never clean, so it is subtracted too
+   (`reason=lookup_failed`), and a census that throws files nothing that tick.
 
    Filing is then gated on **capacity rather than existence**. The command
    counts the monitored repos holding startable
-   `top-priority`/`work-on`/`low-priority` work and suppresses filing only
-   when `startable_repos >= idle_slots`, where `idle_slots` is the fleet's
-   idle capacity read from the `slot_idle_accounting` ledger rather than a
-   constant. A startable issue occupies one slot, not eight. This is **F8**
-   and **F9** in
+   `top-priority`/`work-on`/`low-priority` work and suppresses filing only when
+   `startable_repos >= idle_slots`, where `idle_slots` is the fleet's idle
+   capacity read from the `slot_idle_accounting` ledger rather than a constant.
+   A startable issue occupies one slot, not eight. This is **F8** and **F9** in
    [Every slot busy, always](#every-slot-busy-always--the-fleet-throughput-invariant)
    made operational.
 
-   From the surviving candidates the command shuffles the list, picks the
-   first repo that is still clean (the per-repo dedup loop stays as
-   defence-in-depth against TOCTOU races between the census and the file), and
-   files **one** `idle-task` issue per invocation, tagged with the
-   `security-scan` template — so the next tick re-decides from fresh state
-   instead of scattering wrappers across the fleet in a single pass.
+   From the surviving candidates the command shuffles the list, picks the first
+   repo that is still clean (the per-repo dedup loop stays as defence-in-depth
+   against TOCTOU races between the census and the file), and files **one**
+   `idle-task` issue per invocation, tagged with the `security-scan` template —
+   so the next tick re-decides from fresh state instead of scattering wrappers
+   across the fleet in a single pass.
 
-   The next iteration of the main loop claims that issue through the standard priority
-   dispatch and routes it to `securityScanTemplate.runTask()`, which runs the
-   scanner and files findings. Any failure inside the run is caught, logged as
-   `Idle-task filer failed (continuing): <msg>`, and never aborts the main loop.
+   The next iteration of the main loop claims that issue through the standard
+   priority dispatch and routes it to `securityScanTemplate.runTask()`, which
+   runs the scanner and files findings. Any failure inside the run is caught,
+   logged as `Idle-task filer failed (continuing): <msg>`, and never aborts the
+   main loop.
 
    The idle-task framework retired the previous in-process
-   `maybe-run-security-scan` trigger and the three host state files (`security_scan_idle.json`,
-   `security-scan-state.json`, `security_scan.lock`) it required — the atomic
-   claim on the filed `idle-task` issue serialises the scan across workers.
+   `maybe-run-security-scan` trigger and the three host state files
+   (`security_scan_idle.json`, `security-scan-state.json`, `security_scan.lock`)
+   it required — the atomic claim on the filed `idle-task` issue serialises the
+   scan across workers.
 
 **Worker label policy still applies.** Filed finding issues carry the `security`
 label **only**. The worker is not authorised to apply any workflow label
@@ -1756,14 +1765,14 @@ such label added by the worker on the next scan, so the developer toggles the
 next-phase label manually after triage. The one exception is the audited
 `work-on` → `planning` hand-off of an oversized issue, which does not apply to
 filed findings ([SECURITY.md §5g](SECURITY.md), Issue #2688). See
-[Supported Labels in README.md](README.md#%EF%B8%8F-supported-labels) for the full
-list.
+[Supported Labels in README.md](README.md#%EF%B8%8F-supported-labels) for the
+full list.
 
 **No milestone, no PR.** The `security-scan` template sets `skipMilestone: true`
-, so the wrapper idle-task issue is filed as a standalone issue —
-not under `idle-task: security-scan`. A security scan **never raises a pull
-request**: each finding is filed as its own GitHub issue, the wrapper is closed
-with a summary comment, and nothing else. See
+, so the wrapper idle-task issue is filed as a standalone issue — not under
+`idle-task: security-scan`. A security scan **never raises a pull request**:
+each finding is filed as its own GitHub issue, the wrapper is closed with a
+summary comment, and nothing else. See
 [`docs/IDLE-TASK-FRAMEWORK.md` → Skipping the per-template milestone](docs/IDLE-TASK-FRAMEWORK.md#skipping-the-per-template-milestone)
 and [`docs/SECURITY-SCAN.md` → No PR, ever](docs/SECURITY-SCAN.md#no-pr-ever).
 
@@ -1789,15 +1798,14 @@ re-filing it. The full grammar lives in
 `eslint-disable-next-line`, and `security-scan-ignore` markers across
 TypeScript, JavaScript, Python, Go, Rust, Java, Ruby, and shell.
 
-**Every suppression is attributed, explained, and time-boxed.** All three
-fields are mandatory: `author=<github-login>`, `expires=<YYYY-MM-DD>`, and free
-reason text. A marker missing any of them — or carrying a malformed or past
-expiry, or naming an author outside a configured allowlist — still parses and
-is still reported, but **never suppresses**: the finding stays visible rather
-than being silently waived forever. Every marker seen during a run is listed in
-that run's scan report (`Active suppressions (N): …` /
-`Rejected suppressions (N): …`), so a live waiver is visible in the report and
-not only in the source it silences.
+**Every suppression is attributed, explained, and time-boxed.** All three fields
+are mandatory: `author=<github-login>`, `expires=<YYYY-MM-DD>`, and free reason
+text. A marker missing any of them — or carrying a malformed or past expiry, or
+naming an author outside a configured allowlist — still parses and is still
+reported, but **never suppresses**: the finding stays visible rather than being
+silently waived forever. Every marker seen during a run is listed in that run's
+scan report (`Active suppressions (N): …` / `Rejected suppressions (N): …`), so
+a live waiver is visible in the report and not only in the source it silences.
 
 See [`docs/SECURITY-SCAN.md`](docs/SECURITY-SCAN.md) for the operator manual
 (state files, finding-issue layout, overflow rollover, vulnerability taxonomy,
@@ -1810,9 +1818,9 @@ selected an idle target repo, the idle-task filer picks uniformly at random
 between the registered templates, so every template shares the same trigger
 pipeline and the same per-repo dedup and cooldown gates. The authoritative
 enumeration — and the size of the uniform draw — lives in
-[Idle-task framework](#idle-task-framework); it is deliberately not
-repeated here, so registering a nineteenth template updates one passage rather
-than two that can drift apart.
+[Idle-task framework](#idle-task-framework); it is deliberately not repeated
+here, so registering a nineteenth template updates one passage rather than two
+that can drift apart.
 
 **Bucket-scoped, LLM-only review.** A single run targets one bucket — one of
 `rust`, `typescript`, `react`, `java`, `html`, `aws-cloudformation`,
@@ -1823,36 +1831,35 @@ supported languages, with the two language-agnostic buckets — `general` (repo
 hygiene) and `design` (the named design smells from _Refactoring_ ch. 3, each
 reported as a judgement call) — competing at a weight equal to the dominant
 language. Because neither names a language, a repo whose languages have no
-bucket of their own still receives design feedback. The wrapper body inlines
-the latest `prompts/best_practices/` template
-(from v3 onward) and the matching `prompts/best_practices/buckets/<bucket>.md`
-so the prompt is self-contained (human-style wrappers — no hidden
-marker).
+bucket of their own still receives design feedback. The wrapper body inlines the
+latest `prompts/best_practices/` template (from v3 onward) and the matching
+`prompts/best_practices/buckets/<bucket>.md` so the prompt is self-contained
+(human-style wrappers — no hidden marker).
 
 **Cross-bucket check classes (from v3 onward).** The orchestrating prompt names
 three cross-bucket concerns once; the per-language detections live in the bucket
 guides:
 
-- **Supply-chain hardening** — pin-to-immutable, install-time hardening,
-  dep quarantine, anomalous-publish detection, workflow scope minimisation.
-  Carried by `typescript`, `rust`, `java`, `react`, `github-actions`,
+- **Supply-chain hardening** — pin-to-immutable, install-time hardening, dep
+  quarantine, anomalous-publish detection, workflow scope minimisation. Carried
+  by `typescript`, `rust`, `java`, `react`, `github-actions`,
   `aws-cloudformation`, and `terraform` bucket guides.
 - **Dead dependencies** — declared deps with no source-import reference.
   Static-evidence only (manifest cite + import-grep cite — no `cargo`, `npm`,
   `mvn`, `gradle` invocation), clamped to `severity:low`/`medium`. Carried by
   `typescript`, `rust`, and `java` bucket guides.
-- **Deprecated config on framework bump** — config fields that became
-  no-ops after a framework bump (TypeScript, Next.js, React, Spring Boot,
-  Gradle, Maven). Static-evidence only (no `tsc`, `next
-  build`,
-  `gradle wrapper`), filed at `severity:medium`. Carried by `typescript`,
-  `react`, and `java` bucket guides.
+- **Deprecated config on framework bump** — config fields that became no-ops
+  after a framework bump (TypeScript, Next.js, React, Spring Boot, Gradle,
+  Maven). Static-evidence only (no `tsc`, `next
+  build`, `gradle wrapper`),
+  filed at `severity:medium`. Carried by `typescript`, `react`, and `java`
+  bucket guides.
 
 **CI-gate configuration check (linter + compile).** For language-targeted runs
 (bucket != `general`), the template inspects `.github/workflows/*.yml` for the
 standard linter invocation (Clippy, ESLint, Checkstyle, htmlhint, actionlint,
-cfn-lint + Checkov, tflint) AND — for the four buckets where it is meaningful (`rust`,
-`typescript`, `react`, `java`) — the standard compile/syntax gate
+cfn-lint + Checkov, tflint) AND — for the four buckets where it is meaningful
+(`rust`, `typescript`, `react`, `java`) — the standard compile/syntax gate
 (`cargo
 check`/`cargo build`, `deno check`/`tsc --noEmit`,
 `mvn compile`/`gradle
@@ -1862,31 +1869,30 @@ template files a `severity:high` finding with stable id `BP-LINTER-<bucket>`
 whose title and body name which gate (linter, compile, or both) is missing; that
 pre-filed finding counts against the 6-issue cap. The check is a configuration
 audit — **no linter or compiler is actually invoked**. The compile half was
-added in (extending) after a Deno syntax error reached `main` in a
-monitored repo because no `deno check` ran in CI.
+added in (extending) after a Deno syntax error reached `main` in a monitored
+repo because no `deno check` ran in CI.
 
-**AWS emulator in CI.** A second deterministic pre-filer runs on
-**every** best-practices scan, whatever bucket the draw picked, before
-Claude runs. `checkAwsEmulatorInCI()` detects AWS usage from dependency
-manifests, CloudFormation templates, or `.tf` files, and checks
-whether any GitHub Actions workflow runs an emulator: the `floci/floci`
-image as a service container, job container, `docker://` step, or
-`docker run` step, or the official AWS Emulator: a `run:` step in command
-position that runs a repository test through `aws-emulator-run`
-(`[--ready-timeout N] [--timeout N] -- COMMAND` with a COMMAND that is not a
-no-op such as `true` or `:`), directly or through a repository script that
-itself does so (one level deep). The helper's `--smoke` self-check,
-`--smoke-client` and `--help` run no repository test, so they do not count. Merely installing the pinned
-`container/toolchains/aws-emulator.sh` is not coverage. A repo that uses AWS
-without either emulator wired
-into CI, and without a valid `best-practice-ignore: BP-AWS-EMULATOR-MISSING`
-waiver, gets one `severity:medium` finding with the fixed id
-`BP-AWS-EMULATOR-MISSING`, deduplicated through the same
-`fileFindingOnce` mechanism as `BP-LINTER-<bucket>` and added to the
-known-open list passed to Claude. No finding is filed when the repo
-does not use AWS, when no workflow loaded (status unknown — the same
-fail-safe as the zero-workflows rule), or when Floci already runs in
-CI. See [docs/BEST-PRACTICES-SCAN.md → AWS emulator in CI](docs/BEST-PRACTICES-SCAN.md#aws-emulator-in-ci-bp-aws-emulator-missing)
+**AWS emulator in CI.** A second deterministic pre-filer runs on **every**
+best-practices scan, whatever bucket the draw picked, before Claude runs.
+`checkAwsEmulatorInCI()` detects AWS usage from dependency manifests,
+CloudFormation templates, or `.tf` files, and checks whether any GitHub Actions
+workflow runs an emulator: the `floci/floci` image as a service container, job
+container, `docker://` step, or `docker run` step, or the official AWS Emulator:
+a `run:` step in command position that runs a repository test through
+`aws-emulator-run` (`[--ready-timeout N] [--timeout N] -- COMMAND` with a
+COMMAND that is not a no-op such as `true` or `:`), directly or through a
+repository script that itself does so (one level deep). The helper's `--smoke`
+self-check, `--smoke-client` and `--help` run no repository test, so they do not
+count. Merely installing the pinned `container/toolchains/aws-emulator.sh` is
+not coverage. A repo that uses AWS without either emulator wired into CI, and
+without a valid `best-practice-ignore: BP-AWS-EMULATOR-MISSING` waiver, gets one
+`severity:medium` finding with the fixed id `BP-AWS-EMULATOR-MISSING`,
+deduplicated through the same `fileFindingOnce` mechanism as
+`BP-LINTER-<bucket>` and added to the known-open list passed to Claude. No
+finding is filed when the repo does not use AWS, when no workflow loaded (status
+unknown — the same fail-safe as the zero-workflows rule), or when Floci already
+runs in CI. See
+[docs/BEST-PRACTICES-SCAN.md → AWS emulator in CI](docs/BEST-PRACTICES-SCAN.md#aws-emulator-in-ci-bp-aws-emulator-missing)
 for the full trigger table, waiver syntax, and suggested-fix contract.
 
 **Cap and priority order.** A single run files at most six standalone findings,
@@ -1914,9 +1920,9 @@ language's existing ignore comment with the finding ID and a short reason, e.g.:
 ```
 
 The grammar lives in `worker/deno/lib/suppression_comments.ts` and matches the
-`security-scan-ignore` shape (family). Suppressed ids are
-pre-substituted into the `{{SUPPRESSED_IDS}}` placeholder, so the LLM drops the
-finding in Phase 3 triage on the next run.
+`security-scan-ignore` shape (family). Suppressed ids are pre-substituted into
+the `{{SUPPRESSED_IDS}}` placeholder, so the LLM drops the finding in Phase 3
+triage on the next run.
 
 See [`docs/BEST-PRACTICES-SCAN.md`](docs/BEST-PRACTICES-SCAN.md) for the
 operator manual (idle-trigger sequence diagram, per-bucket scope, label scheme,
@@ -1924,17 +1930,17 @@ suppression syntax, CI-gate (linter + compile) rules).
 
 ### Test-audit scans (template #3)
 
-The test-audit scan is the third registered idle-task template. When it is enabled, it runs a
-**language-agnostic static test-suite maintainability and coverage-gap audit**
-(short display name "Test Audit"): it flags implementation-coupled tests (HOW)
-that assert on incidental implementation details rather than observable
-behaviour (WHAT), because those tests get in the way of safe refactoring. The
-behaviour-based (WHAT) / implementation-coupled (HOW) split is an **informal
-project heuristic**, not established industry taxonomy. The audit is static — it
-reviews source but never executes the tests, so it never claims dynamically
-measured coverage. There is no bucket — a single run inspects every test
-ecosystem present (Deno/TypeScript, JavaScript, Rust, Java, Go, Python,
-shell/BATS, Cypress, Playwright).
+The test-audit scan is the third registered idle-task template. When it is
+enabled, it runs a **language-agnostic static test-suite maintainability and
+coverage-gap audit** (short display name "Test Audit"): it flags
+implementation-coupled tests (HOW) that assert on incidental implementation
+details rather than observable behaviour (WHAT), because those tests get in the
+way of safe refactoring. The behaviour-based (WHAT) / implementation-coupled
+(HOW) split is an **informal project heuristic**, not established industry
+taxonomy. The audit is static — it reviews source but never executes the tests,
+so it never claims dynamically measured coverage. There is no bucket — a single
+run inspects every test ecosystem present (Deno/TypeScript, JavaScript, Rust,
+Java, Go, Python, shell/BATS, Cypress, Playwright).
 
 **Opt-in (Issue #5096).** `test-audit` is registered but **opt-in**: it is not
 automatic idle work unless the owner's `.config.json` names it, either with a
@@ -1944,8 +1950,8 @@ positive `idle_task_template_weights` entry or a `test-audit` entry under
 `work-on-issue` CLI). See
 [Opt-in templates](docs/IDLE-TASK-FRAMEWORK.md#opt-in-templates--registered-is-not-enabled-issue-5096).
 
-**Thirteen audit checks.** Phase 2 of `prompts/test_audit/` walks every test file
-against ten **test-maintainability smells**: (1) implementation-coupled
+**Thirteen audit checks.** Phase 2 of `prompts/test_audit/` walks every test
+file against ten **test-maintainability smells**: (1) implementation-coupled
 assertions (call-order, internal-call mocks, private-symbol assertions — mock /
 interaction assertions are flagged only when not part of the public contract),
 (2) source-text greps used as assertions, (3) performance/timing assertions
@@ -1964,34 +1970,35 @@ acceptable PR outcome.
 **Unit-suite classification.** Checks (12) parallel-unsafe unit tests — a unit
 test that mutates process-wide state (an environment variable, the working
 directory, a module-level singleton) rather than taking it as a parameter or an
-injected seam — and (13) slow unit tests, whose *shape* shows they cannot meet
+injected seam — and (13) slow unit tests, whose _shape_ shows they cannot meet
 the unit budget `CODING-STANDARDS.md` sets: a wall-clock sleep, a retry loop
 with real backoff, a polling wait, or a spawned repository script. Both are
 static, source-shape checks — the audit never runs a test, so it never reports a
 measured or estimated duration, and neither check keys on whether a test passes.
 Files already on the repository's parallel-unsafe manifest are known debt and
 excluded from check 12 (the check exists to stop that list growing, not to
-re-report it); files the repository declares as script-driving suites — on
-the integration-test manifest, or named as one the every-change gate runs
-deliberately with a reason — are excluded from both.
-The remedy is the seam, never a `--no-parallel` flag, or reclassification into
-the integration manifest. Each is reported as a **single** finding listing the
-affected files, so a suite-wide habit across a hundred files cannot become a
-hundred issues.
+re-report it); files the repository declares as script-driving suites — on the
+integration-test manifest, or named as one the every-change gate runs
+deliberately with a reason — are excluded from both. The remedy is the seam,
+never a `--no-parallel` flag, or reclassification into the integration manifest.
+Each is reported as a **single** finding listing the affected files, so a
+suite-wide habit across a hundred files cannot become a hundred issues.
 
-**Coverage-gap detection.** Check (7), *potentially untested public
-API*, is a **potential behavioural coverage gap**: public API functions where no
-test directly references the symbol and no reviewed test provides clear indirect
+**Coverage-gap detection.** Check (7), _potentially untested public API_, is a
+**potential behavioural coverage gap**: public API functions where no test
+directly references the symbol and no reviewed test provides clear indirect
 behavioural coverage — a statically detected candidate, reported alongside the
-maintainability findings in the same audit (not a parallel report). A deterministic Deno-native pre-pass
-(`worker/deno/lib/coverage_gap_scanner.ts`) enumerates exported functions with
-`deno doc --json` (never Node tooling,), cross-checks each against the test
-sources, and injects the gaps into the prompt's `{{COVERAGE_GAPS}}` input as a
-verified starting point; the pre-pass is best-effort (failure → `(none)`
-sentinel) and Claude self-drives the non-Deno languages by static grep. The fix
-is to **add** a behaviour-based (WHAT) test — never auto-written (issue-only).
+maintainability findings in the same audit (not a parallel report). A
+deterministic Deno-native pre-pass (`worker/deno/lib/coverage_gap_scanner.ts`)
+enumerates exported functions with `deno doc --json` (never Node tooling,),
+cross-checks each against the test sources, and injects the gaps into the
+prompt's `{{COVERAGE_GAPS}}` input as a verified starting point; the pre-pass is
+best-effort (failure → `(none)` sentinel) and Claude self-drives the non-Deno
+languages by static grep. The fix is to **add** a behaviour-based (WHAT) test —
+never auto-written (issue-only).
 
-**Cadence.** When enabled, at most once per week per repo (`cooldownHours: 168`).
+**Cadence.** When enabled, at most once per week per repo
+(`cooldownHours: 168`).
 
 **Cap and id.** A single run files at most six standalone findings. Each
 finding's stable id is `BP-<12 hex>` computed with a `"test-audit"`
@@ -2027,13 +2034,12 @@ The github-actions-audit scan is the fourth registered idle-task template. It
 runs a **single-scope, workflow-only review**: it inspects only the repo's
 GitHub Actions material (`.github/workflows/*.yml`/`*.yaml` and composite
 actions under `.github/actions/`) and ignores every other surface. The checks
-cover SHA-pinning, supply-chain hardening — including script
-injection via an untrusted `${{ github.* }}` expression interpolated into a
-`run:` step, the PWN-request poisoned-pipeline chain, secret
-exfiltration, action cache poisoning, and AI coding-action hardening
- — stale action majors, EOL / soon-EOL language runtimes,
-deprecated/archived actions, and duplicate or obsolete steps. GitHub Actions
-review used to be the `github-actions` best-practices bucket;
+cover SHA-pinning, supply-chain hardening — including script injection via an
+untrusted `${{ github.* }}` expression interpolated into a `run:` step, the
+PWN-request poisoned-pipeline chain, secret exfiltration, action cache
+poisoning, and AI coding-action hardening — stale action majors, EOL / soon-EOL
+language runtimes, deprecated/archived actions, and duplicate or obsolete steps.
+GitHub Actions review used to be the `github-actions` best-practices bucket;
 promoted it to its own weekly template and retired the bucket.
 
 **Nine pre-filers run before Claude.** An actionlint-in-CI configuration check
@@ -2048,64 +2054,58 @@ refs are exempt, a tag ref in a workflow covered by a valid, current
 `.github/workflows/actions.lock` is compliant (a stale or invalid lockfile is
 reported natively as `BP-ACTIONS-LOCK-STALE-<slug>` or `BP-ACTIONS-LOCK-INVALID`
 instead), reusable-workflow calls are never covered by a lockfile and so still
-need a SHA, and the finding body lists every call-site `file:line` — a
-native permissions scan (`workflow_permissions_scanner.ts`,) that
-files a `BP-PERMISSIONS-<workflow-basename>[-<job>]` finding at
-`severity:medium` for each workflow/job with no `permissions:` block (inheriting
-the broad default) or a `permissions: write-all` grant at top or job level — the
-decidable core of v7 prompt check #2; the judgement-heavy `id-token: write` (#9)
-and `secrets: inherit` (#24) cases stay with the LLM — and a native
-script-injection scan (`run_injection_scanner.ts`,) that files a
+need a SHA, and the finding body lists every call-site `file:line` — a native
+permissions scan (`workflow_permissions_scanner.ts`,) that files a
+`BP-PERMISSIONS-<workflow-basename>[-<job>]` finding at `severity:medium` for
+each workflow/job with no `permissions:` block (inheriting the broad default) or
+a `permissions: write-all` grant at top or job level — the decidable core of v7
+prompt check #2; the judgement-heavy `id-token: write` (#9) and
+`secrets: inherit` (#24) cases stay with the LLM — and a native script-injection
+scan (`run_injection_scanner.ts`,) that files a
 `BP-INJECTION-<workflow-basename>-<job>-<step-index>` finding at `severity:high`
 for each `run:` step interpolating an attacker-controllable `${{ github.* }}`
 field (the verbatim v7 check #22 allow-list, with the trusted-field exclusion
 set) directly into the shell — the decidable core of check #22; the broader
-injection family (privileged-trigger #6, PWN-request #10/#26, cache
-poisoning #28, AI-action trust #29) stays with the LLM — and a native
-workflow-trigger
+injection family (privileged-trigger #6, PWN-request #10/#26, cache poisoning
+#28, AI-action trust #29) stays with the LLM — and a native workflow-trigger
 scan (`workflow_trigger_scanner.ts`, part of) that files a
-`BP-TRIGGER-<workflow-basename>` finding at `severity:low` for each test/lint/scan
-workflow (classified high-confidence via `workflow_classifier.ts`,)
-that still triggers on push to the default branch — deploy/publish/release and
-ambiguous workflows are left untouched, and the YAML fix (drop `push:` to
-default, keep `pull_request` / `schedule` / `workflow_dispatch`) rides a normal
-worker PR through the pre-merge gate rather than a bulk YAML rewrite — and a
-native checkout-persist-credentials scan
+`BP-TRIGGER-<workflow-basename>` finding at `severity:low` for each
+test/lint/scan workflow (classified high-confidence via
+`workflow_classifier.ts`,) that still triggers on push to the default branch —
+deploy/publish/release and ambiguous workflows are left untouched, and the YAML
+fix (drop `push:` to default, keep `pull_request` / `schedule` /
+`workflow_dispatch`) rides a normal worker PR through the pre-merge gate rather
+than a bulk YAML rewrite — and a native checkout-persist-credentials scan
 (`checkout_persist_credentials_scanner.ts`,) that files a
-`BP-PERSIST-CREDS-<workflow-basename>` finding at
-`severity:medium` per **workflow file** whose `actions/checkout` steps lack
+`BP-PERSIST-CREDS-<workflow-basename>` finding at `severity:medium` per
+**workflow file** whose `actions/checkout` steps lack
 `persist-credentials: false` in a job giving no static signal of needing the
-token (no `git push`/`fetch`, no known push action, no `submodules:`
-checkout), the body naming every offending job/step — one issue per file
-because one edit fixes them all (Issue #2221) — the
-long-documented v3-slot check #23 that was never actually
-implemented until now; nuanced hedge cases stay with the LLM — and a native
-broad-artefact-upload scan (`artifact_upload_scanner.ts`, gap
-from) that files a
-`BP-ARTIFACT-UPLOAD-<workflow-basename>`
-finding per **workflow file** whose `actions/upload-artifact` steps upload the
-whole workspace (`.`, `./`, `${{ github.workspace }}`, `*`, `**`) at
-`severity:low` baseline (`severity:medium` when any listed job has secrets in
-scope or the workflow uses a privileged trigger), on the same one-issue-per-file
-reshape (Issue #2221) — the decidable core of v9 prompt check #30; the
-"otherwise unscoped" long tail stays with the LLM — and a native
-milestone-branch-filter scan (`milestone_branch_filter_scanner.ts`,)
-that files a `BP-MILESTONE-FILTER-<workflow-basename>` finding at
-`severity:medium` for each CI quality (test/lint/scan) workflow whose
-`pull_request` branch filter misses milestone feature branches
-(`milestone/<slug>`,), so milestone sub-issue PRs never merge past
-the gate unchecked — the decidable core of v12 prompt check #33; the fix (add
-`milestone/*` to the filter) rides a normal per-repo worker PR per
-isolation — and a native gitleaks-drift scan
-(`gitleaks_drift_scanner.ts`, Issue #598) that files
-`BP-GITLEAKS-BRANCH-…`, `BP-GITLEAKS-ACTION-STALE-…`,
+token (no `git push`/`fetch`, no known push action, no `submodules:` checkout),
+the body naming every offending job/step — one issue per file because one edit
+fixes them all (Issue #2221) — the long-documented v3-slot check #23 that was
+never actually implemented until now; nuanced hedge cases stay with the LLM —
+and a native broad-artefact-upload scan (`artifact_upload_scanner.ts`, gap from)
+that files a `BP-ARTIFACT-UPLOAD-<workflow-basename>` finding per **workflow
+file** whose `actions/upload-artifact` steps upload the whole workspace (`.`,
+`./`, `${{ github.workspace }}`, `*`, `**`) at `severity:low` baseline
+(`severity:medium` when any listed job has secrets in scope or the workflow uses
+a privileged trigger), on the same one-issue-per-file reshape (Issue #2221) —
+the decidable core of v9 prompt check #30; the "otherwise unscoped" long tail
+stays with the LLM — and a native milestone-branch-filter scan
+(`milestone_branch_filter_scanner.ts`,) that files a
+`BP-MILESTONE-FILTER-<workflow-basename>` finding at `severity:medium` for each
+CI quality (test/lint/scan) workflow whose `pull_request` branch filter misses
+milestone feature branches (`milestone/<slug>`,), so milestone sub-issue PRs
+never merge past the gate unchecked — the decidable core of v12 prompt check
+#33; the fix (add `milestone/*` to the filter) rides a normal per-repo worker PR
+per isolation — and a native gitleaks-drift scan (`gitleaks_drift_scanner.ts`,
+Issue #598) that files `BP-GITLEAKS-BRANCH-…`, `BP-GITLEAKS-ACTION-STALE-…`,
 `BP-GITLEAKS-NO-FALLBACK-…` and `BP-GITLEAKS-NO-PR-TRIGGER-…` findings at
 `severity:medium` for each per-repo `gitleaks.yml` copy that has drifted from
-the canonical template, because the workflow audit detects gitleaks by
-pattern and so scores a months-old copy as fully covered; its branch finding
-defers to the milestone pre-filer's when both cover the same file. Their ids
-are added to the
-known-open list so Claude does not re-emit them; the v7 prompt SHA-pin
+the canonical template, because the workflow audit detects gitleaks by pattern
+and so scores a months-old copy as fully covered; its branch finding defers to
+the milestone pre-filer's when both cover the same file. Their ids are added to
+the known-open list so Claude does not re-emit them; the v7 prompt SHA-pin
 (#1/#13/#25), permissions (#2/#9/#24), and script-injection (#22) checks are
 retained for the judgement-heavy long tail (container `@sha256:` digests,
 provenance-as-sole-gate).
@@ -2122,18 +2122,16 @@ with the retired bucket. The native SHA-pin pre-filer files
 `BP-SHA-PIN-<owner>-<action-slug>` ids; the native permissions pre-filer files
 `BP-PERMISSIONS-<workflow-basename>[-<job>]` ids; the native script-injection
 pre-filer files `BP-INJECTION-<workflow-basename>-<job>-<step-index>` ids; the
-native workflow-trigger pre-filer files `BP-TRIGGER-<workflow-basename>` ids; the
-native checkout-persist-credentials pre-filer files
-`BP-PERSIST-CREDS-<workflow-basename>` ids; the native
-broad-artefact-upload pre-filer files
-`BP-ARTIFACT-UPLOAD-<workflow-basename>` ids — both one per file since
-Issue #2221, with their per-step ids still honoured for dedup, in-source
+native workflow-trigger pre-filer files `BP-TRIGGER-<workflow-basename>` ids;
+the native checkout-persist-credentials pre-filer files
+`BP-PERSIST-CREDS-<workflow-basename>` ids; the native broad-artefact-upload
+pre-filer files `BP-ARTIFACT-UPLOAD-<workflow-basename>` ids — both one per file
+since Issue #2221, with their per-step ids still honoured for dedup, in-source
 suppression, and the per-step pre-PR changed-workflow gate, so the reshape
-neither re-files a repository mid-flight nor lets a newly added offender
-hide behind a pre-existing one; the native
-milestone-branch-filter pre-filer files `BP-MILESTONE-FILTER-<workflow-basename>`
-ids; the native gitleaks-drift pre-filer files
-`BP-GITLEAKS-<CLASS>-<workflow-basename>` ids.
+neither re-files a repository mid-flight nor lets a newly added offender hide
+behind a pre-existing one; the native milestone-branch-filter pre-filer files
+`BP-MILESTONE-FILTER-<workflow-basename>` ids; the native gitleaks-drift
+pre-filer files `BP-GITLEAKS-<CLASS>-<workflow-basename>` ids.
 
 **Labels.** Filed issues carry exactly `github-actions-audit` plus one of
 `severity:high|medium|low` — no `lang:*` label (single-scope). The worker is not
@@ -2163,8 +2161,8 @@ owned by the sibling templates: current vulnerabilities and the
 dependency-update quarantine window by `security-scan` (#1), Actions SHA-pinning
 and runner deprecation by `github-actions-audit` (#4), EOL runtimes by
 `best-practices` (#2) and `github-actions-audit` (#4), and anomalous-publish
-detection by the proactive-detection epic. This template **cross-links**
-those classes in prose, never re-filing them.
+detection by the proactive-detection epic. This template **cross-links** those
+classes in prose, never re-filing them.
 
 **Single-scope, LLM-only, language-agnostic.** Like `test-audit`, the template
 uses a single prompt with no bucket. A run detects the repo's ecosystems (Node,
@@ -2172,13 +2170,12 @@ Deno, Rust, Python, Java, Go), then applies the readiness check catalogue
 (`SCR-LOCKFILE`, `SCR-SBOM`, `SCR-VULN-SCAN`, `SCR-AUTO-UPDATE`,
 `SCR-IGNORE-SCRIPTS`, `SCR-PROVENANCE`, `SCR-DEP-REVIEW`,
 `SCR-QUARANTINE-OVERRIDE`, `SCR-RUNBOOK`). The wrapper body inlines the latest
-`prompts/supply_chain_readiness/` template (human-style wrappers —
-no hidden marker). Findings are recommendations calibrated to real risk:
-ecosystem-aware (never flag tooling an ecosystem does not offer),
-static-evidence only (no package-manager invocation), and severity-matched
-(missing CI vuln-scan or unblocked npm install scripts → `severity:high`;
-missing SBOM → `severity:low`). There is **no `severity:critical`** — readiness
-gaps are pre-incident posture.
+`prompts/supply_chain_readiness/` template (human-style wrappers — no hidden
+marker). Findings are recommendations calibrated to real risk: ecosystem-aware
+(never flag tooling an ecosystem does not offer), static-evidence only (no
+package-manager invocation), and severity-matched (missing CI vuln-scan or
+unblocked npm install scripts → `severity:high`; missing SBOM → `severity:low`).
+There is **no `severity:critical`** — readiness gaps are pre-incident posture.
 
 **Cap and priority order.** A single run files at most six standalone findings,
 ordered `severity:high` > `severity:medium` > `severity:low`. There is no
@@ -2220,7 +2217,7 @@ The orphan-dependency scan is the sixth registered idle-task template. It runs a
 **metadata-backed audit of the repo's declared and locked dependency set for
 dependencies that are genuinely orphaned, abandoned, deprecated, or
 end-of-life** — and suggests a maintained replacement for each. It answers one
-question per dependency: *is anyone still home?* A dependency that is merely a
+question per dependency: _is anyone still home?_ A dependency that is merely a
 few versions behind but still actively maintained is **out of scope** — that
 belongs to the ordinary dependency-bump flow.
 
@@ -2232,13 +2229,14 @@ published four years ago", "marked deprecated", and "source repo archived" live
 in registry and source-host metadata, not in committed files. The static-only
 rule is lifted **only for this scan** and **only within a strict metadata
 allow-list**: npm registry metadata (`https://registry.npmjs.org/<pkg>`), JSR
-and crates.io registry metadata, GitHub repo metadata (`gh api
-repos/<owner>/<repo>` — `archived`, `pushed_at`), and published EOL data.
-Everything else stays forbidden: **no package install ever** (`npm install`,
-`cargo build`, `deno cache`, …), **no lifecycle scripts** (`postinstall`,
-`build.rs`, `setup.py`, …), and **no repo-code execution**. A failed or
-ambiguous metadata read drops the candidate rather than asserting an unbacked
-claim.
+and crates.io registry metadata, GitHub repo metadata
+(`gh api
+repos/<owner>/<repo>` — `archived`, `pushed_at`), and published EOL
+data. Everything else stays forbidden: **no package install ever**
+(`npm install`, `cargo build`, `deno cache`, …), **no lifecycle scripts**
+(`postinstall`, `build.rs`, `setup.py`, …), and **no repo-code execution**. A
+failed or ambiguous metadata read drops the candidate rather than asserting an
+unbacked claim.
 
 **Single-scope, language-agnostic.** A run inventories the ecosystems (Deno/JSR,
 npm, cargo, GitHub Actions), then applies the orphan-signal catalogue
@@ -2254,9 +2252,9 @@ orphan-deps pre-filer, whose already-filed ids arrive in the known-open
 skip-list. Adjacent concerns are cross-linked in prose, never re-filed:
 dormant-then-republished compromise → `security-scan` (#1); active malicious
 signals → `supply-chain-detection`; posture / readiness →
-`supply-chain-readiness` (#5, epics /); idle-tasks-vs-supply-chain
-boundaries →; merely out-of-date → the dependency-bump flow. The
-Boy-Scout brainstorm that motivated the template is.
+`supply-chain-readiness` (#5, epics /); idle-tasks-vs-supply-chain boundaries →;
+merely out-of-date → the dependency-bump flow. The Boy-Scout brainstorm that
+motivated the template is.
 
 **Cap and priority order.** A single run files at most six standalone findings,
 ordered `severity:high` > `severity:medium` > `severity:low`. There is no
@@ -2296,25 +2294,25 @@ rule, weekly cadence).
 ### Bash syntax audit scans (template #12)
 
 The bash syntax audit is the twelfth registered idle-task template, filed
-immediately after the native `bash-script-refs` layer-2 scan of. Bash has **no compile step**, so an invalid bash script can regress
-into
-a repository with no quality gate catching it — the exact FLEET regression that
-motivated parent. This template is **layer 1** of that parent: per
-monitored repository, it verifies the repo's **own CI** blocks any pull request
-whose scripts fail a basic-validity gate, and files **one issue-only finding per
-missing gate**. Rollout is audit-driven — build the audit first, no proactive
-per-repo sub-issues (Round 2 Q2).
+immediately after the native `bash-script-refs` layer-2 scan of. Bash has **no
+compile step**, so an invalid bash script can regress into a repository with no
+quality gate catching it — the exact FLEET regression that motivated parent.
+This template is **layer 1** of that parent: per monitored repository, it
+verifies the repo's **own CI** blocks any pull request whose scripts fail a
+basic-validity gate, and files **one issue-only finding per missing gate**.
+Rollout is audit-driven — build the audit first, no proactive per-repo
+sub-issues (Round 2 Q2).
 
 **Native, deterministic, no LLM.** Two Deno detectors drive the core checks, so
 no Claude invocation is involved (modelled on `bash_script_refs_template.ts`).
 The prompt at `prompts/bash_syntax_audit/` is the human-style wrapper body only:
 
-- **Bash CI gate** (`bash_ci_gate_scanner.ts`, sibling) — discovers the
-  repo's bash scripts and checks `.github/workflows/*` for a `bash -n` / `sh -n`
+- **Bash CI gate** (`bash_ci_gate_scanner.ts`, sibling) — discovers the repo's
+  bash scripts and checks `.github/workflows/*` for a `bash -n` / `sh -n`
   **syntax** gate and a `shellcheck` **lint** gate (a committed gate script the
   workflow invokes, e.g. `./quality.sh`, counts).
-- **Language validity** (`language_validity_gate.ts`, sibling) — for each
-  other main language (Rust, TypeScript, React, Java, Python) checks a native
+- **Language validity** (`language_validity_gate.ts`, sibling) — for each other
+  main language (Rust, TypeScript, React, Java, Python) checks a native
   basic-validity step is wired into CI (`cargo check`, `deno check` /
   `tsc --noEmit`, `mvn compile` / `gradle compileJava`, `python -m py_compile`).
   **Main means material, not merely present** (#3): a language qualifies only
@@ -2334,25 +2332,24 @@ tightened later, Round 2 Q1). A main language missing its native check →
 `severity:high` (mirrors the best-practices compile-gate severity).
 
 **Stable ids, dedup, suppression.** Fixed gate classes carry stable prefix ids
-(`BP-BASH-SYNTAX-GATE`, `BP-BASH-SHELLCHECK-GATE`, `BP-VALIDITY-GATE-<language>`)
-deduped per gate via `fileFindingOnce`; the shared `best-practice-ignore: BP-…`
-in-code suppression grammar (a `#` comment in a workflow file) skips a gate id on
-future runs.
+(`BP-BASH-SYNTAX-GATE`, `BP-BASH-SHELLCHECK-GATE`,
+`BP-VALIDITY-GATE-<language>`) deduped per gate via `fileFindingOnce`; the
+shared `best-practice-ignore: BP-…` in-code suppression grammar (a `#` comment
+in a workflow file) skips a gate id on future runs.
 
-**Fail-safe + fail-loud.** A gate whose status is *unknown* (no workflows
-loaded, unparseable workflow) or a repo with no bash scripts (*not applicable*)
+**Fail-safe + fail-loud.** A gate whose status is _unknown_ (no workflows
+loaded, unparseable workflow) or a repo with no bash scripts (_not applicable_)
 never files a false positive; a detector that cannot run surfaces a loud
 `ok: false` summary on the wrapper, never a silent green.
 
 **No PR, ever.** `skipMilestone: true`, `cooldownHours: 168` (weekly). Findings
-carry exactly `bash-syntax-audit` + one `severity:*` label; the worker applies no
-workflow label (`label_security.ts` strips accidents).
+carry exactly `bash-syntax-audit` + one `severity:*` label; the worker applies
+no workflow label (`label_security.ts` strips accidents).
 
 **Implementation:**
 [`worker/deno/lib/idle_task_templates/bash_syntax_audit_template.ts`](worker/deno/lib/idle_task_templates/bash_syntax_audit_template.ts),
-wired into the claim handler, idle-task filer, wrapper-seeder, and backfill title
-map. Tests:
-`worker/deno/tests/bash_syntax_audit_template_test.ts`. See
+wired into the claim handler, idle-task filer, wrapper-seeder, and backfill
+title map. Tests: `worker/deno/tests/bash_syntax_audit_template_test.ts`. See
 [`docs/BASH-SYNTAX-AUDIT-SCAN.md`](docs/BASH-SYNTAX-AUDIT-SCAN.md) for the
 operator manual (detector table, fail-safe / fail-loud rules, severity table, id
 recipe, suppression syntax, lifecycle diagram, no-PR rule).
@@ -2360,8 +2357,8 @@ recipe, suppression syntax, lifecycle diagram, no-PR rule).
 ### Documentation-audit scans (template #13)
 
 The documentation-audit scan is the thirteenth registered idle-task template. It
-runs an **LLM-only, language-agnostic audit of the repo's prose documentation** —
-READMEs, `docs/**`, AI-agent instruction files (`CLAUDE.md`, `AGENTS.md`, and
+runs an **LLM-only, language-agnostic audit of the repo's prose documentation**
+— READMEs, `docs/**`, AI-agent instruction files (`CLAUDE.md`, `AGENTS.md`, and
 other flavours), and the accumulated PR-summary archive
 (`docs/archive/pr-summaries/pr-summary-*.md`). Modelled structurally on
 `test-audit` (single prompt, no bucket, outcome-only Claude contract), it exists
@@ -2376,26 +2373,25 @@ abandoned, say). The audit **unifies durable learnings — successes and negativ
 results — from the PR-summary archive into the relevant existing docs/README
 sections, then deletes the now-obsolete summaries**. A summary is only ever
 deleted **after** its learnings demonstrably land elsewhere, so no learning is
-lost; the deletion happens in the *fix* issue's PR, never during the scan.
+lost; the deletion happens in the _fix_ issue's PR, never during the scan.
 
 **Fourteen checks (Phase 2 of `prompts/documentation_audit/`).** (1) unabsorbed
 PR-summary learnings, (2) stale/obsolete content, (3) contradictions and
 inconsistencies, (4) duplicate/redundant content — including, from v4 onward,
 prose that paraphrases an external tool's docs instead of linking to them, (5)
-redundant or stale agent
-files — a **single** agent file that repeats the README (trim to point at the
-README, or delete when it adds nothing beyond it), (6) README not the source of
-truth (inaccurate, inlines detail that belongs in a linked doc, or fails to link
-off), (7) undefined terms/acronyms/playful names (define in plain English on
-first use, preferring an external link such as Wikipedia; e.g. glossing a
-private-repo-14 "creature" in boring terms), (8) broken/invalid links (internal
-strictly, external best-effort) plus places a Mermaid diagram would materially
-aid understanding, and (9) multiple/redundant agent instruction files — two or
-more substantive agent files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, near-miss
-variants) coexisting is itself redundancy; consolidate towards one set shared by
-humans and agents (instructions in the README/human docs; provider-specific
-files deleted after unique content is folded in; at most one thin `AGENTS.md`
-pointer).
+redundant or stale agent files — a **single** agent file that repeats the README
+(trim to point at the README, or delete when it adds nothing beyond it), (6)
+README not the source of truth (inaccurate, inlines detail that belongs in a
+linked doc, or fails to link off), (7) undefined terms/acronyms/playful names
+(define in plain English on first use, preferring an external link such as
+Wikipedia; e.g. glossing a private-repo-14 "creature" in boring terms), (8)
+broken/invalid links (internal strictly, external best-effort) plus places a
+Mermaid diagram would materially aid understanding, and (9) multiple/redundant
+agent instruction files — two or more substantive agent files (`AGENTS.md`,
+`CLAUDE.md`, `GEMINI.md`, near-miss variants) coexisting is itself redundancy;
+consolidate towards one set shared by humans and agents (instructions in the
+README/human docs; provider-specific files deleted after unique content is
+folded in; at most one thin `AGENTS.md` pointer).
 
 **Claim verification (checks 10–12, from v4 onward).** Checks 1–9 are
 drift-shaped — they find docs that disagree with other docs. Documentation is
@@ -2419,12 +2415,12 @@ behaviour the adjacent code does not have is **removed** — the code is the
 truth, and a comment nobody can trust is worse than none (`severity:medium`,
 collapsed to one finding per source file). The exception is a comment describing
 deliberate behaviour the code never implements — a guard, limit, error path or
-lock it says is applied. That comment is the only surviving record of the intent,
-so it stays and the finding is filed as a **possible bug in the code**
+lock it says is applied. That comment is the only surviving record of the
+intent, so it stays and the finding is filed as a **possible bug in the code**
 (`severity:high`). The boundary against `doc-coverage` is drawn by what is wrong
-with the comment: an absent or paraphrase-only doc comment is `doc-coverage`'s, a
-comment that says something untrue is this scan's. `TODO`/`FIXME` notes,
-commented-out code, licence headers, and comments explaining *why* rather than
+with the comment: an absent or paraphrase-only doc comment is `doc-coverage`'s,
+a comment that says something untrue is this scan's. `TODO`/`FIXME` notes,
+commented-out code, licence headers, and comments explaining _why_ rather than
 what are all silent.
 
 **Agent instructions against the published guidance (check 14, Issue #2321).**
@@ -2438,8 +2434,8 @@ signal shows the repo has that stage, and one documented gate command such as
 the published 200-line budget at `severity:medium` (counted as `wc -l` physical
 lines, per file, never on `README.md`), and — at `severity:low` — content the
 guidance says to exclude plus five conditional items (style rules, etiquette,
-architectural decisions, environment quirks, gotchas) each gated on a fixed
-repo signal rather than judgement. The check never asks a repo to create a
+architectural decisions, environment quirks, gotchas) each gated on a fixed repo
+signal rather than judgement. The check never asks a repo to create a
 `CLAUDE.md` (check 9's end-state stands) and is held while check 5 or 9 is
 outstanding, since content review is moot mid-consolidation. All of a repo's
 gaps collapse into **one** finding per run under a fixed title, so its stable id
@@ -2449,21 +2445,21 @@ does not move as the gap list changes.
 **never** one issue per typo, **never** one unreviewable mega-issue.
 
 **Complement, never duplicate.** Prose docs and contradicting code comments are
-this scan; code doc-comment *coverage* is `doc-coverage`; spelling is
+this scan; code doc-comment _coverage_ is `doc-coverage`; spelling is
 `spelling-fix`. A candidate belonging to a sibling is left to it.
 
 **No PR, ever.** `skipMilestone: true`, `cooldownHours: 168` (weekly). A run
 files **issues only** (at most six, most important first, `severity:high` >
 `medium` > `low`); zero findings files nothing. Findings carry exactly
 `documentation-audit` + one `severity:*` label; the worker applies no workflow
-label (`label_security.ts` strips accidents). Stable ids are `BP-<12 hex>` with a
-`"documentation-audit"` discriminator; the shared `best-practice-ignore: BP-…`
+label (`label_security.ts` strips accidents). Stable ids are `BP-<12 hex>` with
+a `"documentation-audit"` discriminator; the shared `best-practice-ignore: BP-…`
 grammar (a `<!-- … -->` Markdown comment) suppresses a finding on future runs.
 
 **Implementation:**
 [`worker/deno/lib/idle_task_templates/documentation_audit_template.ts`](worker/deno/lib/idle_task_templates/documentation_audit_template.ts),
-wired into the claim handler, idle-task filer, wrapper-seeder, and backfill title
-map. Tests: `worker/deno/tests/documentation_audit_template_test.ts`. See
+wired into the claim handler, idle-task filer, wrapper-seeder, and backfill
+title map. Tests: `worker/deno/tests/documentation_audit_template_test.ts`. See
 [`docs/DOCUMENTATION-AUDIT-SCAN.md`](docs/DOCUMENTATION-AUDIT-SCAN.md) for the
 operator manual (fourteen-check catalogue, idle-trigger diagram, severity table,
 id recipe, suppression syntax, no-PR rule, weekly cadence).
@@ -2473,15 +2469,15 @@ id recipe, suppression syntax, no-PR rule, weekly cadence).
 The workflow-annotation scan is the fifteenth registered idle-task template. It
 is a **native (no-LLM)** weekly scan that fetches recent GitHub Actions
 **workflow-run annotations** — both **errors and warnings**, including
-annotations attached to *passing* runs — and files one self-contained issue per
+annotations attached to _passing_ runs — and files one self-contained issue per
 distinct annotation class. It exists because the `ci_fix` prompt only reads
-annotations while fixing an *already-failing* run; warnings on green runs (a
+annotations while fixing an _already-failing_ run; warnings on green runs (a
 deprecated-runtime notice, say) previously had no idle-task coverage.
 
 **Detect → `work-on` → PR.** Like every audit-family template it only **files an
-issue** in the affected repo (per-repo isolation,) — it never opens
-a PR. A human applies `work-on` as a lightweight sanity check, and the fix rides
-a normal per-repo PR. Because that approval is deliberately lightweight, each
+issue** in the affected repo (per-repo isolation,) — it never opens a PR. A
+human applies `work-on` as a lightweight sanity check, and the fix rides a
+normal per-repo PR. Because that approval is deliberately lightweight, each
 filed issue must be self-contained and obviously correct.
 
 **Version-agnostic contract.** This scan reports **whatever runtime deprecation
@@ -2497,10 +2493,9 @@ already-open issue.
 **Complement to static `github-actions-audit` check #34, not a duplicate.** The
 two split the deprecated-runtime problem cleanly:
 
-- **Static half — `github-actions-audit` check #34** (from closed):
-  resolves each SHA-pinned action's `runs.using` at the pinned ref and flags
-  actions whose *declared* runner is a deprecated runtime, before any run
-  executes.
+- **Static half — `github-actions-audit` check #34** (from closed): resolves
+  each SHA-pinned action's `runs.using` at the pinned ref and flags actions
+  whose _declared_ runner is a deprecated runtime, before any run executes.
 - **Runtime half — this scan:** catches the instances the static audit misses —
   a deprecation that only surfaces as a live workflow-run annotation, including
   the markdownlint **"Unicorn!"** HTML-error-page error class.
@@ -2513,8 +2508,8 @@ double-file** the same finding.
 (native annotation fetcher) and
 [`worker/deno/lib/workflow_annotation_classifier.ts`](worker/deno/lib/workflow_annotation_classifier.ts)
 (version-agnostic classification + stable dedup key), driven by the
-`workflow-annotation-scan` template (wrapper wiring tracked in). Findings
-carry `workflow-annotation-scan` + `severity:<level>` labels; **fail-loud** on a
+`workflow-annotation-scan` template (wrapper wiring tracked in). Findings carry
+`workflow-annotation-scan` + `severity:<level>` labels; **fail-loud** on a
 fetch/classify error; `cooldownHours: 168` (weekly). See the template row in
 [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md).
 
@@ -2530,27 +2525,26 @@ present. Mixed repos are still Deno.
 
 **Where the guards apply:**
 
-- **Prompts.** The coding-guidelines prompt
-  (`prompts/coding_guidelines/`, from v23 onward) warns Claude during issue and
-  PR-feedback runs not to introduce Node-only tooling, dependencies, or
-  configuration into a Deno repo. When Claude deliberately picks a Deno-native
-  path over a Node one, it records a one-line **Deno regression avoided** entry
-  in the PR summary.
-- **Best-practices `typescript` bucket.** In a Deno repo, Phase 2
-  flags Node regressions at `severity:high` — runtime `dependencies` in
-  `package.json`, a committed `node_modules/`, CI steps that run application
-  code via `npm`/`pnpm`/`yarn`/`npx`, a `tsconfig.json` that overrides Deno's
-  compiler options, and Node-only bundler configs. Each finding's suggested fix
-  points at the Deno-native equivalent.
-- **Best-practices `general` bucket.** When a repo has both a Deno
-  marker and a root `package.json` with a non-empty `dependencies` block, the
-  general bucket files **one** idempotent `severity:medium` mixed-runtime
-  finding ("choose one runtime or document the split"). The stable `BP-<12 hex>`
-  id makes it re-detection-safe, and it counts against the six-issue cap.
-- **Security-scan v10.** Phase 1 records the dual-marker state
-  (Deno markers present, with or without Node markers) and classifies the repo
-  as Deno; Phase 2 prefers Deno-native remediation advice and files a
-  `severity:medium` "Node tooling in a Deno repo" regression finding.
+- **Prompts.** The coding-guidelines prompt (`prompts/coding_guidelines/`, from
+  v23 onward) warns Claude during issue and PR-feedback runs not to introduce
+  Node-only tooling, dependencies, or configuration into a Deno repo. When
+  Claude deliberately picks a Deno-native path over a Node one, it records a
+  one-line **Deno regression avoided** entry in the PR summary.
+- **Best-practices `typescript` bucket.** In a Deno repo, Phase 2 flags Node
+  regressions at `severity:high` — runtime `dependencies` in `package.json`, a
+  committed `node_modules/`, CI steps that run application code via
+  `npm`/`pnpm`/`yarn`/`npx`, a `tsconfig.json` that overrides Deno's compiler
+  options, and Node-only bundler configs. Each finding's suggested fix points at
+  the Deno-native equivalent.
+- **Best-practices `general` bucket.** When a repo has both a Deno marker and a
+  root `package.json` with a non-empty `dependencies` block, the general bucket
+  files **one** idempotent `severity:medium` mixed-runtime finding ("choose one
+  runtime or document the split"). The stable `BP-<12 hex>` id makes it
+  re-detection-safe, and it counts against the six-issue cap.
+- **Security-scan v10.** Phase 1 records the dual-marker state (Deno markers
+  present, with or without Node markers) and classifies the repo as Deno; Phase
+  2 prefers Deno-native remediation advice and files a `severity:medium` "Node
+  tooling in a Deno repo" regression finding.
 
 **Carve-out — Node-only repos stay Node.** This is regression-prevention, not
 migration. A repo with no Deno markers stays on Node, and pre-existing Node
@@ -2599,36 +2593,33 @@ never overlap:
   `24`, governing `bump-deps.sh`). `renovate.json` disables Renovate's `deno`
   manager so it never double-gates the deps Deno now owns, while keeping the 24h
   window for the ecosystems it still manages. A first-party
-  `minimumReleaseAge: null` rule is added only where Renovate manages a
-  matching `stSoftwareAU` package (Issue #5120), matched by first-party names
-  only.
+  `minimumReleaseAge: null` rule is added only where Renovate manages a matching
+  `stSoftwareAU` package (Issue #5120), matched by first-party names only.
 
-  The `bump-deps.sh` window is **verified rather than advised**.
-  Exporting `VIBE_BUMP_QUARANTINE_HOURS` into a repo-supplied script left the
-  policy on the honour system — the managed repo decided whether the worker's
-  own embargo applied. `worker/deno/lib/bump_age_audit.ts` now reads the
-  versions the script actually wrote (from the bump diff), resolves each
-  publish time from npm, JSR, or crates.io, and reverts the bump as
-  `rejected_by_quarantine` when one landed inside the window. Internal
-  `@stsoftware/*` packages are exempt (0h). An npm or JSR age that cannot be
-  resolved is logged as unverified rather than blocking, so an offline host
-  still bumps. A crates.io age that cannot be resolved defers the bump to the
-  next cycle (Issue #4325): the pin is not adopted unchecked, and it is not
-  refused for good.
+  The `bump-deps.sh` window is **verified rather than advised**. Exporting
+  `VIBE_BUMP_QUARANTINE_HOURS` into a repo-supplied script left the policy on
+  the honour system — the managed repo decided whether the worker's own embargo
+  applied. `worker/deno/lib/bump_age_audit.ts` now reads the versions the script
+  actually wrote (from the bump diff), resolves each publish time from npm, JSR,
+  or crates.io, and reverts the bump as `rejected_by_quarantine` when one landed
+  inside the window. Internal `@stsoftware/*` packages are exempt (0h). An npm
+  or JSR age that cannot be resolved is logged as unverified rather than
+  blocking, so an offline host still bumps. A crates.io age that cannot be
+  resolved defers the bump to the next cycle (Issue #4325): the pin is not
+  adopted unchecked, and it is not refused for good.
 
-  Two failure modes, two directions. A release whose publish
-  time npm or JSR would not serve **fails open** — an offline or rate-limited
-  host must not turn every bump into a rejection. crates.io is the exception:
-  an unreachable crates.io API defers that bump until the next cycle. A
-  dependency change the scanner cannot recognise at all **fails closed**: an
-  open-ended range or tag (`>=1.0.0`, `*`, `latest`) names no single release,
-  a foreign ecosystem's manifest (`Gemfile`, `go.mod`, `requirements.txt`) has
-  no publish time this worker can resolve, and an unreadable diff shows nothing
-  at all. `Cargo.lock` and `Cargo.toml` pins are crates.io releases: the
-  worker reads each version's `created_at` and holds a young one back the same
-  way it holds back a young npm release. The first means the embargo looked
-  and could not see; the second means it never got to look, and silence must
-  not read as compliance.
+  Two failure modes, two directions. A release whose publish time npm or JSR
+  would not serve **fails open** — an offline or rate-limited host must not turn
+  every bump into a rejection. crates.io is the exception: an unreachable
+  crates.io API defers that bump until the next cycle. A dependency change the
+  scanner cannot recognise at all **fails closed**: an open-ended range or tag
+  (`>=1.0.0`, `*`, `latest`) names no single release, a foreign ecosystem's
+  manifest (`Gemfile`, `go.mod`, `requirements.txt`) has no publish time this
+  worker can resolve, and an unreadable diff shows nothing at all. `Cargo.lock`
+  and `Cargo.toml` pins are crates.io releases: the worker reads each version's
+  `created_at` and holds a young one back the same way it holds back a young npm
+  release. The first means the embargo looked and could not see; the second
+  means it never got to look, and silence must not read as compliance.
   `worker/deno/lib/bump_diff_scan.ts` draws that line, and covers the shapes the
   first parser missed — range specifiers, `deno.lock` and the npm lockfiles.
 
@@ -2638,21 +2629,21 @@ audit in `prompts/security_scan/`.
 
 ### Software auto-update — interval-OR-floor
 
-The software auto-update framework (`worker/deno/lib/software_updates.ts`,
-//) is normally time-based: each tool (Claude CLI, GH CLI,
-Deno) updates at most once per interval (default 7 days). That cadence is wrong
-when a known minimum version is required — e.g. `--model fable` support needs a
-recent Claude CLI release, but a worker updated six days ago would not re-check
-for another day and every `--model fable` invocation would fail meanwhile.
+The software auto-update framework (`worker/deno/lib/software_updates.ts`, //)
+is normally time-based: each tool (Claude CLI, GH CLI, Deno) updates at most
+once per interval (default 7 days). That cadence is wrong when a known minimum
+version is required — e.g. `--model fable` support needs a recent Claude CLI
+release, but a worker updated six days ago would not re-check for another day
+and every `--model fable` invocation would fail meanwhile.
 
 **Rule: run the update when _either_ the interval has elapsed _or_ the installed
 version is below a configured floor.** Floors live in the
 `software_min_versions` config key (defaults in
 `worker/deno/lib/config_defaults.ts`, the single source of truth; default
-`{ claude: "2.1.293" }` — the oldest release that resolves the `haiku` alias
-to Haiku 5.5 (PR #3432 review, Issue #3400); it was 2.1.280, the Opus 5.5
-floor from Issue #2560). The map is
-generic per tool so `gh`/`deno` floors can be added later.
+`{ claude: "2.1.293" }` — the oldest release that resolves the `haiku` alias to
+Haiku 5.5 (PR #3432 review, Issue #3400); it was 2.1.280, the Opus 5.5 floor
+from Issue #2560). The map is generic per tool so `gh`/`deno` floors can be
+added later.
 
 - **Below floor → immediate update**, bypassing the timestamp gate. At/above
   floor preserves the existing interval behaviour exactly.
@@ -2677,11 +2668,11 @@ See
 
 ### Toolchain upgrades are quarantined too
 
-The interval and the version floor both answer *when to check*. Neither answers
-*how old the thing being installed is* — so the auto-update path adopted a
-release published minutes ago exactly as readily as one published months ago,
-on hosts holding `GH_TOKEN`, a GitHub App key, and `ANTHROPIC_API_KEY`, while
-every other external ecosystem in this repo sat behind a 24-hour embargo.
+The interval and the version floor both answer _when to check_. Neither answers
+_how old the thing being installed is_ — so the auto-update path adopted a
+release published minutes ago exactly as readily as one published months ago, on
+hosts holding `GH_TOKEN`, a GitHub App key, and `ANTHROPIC_API_KEY`, while every
+other external ecosystem in this repo sat behind a 24-hour embargo.
 
 **Rule: the release-age quarantine applies to host toolchains, not just
 dependency manifests.** `worker/deno/lib/tool_release_age.ts` resolves the
@@ -2706,11 +2697,12 @@ Three consequences are deliberate:
 
 - **Fail closed.** An unverifiable age blocks the upgrade: skipping an optional
   upgrade costs nothing, while installing an unverifiable binary replaces the
-  `claude` and `deno` executables that run all subsequent worker logic. aligned `npm_package_age.ts` with the same rule — it used to let an
-  unverifiable age pass so an offline operator setup still worked, which meant
-  one dropped or 5xx registry lookup converted a block into a pass for a
-  specifier that then ran under `--allow-all`. A lookup you could not perform
-  is not a lookup that passed.
+  `claude` and `deno` executables that run all subsequent worker logic. aligned
+  `npm_package_age.ts` with the same rule — it used to let an unverifiable age
+  pass so an offline operator setup still worked, which meant one dropped or 5xx
+  registry lookup converted a block into a pass for a specifier that then ran
+  under `--allow-all`. A lookup you could not perform is not a lookup that
+  passed.
 - **Enumerate, never `--all`.** `gh extension upgrade --all` upgraded an
   unbounded set of arbitrary third-party repositories in one unpinned step.
   Extensions are enumerated and gated individually; an unreadable list upgrades
@@ -2736,17 +2728,17 @@ and claim handler.
 
 **Key design choices:**
 
-- **`idle-task` is just the lowest work-trigger priority — nothing more.**
-  The four work-trigger labels — `top-priority` > `work-on` > `low-priority` >
+- **`idle-task` is just the lowest work-trigger priority — nothing more.** The
+  four work-trigger labels — `top-priority` > `work-on` > `low-priority` >
   `idle-task` — **all mean the same thing: "work on this issue"**, and differ
-  *only* in priority. No other logic is attached to any of them. `idle-task` is
+  _only_ in priority. No other logic is attached to any of them. `idle-task` is
   simply the tier the worker reaches last. The **only** thing special about
   `idle-task` is **who may apply it**: the worker may self-apply `idle-task`,
   whereas `top-priority` / `work-on` / `low-priority` are reserved for trusted
   humans (see `RESERVED_LABELS`). Crucially, `idle-task` is **not** a scan-only
   marker — any `idle-task` issue (a scan finding, a chore, a hand-written task)
   is worked through the standard issue→PR pipeline. The scan-template framework
-  below is layered *on top* of this: a claimed `idle-task` issue runs a scan
+  below is layered _on top_ of this: a claimed `idle-task` issue runs a scan
   `runTask` **only** when it is a registered wrapper (its title matches
   `buildIssueTitle`, or its body matches `matchesIdleTaskBody`); every other
   `idle-task` issue flows through the normal fix pipeline. See
@@ -2762,19 +2754,19 @@ and claim handler.
   work-trigger / operational label (`planning`, `work-on`, `top-priority`,
   `low-priority`, etc.) remains human-only — only `idle-task` may be
   self-applied by the worker, because the framework requires it.
-- **Human-style wrappers.** Each template files its wrapper as an
-  issue that reads like one a person would type. The `security-scan` template
-  uses the title `Run a security scan` and a body that is the latest
+- **Human-style wrappers.** Each template files its wrapper as an issue that
+  reads like one a person would type. The `security-scan` template uses the
+  title `Run a security scan` and a body that is the latest
   `prompts/security_scan/` template with placeholders substituted at file time —
   no hidden marker, no parameters block. Dispatch matches the issue title to the
   registered template's `buildIssueTitle(repo)`, so a human can paste the same
   prompt into a fresh issue with the `idle-task` label and the worker runs it
-  identically. retired the `idle-task-pending` / `requiresApproval`
-  approval gate — `idle-task` is already the lowest priority, so a separate
-  approval step added no value.
-- **Attribution footer.** Every wrapper body and every
-  filed finding issue body ends with a single visible line naming the template
-  and the worker run id, e.g.
+  identically. retired the `idle-task-pending` / `requiresApproval` approval
+  gate — `idle-task` is already the lowest priority, so a separate approval step
+  added no value.
+- **Attribution footer.** Every wrapper body and every filed finding issue body
+  ends with a single visible line naming the template and the worker run id,
+  e.g.
   `🏷️ Filed by idle-task template:`test-audit`· Run id:`vibe-lkz3p9x-1a2b3c``.
   The footer is built once per run by
   [`buildAttributionFooter`](worker/deno/lib/idle_task_attribution.ts); the
@@ -2789,8 +2781,8 @@ and claim handler.
 - [`worker/deno/lib/idle_task_template.ts`](worker/deno/lib/idle_task_template.ts)
   — `IdleTaskTemplate` interface and module-level registry.
 - [`worker/deno/lib/idle_task_issue.ts`](worker/deno/lib/idle_task_issue.ts) —
-  Label-only repo dedup (retired the hidden marker — wrappers are
-  now human-style).
+  Label-only repo dedup (retired the hidden marker — wrappers are now
+  human-style).
 - [`worker/deno/lib/idle_task_milestone.ts`](worker/deno/lib/idle_task_milestone.ts)
   — Per-template milestone (`idle-task: <template>`) for batch tracking.
 - [`worker/deno/lib/idle_task_claim_handler.ts`](worker/deno/lib/idle_task_claim_handler.ts)
@@ -2809,58 +2801,59 @@ and claim handler.
   `supply_chain_readiness_template.ts` (#5, weekly static supply-chain readiness
   audit — see
   [`docs/SUPPLY-CHAIN-READINESS-SCAN.md`](docs/SUPPLY-CHAIN-READINESS-SCAN.md)),
-  `orphan_deps_template.ts` (#6, weekly orphan / unmaintained-dependency
-  audit — the one sanctioned-network exception — see
+  `orphan_deps_template.ts` (#6, weekly orphan / unmaintained-dependency audit —
+  the one sanctioned-network exception — see
   [`docs/ORPHAN-DEPS-SCAN.md`](docs/ORPHAN-DEPS-SCAN.md)), and the four "Boy
   Scout" issue-only templates `dead_code_template.ts` (#7),
   `doc_coverage_template.ts` (#8), `format_drift_template.ts` (#9), and
-  `deprecated_api_template.ts` (#10), wired into the production filer by; `bash_script_refs_template.ts` (#11, native layer-2 missing-script
-  scan,); and `bash_syntax_audit_template.ts` (#12, native weekly bash `bash -n`
-  + `shellcheck` + language-validity CI-gate audit — see
-  [`docs/BASH-SYNTAX-AUDIT-SCAN.md`](docs/BASH-SYNTAX-AUDIT-SCAN.md)); and
-  `documentation_audit_template.ts` (#13, LLM-only weekly prose-documentation
-  audit — unify PR-summary learnings into the README, prune stale docs — see
-  [`docs/DOCUMENTATION-AUDIT-SCAN.md`](docs/DOCUMENTATION-AUDIT-SCAN.md)); and
-  `alert_feed_template.ts` (#14, native weekly Dependabot + code-scanning
-  alert feed — one issue per new high/critical alert in the affected repo,
-  ); and `workflow_annotation_scan_template.ts` (#15, native weekly
-  scan of recent GitHub Actions workflow-run annotations — errors and warnings —
-  filing one self-contained, version-agnostic issue per annotation class;
-  complements the static `github-actions-audit` check #34 by catching the
-  runtime deprecation instances the static audit misses,); and
-  `private_repo_reference_template.ts` (#16, LLM-only weekly audit that runs
-  **only against a public repo** and detects direct references to a private
-  `stSoftwareAU` repo — runtime access, committed private-derived data, or
-  textual repo-name mentions — with the public-only gate read from the GitHub
-  API at scan time and enforced in both `shouldFile` and `runTask`, — see
-  [`docs/PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md`](docs/PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md));
-  and `duplicated_knowledge_template.ts` (#17, LLM-only weekly scan for
-  copy-pasted blocks of five or more lines that encode the **same knowledge** —
-  one rule with more than one authoritative copy — where a call to an existing
-  helper would serve every site, seeded by the deterministic
-  `duplicate_block_scanner.ts` pre-pass and biased towards silence because
-  duplicated text is not duplicated knowledge and the wrong abstraction is worse
-  than duplication, — see
-  [`docs/DUPLICATED-KNOWLEDGE-SCAN.md`](docs/DUPLICATED-KNOWLEDGE-SCAN.md));
-  and `retro_template.ts` (#18, LLM-only scan that retrospects the most recent
-  finished piece of work in a repository — a merged pull request, the issue it
-  closed, its commits, and its review and check feedback — and files at most one
-  suggestion-only issue proposing improvements to the **environment** the agent
-  worked in, never to the code that run wrote — see
-  [`docs/RETRO-SCAN.md`](docs/RETRO-SCAN.md));
-  and `gate_skip_drift_template.ts` (#19, native weekly audit that compares a
-  repository's own `quality.sh` with its own CI and files one issue naming every
-  tool the gate skips with a warning while CI installs and runs it — the drift
-  that let NEAT-AI-core PR 597 pass locally and fail in CI; suppressed for a
-  tool `container/tools.json` already pins for that repository — see
-  [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md));
-  and `ponytail_debt_template.ts` (#20, native weekly report that lists every
-  `// SIMPLE-ON-PURPOSE:` marker with its path, line, ceiling and upgrade
-  condition, flags a marker with no `upgrade when`, and posts or refreshes one
-  ledger issue without committing or opening a pull request — see
-  [`docs/PONYTAIL-DEBT-SCAN.md`](docs/PONYTAIL-DEBT-SCAN.md)).
-  The idle-task filer picks uniformly at random (1/20 each) between the
-  twenty on every idle pass.
+  `deprecated_api_template.ts` (#10), wired into the production filer by;
+  `bash_script_refs_template.ts` (#11, native layer-2 missing-script scan,); and
+  `bash_syntax_audit_template.ts` (#12, native weekly bash `bash -n`
+  - `shellcheck` + language-validity CI-gate audit — see
+    [`docs/BASH-SYNTAX-AUDIT-SCAN.md`](docs/BASH-SYNTAX-AUDIT-SCAN.md)); and
+    `documentation_audit_template.ts` (#13, LLM-only weekly prose-documentation
+    audit — unify PR-summary learnings into the README, prune stale docs — see
+    [`docs/DOCUMENTATION-AUDIT-SCAN.md`](docs/DOCUMENTATION-AUDIT-SCAN.md)); and
+    `alert_feed_template.ts` (#14, native weekly Dependabot + code-scanning
+    alert feed — one issue per new high/critical alert in the affected repo, );
+    and `workflow_annotation_scan_template.ts` (#15, native weekly scan of
+    recent GitHub Actions workflow-run annotations — errors and warnings —
+    filing one self-contained, version-agnostic issue per annotation class;
+    complements the static `github-actions-audit` check #34 by catching the
+    runtime deprecation instances the static audit misses,); and
+    `private_repo_reference_template.ts` (#16, LLM-only weekly audit that runs
+    **only against a public repo** and detects direct references to a private
+    `stSoftwareAU` repo — runtime access, committed private-derived data, or
+    textual repo-name mentions — with the public-only gate read from the GitHub
+    API at scan time and enforced in both `shouldFile` and `runTask`, — see
+    [`docs/PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md`](docs/PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md));
+    and `duplicated_knowledge_template.ts` (#17, LLM-only weekly scan for
+    copy-pasted blocks of five or more lines that encode the **same knowledge**
+    — one rule with more than one authoritative copy — where a call to an
+    existing helper would serve every site, seeded by the deterministic
+    `duplicate_block_scanner.ts` pre-pass and biased towards silence because
+    duplicated text is not duplicated knowledge and the wrong abstraction is
+    worse than duplication, — see
+    [`docs/DUPLICATED-KNOWLEDGE-SCAN.md`](docs/DUPLICATED-KNOWLEDGE-SCAN.md));
+    and `retro_template.ts` (#18, LLM-only scan that retrospects the most recent
+    finished piece of work in a repository — a merged pull request, the issue it
+    closed, its commits, and its review and check feedback — and files at most
+    one suggestion-only issue proposing improvements to the **environment** the
+    agent worked in, never to the code that run wrote — see
+    [`docs/RETRO-SCAN.md`](docs/RETRO-SCAN.md)); and
+    `gate_skip_drift_template.ts` (#19, native weekly audit that compares a
+    repository's own `quality.sh` with its own CI and files one issue naming
+    every tool the gate skips with a warning while CI installs and runs it — the
+    drift that let NEAT-AI-core PR 597 pass locally and fail in CI; suppressed
+    for a tool `container/tools.json` already pins for that repository — see
+    [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md)); and
+    `ponytail_debt_template.ts` (#20, native weekly report that lists every
+    `// SIMPLE-ON-PURPOSE:` marker with its path, line, ceiling and upgrade
+    condition, flags a marker with no `upgrade when`, and posts or refreshes one
+    ledger issue without committing or opening a pull request — see
+    [`docs/PONYTAIL-DEBT-SCAN.md`](docs/PONYTAIL-DEBT-SCAN.md)). The idle-task
+    filer picks uniformly at random (1/20 each) between the twenty on every idle
+    pass.
 
 See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the
 operator manual, lifecycle sequence diagram, registry flowchart, and
@@ -2870,43 +2863,43 @@ step-by-step instructions for adding a new template.
 
 An authorised human onboards a new repository to the monitored set by filing a
 `work-on` issue in `stSoftwareAU/VibeCoder` whose **title** is
-`add-repo: owner/repo` (e.g. `add-repo: stSoftwareAU/private-repo-11` — the slug is
-never hardcoded; any reachable `owner/repo` works). The dispatch loop routes the
-claimed issue to the `process-add-repo` command, which validates access and
+`add-repo: owner/repo` (e.g. `add-repo: stSoftwareAU/private-repo-11` — the slug
+is never hardcoded; any reachable `owner/repo` works). The dispatch loop routes
+the claimed issue to the `process-add-repo` command, which validates access and
 detects visibility at runtime, idempotently appends the slug to the per-machine
 `.config.json` (a forbidden-to-commit secrets file — never committed), syncs the
 full canonical GitHub label set to the target repo, configures the
-default-branch protection "wall", seeds all twenty idle-task wrappers
-in the target repo, then comments and closes the add-repo issue.
+default-branch protection "wall", seeds all twenty idle-task wrappers in the
+target repo, then comments and closes the add-repo issue.
 
 - **Timing.** The monitored-list change takes effect on the next config reload /
   worker restart; the seeded wrappers persist as open issues until the repo
   becomes active.
-- **Canonical label sync.** Onboarding syncs the full canonical
-  label set (`syncLabelsForRepo` over `LABEL_DEFINITIONS` — no second list) to
-  the new repo immediately, so a human can schedule/queue issues (`work-on`,
+- **Canonical label sync.** Onboarding syncs the full canonical label set
+  (`syncLabelsForRepo` over `LABEL_DEFINITIONS` — no second list) to the new
+  repo immediately, so a human can schedule/queue issues (`work-on`,
   `top-priority`, `grill-me`, …) right away rather than waiting for the next
   `setup.sh`/idle sync. It runs before wrapper seeding (so `idle-task` exists
   first), is idempotent, and is **non-fatal** — a failure is reported in the
   success comment but does not abort onboarding.
-- **Default-branch ruleset configuration.** Onboarding
-  configures the target repo's default-branch ruleset via the idempotent
-  `syncBranchProtectionForRepo` (which wraps `ensureDefaultBranchRuleset`,
-  ), forwarding the visibility resolved during validation so the
-  required-check selection is visibility-aware (no unsatisfiable check). A
-  repo whose default branch takes direct pushes, or that opted out (topic
-  `direct-push` / marker `.vibe/no-default-branch-ruleset`), gets **no**
-  ruleset and the success comment says so. It is
-  **non-fatal** — a configuration failure is reported in the success comment,
-  not swallowed, and the setup-time `branch-protection-sync` reconciles later.
+- **Default-branch ruleset configuration.** Onboarding configures the target
+  repo's default-branch ruleset via the idempotent `syncBranchProtectionForRepo`
+  (which wraps `ensureDefaultBranchRuleset`, ), forwarding the visibility
+  resolved during validation so the required-check selection is visibility-aware
+  (no unsatisfiable check). A repo whose default branch takes direct pushes, or
+  that opted out (topic `direct-push` / marker
+  `.vibe/no-default-branch-ruleset`), gets **no** ruleset and the success
+  comment says so. It is **non-fatal** — a configuration failure is reported in
+  the success comment, not swallowed, and the setup-time
+  `branch-protection-sync` reconciles later.
 - **Failure paths.** An unparseable title is commented on and closed; a repo
   that is not found or grants no triage access is commented with the
   `gh api ... permission=triage` remediation and escalated via `needs-human`
   (through `escalateToHuman`), and the repo is **not** added.
 - **Deliberate skips.** The remaining one-off setup syncs (workflows,
   `.gitignore`, collaborator precheck) are **not** re-run — best-practice setup
-  is delegated to the twenty idle tasks. Visibility gating (which idle checks fire
-  on private repos) is handled at runtime per.
+  is delegated to the twenty idle tasks. Visibility gating (which idle checks
+  fire on private repos) is handled at runtime per.
 - **Labels.** No new worker-applied label behaviour: the flow relies on the
   existing `idle-task` self-apply (via the wrappers) and `needs-human` (only
   through `escalateToHuman`). The canonical label sync only **creates label
@@ -2917,14 +2910,14 @@ validation, monitored-list append), `worker/deno/commands/process_add_repo.ts`
 (orchestrator), `worker/deno/lib/create_all_idle_task_wrappers.ts` (wrapper
 seeding), `worker/deno/setup/branch_protection_sync.ts`
 (`syncBranchProtectionForRepo` — single-repo default-branch ruleset), and
-`worker/deno/lib/add_repo_process_issue_route.ts` (dispatch
-routing). See [`docs/ADD-REPO.md`](docs/ADD-REPO.md) for the operator manual,
-end-to-end flow diagram, timing/secrets caveats, and failure-path table.
+`worker/deno/lib/add_repo_process_issue_route.ts` (dispatch routing). See
+[`docs/ADD-REPO.md`](docs/ADD-REPO.md) for the operator manual, end-to-end flow
+diagram, timing/secrets caveats, and failure-path table.
 
 ### Release the claim on terminal failure
 
 Every self-assigning phase processor must release its claim — unassign the
-worker — on **every** terminal exit, success *and* failure, not just the happy
+worker — on **every** terminal exit, success _and_ failure, not just the happy
 path. A processor that self-assigns the worker on claim (grill-me, clarity,
 planning, refinement, question, revision) hands the ball back to the developer
 when it finishes a round, routes via a label, or hits a terminal failure; once
@@ -2932,16 +2925,16 @@ the ball is back in the developer's court the self-assignment must be dropped.
 
 **Why.** A claim left dangling on a terminal failure is the worst case: the
 issue stays assigned to the worker with no live heartbeat, so the
-assigned-without-heartbeat recovery trips a spurious
-"Automatic recovery" comment ~30 minutes later, and meanwhile no other worker —
-and not the consecutive-failure escalation — can take the issue over cleanly.
-Releasing the claim on the failure path lets the next worker (or the escalation
-backstop) pick the issue up immediately and keeps the recovery scan quiet.
+assigned-without-heartbeat recovery trips a spurious "Automatic recovery"
+comment ~30 minutes later, and meanwhile no other worker — and not the
+consecutive-failure escalation — can take the issue over cleanly. Releasing the
+claim on the failure path lets the next worker (or the escalation backstop) pick
+the issue up immediately and keeps the recovery scan quiet.
 
 **The rule (KISS):**
 
 - Release the claim on **every** terminal exit path — success, label hand-off,
-  *and* terminal failure.
+  _and_ terminal failure.
 - Release **after** posting the failure marker / round comment, so the audit
   trail records what happened before the assignment is dropped.
 - The release is **best-effort**: try, log on failure, swallow the error, never
@@ -2950,19 +2943,19 @@ backstop) pick the issue up immediately and keeps the recovery scan quiet.
   silently-failed unassign.
 
 **Implementation.** Use the shared helper
-[`releaseClaim`](worker/deno/lib/claim_release.ts) — do not
-copy-paste a bespoke unassign block into a new processor. The helper centralises
-the try/log/return-boolean shape; every self-assigning processor
+[`releaseClaim`](worker/deno/lib/claim_release.ts) — do not copy-paste a bespoke
+unassign block into a new processor. The helper centralises the
+try/log/return-boolean shape; every self-assigning processor
 ([`grill_me_processor.ts`](worker/deno/lib/grill_me_processor.ts) —,
 [`planning_processor.ts`](worker/deno/lib/planning_processor.ts),
 [`refinement_processor.ts`](worker/deno/lib/refinement_processor.ts),
 [`question_processor.ts`](worker/deno/lib/question_processor.ts),
 [`revision_processor.ts`](worker/deno/lib/revision_processor.ts) — extended to
 the full "for all" set in) routes its terminal paths through it. The
-consecutive-failure → `needs-human` escalation, which counts
-failures across **all** worker identities so it fires in a fleet, is the loop's
-terminating backstop: once a freed-and-retried issue exceeds the threshold it is
-escalated to a human rather than re-claimed indefinitely.
+consecutive-failure → `needs-human` escalation, which counts failures across
+**all** worker identities so it fires in a fleet, is the loop's terminating
+backstop: once a freed-and-retried issue exceeds the threshold it is escalated
+to a human rather than re-claimed indefinitely.
 
 See
 [`docs/INTERNALS.md` → Unified claim release](docs/INTERNALS.md#-1-worker-run-loop-and-process-lifecycle)
@@ -2971,26 +2964,26 @@ for where this sits in the claim/heartbeat lifecycle.
 ### Analysis-only / no-PR issues under `work-on`
 
 `work-on` treats a raised PR as its completion signal. An issue whose only
-deliverable is analysis — a gap analysis, coverage matrix, or
-"populate the issue" recommendation posted as a comment — produces no PR, so the
-"no PR" outcome reads as "not done" and the issue is re-picked-up and re-run
-indefinitely (the loop, which re-posted the same matrix plus an "unable to
-make code changes" note about five times).
+deliverable is analysis — a gap analysis, coverage matrix, or "populate the
+issue" recommendation posted as a comment — produces no PR, so the "no PR"
+outcome reads as "not done" and the issue is re-picked-up and re-run
+indefinitely (the loop, which re-posted the same matrix plus an "unable to make
+code changes" note about five times).
 
 An issue whose body carries `<!-- analysis-only -->` (or `<!-- no-pr -->`) is
 run like any other: the analysis is the deliverable, so the agent must produce
-it. A run that ends with no code changes and useful text posts the analysis
-and **closes the issue as completed** (Issue #4298). It used to be handed to a
-human to read and decide; that hand-off — up front before Claude ran, and after
-the run — is gone, because handing an issue back is a failure, not an
-outcome. An approved issue without the marker is retried as not finished
-instead (Issue #4227). The loop guard for the remaining case (no changes
-**and** no useful output) is the `failed-once` record and its escalating
-cooldown in [`label_failure.ts`](worker/deno/lib/label_failure.ts), so
-`work-on` re-runs the same issue at most once a day, and never parks it
-(Issue #4158). The image gate still wins: when an untrusted author's image sat
-in front of an agent that reported the issue already fixed, nothing it said
-closes the issue, marked or not (Issue #1385).
+it. A run that ends with no code changes and useful text posts the analysis and
+**closes the issue as completed** (Issue #4298). It used to be handed to a human
+to read and decide; that hand-off — up front before Claude ran, and after the
+run — is gone, because handing an issue back is a failure, not an outcome. An
+approved issue without the marker is retried as not finished instead (Issue
+#4227). The loop guard for the remaining case (no changes **and** no useful
+output) is the `failed-once` record and its escalating cooldown in
+[`label_failure.ts`](worker/deno/lib/label_failure.ts), so `work-on` re-runs the
+same issue at most once a day, and never parks it (Issue #4158). The image gate
+still wins: when an untrusted author's image sat in front of an agent that
+reported the issue already fixed, nothing it said closes the issue, marked or
+not (Issue #1385).
 
 **Implementation:** [`analysis_only.ts`](worker/deno/lib/analysis_only.ts)
 (`hasAnalysisOnlyMarker`) and
@@ -3004,36 +2997,36 @@ Analysis-only / no-PR issues for the operator detail.
 A `work-on` run that produces no code changes can close as already complete,
 close an explicitly marked analysis-only issue with its analysis (Issue #4298),
 defer on an open dependency, or retry as not finished (Issue #4227).
-Historically, a run that read the code and found the work genuinely blocked
-on another issue had no ending, so it fell through to the analysis-only
-branch: NEAT-AI-Backpropagation#94's correct, well-evidenced
-"## Blocked: `creature_validate` …" answer was described as
-"analysis-only / recommendation-only", escalated to `needs-human`, and closed as
-`not planned` by the implementing agent itself.
+Historically, a run that read the code and found the work genuinely blocked on
+another issue had no ending, so it fell through to the analysis-only branch:
+NEAT-AI-Backpropagation#94's correct, well-evidenced "## Blocked:
+`creature_validate` …" answer was described as "analysis-only /
+recommendation-only", escalated to `needs-human`, and closed as `not planned` by
+the implementing agent itself.
 
 **Committed runs too (Issue #3088).** Detection no longer requires "no code
 changes" either — a `declared_handoff` phase runs after execute and before
 `bump_deps` / the quality gate / completion. On that path a `## Blocked:`
 heading defers only when its `Depends on` or `Blocked by` line names a
-dependency the worker reads as open. A closed dependency, a missing `state`,
-or a lookup that fails does not defer; the committed run is retried as not
-finished and raises no PR (Issue #4227). A dependency filed during this run
-does not defer either, on either path: the worker reads that from the
-issue, when its author is this host's login or another fleet author and
-its `createdAt` is at or after the whole run started. A later execute
-attempt does not move that start. A committed run is retried and raises no
-PR; a no-changes run is retried the same way, straight away — bypassing the
-usage-limit and interrupted-run checks, the described-code-change retry, and
-the short-output failure, so the next run never defers onto a follow-up nothing
-picks up (Issues #3146, #4227). Wording such as "out of scope" does not turn an
-older open dependency into that case. A bullet, or a heading with no
-`Depends on` / `Blocked by` line, still continues and raises its PR. A time
-deferral or a planning marker is still honoured after a commit, so the worker
-defers or hands to planning rather than sailing through to a `Closes #N` PR. Before any of those
-hand-offs the phase pushes the branch through `commitAndPushPending`, which
-refuses the default branch and runs `assertSafeToCommit`. The hand-off is
-applied only once nothing is left unpushed. A failed push returns a failure
-and posts no comment; the phase raises no PR. See
+dependency the worker reads as open. A closed dependency, a missing `state`, or
+a lookup that fails does not defer; the committed run is retried as not finished
+and raises no PR (Issue #4227). A dependency filed during this run does not
+defer either, on either path: the worker reads that from the issue, when its
+author is this host's login or another fleet author and its `createdAt` is at or
+after the whole run started. A later execute attempt does not move that start. A
+committed run is retried and raises no PR; a no-changes run is retried the same
+way, straight away — bypassing the usage-limit and interrupted-run checks, the
+described-code-change retry, and the short-output failure, so the next run never
+defers onto a follow-up nothing picks up (Issues #3146, #4227). Wording such as
+"out of scope" does not turn an older open dependency into that case. A bullet,
+or a heading with no `Depends on` / `Blocked by` line, still continues and
+raises its PR. A time deferral or a planning marker is still honoured after a
+commit, so the worker defers or hands to planning rather than sailing through to
+a `Closes #N` PR. Before any of those hand-offs the phase pushes the branch
+through `commitAndPushPending`, which refuses the default branch and runs
+`assertSafeToCommit`. The hand-off is applied only once nothing is left
+unpushed. A failed push returns a failure and posts no comment; the phase raises
+no PR. See
 [`lib/phases/declared_handoff.ts`](worker/deno/lib/phases/declared_handoff.ts).
 
 A blocked run is now **deferred**:
@@ -3044,15 +3037,16 @@ A blocked run is now **deferred**:
   `isDependencyBlocked` reads — so the dependency gate skips the issue on every
   scan until that dependency closes (the `blocked` label is the fallback when
   the body cannot be edited). The line goes inside a delimited, machine-owned
-  block (`<!-- vibe-worker-record-start -->` … `<!-- vibe-worker-record-end -->`)
-  that the content-approval gate strips before hashing, so the fleet's own
-  bookkeeping write no longer reads as content changed after approval
-  (Issue #1631). The exemption is scoped to the **edit**, never the author: a
-  block is ignored only while every line inside it matches
-  `Depends on [owner/repo]#N` or (Issue #2873) `Deferred until
-  YYYY-MM-DDTHH:MM:SSZ` — the line the time-gated deferral below writes — so
-  nothing else can be smuggled past the gate,
-  and a compromised agent running as the worker's own login gains nothing;
+  block (`<!-- vibe-worker-record-start -->` …
+  `<!-- vibe-worker-record-end -->`) that the content-approval gate strips
+  before hashing, so the fleet's own bookkeeping write no longer reads as
+  content changed after approval (Issue #1631). The exemption is scoped to the
+  **edit**, never the author: a block is ignored only while every line inside it
+  matches `Depends on [owner/repo]#N` or (Issue #2873)
+  `Deferred until
+  YYYY-MM-DDTHH:MM:SSZ` — the line the time-gated deferral
+  below writes — so nothing else can be smuggled past the gate, and a
+  compromised agent running as the worker's own login gains nothing;
 - the claim is released with the outcome `deferred: depends on owner/repo#N`,
   which the release comment states.
 
@@ -3063,17 +3057,17 @@ References quoted inside code fences are ignored, matching
 `extractDependencyReferences`.
 
 **A deferral is never repeated silently.** The deferral comment carries a hidden
-marker naming the dependency, and a run that reports the *same* dependency again
+marker naming the dependency, and a run that reports the _same_ dependency again
 does not defer a second time — the gate plainly did not hold (the dependency
 closed and the work is still reported blocked, or the record was lost), and
-re-deferring would spend a full agent run on every scan. The repeat returns
-a not-finished failure on the normal retry ladder; it is still never closed
-(Issue #4227). The marker is looked up in the issue's full comment thread (fetched via
-the GitHub client, every author), not the budgeted prompt comments (20
-comments / 12,000 characters): on a busy issue that budget could drop the
-marker, so the guard never fired and the same dependency was re-deferred on
-every scan (Issue #2936). The prompt comments are used only as a fallback,
-with a logged warning, if the full-thread fetch fails.
+re-deferring would spend a full agent run on every scan. The repeat returns a
+not-finished failure on the normal retry ladder; it is still never closed (Issue
+#4227). The marker is looked up in the issue's full comment thread (fetched via
+the GitHub client, every author), not the budgeted prompt comments (20 comments
+/ 12,000 characters): on a busy issue that budget could drop the marker, so the
+guard never fired and the same dependency was re-deferred on every scan (Issue
+#2936). The prompt comments are used only as a fallback, with a logged warning,
+if the full-thread fetch fails.
 
 Two supporting changes make the deferral hold. The dependency gate now resolves
 a **cross-repo** `Depends on owner/repo#N` against its own repo — previously
@@ -3097,59 +3091,61 @@ flowchart TD
 ### A time-gated analysis run is parked, not escalated (Issue #2873)
 
 Some analysis-only issues have a correct answer the agent simply cannot reach
-yet — "measure X over the last 7 days" asked before the window has elapsed.
-That is a third shape beside "blocked on another issue" and
-"analysis-only with no deliverable": a wait on the **calendar**, not on a
-dependency or a human. The agent says so with
-`<!-- vibe-defer-until until="<ISO-8601>" reason="…" -->`, checked immediately
-after the `## Blocked:` dependency deferral above and before the
-already-resolved / analysis-only checks. `until` must be in the future and at
-most 30 days out; anything else is ignored and the run falls through unchanged.
+yet — "measure X over the last 7 days" asked before the window has elapsed. That
+is a third shape beside "blocked on another issue" and "analysis-only with no
+deliverable": a wait on the **calendar**, not on a dependency or a human. The
+agent says so with `<!-- vibe-defer-until until="<ISO-8601>" reason="…" -->`,
+checked immediately after the `## Blocked:` dependency deferral above and before
+the already-resolved / analysis-only checks. `until` must be in the future and
+at most 30 days out; anything else is ignored and the run falls through
+unchanged.
 
 A time-gated run is **parked**: one `## Deferred until <time>` comment (hidden
-`<!-- vibe-time-deferral until="…" -->` record), a `Deferred until
-YYYY-MM-DDTHH:MM:SSZ` line in the same worker-record block that carries
-`Depends on owner/repo#N`, the discovery label kept, no `needs-human`, claim
-released. Discovery skips it with reason `time-deferred` until `until` passes,
-then re-runs it — the same single-issue suppression the dependency wait uses,
-never a whole repo or tier. After three deferrals on one issue
+`<!-- vibe-time-deferral until="…" -->` record), a
+`Deferred until
+YYYY-MM-DDTHH:MM:SSZ` line in the same worker-record block that
+carries `Depends on owner/repo#N`, the discovery label kept, no `needs-human`,
+claim released. Discovery skips it with reason `time-deferred` until `until`
+passes, then re-runs it — the same single-issue suppression the dependency wait
+uses, never a whole repo or tier. After three deferrals on one issue
 (`MAX_TIME_DEFERRALS`) the next marker is not honoured: the worker posts
 `## Deferral limit reached` with the deferral history and falls back to the
 not-finished retry on the normal failure ladder (#4227) instead. Only a time
 wait is supported; there is no run-count variant.
 
-**Implementation:** [`worker_record_block.ts`](worker/deno/lib/worker_record_block.ts)
-(shared grammar for both machine-owned lines). Operator view:
+**Implementation:**
+[`worker_record_block.ts`](worker/deno/lib/worker_record_block.ts) (shared
+grammar for both machine-owned lines). Operator view:
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) →
 Time-gated deferral.
 
 ### A blocked issue promotes its chain rather than yielding the fleet
 
-Deferring a blocked issue keeps it safe, but on its own it also hands the host to
-lower-priority work: a `top-priority` issue waiting on `Depends on #N` is skipped
-by the dependency gate, and the very next candidate the ladder offers is a
-`low-priority` one. The fleet then works the least valuable thing available while
-the most valuable chain sits still — even though `#N` itself is open, labelled
-and nobody's.
+Deferring a blocked issue keeps it safe, but on its own it also hands the host
+to lower-priority work: a `top-priority` issue waiting on `Depends on #N` is
+skipped by the dependency gate, and the very next candidate the ladder offers is
+a `low-priority` one. The fleet then works the least valuable thing available
+while the most valuable chain sits still — even though `#N` itself is open,
+labelled and nobody's.
 
 Discovery now walks that chain. From every dependency-blocked `top-priority` or
 `work-on` candidate it walks the blockers breadth-first, and each member that is
 **open, itself unblocked, carrying a discovery label and unassigned** is
 **promoted into the blocked issue's own tier** for that scan. Unblocking the
-chain *is* the top-priority work, so it is ranked as such.
+chain _is_ the top-priority work, so it is ranked as such.
 
 Three boundaries keep the promotion honest:
 
 - **Promotion changes rank, never eligibility.** A promoted issue is otherwise
-  untouched — same repo, same labels, same discovery source. An issue that is not
-  already a candidate at some tier is not made one by being in a chain.
-- **No labels are written.** The worker cannot apply `top-priority` to anything —
-  label security strips reserved labels the worker adds — so a promotion lives in
-  memory for exactly one scan and is recomputed from scratch on the next.
+  untouched — same repo, same labels, same discovery source. An issue that is
+  not already a candidate at some tier is not made one by being in a chain.
+- **No labels are written.** The worker cannot apply `top-priority` to anything
+  — label security strips reserved labels the worker adds — so a promotion lives
+  in memory for exactly one scan and is recomputed from scratch on the next.
 - **A chain that cannot be read is never assumed closed.** A blocker in a repo
-  whose issue list could not be fetched stays in the chain; only a blocker absent
-  from a list that *was* read counts as closed. A cycle terminates on its own
-  members rather than looping; chain members off the cycle still promote.
+  whose issue list could not be fetched stays in the chain; only a blocker
+  absent from a list that _was_ read counts as closed. A cycle terminates on its
+  own members rather than looping; chain members off the cycle still promote.
 
 Each promotion is auditable from the scan log alone:
 
@@ -3157,25 +3153,24 @@ Each promotion is auditable from the scan log alone:
 [issue-finder] promoted-dependency=owner/repo#412 for #398
 ```
 
-The blocked issue's own counter is untouched — `configured-label-blocked=N` still
-counts every blocked candidate, promoted chain or not, so the two lines answer
-different questions and neither hides the other.
+The blocked issue's own counter is untouched — `configured-label-blocked=N`
+still counts every blocked candidate, promoted chain or not, so the two lines
+answer different questions and neither hides the other.
 
-When the walk ends somewhere the fleet cannot go, the root is **classified rather
-than retried**: `cross-repo-unmonitored` (the blocker lives in a repo this fleet
-does not monitor), `needs-human`, `assigned` (a human holds it), or
+When the walk ends somewhere the fleet cannot go, the root is **classified
+rather than retried**: `cross-repo-unmonitored` (the blocker lives in a repo
+this fleet does not monitor), `needs-human`, `assigned` (a human holds it), or
 `no-discovery-label`. Those four become the root sentence of the blocked issue's
 **gate comment** (Issue #2535). Every held `top-priority`/`work-on` issue
-carries exactly one fleet comment naming the gate that holds it — *PR #N is
-open on this stream*, *waits on milestone M*, or *waits on dependency #N* —
-with the unworkable root and its reason added to the last. No labels change;
-the comment is **edited in place** when the gate moves, so it never names a
-root the chain has passed, and the retired stand-alone chain-root comment
-(#2496) is deleted once the gate comment is written. A root assigned to a
-**fleet** account is not unworkable at all: a sibling host is already on it, so
-the root sentence is left out (logging `chain-root-in-progress` only under
-`ISSUE_FINDER_DEBUG=true`) — the issue is still told which dependency it waits
-on.
+carries exactly one fleet comment naming the gate that holds it — _PR #N is open
+on this stream_, _waits on milestone M_, or _waits on dependency #N_ — with the
+unworkable root and its reason added to the last. No labels change; the comment
+is **edited in place** when the gate moves, so it never names a root the chain
+has passed, and the retired stand-alone chain-root comment (#2496) is deleted
+once the gate comment is written. A root assigned to a **fleet** account is not
+unworkable at all: a sibling host is already on it, so the root sentence is left
+out (logging `chain-root-in-progress` only under `ISSUE_FINDER_DEBUG=true`) —
+the issue is still told which dependency it waits on.
 
 ```mermaid
 flowchart TD
@@ -3227,11 +3222,12 @@ kept as a fallback for agents that phrase it in prose.
 
 **Closing requires cited evidence.** A commit and/or PR reference, plus (on the
 marker path) how the fix was verified. Without it the run is retried as not
-finished, which is deliberately tighter than the keyword path it replaces: that path closed on a plain "already fixed" claim. The evidence is
-recorded in the close comment, so the closure is auditable from the issue alone,
-and it is what keeps this from recreating the failure of closing an issue by
-inference from a PR that merely references it — the agent must verify the code
-itself, not read a cross-reference.
+finished, which is deliberately tighter than the keyword path it replaces: that
+path closed on a plain "already fixed" claim. The evidence is recorded in the
+close comment, so the closure is auditable from the issue alone, and it is what
+keeps this from recreating the failure of closing an issue by inference from a
+PR that merely references it — the agent must verify the code itself, not read a
+cross-reference.
 
 **Implementation:**
 [`already_resolved_outcome.ts`](worker/deno/lib/already_resolved_outcome.ts),
@@ -3251,17 +3247,17 @@ The merged-PR pre-check refuses to close an issue whose PR merged but whose
 change never landed — a child PR merged into a milestone branch after that
 milestone's rollup PR had already merged into the default branch. Reporting the
 refusal as a **success** is what livelocked the pool: the scan forgot the issue
-immediately, both slots re-claimed the same top candidate every cycle
-(GRQ#4173, 13 bounces in the first 40 minutes of a run), no rollup PR was ever
-raised, and every bounce was counted in `WORKER_SUMMARY` as a processed issue.
+immediately, both slots re-claimed the same top candidate every cycle (GRQ#4173,
+13 bounces in the first 40 minutes of a run), no rollup PR was ever raised, and
+every bounce was counted in `WORKER_SUMMARY` as a processed issue.
 
 **The rule.** A phase that ends a run without resolving the issue and without
-failing declares an **expected skip**
-(`WorkOnIssueResult.expectedSkip`). The main loop then treats it exactly like a
-claim rejection: record the retry cooldown, release the claim, leave failure
-tracking and the circuit breaker alone, and do **not** count it as a processed
-issue. Because the cooldown state is shared across slots and re-read on every
-scan, one unresolvable issue can no longer consume both slots.
+failing declares an **expected skip** (`WorkOnIssueResult.expectedSkip`). The
+main loop then treats it exactly like a claim rejection: record the retry
+cooldown, release the claim, leave failure tracking and the circuit breaker
+alone, and do **not** count it as a processed issue. Because the cooldown state
+is shared across slots and re-read on every scan, one unresolvable issue can no
+longer consume both slots.
 
 **Self-heal first.** A refusal that nothing can change is a loop by
 construction, so the pre-check repairs what it can before bouncing: an orphaned
@@ -3270,10 +3266,11 @@ rollup PR raised in the same cycle
 ([`orphaned_rollup.ts`](worker/deno/lib/orphaned_rollup.ts), idempotent — an
 open rollup PR for that branch is reported, never duplicated). When the rollup
 lands the merge commit becomes reachable and the ordinary close-on-merge path
-closes the issue with no human action. A repair that fails is reported loudly
-in the `WARNING` line, never swallowed.
+closes the issue with no human action. A repair that fails is reported loudly in
+the `WARNING` line, never swallowed.
 
-**Implementation:** [`phases/merged_pr_precheck_phase.ts`](worker/deno/lib/phases/merged_pr_precheck_phase.ts),
+**Implementation:**
+[`phases/merged_pr_precheck_phase.ts`](worker/deno/lib/phases/merged_pr_precheck_phase.ts),
 [`orphaned_rollup.ts`](worker/deno/lib/orphaned_rollup.ts), and
 `isExpectedSkipResult` in
 [`issue_worker_types.ts`](worker/deno/lib/issue_worker_types.ts). See
@@ -3300,27 +3297,27 @@ permanently-red test stops being read.
 
 **The rule.** The outcome names what happened, and the three cases are distinct:
 **work failed** (`no_pr`, with its diagnosed category — the deadline-exceeded
-case is `timeout`), **work done, summary incomplete** (`summary_incomplete`), and
-everything the existing outcomes already covered. A run that raised a mergeable
-PR is never recorded `failure` for a summary-format shortfall alone, and its
-issue stays attached to that PR instead of going back in the queue.
+case is `timeout`), **work done, summary incomplete** (`summary_incomplete`),
+and everything the existing outcomes already covered. A run that raised a
+mergeable PR is never recorded `failure` for a summary-format shortfall alone,
+and its issue stays attached to that PR instead of going back in the queue.
 
-The run's first summary-rule block gets the one in-run recovery turn whether
-or not the agent already raised the PR itself from inside the execute phase
-(Issue #3163): a PR the agent raised itself is not finalised or auto-merged
-until that turn has run. A block that survives that turn — the run's
-second — does not fail the run (Issue #4234). The pull request is raised or
-finalised and auto-merge stays armed, and whatever remains is one comment
-for the reviewer. A standing Standards violation on the branch's own lines is
-a defect in the change, not a documentation shortfall, so that recovery turn
-may fix the code for it, and an existing PR finalised with one still standing
-has it posted on the PR for the next run to fix (Issues #3382, #4291).
+The run's first summary-rule block gets the one in-run recovery turn whether or
+not the agent already raised the PR itself from inside the execute phase (Issue
+#3163): a PR the agent raised itself is not finalised or auto-merged until that
+turn has run. A block that survives that turn — the run's second — does not fail
+the run (Issue #4234). The pull request is raised or finalised and auto-merge
+stays armed, and whatever remains is one comment for the reviewer. A standing
+Standards violation on the branch's own lines is a defect in the change, not a
+documentation shortfall, so that recovery turn may fix the code for it, and an
+existing PR finalised with one still standing has it posted on the PR for the
+next run to fix (Issues #3382, #4291).
 
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in
-`prompts/issue/prompt.md` — stating the verdict field on every surface that names
-`unrequested`, not only showing it in the example — rather than in a gate that
-fails the run afterwards.
+`prompts/issue/prompt.md` — stating the verdict field on every surface that
+names `unrequested`, not only showing it in the example — rather than in a gate
+that fails the run afterwards.
 
 **The security case keeps its hard block, and goes first.** A PR closing a
 `security`-labelled finding without its vulnerability-fix evidence stops the run
@@ -3333,37 +3330,37 @@ block it has not already had its say on.
 [`phases/completion_phase.ts`](worker/deno/lib/phases/completion_phase.ts) and
 `summaryIncompleteOutcome` in
 [`run_outcome.ts`](worker/deno/lib/run_outcome.ts). See
-[`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) →
-A summary shortfall after the PR is not a failed run.
+[`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) → A
+summary shortfall after the PR is not a failed run.
 
 ### An issue this run finished is never re-offered to the scan
 
 The scan ranks a cached issue list whose TTL is 600 s, and until Issue #181 the
-success path recorded no local exclusion at all — only skips and failures took
-a cooldown. So an idle-task wrapper that was scanned, commented and **closed**
-at 02:02Z was re-claimed and "processed" again at 02:05Z and 02:08Z from the
-same stale list, while thirteen open wrappers in that repo were never reached
-and every bounce counted in `WORKER_SUMMARY` as a processed issue.
+success path recorded no local exclusion at all — only skips and failures took a
+cooldown. So an idle-task wrapper that was scanned, commented and **closed** at
+02:02Z was re-claimed and "processed" again at 02:05Z and 02:08Z from the same
+stale list, while thirteen open wrappers in that repo were never reached and
+every bounce counted in `WORKER_SUMMARY` as a processed issue.
 
-**The rule.** Every terminal outcome of the scan loop — success, skip, failure
-— and every issue the worker itself closes is recorded in a per-run
+**The rule.** Every terminal outcome of the scan loop — success, skip, failure —
+and every issue the worker itself closes is recorded in a per-run
 [`ProcessedIssueRegistry`](worker/deno/lib/processed_issue_registry.ts). The
 scan excludes what it holds and the claim refuses it (`already_closed`), so
-re-claiming does not depend on a cache TTL, on invalidation having succeeded,
-or on an API round-trip. The registry is in-process and one process is one run,
-so an entry lives exactly as long as the run; a `gh issue reopen` clears it
+re-claiming does not depend on a cache TTL, on invalidation having succeeded, or
+on an API round-trip. The registry is in-process and one process is one run, so
+an entry lives exactly as long as the run; a `gh issue reopen` clears it
 immediately.
 
-**Close, then forget — at the chokepoint.** The close hook lives in
-`spawnGh` ([`issue_close_notifier.ts`](worker/deno/lib/issue_close_notifier.ts)),
-the single place every worker `gh` call passes through, so the idle-task
-wrapper closure, close-on-merge, the self-healing closes and the stale-workflow
-purge are all covered without each remembering to invalidate for itself. The
-same hook drops the repo's `issues_all` / `issues_closed_all`, every
-per-milestone closed list (`issues_closed_milestone_<n>`) and the per-issue
-cache entries. The claim's own open-state check (`fetchIssueState`) reads
-through the **uncached** `runGhCommand`: a stale "OPEN" there is exactly what
-lets a closed issue be claimed.
+**Close, then forget — at the chokepoint.** The close hook lives in `spawnGh`
+([`issue_close_notifier.ts`](worker/deno/lib/issue_close_notifier.ts)), the
+single place every worker `gh` call passes through, so the idle-task wrapper
+closure, close-on-merge, the self-healing closes and the stale-workflow purge
+are all covered without each remembering to invalidate for itself. The same hook
+drops the repo's `issues_all` / `issues_closed_all`, every per-milestone closed
+list (`issues_closed_milestone_<n>`) and the per-issue cache entries. The
+claim's own open-state check (`fetchIssueState`) reads through the **uncached**
+`runGhCommand`: a stale "OPEN" there is exactly what lets a closed issue be
+claimed.
 
 **Implementation:**
 [`processed_issue_registry.ts`](worker/deno/lib/processed_issue_registry.ts),
