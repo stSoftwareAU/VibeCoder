@@ -1017,18 +1017,44 @@ from _bumping_ deps to _fixing their root causes_.
 
 - **Internal `stSoftwareAU/*` dependency you can access → fix the root cause
   cross-repo, in this run. Do NOT defer it to a follow-up issue.** "Can access"
-  means the `stSoftwareAU/*` repo is reachable — you can clone it and open a PR
-  against it. Fix the bug in the dependency's own repo (raise a PR there)
-  **and** bring that fix into the consuming repo in the same run, relying on the
-  cross-repo capability. A follow-up issue for the fix itself is **not** an
-  acceptable default.
+  means this repo's own manifest on its default branch declares the dependency
+  (`deno.json`, `deno.jsonc`, `package.json`, `worker/deno/deno.json`, or
+  `Cargo.toml` and each literal workspace member's `Cargo.toml`, via a `path`
+  sibling checkout or a github.com `git` URL under the owner), **and** you can
+  clone its repo and push a branch to it. Check the manifest before pushing
+  anything, for example `git show origin/<default-branch>:deno.json`. Fix the
+  bug in the dependency's own repo (raise a PR there) **and** bring that fix
+  into the consuming repo in the same run, relying on the cross-repo
+  capability. A follow-up issue for the fix itself is **not** an acceptable
+  default.
 - **Recurse to where the root cause actually lives.** This rule is general to
   _every_ internal `stSoftwareAU/*` dependency — no single dependency is special
   — and it follows transitive internal dependencies: if the root cause is in an
-  internal dependency _of_ an internal dependency, fix it there.
-- **Unreachable internal dependency → treat as external.** If an
-  `stSoftwareAU/*` repo cannot be cloned, or you cannot open a PR against it,
-  treat it as external for this decision.
+  internal dependency _of_ an internal dependency, fix it there. A transitive
+  internal dependency is on this path only when this repo's own manifest also
+  declares it; otherwise it is the undeclared case below.
+- **Undeclared or unreachable internal repo → no branch, no marker.** A
+  `stSoftwareAU/*` repo this repo's manifests do not declare — such as one a
+  script checks out and runs, or a transitive dependency this repo does not
+  declare — is refused by the worker however reachable it is; reachability
+  grants no cross-repo write authority. The same holds for a repo you cannot
+  clone or push. Push no branch there and declare no `vibe-cross-repo-pr`
+  marker. Instead:
+  - Fix here what this repo's own code owns, including a workaround such as
+    pinning the last good version the script checks out, as for an external
+    dependency.
+  - Route the rest to the repository whose code must change, under
+    `docs/ISSUE-ROUTING.md` in stSoftwareAU/VibeCoder. When an open issue or PR
+    there already tracks it, reuse it: link it in the PR summary, and when this
+    repo can do nothing more until it lands, end with the `## Blocked:` shape
+    and `Depends on stSoftwareAU/<repo>#N` so the worker defers this issue
+    until it closes. When none exists, name the owning repository and the basis
+    for it in the PR summary so an operator can file it there with the worker's
+    `route-issue` command; this run cannot file it, because its `gh` writes
+    reach only the repo it is working.
+  - Keep this repo's unmet requirement open: record it as `partial` or
+    `missing` with that reason, and never as `met` because a fix branch exists
+    in another repo.
 - **External (non-`stSoftwareAU/*`) dependency → work around it here.** Pin
   the last good version, replace the package, or vendor and patch the code in
   this repo, and record the upstream defect in the PR summary. No run hands it
@@ -1042,7 +1068,8 @@ from _bumping_ deps to _fixing their root causes_.
 `gh pr create --repo stSoftwareAU/<dep>` **from your own shell is refused**: the
 run's `gh` guard allows writes to the claim repo only, so the call dies with
 `[SECURITY] [WRITE_REPO_BLOCKED]`. Do not retry it, do not try to widen the
-allowlist, and do not hand the PR to a human. Use the sanctioned path instead:
+allowlist, and do not hand the PR to a human. This path is only for a
+dependency the definition above covers. Use the sanctioned path instead:
 
 1. **Push the branch yourself.** `git` is not guarded — clone the dependency
    repo, commit the fix on a feature branch, and push that branch to
@@ -1062,10 +1089,12 @@ The worker then validates the target (internal `stSoftwareAU/*` owner, **a
 dependency this repo's own manifest declares**, reachable, pushable, the branch
 actually pushed, not the default branch), opens the PR through its own boundary,
 and cross-links it on the issue. Sharing the owner is not enough on its own —
-the target must be a real dependency of the repo you are working, read from that
-repo's default branch, so a sibling repo it does not depend on is refused. If it cannot
-open the PR it escalates to `needs-human` with the branch details, so a declared
-fix is never stranded on an unreferenced branch.
+the target must meet the "Can access" definition above, read from this repo's
+default branch, so a sibling repo it does not depend on is refused. A refused
+declaration escalates to `needs-human` with the branch details, so a declared
+fix is never stranded on an unreferenced branch. An undeclared repo's
+declaration is always refused and always ends in that hand-off, which is why the
+undeclared case pushes nothing.
 
 ### Release-gating after the dependency PR is open
 
@@ -1868,14 +1897,15 @@ the situation, not its wording.
 <examples>
 <example>
 <situation>A failure in the repo you are working in traces to a bug in
-`@stsoftware/parser`, an internal `stSoftwareAU/*` dependency you can
-clone.</situation>
+`@stsoftware/parser`, an internal `stSoftwareAU/*` dependency that this repo's
+`deno.json` declares on its default branch and that you can clone and
+push.</situation>
 <action>Fix the bug in the dependency's own repo and raise a PR there in this
 run, then bring the fix into the consuming repo. Do not file a follow-up issue
 instead of fixing it.</action>
-<reason>Internal dependencies are reachable, so the root cause is fixable where
-it lives. Do not auto-merge or publish that PR — releasing it is a
-human decision.</reason>
+<reason>A declared, reachable dependency is one the worker opens a PR in, so the
+root cause is fixable where it lives. Do not auto-merge or publish that PR —
+releasing it is a human decision.</reason>
 </example>
 <example>
 <situation>The same failure instead traces to a bug in an external npm

@@ -1572,10 +1572,19 @@ worker defer internal-dependency fixes by filing follow-up issues.
 - **Internal `stSoftwareAU/*` dependency the worker can access → fix it
   cross-repo, in the same run.** Raise a PR in the dependency's own repo **and**
   bring that fix into the consuming repo — no follow-up issue for the fix itself.
-  "Can access" means a reachable `stSoftwareAU/*` repo the worker can clone and
-  open a PR against; if unreachable, treat it as external (defer is then
-  legitimate). The rule is general to every internal dependency and **recurses to
-  transitive internal deps** — fix wherever the root cause actually lives.
+  "Can access" means the consuming repo's own manifest declares the dependency
+  on its default branch (the condition `authoriseCrossRepoTarget` enforces,
+  Issue #1382) and the worker can clone and push to it. The rule is general to
+  every internal dependency and recurses to transitive internal deps the
+  consuming repo also declares.
+- **Undeclared or unreachable internal repo → no branch, no marker.** A
+  `stSoftwareAU/*` repo the consuming repo's manifests do not declare — one a
+  script checks out, say — is refused however reachable it is, so the agent
+  pushes nothing there, fixes or works around what the consuming repo owns,
+  routes the rest under [Issue routing](docs/ISSUE-ROUTING.md) (linking an
+  existing owning issue, or deferring on it with `Depends on`), and records the
+  consumer's requirement as unmet rather than handing it to a person
+  (Issue #5134).
 - **External (non-`stSoftwareAU/*`) dependency → work around it in the repo
   being worked on** — pin the last good version, replace the package, or vendor
   and patch it — and record the upstream defect in the PR summary. A cross-repo

@@ -135,7 +135,13 @@ the agent's boundary**:
    dependency's default branch and `summary` is folded into the PR body.
    `branch` must be a valid git ref component — a dash-leading name is refused
    rather than handed to git as an option (Issue #1548). The instruction lives
-   in `prompts/coding_guidelines/` and `prompts/issue/`.
+   in `prompts/coding_guidelines/` and `prompts/issue/`. The prompts define
+   "can access" by the same manifest condition the worker checks in step 2, so
+   the agent checks the declaration before pushing. For an undeclared
+   `stSoftwareAU/*` repo (one a script checks out) it pushes no branch and
+   declares no marker; it routes that work under
+   [ISSUE-ROUTING.md](ISSUE-ROUTING.md) and leaves the consumer's requirement
+   unmet (Issue #5134).
 2. The worker parses the declaration, treats every field as untrusted model
    output (shape-validated before it becomes a `gh` argument), and validates the
    target: internal `stSoftwareAU/*` owner, **a dependency the consuming repo's
