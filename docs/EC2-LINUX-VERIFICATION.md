@@ -33,10 +33,15 @@ CI runs the same script in
 1.0.385 through
 [`container/toolchains/aws-emulator.sh`](../container/toolchains/aws-emulator.sh),
 with its sha256 pins from [`container/tools.json`](../container/tools.json), and
-installs the helper too. It runs on pull requests to `Develop`, `main` and
-`milestone/*` when `infra/cloudformation/**`, the workflow, the helper, the
-fragment or `container/tools.json` changes. It needs no Docker socket and no
-service container.
+installs the helper too. It also replaces the runner's own aws-cli with the
+pinned one through
+[`container/toolchains/aws-cli.sh`](../container/toolchains/aws-cli.sh). It is
+a reusable workflow that
+[`quality.yml`](../.github/workflows/quality.yml) calls as the `aws-emulator`
+job, which the required `gate` job needs. There is no path filter: it runs on
+every pull request to `Develop`, `main` and `milestone/*` (drafts run when
+marked ready), and a failed, cancelled or skipped run turns `gate` red. It
+needs no Docker socket and no service container.
 
 ```mermaid
 flowchart LR

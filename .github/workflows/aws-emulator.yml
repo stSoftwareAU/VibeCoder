@@ -17,9 +17,15 @@
 # the docker socket: the emulator runs as a local process, not a service
 # container.
 #
+# Runs on every pull request as a job of quality.yml, whose `gate` job needs
+# it: a failed, cancelled or skipped run turns `gate` red. There is no path
+# filter, so `gate` never waits on a skipped job; a template, the runner or the
+# pin can change in any PR.
+#
 # There is deliberately no push trigger. Test workflows must not run on push
-# to the default branch (fleet rule `workflow-triggers`); pull request runs
-# cover every change that can alter a template, the runner or the pin.
+# to the default branch (fleet rule `workflow-triggers`); the pull request run
+# through quality.yml covers every change that can alter a template, the runner
+# or the pin. `workflow_dispatch` is kept for manual runs.
 #
 # Third-party actions are pinned to 40-character commit SHAs so a hijacked
 # tag cannot inject code into the workflow. The version tag each SHA
@@ -28,27 +34,17 @@
 name: AWS Emulator CloudFormation
 
 on:
-  pull_request:
-    # Milestone sub-issue PRs target a shared `milestone/<name>` branch;
-    # include it so the check runs before those PRs merge, not only on
-    # Develop/main PRs.
-    branches: [Develop, main, 'milestone/*']
-    paths:
-      - 'infra/cloudformation/**'
-      - '.github/workflows/aws-emulator.yml'
-      - 'container/aws-emulator-run.sh'
-      - 'container/toolchains/aws-emulator.sh'
-      - 'container/toolchains/aws-cli.sh'
-      - 'container/tools.json'
+  # Called by quality.yml, whose `gate` job is the one required check: on a
+  # pull request this workflow runs once, through that call.
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Cancel superseded runs; only the latest commit's result matters.
-concurrency:
-  group: aws-emulator-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# No concurrency group here: as a called workflow this file inherits its
+# caller's `github.workflow`, so a group of its own would cancel its siblings.
+# quality.yml holds the one group.
 
 jobs:
   cloudformation:

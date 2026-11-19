@@ -1,7 +1,7 @@
 /**
  * Tests for the AWS Emulator CloudFormation CI workflow (Issue #5110).
  *
- * Parses the real `.github/workflows/aws-emulator.yml`, and exercises the
+ * Parses the real `.github/workflows/aws-emulator.yml` and `quality.yml`, and exercises the
  * pure checker against mutated copies of its YAML text. Each negative
  * mutation breaks exactly one invariant and must produce exactly the named
  * finding; each mutation's anchor must occur exactly once, so a stale anchor
@@ -10,7 +10,10 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml/parse";
-import { checkAwsEmulatorWorkflow } from "../lib/aws_emulator_workflow_check.ts";
+import {
+  checkAwsEmulatorWorkflow,
+  checkQualityCallsAwsEmulator,
+} from "../lib/aws_emulator_workflow_check.ts";
 
 const WORKFLOW_PATH =
   new URL("../../../.github/workflows/aws-emulator.yml", import.meta.url)
@@ -189,13 +192,6 @@ Deno.test("(b) refuses a missing pinned aws-cli install (Issue #5110: CI must no
   ]);
 });
 
-Deno.test("(d) refuses a pull_request path filter without the aws-cli fragment", () => {
-  expectFindings(
-    mutate(["      - 'container/toolchains/aws-cli.sh'\n", ""]),
-    ["container/toolchains/aws-cli.sh"],
-  );
-});
-
 Deno.test("(b) refuses a missing runner install", () => {
   expectFindings(
     mutate([RUNNER_INSTALL_ANCHOR, "true"]),
@@ -236,51 +232,81 @@ Deno.test("(c) refuses a step that references Floci", () => {
   );
 });
 
-// (d) pull_request watches the required paths and targets milestone/*.
+// (d) called from quality.yml: workflow_call, no pull_request, no concurrency.
 
-Deno.test("(d) refuses a pull_request trigger without milestone/*", () => {
+Deno.test("(d) refuses a missing workflow_call trigger", () => {
+  expectFindings(
+    mutate(["  workflow_call:\n", ""]),
+    ["[triggers] on.workflow_call must be present"],
+  );
+});
+
+Deno.test("(d) refuses a re-added pull_request trigger with a paths filter", () => {
   expectFindings(
     mutate([
-      "branches: [Develop, main, 'milestone/*']",
-      "branches: [Develop, main]",
+      "  workflow_call:\n",
+      "  workflow_call:\n  pull_request:\n    paths:\n      - 'infra/cloudformation/**'\n",
     ]),
-    ["[triggers] on.pull_request.branches must include milestone/*"],
+    [
+      "[triggers] on.pull_request must be absent: a standalone pull_request run is not part of quality.yml's gate",
+    ],
   );
 });
 
-Deno.test("(d) refuses a missing tools.json path", () => {
+Deno.test("(d) refuses a top-level concurrency block", () => {
   expectFindings(
-    mutate(["      - 'container/tools.json'\n", ""]),
-    ["[triggers] on.pull_request.paths must include container/tools.json"],
+    mutate([
+      "\njobs:\n",
+      "\nconcurrency:\n  group: x\n  cancel-in-progress: true\n\njobs:\n",
+    ]),
+    ["[no-concurrency]"],
   );
 });
 
-Deno.test("(d) refuses a missing runner-script path", () => {
-  expectFindings(
-    mutate(["      - 'container/aws-emulator-run.sh'\n", ""]),
-    ["[triggers] on.pull_request.paths must include container/aws-emulator-run.sh"],
+// quality.yml calls this workflow and its gate job needs the call.
+
+const QUALITY = Deno.readTextFileSync(
+  new URL("../../../.github/workflows/quality.yml", import.meta.url).pathname,
+);
+
+function qualityMutated(from: string, to: string): unknown {
+  const occurrences = QUALITY.split(from).length - 1;
+  assertEquals(
+    occurrences,
+    1,
+    `anchor must occur exactly once, found ${occurrences}: ${
+      JSON.stringify(from)
+    }`,
   );
+  return parseYaml(QUALITY.replace(from, to));
+}
+
+Deno.test("real quality.yml calls aws-emulator.yml and gate needs it", () => {
+  assertEquals(checkQualityCallsAwsEmulator(parseYaml(QUALITY)), []);
 });
 
-Deno.test("(d) refuses a missing CloudFormation template path", () => {
-  expectFindings(
-    mutate(["      - 'infra/cloudformation/**'\n", ""]),
-    ["[triggers] on.pull_request.paths must include infra/cloudformation/**"],
+Deno.test("(gate-needs) refuses a gate that does not need aws-emulator", () => {
+  const findings = checkQualityCallsAwsEmulator(
+    qualityMutated("      - aws-emulator\n", ""),
   );
+  assertEquals(findings.length, 1);
+  assert(findings[0]?.startsWith("[gate-needs]"), findings[0]);
 });
 
-Deno.test("(d) refuses a missing workflow self-path", () => {
-  expectFindings(
-    mutate(["      - '.github/workflows/aws-emulator.yml'\n", ""]),
-    ["[triggers] on.pull_request.paths must include .github/workflows/aws-emulator.yml"],
+Deno.test("(gate-call) refuses a quality.yml without the aws-emulator caller job", () => {
+  const start = QUALITY.indexOf("  aws-emulator:\n");
+  const end = QUALITY.indexOf("  gate:\n");
+  assert(start > 0 && end > start, "anchors out of order");
+  const findings = checkQualityCallsAwsEmulator(
+    parseYaml(QUALITY.slice(0, start) + QUALITY.slice(end)),
   );
+  assertEquals(findings.length, 1);
+  assert(findings[0]?.startsWith("[gate-call]"), findings[0]);
 });
 
-Deno.test("(d) refuses a missing toolchain-script path", () => {
-  expectFindings(
-    mutate(["      - 'container/toolchains/aws-emulator.sh'\n", ""]),
-    ["[triggers] on.pull_request.paths must include container/toolchains/aws-emulator.sh"],
-  );
+Deno.test("checkQualityCallsAwsEmulator reports non-object input without throwing", () => {
+  assertEquals(checkQualityCallsAwsEmulator(null).length, 1);
+  assertEquals(checkQualityCallsAwsEmulator("nope").length, 1);
 });
 
 // (e) least-privilege token.

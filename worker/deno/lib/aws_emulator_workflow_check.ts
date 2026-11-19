@@ -19,11 +19,16 @@
  *   `container/aws-emulator-run.sh`, all before the test step;
  * - (c) the job has no `services`, no step or volume mentions
  *   `/var/run/docker.sock`, and nothing references Floci;
- * - (d) `pull_request` watches `infra/cloudformation/**`, the workflow itself,
- *   `container/aws-emulator-run.sh`, `container/toolchains/aws-emulator.sh`,
- *   `container/toolchains/aws-cli.sh` and `container/tools.json`, and targets `milestone/*` branches;
+ * - (d) `on.workflow_call` is present (quality.yml calls this workflow), and
+ *   `on.pull_request` is absent: a standalone pull_request run is not part of
+ *   quality.yml's gate; and top-level `concurrency` is absent, because a
+ *   called workflow inherits its caller's group and its own would cancel
+ *   siblings;
  * - (e) top-level `permissions.contents` is `read`;
  * - (f) every `actions/checkout` step sets `persist-credentials: false`.
+ *
+ * `checkQualityCallsAwsEmulator` checks the parsed quality.yml: a job calls
+ * this workflow (`[gate-call]`) and the `gate` job needs it (`[gate-needs]`).
  *
  * Each finding names its invariant in square brackets, e.g. `[test-step]`.
  *
@@ -48,14 +53,8 @@ const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * `CURL_RETRY="--retry 8"` is one word even though its quoted part has spaces.
  */
 const WORD_RE = /(?:[^\s"']+|"[^"]*"|'[^']*')+/g;
-const REQUIRED_PATHS = [
-  "infra/cloudformation/**",
-  ".github/workflows/aws-emulator.yml",
-  RUNNER_PATH,
-  TOOLCHAIN_PATH,
-  CLI_TOOLCHAIN_PATH,
-  "container/tools.json",
-];
+/** The `uses` value of the quality.yml job that calls this workflow. */
+export const AWS_EMULATOR_USES = "./.github/workflows/aws-emulator.yml";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -252,29 +251,25 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
     problems.push("[no-floci] nothing may reference Floci");
   }
 
-  // (d) trigger paths. YAML 1.1 parsers may read `on` as boolean true.
+  // (d) triggers. YAML 1.1 parsers may read `on` as boolean true.
   const triggers = isObject(workflow.on)
     ? workflow.on
     : isObject(workflow["true"])
     ? workflow["true"]
     : undefined;
-  const prTrigger = isObject(triggers) ? triggers.pull_request : undefined;
-  const paths = isObject(prTrigger) && Array.isArray(prTrigger.paths)
-    ? prTrigger.paths
-    : [];
-  for (const required of REQUIRED_PATHS) {
-    if (!paths.includes(required)) {
-      problems.push(
-        `[triggers] on.pull_request.paths must include ${required}`,
-      );
-    }
-  }
-  const prBranches = isObject(prTrigger) && Array.isArray(prTrigger.branches)
-    ? prTrigger.branches
-    : [];
-  if (!prBranches.includes("milestone/*")) {
+  if (!isObject(triggers) || !("workflow_call" in triggers)) {
     problems.push(
-      "[triggers] on.pull_request.branches must include milestone/*",
+      "[triggers] on.workflow_call must be present: quality.yml calls this workflow",
+    );
+  }
+  if (isObject(triggers) && "pull_request" in triggers) {
+    problems.push(
+      "[triggers] on.pull_request must be absent: a standalone pull_request run is not part of quality.yml's gate",
+    );
+  }
+  if ("concurrency" in workflow) {
+    problems.push(
+      "[no-concurrency] top-level concurrency must be absent: a called workflow inherits its caller's group and its own would cancel siblings",
     );
   }
 
@@ -303,5 +298,37 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
     }
   }
 
+  return problems;
+}
+
+/**
+ * Check a parsed quality.yml: some job calls the AWS Emulator workflow and the
+ * `gate` job needs that job. Never throws on malformed input.
+ */
+export function checkQualityCallsAwsEmulator(quality: unknown): string[] {
+  if (!isObject(quality)) return ["quality workflow is not an object"];
+  const problems: string[] = [];
+  const jobs = jobEntries(quality);
+  const caller = jobs.find(([, job]) => job.uses === AWS_EMULATOR_USES);
+  if (!caller) {
+    problems.push(
+      `[gate-call] no quality.yml job has uses: ${AWS_EMULATOR_USES}`,
+    );
+    return problems;
+  }
+  const gate = jobs.find(([id]) => id === "gate")?.[1];
+  const needs = gate?.needs;
+  const list = Array.isArray(needs)
+    ? needs
+    : needs === undefined
+    ? []
+    : [needs];
+  if (!list.includes(caller[0])) {
+    problems.push(
+      `[gate-needs] the gate job must need ${
+        caller[0]
+      }, so a failed or skipped AWS Emulator run turns gate red`,
+    );
+  }
   return problems;
 }
