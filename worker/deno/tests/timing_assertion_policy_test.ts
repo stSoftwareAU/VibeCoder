@@ -38,6 +38,11 @@
  * wall-clock ratio where the target repository keeps timing out of unit tests,
  * and name no VibeCoder-only helper.
  *
+ * Issue #5234: the output form guards only a cost that never returns; a
+ * polynomial cost still returns the same output, so the guidelines and
+ * standards send it to counted work, and the standards carry the pre-fix-cost
+ * caveat beside the output form rather than under the ratio bullet.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -366,6 +371,48 @@ Deno.test("timing policy - regex hostile-case rules assert output or counted wor
     forbiddenIn(prFeedbackParagraph, FORBIDDEN),
     [],
     "pr_feedback paragraph names a VibeCoder-only helper, precedent or issue number the guidelines must not cite",
+  );
+});
+
+Deno.test("timing policy - the output form is scoped to cost that never returns, polynomial cost goes to counted work (Issue #5234)", async () => {
+  const guidelinesDoc = await readRepoDoc(GUIDELINES_SECTION.doc);
+  const standardsDoc = await readRepoDoc(STANDARDS_SECTION.doc);
+  const guidelinesBullet = slice(
+    section(guidelinesDoc, GUIDELINES_SECTION.title),
+    "- **Guard super-linear cost by output, then by counted work.**",
+    ["\n- ", "\n\n"],
+  );
+  assertPins(guidelinesBullet, [
+    "Catastrophic backtracking on an input of real size never returns, so for that cost first assert what the code **produces**",
+    "A polynomial cost, such as a quadratic rescan or lookup, still returns the same output",
+    "so an output-only test passes on the unfixed code",
+  ]);
+  const standardsBullet = slice(
+    section(standardsDoc, STANDARDS_SECTION.title),
+    "- **Guard super-linearity by behaviour first**",
+    ["\n- ", "\n\n"],
+  );
+  assertPins(standardsBullet, [
+    "A backtracking regression then hangs the case",
+    "The behavioural form only works when the pre-fix cost is large enough to hang",
+    "A polynomial cost, such as a quadratic rescan or lookup, returns the same output",
+    "plan_coverage_gate_bounds_1245_test.ts",
+  ]);
+  assertEquals(
+    phraseAnywhere(
+      standardsDoc,
+      "A super-linear regression then hangs the case",
+    ),
+    false,
+    "CODING-STANDARDS.md still says any super-linear regression hangs the case",
+  );
+  assertEquals(
+    phraseAnywhere(
+      guidelinesDoc,
+      "First assert what the code **produces** on the hostile input: catastrophic backtracking",
+    ),
+    false,
+    "the guidelines still scope the output form to any super-linear cost",
   );
 });
 

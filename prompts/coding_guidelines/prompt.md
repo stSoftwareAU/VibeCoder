@@ -785,13 +785,16 @@ separate.
   readings too. A ratio between two timings is still a timing threshold: a
   loaded host skews the two readings differently, and a ratio assertion has
   gone red reading 30 ms against 355 ms for work that is linear.
-- **Guard super-linear cost by output, then by counted work.** First assert
-  what the code **produces** on the hostile input: catastrophic backtracking
-  on an input of real size never returns, so the case hangs on every host.
-  When the output cannot tell the two apart, count **deterministic work**
-  through an injected observer or counter (steps, comparisons, nodes visited)
-  at size N and 4N and assert the count grows linearly — the count is the
-  same on every host under every load. Timing comparisons belong in the
+- **Guard super-linear cost by output, then by counted work.** Catastrophic
+  backtracking on an input of real size never returns, so for that cost first
+  assert what the code **produces** on the hostile input: on the unfixed code
+  the case hangs on every host. A polynomial cost, such as a quadratic rescan
+  or lookup, still returns the same output in seconds at any size a unit test
+  builds, so an output-only test passes on the unfixed code. There, and
+  wherever else the output cannot tell the two apart, count **deterministic
+  work** through an injected observer or counter (steps, comparisons, nodes
+  visited) at size N and 4N and assert the count grows linearly — the count is
+  the same on every host under every load. Timing comparisons belong in the
   repository's benchmark harness. A wall-clock ratio inside a unit test is a
   last resort, used only where the repository's own standard explicitly
   allows ratio tests and neither the output nor a work count distinguishes
@@ -817,12 +820,12 @@ separate.
   hostile case per pattern: a long run of the shared character followed by a
   character the pattern rejects. A parser with several patterns needs a case for
   each. Each case asserts the pattern's result on an input long enough that
-  catastrophic backtracking never returns, so it hangs on every host, or a
-  deterministic step count: guard super-linear cost by output, then by counted
-  work, as the timing bullets above say. It is not a wall-clock ratio where the
-  repository's own testing standard keeps timing out of unit tests.
-  Capping one pattern and leaving its sibling in the same file with the same
-  defect is the usual miss.
+  catastrophic backtracking never returns, so it hangs on every host, or,
+  where the cost is polynomial and still returns, a deterministic step count:
+  guard super-linear cost by output, then by counted work, as the timing bullets
+  above say. It is not a wall-clock ratio where the repository's own testing
+  standard keeps timing out of unit tests. Capping one pattern and leaving its
+  sibling in the same file with the same defect is the usual miss.
 - **Keep iteration counts honest** — do not shrink them to make a "performance
   test" fit inside a unit test. Write a proper benchmark and report the results
   in the PR summary as indicative evidence (see **Performance Task Workflow**).
