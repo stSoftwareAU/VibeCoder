@@ -3,8 +3,9 @@
  * (Issue #5163).
  *
  * The document's `provider` used to be the host's configured provider, which
- * is wrong whenever a repository pin, a mode override or an
- * `agent_provider_fallback` switch sent the run to another provider.
+ * is wrong whenever a repository `agent_provider` pin, a non-external
+ * subscription allocation, a reroute to Claude or an `agent_provider_fallback`
+ * switch sent the run to another provider.
  */
 
 /** The per-invocation stats this reads: the provider the runner stamped on each. */
@@ -16,7 +17,7 @@ export interface ProviderSource {
  * The provider that served a run.
  *
  * Each invocation's `runStats.provider` is stamped by `buildRunStats` in
- * claude_runner.ts with the id of the provider it spawned (including one
+ * `lib/claude_runner.ts` with the id of the provider it spawned (including one
  * switched to by `agent_provider_fallback`).
  *
  * - No invocations: no agent spawned, so the configured provider is the one

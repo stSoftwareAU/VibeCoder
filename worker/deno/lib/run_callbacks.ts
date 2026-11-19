@@ -529,6 +529,10 @@ export interface TerminalIssueRun {
   result: "success" | "failure";
   /** Epoch ms the claim was taken. */
   startedAtEpochMs: number;
+  /** Epoch ms the run terminated. */
+  finishedAtEpochMs: number;
+  /** The workflow the run served, when the dispatch named one (#2100). */
+  mode?: string;
   /**
    * Agent provider that served the run (Issue #5163): the one provider its
    * recorded invocations named, or the host's configured provider when it
@@ -536,10 +540,6 @@ export interface TerminalIssueRun {
    * when the run never reported them (a hard-killed or thrown run).
    */
   provider?: string;
-  /** Epoch ms the run terminated. */
-  finishedAtEpochMs: number;
-  /** The workflow the run served, when the dispatch named one (#2100). */
-  mode?: string;
   /** Token and cost telemetry, when the run's invocations reported it. */
   telemetry?: CallbackRunTelemetry;
   /** What the run's Graft collection did, when it reached one (#2104). */
