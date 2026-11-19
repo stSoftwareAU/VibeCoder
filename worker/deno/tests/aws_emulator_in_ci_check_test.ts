@@ -1520,6 +1520,26 @@ Deno.test("workflowRunsAwsEmulator - a repository script's unreachable runner ea
   );
 });
 
+Deno.test("workflowRunsAwsEmulator - compound conditions gate direct and repository-script runners", () => {
+  const scriptDoc = docWithStep("bash ./test.sh");
+  for (
+    const [condition, expected] of [
+      ["false && true", false],
+      ["true && false", false],
+      ["false || false", false],
+      ['[ -n "$X" ] && false', false],
+      ["true && true", true],
+      ["false && true || true", true],
+      ["true || false && false", false],
+    ] as const
+  ) {
+    const run = `if ${condition}; then ${RUNNER}; fi`;
+    assertEquals(workflowRunsAwsEmulator(docWithStep(run)), expected, run);
+    const read = (path: string) => path === "./test.sh" ? run : null;
+    assertEquals(workflowRunsAwsEmulator(scriptDoc, read), expected, run);
+  }
+});
+
 Deno.test("workflowRunsAwsEmulator - a repository script after a guaranteed short-circuit exit earns no credit", () => {
   const doc = docWithStep("./ci/t.sh");
   const read = (text: string) => (path: string) =>

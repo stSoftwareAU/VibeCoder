@@ -305,8 +305,6 @@ interface Frame {
   branch: "cond" | "body" | "else";
   /** An earlier `if`/`elif` branch was statically taken, so later ones are not. */
   earlierTrue: boolean;
-  /** Plain commands seen in the condition (only a lone one has a static truth). */
-  condCommands: number;
   /** `while` runs while true; `until` runs while false. */
   loop: "while" | "until" | null;
   /** A function body: never reached, ended by `}`. */
@@ -360,7 +358,6 @@ export function reachableSegments(script: string): string[][] {
       truth: null,
       branch: "body",
       earlierTrue: false,
-      condCommands: 0,
       loop: null,
       fn: false,
       awaitBrace: false,
@@ -370,7 +367,6 @@ export function reachableSegments(script: string): string[][] {
 
   for (const { words: all, sep } of shellCommands(stripHeredocBodies(script))) {
     let words = all;
-    let opened: "if" | "elif" | "while" | "until" | null = null;
     // Structural keywords first; what is left is a plain command.
     while (words.length > 0) {
       const w = words[0] ?? "";
@@ -384,13 +380,10 @@ export function reachableSegments(script: string): string[][] {
           branch: "cond",
           loop: w === "if" ? null : w,
         });
-        opened = w;
       } else if (w === "elif" && top) {
         top.earlierTrue = top.earlierTrue || top.truth === true;
         top.branch = "cond";
-        top.condCommands = 0;
         top.truth = null;
-        opened = "elif";
       } else if (w === "then" || w === "do") {
         if (top) top.branch = "body";
       } else if (w === "else") {
@@ -436,18 +429,19 @@ export function reachableSegments(script: string): string[][] {
       : true;
     const skipped = runs === false;
     const frameOpen = stack.at(-1);
-    if (frameOpen && frameOpen.branch === "cond" && !skipped) {
-      frameOpen.condCommands++;
-    }
     if (!skipped) {
-      prev = sep === "|" || runs === null ? null : staticStatus(words);
+      const status = sep === "|" ? null : staticStatus(words);
+      // When the left side is unknown, both paths can still agree:
+      // X && false always fails, and X || true always succeeds.
+      const skippedStatus = sep === "||";
+      prev = runs === null && status !== skippedStatus ? null : status;
     }
     const reached = live() && !skipped;
-    if (frameOpen && frameOpen.branch === "cond") {
-      const s = frameOpen.condCommands === 1 && opened !== null
-        ? staticStatus(words)
-        : null;
-      frameOpen.truth = s === null ? null : frameOpen.loop === "until" ? !s : s;
+    if (frameOpen?.branch === "cond") {
+      // A skipped right operand leaves the chain's previous status intact.
+      frameOpen.truth = prev === null || frameOpen.loop !== "until"
+        ? prev
+        : !prev;
     }
     if (reached) {
       out.push(words);
