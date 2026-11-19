@@ -75,12 +75,13 @@ Backend test-only change; no UI files touched.
     its `clearTimeout`.
 - `deno fmt --check` and `deno lint` on the file: passed.
 - `deno task test:unit tests/ephemeral_root_telemetry_5105_test.ts`: 20 passed, 0 failed.
-- `./quality.sh < /dev/null` on the head: lint, type check, fmt and every other
-  stage passed. `deno tests` FAILED, 35242 passed and 1 failed. The one failure
-  is `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`
-  ("PR summary CI task runs git with restricted environment permissions"). It
-  failed with
-  `error: Failed caching npm package 'commonmark@0.31.2'` … `dns error: failed to lookup address information: Temporary failure in name resolution`.
-  This container cannot resolve `registry.npmjs.org`, and the test does not
-  touch the file this PR changes. `ephemeral_root_telemetry_5105_test.ts`
-  passed in that run.
+- `./quality.sh < /dev/null` on the head: `Result: PASSED (with skipped checks)`.
+  Deno tests, lint, type check, fmt, markdownlint, semgrep and gitleaks passed.
+  Two stages were skipped because their tools are not installed here: checkov
+  (not on PATH) and config integration (no `.config.json`). An earlier run on
+  this branch failed one unrelated test,
+  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`. Its cleared-env
+  `deno task` child could not download `mdurl@1.0.1` because this container
+  cannot resolve `registry.npmjs.org`. Seeding the default Deno npm cache
+  (`~/.cache/deno`, outside the repository) from the warm `DENO_DIR` cache fixed
+  it, and that file then passed 11/11.
