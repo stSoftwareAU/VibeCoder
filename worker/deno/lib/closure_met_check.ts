@@ -200,7 +200,7 @@ export function closureGapFindings(
           note ? ` — ${gapText(note, MAX_NOTE)}` : ""
         }`,
       fix:
-        "Deliver every case, path and test the criterion names in the code and its tests, or dispute the verdict in your final message with evidence from the code.",
+        "Deliver the case the note names, with its test, and keep `met`; or mark the entry `partial` with a `reason:` naming that case, so the PR says `Part of #N`; or dispute the verdict in your final message with evidence from the code.",
     });
   }
   if (unreported.length > 0) {

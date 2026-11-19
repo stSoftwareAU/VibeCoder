@@ -1309,6 +1309,6 @@ export function buildPrePrVerifierGateComment(review: ReviewReply): string {
     "3. Run the tests covering what you changed.",
     "4. Make the PR summary describe the head.",
     "5. If you have evidence a finding is wrong, say so in your final message, naming the finding and the evidence — the verifier runs again on the next completion attempt.",
-    'A finding is closed only by fixing it or disputing it with evidence. Marking a criterion `partial`, listing a known gap or open limitation in the PR summary, or noting a test as "not red-checked" does not close a finding.',
+    'A finding is closed only by fixing it or disputing it with evidence. Marking a criterion `partial` closes only a finding about that entry\'s `met` status. Listing a known gap or open limitation in the PR summary, or noting a test as "not red-checked", closes no finding.',
   ].join("\n");
 }
