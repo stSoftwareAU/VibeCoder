@@ -44,18 +44,11 @@
   ],
   "packageRules": [
     {
-      "description": "Deno (JSR / deno.land/x) dependencies are intentionally governed by native Deno tooling \u2014 deno.json `minimumDependencyAge` \u2014 not Renovate. Disable Renovate's deno manager so the two mechanisms do not overlap or conflict for Deno (Issue #2536; native window added in #2539). The 24h window and the stSoftwareAU/* exemption below still apply to the ecosystems Renovate owns (e.g. GitHub Actions).",
+      "description": "Deno (JSR / deno.land/x) dependencies are intentionally governed by native Deno tooling \u2014 deno.json `minimumDependencyAge` \u2014 not Renovate. Disable Renovate's deno manager so the two mechanisms do not overlap or conflict for Deno (Issue #2536; native window added in #2539). The top-level 24h window still applies to the ecosystems Renovate owns (e.g. GitHub Actions). No first-party exemption rule is carried while this config manages no stSoftwareAU package; add one with \"minimumReleaseAge\": null, matched by first-party names only, when it does (Issue #5120).",
       "matchManagers": [
         "deno"
       ],
       "enabled": false
-    },
-    {
-      "description": "Internal stSoftwareAU/* packages bypass the supply-chain quarantine \u2014 they are first-party code and ship with no embargo (Issue #2124). This is a standing first-party-code exemption, NOT the emergency override for an actively-exploited third-party CVE \u2014 for that, see docs/security-advisory-triage.md#emergency-dependency-override (Issue #2509).",
-      "matchPackageNames": [
-        "/^stSoftwareAU\\//"
-      ],
-      "minimumReleaseAge": "0"
     }
   ]
 }

@@ -5,7 +5,7 @@
  * #874 opens: "59 `VIBE_*` environment variables bypass `.config.json`".
  * The number could not be checked, because nothing listed them — so the first
  * thing this module does is make the claim falsifiable. Scanning `lib/`,
- * `commands/`, `setup/` and `mod.ts` for the `VIBE_*` shape finds **124**
+ * `commands/`, `setup/` and `mod.ts` for the `VIBE_*` shape finds **125**
  * names, and they are not one population:
  *
  * | Role | Count | Belongs in `.config.json`? |
@@ -13,7 +13,7 @@
  * | {@linkcode VibeEnvRole `operator_config`} | 21 | **yes — this is the debt** |
  * | `setup_input` | 30 | already does; these fill it in |
  * | `launch_plumbing` | 23 | no — computed per run |
- * | `switch` | 30 | no — escape hatches and credentials |
+ * | `switch` | 31 | no — escape hatches and credentials |
  * | `marker` | 20 | not a variable at all |
  *
  * So the surface that genuinely bypasses the config file is **21**, not 59,
@@ -575,6 +575,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "switch",
     note: "shortens the attached launcher's host-disk.json refresh interval " +
       "from its fixed five minutes (Issue #1691); tests only",
+  },
+  VIBE_GUEST_SILENCE_SECONDS: {
+    role: "switch",
+    note:
+      "the early silent-guest reap threshold, default 900s; 0 turns the early reap off and launcher tests shorten it (Issue #5161)",
   },
   VIBE_EXTENSION_PREFIX: {
     role: "switch",

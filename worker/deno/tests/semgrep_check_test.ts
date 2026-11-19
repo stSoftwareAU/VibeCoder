@@ -26,6 +26,7 @@ import {
   isScannablePath,
   makeGitRunner,
   parseSemgrepJson,
+  RENOVATE_RELEASE_AGE_REMEDY,
   runSemgrepCheck,
   selectScannableFiles,
   SEMGREP_CONFIG,
@@ -347,6 +348,54 @@ Deno.test("runSemgrepCheck - a finding from another rule omits the regexp remedy
   assertEquals(result.status, "FAILED");
   assertStringIncludes(result.output, "detect-child-process");
   assert(!result.output.includes("escape the interpolated value"));
+});
+
+Deno.test("runSemgrepCheck - FAILED naming the Renovate release-age remedy (Issue #5120)", async () => {
+  const result = await runCheck("/repo", {
+    git: gitWithChangedFile("renovate.json"),
+    detectInvocation: fixedInvocation({
+      exitCode: 1,
+      stdout: reportOf([
+        {
+          ruleId:
+            "package_managers.renovate.renovate-missing-minimum-release-age.renovate-missing-minimum-release-age",
+          file: "renovate.json",
+          line: 3,
+          severity: "WARNING",
+          message:
+            'Set "minimumReleaseAge": false to exempt first-party packages',
+        },
+      ]),
+      stderr: "",
+    }),
+  });
+
+  assertEquals(result.status, "FAILED");
+  assertStringIncludes(result.output, RENOVATE_RELEASE_AGE_REMEDY);
+  assertStringIncludes(result.output, '"minimumReleaseAge": null');
+  assertStringIncludes(result.output, "Never `false`");
+  assert(!result.output.includes("escape the interpolated value"));
+});
+
+Deno.test("runSemgrepCheck - a finding from an unrelated rule omits the Renovate remedy", async () => {
+  const result = await runCheck("/repo", {
+    git: gitWithChangedFile("worker/deno/lib/spawn.ts"),
+    detectInvocation: fixedInvocation({
+      exitCode: 1,
+      stdout: reportOf([
+        {
+          ruleId: "javascript.lang.security.audit.detect-child-process",
+          file: "worker/deno/lib/spawn.ts",
+          line: 8,
+        },
+      ]),
+      stderr: "",
+    }),
+  });
+
+  assertEquals(result.status, "FAILED");
+  assert(!result.output.includes(RENOVATE_RELEASE_AGE_REMEDY));
+  assert(!result.output.includes("Never `false`"));
 });
 
 Deno.test("runSemgrepCheck - PASSED when the scan reports no findings", async () => {

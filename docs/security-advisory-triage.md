@@ -142,6 +142,12 @@ is a deliberate, recorded exception, not a routine merge.
   }
   ```
 
+  The blocking Semgrep check (`renovate-missing-minimum-release-age`) and the
+  supply-chain gate (`renovate-release-age`) both report this rule, because it
+  lifts the window for an external package. That signal is what they exist to
+  give, so prefer merging the security PR directly and treat this rule as the
+  recorded exception.
+
   For a Deno dep, add the package glob to the `deno.json` `minimumDependencyAge`
   `exclude` list with the same emergency comment instead.
 

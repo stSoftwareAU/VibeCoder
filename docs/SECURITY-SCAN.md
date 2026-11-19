@@ -77,9 +77,15 @@ the repo; the Phase 2 audit then opens each one and confirms the quarantine
 rules:
 
 - **Renovate** — `renovate.json`, `.github/renovate.json`, `renovate.json5`.
-  Looks for a top-level or `packageRules` entry that sets `minimumReleaseAge`
-  (or its legacy alias `stabilityDays`) to a window of at least
-  `VIBE_BUMP_QUARANTINE_HOURS` hours.
+  Looks for a top-level `minimumReleaseAge` of at least
+  `VIBE_BUMP_QUARANTINE_HOURS` hours, written as a string such as `"24 hours"`.
+  The deprecated alias `stabilityDays` is not accepted: the supply-chain gate
+  refuses it, because Renovate migrates it into `minimumReleaseAge` (0 becomes
+  `null`) at any depth. A first-party `packageRules` entry with
+  `"minimumReleaseAge": null` is valid only where the repo manages a matching
+  `stSoftwareAU` package. `null` is the no-wait value; `"0"` is read as `null`
+  by Renovate 42.19.5 and later, but the blocking Semgrep rule reports it; a
+  boolean `false` is invalid config that aborts the repository run.
 - **Dependabot** — `.github/dependabot.yml`. Dependabot has **no native
   `minimumReleaseAge`** field — only the in-preview `cooldown` keyword — so a
   Dependabot-only repo without a compensating `bump-deps.sh` will reliably
@@ -142,13 +148,17 @@ Three rules differ from the manifest checks above and are deliberate:
 
 ### Internal vs external classification
 
-Per the worker-side bump policy in, dependencies under
-`stSoftwareAU/*` are **internal** — bumped immediately, no quarantine, so that
-packages like FLEET stitch in the latest private-repo-14 without delay. All other
-dependencies (npm, JSR, crates.io, Maven Central, third-party GitHub Actions)
-are **external** and require the quarantine. A `packageRules` entry that
-*excludes* `stSoftwareAU/*` from the wait is the correct shape; a rule that
-gates internal deps is itself a misconfiguration to flag.
+Per the worker-side bump policy, dependencies under `stSoftwareAU/*` are
+**internal** — bumped immediately, no quarantine, so that packages like FLEET
+stitch in the latest private-repo-14 without delay. All other dependencies
+(npm, JSR, crates.io, Maven Central, third-party GitHub Actions) are
+**external** and require the quarantine. Immediate bumping is an update-policy
+choice, not a claim that internal code or its publishing chain cannot be
+compromised. Renovate exempts only the internal packages a repo actually
+manages: a `packageRules` entry whose `matchPackageNames` lists only first-party
+names sets `"minimumReleaseAge": null`. A repo that manages no matching package
+needs no such rule. A rule that gates managed internal deps is itself a
+misconfiguration to flag.
 
 ### Threshold
 
@@ -164,10 +174,10 @@ The audit emits one of two finding classes — Claude itself files them via
 [Reading a filed finding issue](#reading-a-filed-finding-issue)) like every
 other finding:
 
-| Class                                     | Meaning                                                                                                                                                                                                                                                                                                  |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `supply-chain:quarantine-missing`         | No eligible quarantine config detected for one or more ecosystems in scope — e.g. a Dependabot-only repo with no compensating `bump-deps.sh`, or no auto-update tooling at all while third-party deps are present.                                                                                       |
-| `supply-chain:quarantine-misconfigured`   | Quarantine config is present but the window is shorter than `VIBE_BUMP_QUARANTINE_HOURS`, the rule does not cover every external ecosystem in scope (e.g. Renovate gates npm but not cargo), or the rule incorrectly gates internal `stSoftwareAU/*` packages (which must bypass the quarantine).        |
+| Class                                     | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `supply-chain:quarantine-missing`         | No eligible quarantine config detected for one or more ecosystems in scope — e.g. a Dependabot-only repo with no compensating `bump-deps.sh`, or no auto-update tooling at all while third-party deps are present.                                                                                                                                                                                                                                      |
+| `supply-chain:quarantine-misconfigured`   | Quarantine config is present but the window is shorter than `VIBE_BUMP_QUARANTINE_HOURS`, the rule does not cover every external ecosystem in scope (e.g. Renovate gates npm but not cargo), or the rule incorrectly gates managed internal `stSoftwareAU/*` packages (which must bypass the quarantine). A boolean or other non-string age is invalid config, and a `null` or short window on a package that is not first-party is also misconfigured. |
 
 ### Hard rule: inspect-only, never auto-remediate
 

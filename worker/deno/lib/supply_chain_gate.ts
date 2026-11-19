@@ -26,7 +26,10 @@
  *                             Podman's enforcing short-name mode can resolve
  *                             it on a fresh host (Issue #728).
  *   - `renovate-automerge` /  Renovate may auto-merge only pin-class updates
- *     `renovate-release-age`  and must keep the release-age quarantine.
+ *     `renovate-release-age`  and must keep the release-age quarantine: outside
+ *                             `vulnerabilityAlerts`, a null or sub-24h age is
+ *                             allowed only in a packageRules entry scoped to
+ *                             first-party stSoftwareAU names (Issue #5120).
  *   - `inventory-stale`       `docs/audits/dependency-inventory.md` matches
  *                             what {@link buildDependencyInventory} generates
  *                             from the tree, so the audit record is diffable
@@ -40,6 +43,7 @@
 
 import { extractUsesValue } from "./action_pin_scanner.ts";
 import { isRegistryQualifiedImage } from "./container_manifest.ts";
+import { findReleaseAgeProblems } from "./renovate_release_age.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -743,7 +747,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * Assert the Renovate auto-merge policy explicitly: no top-level or nested
  * `automerge: true` outside pin-class updates, no automerge presets, and a
- * release-age quarantine in place.
+ * release-age quarantine in place. A missing, null or blank top-level
+ * `minimumReleaseAge` is one `renovate-release-age` finding here; every other
+ * problem {@link findReleaseAgeProblems} reports (a non-string age, an
+ * unreadable or sub-24h age, or a null or sub-24h age not scoped to
+ * first-party stSoftwareAU names) is one more finding under the same rule
+ * (Issue #5120).
  */
 export function evaluateRenovatePolicy(
   file: string,
@@ -759,7 +768,10 @@ export function evaluateRenovatePolicy(
   }
   const findings: GateFinding[] = [];
   const age = config["minimumReleaseAge"];
-  if (typeof age !== "string" || age.trim() === "") {
+  if (
+    age === undefined || age === null ||
+    (typeof age === "string" && age.trim() === "")
+  ) {
     findings.push({
       rule: "renovate-release-age",
       file,
@@ -767,6 +779,9 @@ export function evaluateRenovatePolicy(
       message: "top-level minimumReleaseAge is missing; the supply-chain " +
         "quarantine must stay explicit",
     });
+  }
+  for (const message of findReleaseAgeProblems(config)) {
+    findings.push({ rule: "renovate-release-age", file, line: 1, message });
   }
   const presets = Array.isArray(config["extends"]) ? config["extends"] : [];
   for (const preset of presets) {

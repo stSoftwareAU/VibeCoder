@@ -218,14 +218,26 @@ launch.
 
 A container VM can wedge: `<runtime> exec` hangs, nothing new appears in
 `${LOG_DIR}/worker.log`, and the host-side `container run` client never exits.
-The launcher no longer waits on it for ever — past the plan's watchdog deadline
-it kills the container, SIGKILLs the host-side client and runtime helper if the
+The launcher no longer waits on it for ever — at the latest past the plan's
+watchdog deadline (or earlier, see below) it kills the container, SIGKILLs the host-side client and runtime helper if the
 record survives that, and exits `87`:
 
 ```text
 [run.sh] watchdog: vibe-coder-66770 is still running after 11400s - reaping it
 Error: container vibe-coder-66770 wedged past the 11400s watchdog deadline and was reaped - exiting 87 so the next cycle runs
 ```
+
+Before the deadline, `run.sh` checks every `VIBE_GUEST_SILENCE_CHECK_SECONDS`
+(default 300) whether the worker log has been silent for
+`VIBE_GUEST_SILENCE_SECONDS` (default 900, `0` turns it off). Only if so does it
+probe the guest with `container exec <name> true` twice (30 seconds each). When
+neither probe answers it reaps the container early, with the same evidence
+capture and exit `87`. When that reap finishes, the filed issue's Reason line
+reads "The launcher's watchdog found the guest silent and not answering its exec
+probe." A guest that
+answers is never reaped early, however long the log is silent. If the early reap is cut short after it decided to reap (for example its evidence capture crosses the deadline), the watchdog completes the reap with the ordinary reaper rather than trusting the decision. That evidence record carries the reason "the launcher's early silent-guest reap exited N before it finished", which the hard-kill report reads like the others: the filed issue's Reason line says the early reap was cut short and the watchdog finished it. When the early command had already written its record, the completing reap skips a second capture. This is `run.sh`
+only: `run.ps1` keeps the deadline alone (it also captures no hard-kill
+evidence). Issue #5161.
 
 Nothing to do by hand: the next cycle launches a fresh container, and any
 leftover `vibe-coder-*` container is reaped before it. On `run.sh`, the reap

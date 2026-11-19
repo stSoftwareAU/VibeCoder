@@ -118,6 +118,32 @@ export const NON_LITERAL_REGEXP_REMEDY = [
 /** Rule identifier suffix that triggers the remedy note above. */
 const NON_LITERAL_REGEXP_RULE = "detect-non-literal-regexp";
 
+/**
+ * The remedy for `renovate-missing-minimum-release-age` (Issue #5120). The
+ * rule's message tells agents to write `"minimumReleaseAge": false`, which
+ * Renovate rejects, aborting the repository run so no update PR is raised.
+ * This note overrides that advice in the same output as the finding.
+ */
+export const RENOVATE_RELEASE_AGE_REMEDY = [
+  "Remedy for `renovate-missing-minimum-release-age`:",
+  "- Keep the third-party quarantine as the top-level `minimumReleaseAge` (at",
+  "  least 24 hours). This rule does not inspect the top level.",
+  "- A first-party exemption belongs only where Renovate manages a matching",
+  "  stSoftwareAU package, in a packageRules entry whose `matchPackageNames`",
+  '  lists first-party names only, spelled `"minimumReleaseAge": null`:',
+  "  Renovate's documented no-wait value, which this rule does not report.",
+  "- Never `false`, whatever the rule's message says. Renovate's validator",
+  "  rejects a non-string age and the repository run aborts, so no update PR",
+  '  is raised. A `"0"` string is read as null by Renovate 42.19.5+, but this',
+  "  rule still reports it.",
+  '- A packageRules age for third-party packages needs `"N days"` with N of at',
+  "  least 7 to satisfy the rule.",
+  "- Do not delete a Renovate manager or rule to silence the finding (Issue #5120).",
+].join("\n");
+
+/** Rule identifier suffix that triggers the Renovate remedy note above. */
+const RENOVATE_RELEASE_AGE_RULE = "renovate-missing-minimum-release-age";
+
 /** A single semgrep finding, flattened from the JSON report. */
 export interface SemgrepFinding {
   /** Path as semgrep reported it. */
@@ -636,6 +662,10 @@ function formatFindings(
 
   if (findings.some((f) => f.ruleId.endsWith(NON_LITERAL_REGEXP_RULE))) {
     lines.push("", NON_LITERAL_REGEXP_REMEDY);
+  }
+
+  if (findings.some((f) => f.ruleId.endsWith(RENOVATE_RELEASE_AGE_RULE))) {
+    lines.push("", RENOVATE_RELEASE_AGE_REMEDY);
   }
 
   return lines.join("\n");
