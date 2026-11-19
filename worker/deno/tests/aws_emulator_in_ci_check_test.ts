@@ -1214,10 +1214,15 @@ Deno.test("checkAwsEmulatorInCI - timeout 900 ./ci/t.sh resolves the script and 
   }
 });
 
+// `id -u` needs only --allow-run, unlike Deno.uid() which needs --allow-sys.
+const IS_ROOT = new TextDecoder().decode(
+  new Deno.Command("id", { args: ["-u"], stdout: "piped" }).outputSync().stdout,
+).trim() === "0";
+
 Deno.test({
   name:
     "checkAwsEmulatorInCI - unreadable repository script rejects, readable one counts (ignored as root, which reads any file)",
-  ignore: Deno.uid() === 0,
+  ignore: IS_ROOT,
   fn: async () => {
     const root = await makeTempRepo();
     try {

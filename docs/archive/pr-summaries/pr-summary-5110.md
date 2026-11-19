@@ -298,4 +298,24 @@ flowchart LR
     `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts::real aws-emulator.yml passes every check`
     and `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts`.
 - The real emulator run is in Evidence.
-- `./quality.sh`: see the result line below.
+- `./quality.sh` (run with the injected `GIT_CONFIG_*` variables unset): every
+  stage passed except `deno tests` (`config integration` and `checkov` were
+  skipped). The parallel pass ran 35111 tests and passed them, with 2 failures:
+  - `worker/deno/tests/aws_emulator_in_ci_check_test.ts` failed to load
+    because `Deno.uid()` needs `--allow-sys`, which the gate does not grant. It
+    is fixed (`id -u` instead), and the file now passes without `--allow-sys`:
+    80 passed.
+  - `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` failed with
+    `dns error: failed to lookup address information` fetching
+    `registry.npmjs.org`. This is an environmental network fault in this
+    container, not this change.
+- The gate skipped its serial pass after that failure, so the 40
+  `PARALLEL_UNSAFE_TEST_FILES` were run directly: 948 passed, 0 failed, 1
+  ignored.
+
+<!-- vibe-quality-gate-skipped reason="the full gate was not re-run after the one-line Deno.uid fix; the affected file passes under the gate's permissions; the only other failure is a DNS fault fetching npm" -->
+
+Not checked: the script was not run as `agent` in a fresh container. CI has not
+run on this branch. CI's `aws` CLI is the runner's, not the pinned 2.40.3. The
+detector does not skip `sudo` options (`sudo -E aws-emulator-run` is not
+counted). The 43 integration suites the gate leaves to CI were not run here.
