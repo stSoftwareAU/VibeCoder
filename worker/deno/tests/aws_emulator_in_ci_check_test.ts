@@ -851,6 +851,124 @@ Deno.test("workflowRunsAwsEmulator - no jobs does not throw and returns false", 
   assertEquals(workflowRunsAwsEmulator("not a doc"), false);
 });
 
+/** A one-job workflow whose single `run: |` step body is `body`, parsed. */
+function workflowRunBlock(body: string): unknown {
+  const indented = body.split("\n").map((line) => `          ${line}`).join(
+    "\n",
+  );
+  return parseYaml(
+    `jobs:\n  test:\n    steps:\n      - run: |\n${indented}\n`,
+  );
+}
+
+Deno.test("workflowRunsAwsEmulator - if/then before aws-emulator-run counts", () => {
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock(`if [ -n "$X" ]; then aws-emulator-run -- ./t.sh; fi`),
+    ),
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - timeout with a duration before aws-emulator-run counts", () => {
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("timeout 600 aws-emulator-run -- ./t.sh"),
+    ),
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - timeout with a -k option before aws-emulator-run counts", () => {
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("timeout -k 5 600 aws-emulator-run -- ./t.sh"),
+    ),
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - quoted aws-emulator-run command word counts", () => {
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock(`"aws-emulator-run" -- ./t.sh`),
+    ),
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - time before aws-emulator-run counts", () => {
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("time aws-emulator-run -- ./t.sh"),
+    ),
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - command aws-emulator-run counts", () => {
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("command aws-emulator-run -- ./t.sh"),
+    ),
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - aws-emulator-run on the line after an if line counts", () => {
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock(
+        `if [ -n "$X" ]; then\n  aws-emulator-run -- ./t.sh\nfi`,
+      ),
+    ),
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - command -v aws-emulator-run does not count", () => {
+  assertEquals(
+    workflowRunsAwsEmulator(workflowRunBlock("command -v aws-emulator-run")),
+    false,
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - if command -v aws-emulator-run then echo does not count", () => {
+  assertEquals(
+    workflowRunsAwsEmulator(
+      workflowRunBlock(
+        "if command -v aws-emulator-run >/dev/null; then echo ok; fi",
+      ),
+    ),
+    false,
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - timeout wrapping echo aws-emulator-run does not count", () => {
+  assertEquals(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("timeout 600 echo aws-emulator-run"),
+    ),
+    false,
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - double-quoted echo aws-emulator-run does not count", () => {
+  assertEquals(
+    workflowRunsAwsEmulator(workflowRunBlock(`echo "aws-emulator-run"`)),
+    false,
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - which aws-emulator-run does not count", () => {
+  assertEquals(
+    workflowRunsAwsEmulator(workflowRunBlock("which aws-emulator-run")),
+    false,
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - commented if/then aws-emulator-run does not count", () => {
+  assertEquals(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("# if true; then aws-emulator-run -- ./t.sh; fi"),
+    ),
+    false,
+  );
+});
+
 Deno.test("checkAwsEmulatorInCI - CloudFormation template with AWS Emulator workflow, then without it", async () => {
   const root = await makeTempRepo();
   try {
@@ -1082,4 +1200,47 @@ Deno.test("checkAwsEmulatorInCI - script over 1 MiB is not read", async () => {
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+Deno.test("checkAwsEmulatorInCI - timeout 900 ./ci/t.sh resolves the script and counts", async () => {
+  const root = await makeTempRepo();
+  try {
+    await setupAwsRepo(root, "timeout 900 ./ci/t.sh");
+    await writeFile(root, "ci/t.sh", RUNNER_SCRIPT);
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.emulatorConfigured, true);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test({
+  name:
+    "checkAwsEmulatorInCI - unreadable repository script rejects, readable one counts (ignored as root, which reads any file)",
+  ignore: Deno.uid() === 0,
+  fn: async () => {
+    const root = await makeTempRepo();
+    try {
+      await setupAwsRepo(root, "./ci/t.sh");
+      const script = `${root}/ci/t.sh`;
+      await writeFile(
+        root,
+        "ci/t.sh",
+        "#!/usr/bin/env bash\naws-emulator-run -- ./t.sh\n",
+      );
+      await Deno.chmod(script, 0o000);
+      await assertRejects(
+        () => checkAwsEmulatorInCI(root),
+        Error,
+        "ci/t.sh",
+      );
+
+      // Positive control: the same repo counts once the script is readable.
+      await Deno.chmod(script, 0o644);
+      const result = await checkAwsEmulatorInCI(root);
+      assertEquals(result.emulatorConfigured, true);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
 });

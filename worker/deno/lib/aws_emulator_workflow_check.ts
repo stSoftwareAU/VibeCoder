@@ -20,7 +20,7 @@
  *   `/var/run/docker.sock`, and nothing references Floci;
  * - (d) `pull_request` watches `infra/cloudformation/**`, the workflow itself,
  *   `container/aws-emulator-run.sh`, `container/toolchains/aws-emulator.sh` and
- *   `container/tools.json`, and targets `milestone/*` branches (Issue #3360);
+ *   `container/tools.json`, and targets `milestone/*` branches;
  * - (e) top-level `permissions.contents` is `read`;
  * - (f) every `actions/checkout` step sets `persist-credentials: false`.
  *

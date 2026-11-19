@@ -345,17 +345,19 @@ CloudFormation template, or any `.tf` file.
 **Pass condition.** Any GitHub Actions workflow runs an emulator: the
 `floci/floci` image — as a service container, a job container, a
 `docker://` step, or a `docker run` step — or the official AWS Emulator,
-via a `run:` step that invokes `aws-emulator-run` (command word, after
-`sudo`/`env`/`exec`/`VAR=value`, is `aws-emulator-run` or a path ending
-`/aws-emulator-run`), or that runs a repository script (a relative path,
-or the first argument of `bash`/`sh`) which itself invokes
-`aws-emulator-run` the same way — one level of indirection, with the
-script read from the checkout and confined to it (absolute paths, `..`,
-`$` expansions and symlinks out of the repo do not count). Merely
-installing the emulator (`container/toolchains/aws-emulator.sh`, or
+via a `run:` step that invokes `aws-emulator-run` (the command word, once
+shell reserved words, `sudo`/`env`/`exec`, `VAR=value` and the
+`time`/`nice`/`timeout`/`command` wrappers are skipped and quotes are
+stripped, is `aws-emulator-run` or a path ending `/aws-emulator-run`), or
+that runs a repository script (a relative path, or the first argument of
+`bash`/`sh`) which itself invokes `aws-emulator-run` the same way — one
+level of indirection, with the script read from the checkout and confined
+to it (absolute paths, `..`, `$` expansions and symlinks out of the repo
+do not count). Merely installing the emulator
+(`container/toolchains/aws-emulator.sh`, or
 `install ... /usr/local/bin/aws-emulator-run`) is not coverage. An
-`echo aws-emulator-run`, a comment, or a mention in a string does not
-count.
+`echo aws-emulator-run`, `command -v aws-emulator-run`, a comment, or a
+mention in a string does not count.
 
 **No finding is filed** when the repo does not use AWS, when no
 workflow loaded (status unknown — the same fail-safe reasoning as the

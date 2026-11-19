@@ -1,10 +1,12 @@
 # AWS Emulator CloudFormation deployment test (Issue #5110).
 #
 # Deploys every CloudFormation template under infra/cloudformation/ into the
-# official AWS Emulator via infra/cloudformation/test-aws-emulator.sh, and
-# asserts each stack reaches CREATE_COMPLETE, so a template that cannot be
-# deployed fails the PR rather than the first real deployment. The script
-# reports named unsupported gaps separately and exits non-zero on any failure.
+# official AWS Emulator via infra/cloudformation/test-aws-emulator.sh, so a
+# template that cannot be deployed fails the PR rather than the first real
+# deployment. Each stack must reach CREATE_COMPLETE, unless a template has a
+# named gap in the script's KNOWN_GAPS: that gap must then fail with exactly
+# CREATE_FAILED caused only by the gap, and the run fails if it changes. The
+# script exits non-zero on any other failure.
 #
 # The emulator is installed by container/toolchains/aws-emulator.sh, which
 # reads the pinned version and the per-architecture sha256 from
@@ -19,17 +21,17 @@
 # to the default branch (fleet rule `workflow-triggers`); pull request runs
 # cover every change that can alter a template, the runner or the pin.
 #
-# Third-party actions are pinned to 40-character commit SHAs (Issue
-# #2123) so a hijacked tag cannot inject code into the workflow. The
-# version tag each SHA corresponds to is captured in a leading comment.
+# Third-party actions are pinned to 40-character commit SHAs so a hijacked
+# tag cannot inject code into the workflow. The version tag each SHA
+# corresponds to is captured in a leading comment.
 
 name: AWS Emulator CloudFormation
 
 on:
   pull_request:
-    # Issue #3360 — milestone sub-issue PRs target a shared
-    # `milestone/<name>` branch (Issue #1300); include it so the check
-    # runs before those PRs merge, not only on Develop/main PRs.
+    # Milestone sub-issue PRs target a shared `milestone/<name>` branch;
+    # include it so the check runs before those PRs merge, not only on
+    # Develop/main PRs.
     branches: [Develop, main, 'milestone/*']
     paths:
       - 'infra/cloudformation/**'

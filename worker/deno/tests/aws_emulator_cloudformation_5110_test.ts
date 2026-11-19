@@ -6,7 +6,8 @@
  * on a minimal PATH, so no emulator, network or AWS account is needed. The last
  * case runs the script through the real `aws-emulator-run` and is ignored unless
  * the current account is ordinary (neither root nor the worker account `vibe`)
- * and `aws-emulator` and `aws` are on PATH, as the 5109 suite does.
+ * and `aws-emulator-run`, `aws-emulator` and `aws` are on PATH, as the 5109
+ * suite does.
  *
  * Uses Australian English spelling (behaviour, organisation).
  */
@@ -659,8 +660,12 @@ Deno.test(
 );
 
 // The real end-to-end run. As with the 5109 suite, the helper refuses the
-// worker account `vibe` and uid 0 by design, so this case is ignored for both
-// and runs in CI as an ordinary user.
+// worker account `vibe` and uid 0 by design, so this case is ignored for both.
+// It runs only where an ordinary non-root, non-`vibe` account has
+// `aws-emulator-run`, `aws-emulator` and `aws` on PATH (e.g. a fresh worker
+// container as `agent`). The deno test jobs do not install the emulator, so the
+// case is ignored there; CI exercises the same script through
+// .github/workflows/aws-emulator.yml, which runs it directly.
 Deno.test({
   name:
     "aws-emulator-cloudformation 5110: real aws-emulator-run runs the whole template suite (ordinary user only)",

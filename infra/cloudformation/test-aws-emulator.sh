@@ -193,8 +193,7 @@ physical_id() {
 }
 
 # --- Templates ---------------------------------------------------------------
-# SIMPLE-ON-PURPOSE: 2-space names, 4-space keys, single-line Type, as in the
-# retired test-floci.sh. Upgrade when a template uses flow-style or anchors.
+# SIMPLE-ON-PURPOSE: 2-space names, 4-space keys, single-line Type, as in the retired test-floci.sh — upgrade when a template uses flow-style or anchors
 # Prints "<Name><TAB><Type>" for each SSM-typed parameter of template $1.
 ssm_parameters() {
     awk '

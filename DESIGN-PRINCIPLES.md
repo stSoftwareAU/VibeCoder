@@ -1871,9 +1871,11 @@ Claude runs. `checkAwsEmulatorInCI()` detects AWS usage from dependency
 manifests, CloudFormation templates, or `.tf` files, and checks
 whether any GitHub Actions workflow runs an emulator: the `floci/floci`
 image as a service container, job container, `docker://` step, or
-`docker run` step, or the official AWS Emulator (`aws-emulator-run`, or
-the pinned `container/toolchains/aws-emulator.sh` install) in a `run:`
-command position. A repo that uses AWS without either emulator wired
+`docker run` step, or the official AWS Emulator: a `run:` step in command
+position that invokes `aws-emulator-run`, directly or through a repository
+script that itself invokes it (one level deep). Merely installing the pinned
+`container/toolchains/aws-emulator.sh` is not coverage. A repo that uses AWS
+without either emulator wired
 into CI, and without a valid `best-practice-ignore: BP-AWS-EMULATOR-MISSING`
 waiver, gets one `severity:medium` finding with the fixed id
 `BP-AWS-EMULATOR-MISSING`, deduplicated through the same

@@ -389,33 +389,85 @@ function shellSegments(script: string): string[][] {
   return segments;
 }
 
-/** Index of the command word: skips `sudo`, `env` and leading `VAR=value` words. */
+/**
+ * Shell reserved words and plain prefix words that may sit in front of the
+ * command word. A word counts only when it stands alone (`then`, not
+ * `then;`, which `shellSegments` already splits).
+ */
+const SHELL_PREFIX_WORDS = new Set([
+  "if",
+  "then",
+  "elif",
+  "else",
+  "do",
+  "while",
+  "until",
+  "!",
+  "{",
+  "(",
+  "sudo",
+  "env",
+  "exec",
+]);
+/** `timeout` options that take a separate value word (`-k 5`, `-s KILL`). */
+const TIMEOUT_VALUE_OPTIONS = new Set([
+  "-k",
+  "-s",
+  "--kill-after",
+  "--signal",
+]);
+
+/**
+ * Index of the command word. Skips shell reserved words, `sudo`, `env`,
+ * `exec`, leading `VAR=value` words, and the wrappers `time` (with `-p`),
+ * `nice` (with `-n N` or `-N`), `timeout` (with its options and its duration
+ * word) and `command`. `command -v`/`-V` only looks a command up, so it stops
+ * the scan at `command` itself. Returns `words.length` when none is found.
+ */
 function commandIndex(words: string[]): number {
   let i = 0;
   while (i < words.length) {
     const w = words[i] ?? "";
-    if (
-      w === "sudo" || w === "env" || w === "exec" || SHELL_ASSIGNMENT.test(w)
-    ) {
+    if (SHELL_PREFIX_WORDS.has(w) || SHELL_ASSIGNMENT.test(w)) {
       i++;
-      continue;
+    } else if (w === "time") {
+      i++;
+      if (words[i] === "-p") i++;
+    } else if (w === "nice") {
+      i++;
+      const next = words[i];
+      if (next === "-n") i += 2;
+      else if (next !== undefined && /^-n?\d+$/.test(next)) i++;
+    } else if (w === "timeout") {
+      i++;
+      while (i < words.length && (words[i] ?? "").startsWith("-")) {
+        i += TIMEOUT_VALUE_OPTIONS.has(words[i] ?? "") ? 2 : 1;
+      }
+      i++; // the duration
+    } else if (w === "command") {
+      const next = words[i + 1];
+      if (next === "-v" || next === "-V") break;
+      i++;
+    } else {
+      break;
     }
-    break;
   }
   return i;
 }
 
 /**
  * True when one command segment actually invokes the emulator runner: its
- * command word (after optional `sudo`, `env`, `exec` and leading `VAR=value`
- * words) is `aws-emulator-run` or a path ending `/aws-emulator-run`. An
- * `echo aws-emulator-run`, an `install ... /usr/local/bin/aws-emulator-run`
- * and the install fragment `container/toolchains/aws-emulator.sh` do not
- * count: none of them runs a test through the emulator.
+ * command word (see {@link commandIndex}, with any surrounding quotes
+ * removed) is `aws-emulator-run` or a path ending `/aws-emulator-run`. An
+ * `echo aws-emulator-run`, `command -v aws-emulator-run`, an
+ * `install ... /usr/local/bin/aws-emulator-run` and the install fragment
+ * `container/toolchains/aws-emulator.sh` do not count: none of them runs a
+ * test through the emulator.
  */
 function segmentInvokesEmulatorRunner(words: string[]): boolean {
   const command = words[commandIndex(words)];
-  return command !== undefined && AWS_EMULATOR_RUN_COMMAND.test(command);
+  return command !== undefined &&
+    AWS_EMULATOR_RUN_COMMAND.test(stripQuotes(command));
 }
 
 function stripQuotes(word: string): string {
@@ -423,20 +475,20 @@ function stripQuotes(word: string): string {
 }
 
 /**
- * The repo-relative script a segment runs: its command word when that is a
- * relative path (contains `/`), or the first non-flag argument of
- * `bash`/`sh`. Null when none.
+ * The repo-relative script a segment runs: its command word (see
+ * {@link commandIndex}) when that is a relative path (contains `/`), or the
+ * first non-flag argument of `bash`/`sh`. Null when none.
  */
 function segmentScriptPath(words: string[]): string | null {
   const i = commandIndex(words);
-  const command = words[i];
-  if (command === undefined) return null;
+  const word = words[i];
+  if (word === undefined) return null;
+  const command = stripQuotes(word);
   if (command === "bash" || command === "sh") {
     const arg = words.slice(i + 1).find((w) => !w.startsWith("-"));
     return arg === undefined ? null : stripQuotes(arg);
   }
-  const path = stripQuotes(command);
-  return path.includes("/") ? path : null;
+  return command.includes("/") ? command : null;
 }
 
 /** True when `script` text has a segment that invokes the emulator runner. */
@@ -447,8 +499,11 @@ function scriptInvokesEmulatorRunner(script: string): boolean {
 /**
  * Build a `ScriptReader` confined to `repoRoot`. Rejects absolute paths,
  * `~`, `..` segments and `$` expansions; resolves symlinks and requires the
- * real path to sit inside the real repo root. Missing, unreadable,
- * out-of-repo, non-file or over-1-MiB scripts read as null.
+ * real path to sit inside the real repo root. Out-of-repo, non-file or
+ * over-1-MiB scripts read as null, as does a missing script (including a
+ * symlink to a missing target). Any other read error (for example permission
+ * denied) throws, so a script that exists but cannot be read is never
+ * mistaken for one that does not count.
  */
 export function makeRepoScriptReader(repoRoot: string): ScriptReader {
   return (relPath: string): string | null => {
@@ -466,8 +521,13 @@ export function makeRepoScriptReader(repoRoot: string): ScriptReader {
       const info = Deno.statSync(real);
       if (!info.isFile || info.size > MAX_SCRIPT_BYTES) return null;
       return Deno.readTextFileSync(real);
-    } catch {
-      return null; // NotFound or any other error: the script does not count
+    } catch (err) {
+      if (err instanceof Deno.errors.NotFound) return null;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `aws-emulator check: cannot read repository script ${relPath}: ${message}`,
+        { cause: err },
+      );
     }
   };
 }
@@ -624,7 +684,10 @@ async function readFileOrSkip(path: string): Promise<string | null> {
  * through the official AWS Emulator via `aws-emulator-run`, directly or in a
  * repository script a `run:` step executes).
  * A missing or unreadable `repoPath` rejects rather than reading as "no
- * AWS" — a wrong path must never be mistaken for a genuine absence.
+ * AWS" — a wrong path must never be mistaken for a genuine absence. An
+ * unreadable repository script referenced by a `run:` step (one that exists
+ * but cannot be read, such as permission denied) rejects too; a missing one
+ * does not count.
  */
 export async function checkAwsEmulatorInCI(
   repoPath: string,

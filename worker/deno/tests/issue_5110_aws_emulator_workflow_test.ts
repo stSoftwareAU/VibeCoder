@@ -138,6 +138,16 @@ Deno.test("(a) refuses an if: on the test step", () => {
   );
 });
 
+Deno.test("(a) refuses an if: on the job", () => {
+  expectFindings(
+    mutate([
+      "    timeout-minutes: 25\n",
+      "    timeout-minutes: 25\n    if: false\n",
+    ]),
+    ["[test-step] an if: on job cloudformation"],
+  );
+});
+
 // (b) the pinned install and the runner install precede the test step.
 
 Deno.test("(b) refuses the test step placed before the install steps", () => {
