@@ -237,21 +237,18 @@ async function setupAddedRepo(): Promise<{ dir: string; beforeSha: string }> {
   return { dir, beforeSha: rev.stdout.trim() };
 }
 
-Deno.test("runPrFeedbackDriftCheck - a single-figure 'Added 5 tests to' line at head 6 never reaches the recovery prompt as a count mismatch (Issue #3983)", async () => {
+Deno.test("runPrFeedbackDriftCheck - a single-figure 'Added 5 tests to' line at head 6 is never a count mismatch and launches no recovery turn (Issues #3983, #5223)", async () => {
   const { dir, beforeSha } = await setupAddedRepo();
   try {
     await writeFile(dir, "tests/a_test.ts", HEAD_A_TEST_TS);
 
     const calls: AgentCall[] = [];
     const runAgent = makeRunAgent(
-      [
-        { ok: true, output: verdictBlock([]) },
-        { ok: true, output: "did nothing" },
-      ],
+      [{ ok: true, output: verdictBlock([]) }],
       calls,
     );
 
-    await runPrFeedbackDriftCheck(
+    const outcome = await runPrFeedbackDriftCheck(
       { repo: "org/repo", prNumber: 7, repoPath: dir, beforeSha },
       {
         runGit: makeRunGit(dir),
@@ -261,17 +258,20 @@ Deno.test("runPrFeedbackDriftCheck - a single-figure 'Added 5 tests to' line at 
       },
     );
 
-    // The partial figure is unchecked, and an unchecked figure is a hit that
-    // runs the one recovery turn (Issue #3740), so the turn does run. What
-    // must not happen is the figure being compared as a stale whole-file count.
-    assertEquals(calls.length, 2);
-    const prompt = calls[1]!.prompt;
-    assertEquals(prompt.includes("Test Plan mismatches:"), false);
-    assertStringIncludes(
-      prompt,
-      "Test Plan figures the recount could not check:",
-    );
-    assertStringIncludes(prompt, "Added 5 tests to `tests/a_test.ts`.");
+    // The partial figure is unchecked, and an unchecked figure no longer
+    // starts the recovery turn on its own (Issue #5223), so only the read-only
+    // call runs. It is reported unverified, never compared as a stale
+    // whole-file count.
+    assertEquals(calls.length, 1);
+    assertEquals(outcome.status, "reported");
+    if (outcome.status === "reported") {
+      assertEquals(outcome.residual.mismatches, []);
+      assertEquals(outcome.residual.testPlanUnchecked?.length, 1);
+      assertStringIncludes(
+        outcome.residual.testPlanUnchecked![0]!,
+        "Added 5 tests to `tests/a_test.ts`.",
+      );
+    }
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
