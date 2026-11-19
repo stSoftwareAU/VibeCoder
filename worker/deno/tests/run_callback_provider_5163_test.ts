@@ -54,7 +54,14 @@ Deno.test("servedRunProvider - the rule", () => {
   assertEquals(
     servedRunProvider([{}, named("deepseek")], "claude"),
     "deepseek",
+  ); // A review-only pass (the pre-PR verifier) on the host's provider is left
+  // out, so a pinned run still names the pinned provider.
+  const review = { runStats: { provider: "claude" }, reviewOnly: true };
+  assertEquals(
+    servedRunProvider([named("deepseek"), review], "claude"),
+    "deepseek",
   );
+  assertEquals(servedRunProvider([review], "codex"), "codex");
 });
 
 /** Run one issue on a Claude host; `pin` is the repo's agent provider. */

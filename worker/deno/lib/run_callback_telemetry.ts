@@ -220,6 +220,8 @@ export function breakdownInvocationTelemetry(
 /** The per-invocation stats this reads: the provider the runner stamped on each. */
 export interface ProviderSource {
   runStats?: { provider?: string };
+  /** A review-only pass (the pre-PR verifier), left out of the rule. */
+  reviewOnly?: boolean;
 }
 
 /**
@@ -235,8 +237,13 @@ export interface ProviderSource {
  * `lib/claude_runner.ts` with the id of the provider it spawned (including one
  * switched to by `agent_provider_fallback`).
  *
- * - No invocations: no agent spawned, so the configured provider is the one
- *   that would have served it (undefined when blank or absent).
+ * Review-only passes (`reviewOnly`, the pre-PR verifier) are left out: they
+ * run on the host's configured provider whatever the run was pinned or
+ * rerouted to, so counting them would make every such run look mixed.
+ *
+ * - No implementation invocations: no agent spawned, so the configured
+ *   provider is the one that would have served it (undefined when blank or
+ *   absent).
  * - Exactly one distinct provider named: that id.
  * - None named, or several (for example an external-orchestration run whose
  *   calls ran on different providers): undefined, never the configured one.
@@ -245,11 +252,12 @@ export function servedRunProvider(
   invocations: readonly ProviderSource[],
   configuredProvider: string | undefined,
 ): string | undefined {
-  if (invocations.length === 0) {
+  const work = invocations.filter((invocation) => !invocation.reviewOnly);
+  if (work.length === 0) {
     return configuredProvider?.trim() || undefined;
   }
   const named = new Set<string>();
-  for (const invocation of invocations) {
+  for (const invocation of work) {
     const id = invocation.runStats?.provider?.trim();
     if (id) named.add(id);
   }

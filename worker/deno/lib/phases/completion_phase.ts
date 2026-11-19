@@ -2898,7 +2898,11 @@ async function completionBody(
       maxRetries: config.maxRateLimitRetries,
       logger,
     });
-    if (prePrVerifier.run) recordClaudeRunStats(state, prePrVerifier.run);
+    // Review-only (Issue #5163): the verifier runs on the host's provider, so
+    // it must not make a pinned or rerouted run's served provider mixed.
+    if (prePrVerifier.run) {
+      recordClaudeRunStats(state, { ...prePrVerifier.run, reviewOnly: true });
+    }
     if (prePrVerifier.status === "not_checked") {
       logger.warn(
         "Pre-PR verifier not checked — not read as clean, does not block (Issue #3395)",
