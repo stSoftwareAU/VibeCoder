@@ -115,10 +115,21 @@ container runs the command, so this is Part of #5110.
 
 ## Evidence
 
+The detector also skips compound groups opened behind a skipped chain:
+`false && {` ... `}` and `true || {` ... `}` (a standalone or one-line brace
+group), a `( ... )` subshell and an `if` after a skipped `&&`/`||` no longer
+earn credit, in a workflow step and in a script run by `bash ./test.sh`, with
+`true && {` and `false || {` as credited controls
+(`worker/deno/lib/shell_command_words.ts`, `reachableSegments`). Run on this
+head with `deno task test:unit`, the six new not-credited and credited cases in
+`worker/deno/tests/aws_emulator_in_ci_check_test.ts` fail (156 passed, 6 failed)
+with the `shell_command_words.ts` change reverted and pass with it (162 passed,
+0 failed).
+
 At `2413cf34`, the detector preserves the exit status of short-circuited
 compound conditions. The regression test checks both reported false conditions
-and reachable controls in a workflow step and in a script invoked by Bash.
-A Node harness passed all 53 focused detector tests it ran. For 500 three-command
+and reachable controls in a workflow step and in a script invoked by Bash. A
+Node harness passed all 53 focused detector tests it ran. For 500 three-command
 conditions combining `&&` and `||`, the scanner disagreed with Bash in 200 cases
 before the fix and agreed in all 500 afterwards.
 
@@ -234,10 +245,10 @@ flowchart LR
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts` (disabled and unreachable
   runner invocations, including `true && exit 0` and `false || exit 0` before
   the runner and `bash -n ./test.sh`, in the workflow and in a repository
-  script, plus false compound conditions and their reachable controls) — evidence:
-  the review at the earlier head found a negated test step accepted and a
-  disabled, guaranteed-exit or no-exec runner credited; all are refused at this
-  head
+  script, plus false compound conditions, skipped brace and subshell groups
+  (`false && {`, `true || {`) and their reachable controls) — evidence: the
+  review at the earlier head found a negated test step accepted and a disabled,
+  guaranteed-exit or no-exec runner credited; all are refused at this head
 - **met** — Every existing template is accounted for as exercised or as a
   specific unsupported case with alternative validation; no unsupported/stubbed
   resource is reported as proven. — evidence:
@@ -373,7 +384,7 @@ flowchart LR
   The ignored case is the real end-to-end run. It is skipped for `vibe` and
   root, and was run as `agent` in Evidence instead.
 - `worker/deno/tests/aws_emulator_in_ci_check_test.ts` (extended, additions
-  only; 148 tests at head). Coverage:
+  only; 162 tests at head). Coverage:
   - runner text that cannot run earns no credit (19 not-credited cases: a step
     or job `if: false`, `${{ false }}` and `'0'`, a false or negated-true `if`,
     the `else` of `if true`, an `elif` after a taken branch, `while false`,
@@ -392,6 +403,11 @@ flowchart LR
     `-o noexec` or `--noexec`, and a step with a no-exec `shell:` or
     `defaults.run.shell`, earn no credit, with `bash -eo pipefail ./test.sh` as
     a credited control;
+  - a brace group, one-line brace group, `( )` subshell or `if` opened behind
+    `false &&` or `true ||` earns no credit, with `true &&`, `false ||` and a
+    runtime-test `&&` as credited controls, and code after a skipped group stays
+    credited; the same through a repository script and through
+    `checkAwsEmulatorInCI` (direct and `bash ./test.sh`);
   - hostile long inputs (a long `<` run and whitespace run for the here-document
     pattern, a long whitespace run in `${{ }}`) return the right answer;
   - direct, wrapped, keyword-prefixed and quoted invocations;
@@ -402,7 +418,7 @@ flowchart LR
   AWS Emulator script is never planned". It passes on the base by design,
   because it pins a deliberate absence.
 - On the head after the PR #5276 review fixes, run one file at a time (tests at
-  head, all passing unless noted): `aws_emulator_in_ci_check_test.ts` (148);
+  head, all passing unless noted): `aws_emulator_in_ci_check_test.ts` (162);
   `issue_5110_aws_emulator_workflow_test.ts` (43);
   `aws_emulator_cloudformation_5110_test.ts` (18: 17 pass, 1 ignored);
   `checkov_workflow_test.ts` (20); `best_practices_template_test.ts` (69);

@@ -1374,6 +1374,43 @@ const NOT_EXECUTED: [
   ],
   ["a false && chain", `false && ${RUNNER}`, {}, {}],
   ["a true || chain", `true || ${RUNNER}`, {}, {}],
+  [
+    "a brace group behind false &&",
+    `false && {\n  ${RUNNER}\n}`,
+    {},
+    {},
+  ],
+  [
+    "a brace group behind true ||",
+    `true || {\n  ${RUNNER}\n}`,
+    {},
+    {},
+  ],
+  [
+    "a one-line brace group behind false &&",
+    `false && { ${RUNNER}; }`,
+    {},
+    {},
+  ],
+  [
+    "a brace group on the line after a pending false &&",
+    `false &&\n{\n  ${RUNNER}\n}`,
+    {},
+    {},
+  ],
+  [
+    "a subshell group behind false &&",
+    `false && (\n  ${RUNNER}\n)`,
+    {},
+    {},
+  ],
+  ["a one-line subshell behind true ||", `true || ( ${RUNNER} )`, {}, {}],
+  [
+    "an if compound behind false &&",
+    `false && if true; then ${RUNNER}; fi`,
+    {},
+    {},
+  ],
   ["code after true && exit 0", `true && exit 0\n${RUNNER}`, {}, {}],
   ["code after false || exit 0", `false || exit 0\n${RUNNER}`, {}, {}],
   ["code after : && exit 0 on one line", `: && exit 0; ${RUNNER}`, {}, {}],
@@ -1444,6 +1481,21 @@ const EXECUTED: [
     {},
   ],
   ["a true && chain", `true && ${RUNNER}`, {}, {}],
+  ["a brace group behind true &&", `true && {\n  ${RUNNER}\n}`, {}, {}],
+  ["a brace group behind false ||", `false || {\n  ${RUNNER}\n}`, {}, {}],
+  [
+    "a brace group behind a runtime test",
+    `[ -n "$X" ] && {\n  ${RUNNER}\n}`,
+    {},
+    {},
+  ],
+  ["a subshell group behind true &&", `true && (\n  ${RUNNER}\n)`, {}, {}],
+  [
+    "code after a skipped brace group",
+    `false && {\n  echo x\n}\n${RUNNER}`,
+    {},
+    {},
+  ],
   ["a false || chain", `false || ${RUNNER}`, {}, {}],
   [
     "code after a guarded exit",
@@ -1505,12 +1557,22 @@ Deno.test("workflowRunsAwsEmulator - a repository script's unreachable runner ea
       `exit 0\n${RUNNER}\n`,
       `if false; then ${RUNNER}; fi\n`,
       `false && ${RUNNER}\n`,
+      `false && {\n  ${RUNNER}\n}\n`,
+      `true || {\n  ${RUNNER}\n}\n`,
       `cat <<EOF\n${RUNNER}\nEOF\n`,
     ]
   ) {
     assertEquals(workflowRunsAwsEmulator(doc, read(text)), false, text);
   }
   assertEquals(workflowRunsAwsEmulator(doc, read(`${RUNNER}\n`)), true);
+  for (
+    const text of [
+      `true && {\n  ${RUNNER}\n}\n`,
+      `false || {\n  ${RUNNER}\n}\n`,
+    ]
+  ) {
+    assertEquals(workflowRunsAwsEmulator(doc, read(text)), true, text);
+  }
   assertEquals(
     workflowRunsAwsEmulator(
       doc,
@@ -1649,6 +1711,44 @@ Deno.test("checkAwsEmulatorInCI - a disabled or unreachable runner does not coun
     assertEquals((await checkAwsEmulatorInCI(root)).emulatorConfigured, true);
   } finally {
     await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - a skipped brace group does not count as emulator coverage, directly or through a repository script", async () => {
+  const cases: [string, boolean][] = [
+    [`false && {\n  ${RUNNER}\n}`, false],
+    [`true || {\n  ${RUNNER}\n}`, false],
+    [`true && {\n  ${RUNNER}\n}`, true],
+    [`false || {\n  ${RUNNER}\n}`, true],
+  ];
+  for (const [script, expected] of cases) {
+    for (const viaScript of [false, true]) {
+      const root = await makeTempRepo();
+      try {
+        await writeFile(root, "infra/cloudformation/host.yaml", CFN_TEMPLATE);
+        let run = script;
+        if (viaScript) {
+          await writeFile(root, "test.sh", `${script}\n`);
+          run = "bash ./test.sh";
+        }
+        await writeFile(
+          root,
+          ".github/workflows/ci.yml",
+          `jobs:\n  test:\n    steps:\n      - run: |\n${
+            run.split("\n").map((l) => `          ${l}`).join("\n")
+          }\n`,
+        );
+        const result = await checkAwsEmulatorInCI(root);
+        assertEquals(result.usesAws, true);
+        assertEquals(
+          result.emulatorConfigured,
+          expected,
+          `${viaScript ? "via script: " : ""}${script}`,
+        );
+      } finally {
+        await Deno.remove(root, { recursive: true });
+      }
+    }
   }
 });
 

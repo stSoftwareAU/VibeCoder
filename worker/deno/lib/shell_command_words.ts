@@ -311,8 +311,10 @@ interface Frame {
   fn: boolean;
   /** A function whose `{` is still to come on a later line. */
   awaitBrace: boolean;
-  /** A `{ ... }` group or function body, ended by `}` rather than `fi`/`done`. */
+  /** A `{ ... }` group, `( ... )` subshell or function body, not ended by `fi`/`done`. */
   brace: boolean;
+  /** A `( ... )` subshell: an `exit` inside it does not end the script. */
+  sub: boolean;
 }
 
 function frameLive(f: Frame): boolean {
@@ -325,7 +327,7 @@ function frameLive(f: Frame): boolean {
 
 /** Whether the frame's current branch runs every time the construct is reached. */
 function frameCertain(f: Frame): boolean {
-  if (f.fn) return false;
+  if (f.fn || f.sub) return false;
   if (f.branch === "cond") return true;
   return f.branch === "body" ? f.truth === true : f.truth === false;
 }
@@ -336,7 +338,9 @@ const FUNCTION_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*\(\)$/;
  * The commands of a `run:` body that can run: it drops commands after an
  * unconditional `exit` or `set -n` / `set -o noexec`, behind `false &&` or `true ||`, in an `if`/`elif`/
  * `else` branch or a `while`/`until` body whose condition is statically false
- * (`false`, `! true`, `:` and `true` are the static commands), in a function
+ * (`false`, `! true`, `:` and `true` are the static commands), in a `{ }` or
+ * `( )` group or other compound opened behind a skipped chain
+ * (`false && { ...; }`, `true || (` ... `)`), in a function
  * body (the function may never be called) and in here-document bodies. An
  * `exit` that a condition guards (`[ -z "$X" ] && exit 0`, or inside an
  * unknown `if`) does not end the script here, so later commands still count;
@@ -352,9 +356,12 @@ export function reachableSegments(script: string): string[][] {
 
   const live = () =>
     !exited && (stack.at(-1) ? frameLive(stack.at(-1)!) : true);
+  // Whether the command being read is skipped by the chain before it; a
+  // compound it opens (`false && {`) inherits that, so its body never runs.
+  let chainSkipped = false;
   const push = (partial: Partial<Frame>) =>
     stack.push({
-      outer: live(),
+      outer: live() && !chainSkipped,
       truth: null,
       branch: "body",
       earlierTrue: false,
@@ -362,11 +369,23 @@ export function reachableSegments(script: string): string[][] {
       fn: false,
       awaitBrace: false,
       brace: false,
+      sub: false,
       ...partial,
     });
 
   for (const { words: all, sep } of shellCommands(stripHeredocBodies(script))) {
     let words = all;
+    // Short-circuit chains: `false && x` and `true || x` skip x, while
+    // `true && x` and `false || x` always run it. `runs` is null when a
+    // runtime status decides.
+    const runs: boolean | null = sep === "&&"
+      ? (prev === null ? null : prev)
+      : sep === "||"
+      ? (prev === null ? null : !prev)
+      : true;
+    const skipped = runs === false;
+    chainSkipped = skipped;
+    let closeAfter = false; // a one-line `( ... )` closes with its command
     // Structural keywords first; what is left is a plain command.
     while (words.length > 0) {
       const w = words[0] ?? "";
@@ -395,6 +414,14 @@ export function reachableSegments(script: string): string[][] {
       } else if (w === "{") {
         if (top?.awaitBrace) top.awaitBrace = false;
         else push({ truth: true, brace: true });
+      } else if (w === "(") {
+        push({ truth: true, brace: true, sub: true });
+        if (words.length > 1 && words.at(-1) === ")") {
+          closeAfter = true;
+          words = words.slice(0, -1);
+        }
+      } else if (w === ")") {
+        if (top?.sub) stack.pop();
       } else if (
         w === "function" || FUNCTION_NAME.test(w) || words[1] === "()"
       ) {
@@ -416,18 +443,10 @@ export function reachableSegments(script: string): string[][] {
     if (words.length === 0) {
       // A compound's status (`fi && exit`) is not tracked here.
       prev = null;
+      if (closeAfter) stack.pop();
       continue;
     }
 
-    // Short-circuit chains: `false && x` and `true || x` skip x, while
-    // `true && x` and `false || x` always run it. `runs` is null when a
-    // runtime status decides.
-    const runs: boolean | null = sep === "&&"
-      ? (prev === null ? null : prev)
-      : sep === "||"
-      ? (prev === null ? null : !prev)
-      : true;
-    const skipped = runs === false;
     const frameOpen = stack.at(-1);
     if (!skipped) {
       const status = sep === "|" ? null : staticStatus(words);
@@ -453,6 +472,7 @@ export function reachableSegments(script: string): string[][] {
         (head === "set" && readShellOptions(words.slice(at + 1)).noexec);
       if (stops && certain) exited = true;
     }
+    if (closeAfter) stack.pop();
   }
   return out;
 }
