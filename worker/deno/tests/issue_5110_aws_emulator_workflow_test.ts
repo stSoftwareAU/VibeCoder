@@ -115,6 +115,72 @@ Deno.test("(a) refuses a script mentioned only in an echo", () => {
   );
 });
 
+Deno.test("(a) refuses the call wrapped in an if false; then ... fi block", () => {
+  expectFindings(
+    mutate([
+      TEST_STEP_ANCHOR,
+      "\n          if false; then\n            ./infra/cloudformation/test-aws-emulator.sh\n          fi\n",
+    ]),
+    ["[test-step] no step runs"],
+  );
+});
+
+Deno.test("(a) refuses an exit 0 before the call", () => {
+  expectFindings(
+    mutate([
+      TEST_STEP_ANCHOR,
+      "\n          exit 0\n          ./infra/cloudformation/test-aws-emulator.sh\n",
+    ]),
+    ["[test-step] the infra/cloudformation/test-aws-emulator.sh step must run only"],
+  );
+});
+
+for (
+  const [label, tail] of [
+    ["; true after the call", "; true"],
+    ["a backgrounded call", " &"],
+    ["a pipe to tee", " | tee log.txt"],
+    ["&& echo done after the call", " && echo done"],
+  ] as const
+) {
+  Deno.test(`(a) refuses ${label}`, () => {
+    expectFindings(
+      mutate([
+        TEST_STEP_ANCHOR,
+        "\n          ./infra/cloudformation/test-aws-emulator.sh" + tail + "\n",
+      ]),
+      ["[test-step] no step runs"],
+    );
+  });
+}
+
+Deno.test("(a) refuses the call only in a comment line", () => {
+  expectFindings(
+    mutate([
+      TEST_STEP_ANCHOR,
+      "\n          # ./infra/cloudformation/test-aws-emulator.sh\n",
+    ]),
+    ["[test-step] no step runs"],
+  );
+});
+
+Deno.test("(a) accepts an explicit continue-on-error: false on the test step", () => {
+  expectFindings(
+    mutate([
+      TEST_STEP_NAME,
+      TEST_STEP_NAME + "        continue-on-error: false\n",
+    ]),
+    [],
+  );
+});
+
+Deno.test("(d) accepts a workflow parsed with the YAML 1.1 true key in place of on", () => {
+  const parsed = parseYaml(REAL) as Record<string, unknown>;
+  assert(parsed.on !== undefined, "real workflow must have an on key");
+  const { on, ...rest } = parsed;
+  assertEquals(checkAwsEmulatorWorkflow({ ...rest, "true": on }), []);
+});
+
 Deno.test("(a) refuses continue-on-error on the test step", () => {
   expectFindings(
     mutate([
@@ -182,7 +248,8 @@ Deno.test("(b) refuses a missing pinned install", () => {
 Deno.test("(b) refuses the pinned install with || true, which would swallow a checksum failure", () => {
   expectFindings(
     mutate([TOOLCHAIN_ANCHOR, TOOLCHAIN_ANCHOR + " || true"]),
-    ["[pinned-install] no step runs"],
+    // The runner install shares that step, so the whole step stops counting.
+    ["[pinned-install] no step runs", "[runner-install] no step installs"],
   );
 });
 
@@ -305,7 +372,9 @@ Deno.test("(gate-call) refuses a quality.yml without the aws-emulator caller job
 });
 
 Deno.test("checkQualityCallsAwsEmulator reports non-object input without throwing", () => {
-  assertEquals(checkQualityCallsAwsEmulator(null).length, 1);
+  assertEquals(checkQualityCallsAwsEmulator(null), [
+    "quality workflow is not an object",
+  ]);
   assertEquals(checkQualityCallsAwsEmulator("nope").length, 1);
 });
 
@@ -331,6 +400,6 @@ Deno.test("(f) refuses checkout without persist-credentials: false", () => {
 });
 
 Deno.test("checkAwsEmulatorWorkflow reports non-object input without throwing", () => {
-  assertEquals(checkAwsEmulatorWorkflow(null).length, 1);
+  assertEquals(checkAwsEmulatorWorkflow(null), ["workflow is not an object"]);
   assertEquals(checkAwsEmulatorWorkflow("nope").length, 1);
 });

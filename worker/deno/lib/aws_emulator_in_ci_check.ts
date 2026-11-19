@@ -329,9 +329,9 @@ export type ScriptReader = (relPath: string) => string | null;
  * keep a word together (`X="a b"` is one word), a backslash-newline joins
  * lines, a newline or `;`/`|`/`&` starts a new segment, and a `#` that
  * starts a word ends the line. This finds command words only; it is not a
- * shell parser.
+ * shell parser. Exported because aws_emulator_workflow_check.ts also uses it.
  */
-function shellSegments(script: string): string[][] {
+export function shellSegments(script: string): string[][] {
   const text = script.replace(/\\\r?\n/g, " ");
   const segments: string[][] = [];
   let words: string[] = [];
@@ -423,8 +423,9 @@ const TIMEOUT_VALUE_OPTIONS = new Set([
  * `nice` (with `-n N` or `-N`), `timeout` (with its options and its duration
  * word) and `command`. `command -v`/`-V` only looks a command up, so it stops
  * the scan at `command` itself. Returns `words.length` when none is found.
+ * Exported because aws_emulator_workflow_check.ts also uses it.
  */
-function commandIndex(words: string[]): number {
+export function commandIndex(words: string[]): number {
   let i = 0;
   while (i < words.length) {
     const w = words[i] ?? "";

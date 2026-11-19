@@ -10,9 +10,11 @@
  *
  * - (a) a step invokes `infra/cloudformation/test-aws-emulator.sh` in command
  *   position (an `echo` or a comment does not count), and a failure of the
- *   script fails the job: the call is not followed by `|`, `;`, `&`, `||` or
- *   `&&`, and neither the job nor that step sets `continue-on-error` or an
- *   `if:` (PR #3478 review);
+ *   script fails the job: the step's code (comment lines dropped) has no `|`,
+ *   `;` or `&`, so nothing follows, pipes or backgrounds the call; the step
+ *   consists only of `set -euo pipefail` (optional) and that one call, so no
+ *   `if`, `exit` or second command can skip or replace it; and neither the
+ *   job nor that step sets `continue-on-error` or an `if:` (PR #3478 review);
  * - (b) a step runs `container/toolchains/aws-emulator.sh` (the pinned,
  *   checksum-verified install), a step runs `container/toolchains/aws-cli.sh`
  *   (the pinned aws-cli, not the runner's own), and a step installs
@@ -37,6 +39,8 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import { commandIndex, shellSegments } from "./aws_emulator_in_ci_check.ts";
+
 /** The test script the workflow must run in command position. */
 export const SCRIPT_PATH = "infra/cloudformation/test-aws-emulator.sh";
 /** The pinned, checksum-verified install fragment. */
@@ -47,12 +51,6 @@ const CLI_TOOLCHAIN_PATH = "container/toolchains/aws-cli.sh";
 const RUNNER_PATH = "container/aws-emulator-run.sh";
 const DOCKER_SOCK = "/var/run/docker.sock";
 const CHECKOUT_PREFIX = "actions/checkout@";
-const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
-/**
- * A shell word: a run of bare characters and quoted sections, so that
- * `CURL_RETRY="--retry 8"` is one word even though its quoted part has spaces.
- */
-const WORD_RE = /(?:[^\s"']+|"[^"]*"|'[^']*')+/g;
 /** The `uses` value of the quality.yml job that calls this workflow. */
 export const AWS_EMULATOR_USES = "./.github/workflows/aws-emulator.yml";
 
@@ -71,75 +69,68 @@ function stepsOf(job: Record<string, unknown>): unknown[] {
 }
 
 /**
- * Logical shell lines of a `run:` block: trimmed, comments and blank lines
- * dropped, and backslash-continued lines joined onto the line they continue.
+ * The `run:` text of a step with comment lines (trimmed line starting with
+ * `#`) dropped.
  */
-function logicalLines(run: string): string[] {
-  const lines: string[] = [];
-  let pending = "";
-  for (const raw of run.split("\n")) {
-    const line = raw.trim();
-    if (line === "" || line.startsWith("#")) continue;
-    if (line.endsWith("\\")) {
-      pending += line.slice(0, -1) + " ";
-      continue;
-    }
-    lines.push((pending + line).trim());
-    pending = "";
-  }
-  if (pending.trim() !== "") lines.push(pending.trim());
-  return lines;
+function codeOf(step: unknown): string {
+  return runOf(step).split("\n").filter((l) => !l.trim().startsWith("#"))
+    .join("\n");
 }
 
 /**
- * The command words of a shell line after any leading `sudo`, `env` and
- * `VAR=value` assignments. A quoted value stays one word, so
- * `env CURL_RETRY="--retry 8" bash x.sh` yields `["bash", "x.sh"]`.
+ * The command segments of a step's `run:`, or [] when the step's code has any
+ * `|`, `;` or `&`: those could swallow an exit status (`|| true`, a pipe, a
+ * trailing command or a background job) or skip a command (`if x; then`), so
+ * such a step counts as neither running nor installing anything.
  */
-function commandWords(line: string): string[] {
-  const words = line.match(WORD_RE) ?? [];
-  let i = 0;
-  while (
-    i < words.length &&
-    (words[i] === "sudo" || words[i] === "env" ||
-      ASSIGNMENT_RE.test(words[i] ?? ""))
-  ) {
-    i++;
-  }
-  return words.slice(i);
+function segmentsOf(step: unknown): string[][] {
+  const code = codeOf(step);
+  if (/[|;&]/.test(code)) return [];
+  return shellSegments(code);
 }
 
 /**
- * Whether a line runs `path` in command position with its exit status intact.
- * Any `|`, `;` or `&` on the line could swallow the status (`|| true`, a
- * pipe, a trailing command or a background job), so such a line does not
- * count. Accepts the path as the command, or as the script given to `bash` or
- * `sh`.
+ * Whether a segment runs `path` in command position: the command word ends
+ * with `path`, or is `bash`/`sh` and the next word does.
  */
-function invokes(line: string, path: string): boolean {
-  if (/[|;&]/.test(line)) return false;
-  const words = commandWords(line);
-  const head = words[0] ?? "";
+function segmentInvokes(words: string[], path: string): boolean {
+  const i = commandIndex(words);
+  const head = words[i] ?? "";
   if (head.endsWith(path)) return true;
   return (head === "bash" || head === "sh") &&
-    (words[1] ?? "").endsWith(path);
+    (words[i + 1] ?? "").endsWith(path);
 }
 
 /**
- * Whether a line installs `RUNNER_PATH` by `install` or `cp` with the runner
- * script as a source, with the exit status intact. An `echo` naming it does
- * not count.
+ * Whether a segment installs `RUNNER_PATH` by `install` or `cp` with the
+ * runner script as a later word. An `echo` naming it does not count.
  */
-function installsRunner(line: string): boolean {
-  if (/[|;&]/.test(line)) return false;
-  const words = commandWords(line);
-  return (words[0] === "install" || words[0] === "cp") &&
-    words.slice(1).some((w) => w.endsWith(RUNNER_PATH));
+function segmentInstallsRunner(words: string[]): boolean {
+  const i = commandIndex(words);
+  const head = words[i] ?? "";
+  return (head === "install" || head === "cp") &&
+    words.slice(i + 1).some((w) => w.endsWith(RUNNER_PATH));
 }
 
-/** Whether any logical line of a step's `run:` satisfies `predicate`. */
-function stepMatches(step: unknown, predicate: (line: string) => boolean) {
-  return logicalLines(runOf(step)).some(predicate);
+/** Whether a step runs `path` in command position with its exit status intact. */
+function stepInvokes(step: unknown, path: string): boolean {
+  return segmentsOf(step).some((w) => segmentInvokes(w, path));
+}
+
+/** Whether a step installs the runner script with its exit status intact. */
+function stepInstallsRunner(step: unknown): boolean {
+  return segmentsOf(step).some(segmentInstallsRunner);
+}
+
+/**
+ * Whether the step's code is only `set -euo pipefail` (optional) and exactly
+ * one segment invoking `path`.
+ */
+function stepIsOnlyScript(step: unknown, path: string): boolean {
+  const rest = segmentsOf(step).filter((w) =>
+    w.join(" ") !== "set -euo pipefail"
+  );
+  return rest.length === 1 && segmentInvokes(rest[0] ?? [], path);
 }
 
 /** The job entries of a parsed workflow as `[name, job]` pairs. */
@@ -166,7 +157,7 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
 
   // (a) the test step, in the job that runs it.
   const testJob = jobs.find(([, job]) =>
-    stepsOf(job).some((s) => stepMatches(s, (l) => invokes(l, SCRIPT_PATH)))
+    stepsOf(job).some((s) => stepInvokes(s, SCRIPT_PATH))
   );
   if (!testJob) {
     problems.push(
@@ -175,10 +166,13 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
   } else {
     const [jobId, job] = testJob;
     const steps = stepsOf(job);
-    const testIndex = steps.findIndex((s) =>
-      stepMatches(s, (l) => invokes(l, SCRIPT_PATH))
-    );
+    const testIndex = steps.findIndex((s) => stepInvokes(s, SCRIPT_PATH));
     const testStep = steps[testIndex];
+    if (!stepIsOnlyScript(testStep, SCRIPT_PATH)) {
+      problems.push(
+        `[test-step] the ${SCRIPT_PATH} step must run only \`set -euo pipefail\` and the script, so nothing can skip or replace the deploy`,
+      );
+    }
     const softFails = [job, testStep].some((o) =>
       isObject(o) && o["continue-on-error"] !== undefined &&
       o["continue-on-error"] !== false
@@ -198,7 +192,7 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
 
     // (b) the pinned install and the runner install come before the test.
     const toolchainIndex = steps.findIndex((s) =>
-      stepMatches(s, (l) => invokes(l, TOOLCHAIN_PATH))
+      stepInvokes(s, TOOLCHAIN_PATH)
     );
     if (toolchainIndex === -1) {
       problems.push(
@@ -209,9 +203,7 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
         `[pinned-install] ${TOOLCHAIN_PATH} must run before the test step`,
       );
     }
-    const cliIndex = steps.findIndex((s) =>
-      stepMatches(s, (l) => invokes(l, CLI_TOOLCHAIN_PATH))
-    );
+    const cliIndex = steps.findIndex((s) => stepInvokes(s, CLI_TOOLCHAIN_PATH));
     if (cliIndex === -1) {
       problems.push(
         `[pinned-cli] no step runs ${CLI_TOOLCHAIN_PATH} (the pinned aws-cli the worker container uses) in command position with its exit status intact`,
@@ -221,7 +213,7 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
         `[pinned-cli] ${CLI_TOOLCHAIN_PATH} must run before the test step`,
       );
     }
-    const runnerIndex = steps.findIndex((s) => stepMatches(s, installsRunner));
+    const runnerIndex = steps.findIndex((s) => stepInstallsRunner(s));
     if (runnerIndex === -1) {
       problems.push(
         `[runner-install] no step installs ${RUNNER_PATH} with its exit status intact`,
