@@ -281,8 +281,8 @@ flowchart LR
   both evasions)
 - **violation** — Reuse the parser the repo already has: a second hand-written
   shell splitter — evidence: `worker/deno/lib/aws_emulator_workflow_check.ts` —
-  reason: fixed in this diff (it now imports `shellSegments` and `commandIndex`
-  from `worker/deno/lib/aws_emulator_in_ci_check.ts`)
+  reason: fixed in this diff (it now imports `shellSegments` and
+  `statusPreservingCommandIndex` from `worker/deno/lib/shell_command_words.ts`)
 - **violation** — Lost regression protection from the deleted Floci workflow
   suite (`; true`, `&`, `| tee`, `&& echo`, commented-out call,
   `continue-on-error: false`, the YAML 1.1 `true` key) — evidence:
@@ -312,7 +312,7 @@ flowchart LR
 
 ## Test Plan
 
-- `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (new): 43 passed.
+- `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (new; 43 tests at head).
   - The real workflow has no findings.
   - Each invariant has a mutation, and so does each evasion: the `if false`
     wrapper, `exit 0`, `; true`, `&`, `| tee`, `&& echo`, and a commented-out
@@ -330,8 +330,8 @@ flowchart LR
     findings, `[pinned-install]` and `[runner-install]`. The separator check is
     per step, and the real emulator install and runner install share one `run:`
     step, so `|| true` there disproves both.
-- `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (new): 17 passed,
-  1 ignored. The cases:
+- `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (new; 18 tests at
+  head: 17 pass, 1 ignored). The cases:
   - the missing runner (exit 4), and the re-exec with its exit status passed
     through;
   - a non-loopback endpoint refused, with a loopback control;
@@ -358,7 +358,7 @@ flowchart LR
   The ignored case is the real end-to-end run. It is skipped for `vibe` and
   root, and was run as `agent` in Evidence instead.
 - `worker/deno/tests/aws_emulator_in_ci_check_test.ts` (extended, additions
-  only): 132 passed. Coverage:
+  only; 132 tests at head). Coverage:
   - runner text that cannot run earns no credit (19 not-credited cases: a step
     or job `if: false`, `${{ false }}` and `'0'`, a false or negated-true `if`,
     the `else` of `if true`, an `elif` after a taken branch, `while false`,
@@ -380,13 +380,13 @@ flowchart LR
 - `worker/deno/tests/pre_push_gate_test.ts` (one test added, none removed): "the
   AWS Emulator script is never planned". It passes on the base by design,
   because it pins a deliberate absence.
-- On the head after the PR #5276 review fixes, run one file at a time:
-  `aws_emulator_in_ci_check_test.ts` 132 passed;
-  `issue_5110_aws_emulator_workflow_test.ts` 43 passed;
-  `aws_emulator_cloudformation_5110_test.ts` 17 passed, 1 ignored;
-  `checkov_workflow_test.ts` 20 passed; `best_practices_template_test.ts` 69
-  passed; `lib_sweep_record_test.ts` and `lib_sweep_top_up_files_test.ts` 11
-  passed. `pre_push_gate_test.ts` was also run and 43 of its 213 tests fail; it
+- On the head after the PR #5276 review fixes, run one file at a time (tests at
+  head, all passing unless noted): `aws_emulator_in_ci_check_test.ts` (132);
+  `issue_5110_aws_emulator_workflow_test.ts` (43);
+  `aws_emulator_cloudformation_5110_test.ts` (18: 17 pass, 1 ignored);
+  `checkov_workflow_test.ts` (20); `best_practices_template_test.ts` (69);
+  `lib_sweep_record_test.ts` (2); `lib_sweep_top_up_files_test.ts` (9).
+  `pre_push_gate_test.ts` was also run and 43 of its 213 tests fail; it
   imports none of the files this review touched, and its one test about this PR
   ("the AWS Emulator script is never planned") passes.
 - Removed `worker/deno/tests/issue_3369_floci_script_test.ts` and

@@ -6,7 +6,7 @@
  * shell parser. `shellSegments` splits a body into commands, `commandIndex`
  * finds a command's word, and `reachableSegments` drops commands that cannot
  * run (after an unconditional `exit`, behind `false &&`, in a branch or loop
- * whose condition is statically false, in a never-called function, or inside
+ * whose condition is statically false, in any function body, or inside
  * a here-document). A construct it cannot judge counts as reachable only when
  * a runtime value decides it, so an unknown condition keeps its commands.
  *
