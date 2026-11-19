@@ -5,21 +5,25 @@
 VibeCoder's CloudFormation CI now runs on the official AWS Emulator, through
 #5109's `aws-emulator-run`, in place of Floci.
 
-- **New reference command:** `infra/cloudformation/test-aws-emulator.sh`. It
-  exercises real AWS CLI calls: an SSM write, read and delete round trip, and a
-  supported negative case (`ParameterNotFound`). It deploys every template and
-  checks the material properties of each created resource. It reports emulator
-  gaps as `UNSUPPORTED (not proven)`, separately from the pass count. It then
-  deletes the stack and asserts cleanup.
+- **Reference command:** `infra/cloudformation/test-aws-emulator.sh`. It makes
+  real AWS CLI calls: an SSM write, read and delete round trip, and a supported
+  negative case (`ParameterNotFound`). It deploys every template and checks the
+  material properties of each created resource. It reports emulator gaps as
+  `UNSUPPORTED (not proven)`, apart from the pass count. It then deletes the
+  stack and asserts the cleanup.
 - **CI:** `.github/workflows/aws-emulator.yml` replaces `floci.yml`. It installs
   the pinned 1.0.385 package through the sha256-checked toolchain fragment and
   runs the script.
-- **Removed:** the Floci workflow, `test-floci.sh`, the Floci validator and
-  tests, and the pre-push Floci check. Each has a replacement or a stated
-  reason.
+- **Removed:** the Floci workflow, `test-floci.sh`, the Floci workflow validator
+  and the two `issue_3369_floci_*` test files. The pre-push gate's Floci planner
+  stays for repositories that still track `test-floci.sh`. VibeCoder no longer
+  does, so it never fires here.
 - **Template defect fixed:** the emulator caught a real defect in
   `linux-verification-host.yaml`. Three security-group egress descriptions
   contained an em dash, which EC2 rejects. Floci had stubbed past it.
+- **Fleet detector:** `BP-AWS-EMULATOR-MISSING` also accepts a workflow that
+  runs `aws-emulator-run`, directly or through a repository script, so VibeCoder
+  does not flag itself once `floci.yml` is gone.
 
 Some criteria are still partial (see below), so this is Part of #5110.
 
@@ -28,55 +32,65 @@ Some criteria are still partial (see below), so this is Part of #5110.
 ### Intent and Rationale
 
 - **Floci treated stubs as success.** It stubbed unsupported resources and
-  counted the deploy as a success. The emulator applies EC2 validation, which
-  found the em-dash defect a real deployment would have hit.
-- **Real template, no edits.** Deploying it with `--on-failure DO_NOTHING` keeps
-  every supported resource alive for property checks even though one resource is
-  unsupported, so no derived or trimmed template is needed.
-- **The existing workflow was evolved, not paralleled.** `floci.yml` was renamed
-  and rewritten as `aws-emulator.yml`, and the Floci validator was replaced by
+  counted the deploy as passed. The emulator applies EC2 validation, which found
+  the em-dash defect a real deployment would have hit.
+- **The real template, unedited.** Deploying with `--on-failure DO_NOTHING`
+  keeps every supported resource alive for property checks even though one
+  resource is unsupported, so no trimmed copy of the template is needed.
+- **The existing workflow was evolved, not paralleled.** `floci.yml` became
+  `aws-emulator.yml`, and the Floci validator became
   `aws_emulator_workflow_check.ts`.
 
 ### Essential Design Decisions
 
-- **Named gaps are pinned.** `KNOWN_GAPS` in the script holds the expected
-  failure reason for each gap. A gap that stops reproducing, or fails
-  differently, fails the run with `gap changed: update KNOWN_GAPS`.
-- **No status-only pass.** A template with no property-check function fails the
-  run, so a new template cannot pass on stack status alone.
-- **The pre-push gate does not run the check.** The gate runs as `vibe`, which
-  `aws-emulator-run` always refuses (#5109), so the Floci pre-push check was
-  removed with no emulator replacement. CI is the enforcing gate. Locally the
-  command runs as `agent` or any other non-root, non-`vibe` account.
+- **Named gaps are pinned.** `KNOWN_GAPS` in the script holds each gap's
+  expected failure reason. A gap that stops reproducing, or fails another way,
+  fails the run with `gap changed: update KNOWN_GAPS`. A template with no
+  property-check function fails before any AWS call, so stack status alone
+  never passes a template.
+- **The pre-push gate does not run the emulator test.** The gate runs as
+  `vibe`, which `aws-emulator-run` always refuses (#5109). CI is the enforcing
+  gate. Locally the command runs as `agent` or any other non-root account that
+  is not `vibe`. The Floci planner is kept because the gate serves the whole
+  fleet, and removing it would drop a check from repositories that still track
+  `test-floci.sh`.
 - **No push trigger.** The fleet's `workflow-triggers` rule forbids test
-  workflows on push to the default branch, so the workflow runs on
-  `pull_request` (Develop, main, `milestone/*`) and `workflow_dispatch`.
-- **The fleet emulator detector also accepts the official emulator.** With
-  `floci.yml` gone, the best-practices `BP-AWS-EMULATOR-MISSING` pre-filer would
-  otherwise flag VibeCoder itself. A `run:` step invoking `aws-emulator-run` or
-  the pinned install fragment now counts as an emulator in CI. The finding's own
-  text and the Floci-to-emulator migration of other repos stay with #5112.
+  workflows on push to the default branch. The workflow runs on `pull_request`
+  (Develop, main, `milestone/*`) and `workflow_dispatch`.
+- **The detector counts invocation, not installation.** A `run:` command word,
+  after shell keywords, `sudo`/`env`/`exec`, `VAR=value` and the
+  `time`/`nice`/`timeout`/`command` wrappers, must be `aws-emulator-run`. A
+  repository script one level down also counts. An install step, `echo` or
+  `command -v` does not. An unreadable referenced script rejects the check
+  rather than reading as "no emulator". The finding text and migrating other
+  repositories stay with #5112.
 
 ### Undiscoverable Facts
 
-- **`AWS::EC2::Instance` is unsupported on aws-emulator 1.0.385.** Its
-  `MetadataOptions` property is rejected with "this emulator does not apply the
-  MetadataOptions property of AWS::EC2::Instance". Observed at run time; it is a
-  named gap.
+- **`AWS::EC2::Instance` is unsupported on aws-emulator 1.0.385.** The emulator
+  rejects its `MetadataOptions` property with "this emulator does not apply the
+  MetadataOptions property of AWS::EC2::Instance". This was observed at run time
+  and is a named gap.
 - **The public AMI parameter cannot be seeded.** The emulator refuses
   `put-parameter` under `/aws/...` (`ParameterPatternMismatchException`). The
-  script instead seeds a user-owned parameter and passes its name, which still
-  exercises SSM-typed parameter resolution (`ResolvedValue` is asserted).
+  script seeds a user-owned parameter and passes its name instead, then deletes
+  it and asserts the deletion.
 - **Floci stays installed in the image,** but no VibeCoder test uses it.
+- **The repo's shell splitters do not fit the detector.**
+  `ci_install_pin_scanner.ts` `splitCommands`/`shellTokens` do not split on
+  newlines. They drop a word that unquotes to `#`, and they treat `command -v`
+  as a wrapper. The detector therefore keeps its own `shellSegments`.
 
 ## Evidence
 
-The real run used aws-emulator 1.0.385 and aws-cli 2.40.3 on aarch64. It ran as
-`vibe` through a scratch copy of `aws-emulator-run`, with only the `vibe`
-refusal lifted. The installed helper refuses `vibe`, and `sudo` to `agent` needs
-a password here. Command:
-`aws-emulator-run --timeout 450 -- infra/cloudformation/test-aws-emulator.sh`.
-It exited 0:
+The real run used aws-emulator 1.0.385 and aws-cli 2.40.3 on aarch64, on the
+script before this run's review fixes. Those fixes changed only test files,
+comments and one marker line, not the script's logic. It ran as `vibe` through a
+scratch copy of `aws-emulator-run` with only the `vibe` refusal lifted. The
+installed helper refuses `vibe`, and `sudo` to `agent` needs a password here.
+The command was
+`aws-emulator-run --timeout 450 -- infra/cloudformation/test-aws-emulator.sh`,
+and it exited 0:
 
 ```text
 PASS: SSM round trip value = round-trip-46780e87ee0d
@@ -102,18 +116,29 @@ UNSUPPORTED (not proven, named gaps):
       recheck: when the aws-emulator pin in container/tools.json changes, or when the gap stops reproducing
 ```
 
-- **Negative proof:** a copy with a deliberately wrong gap reason exited 1 with
-  `::error::gap changed: update KNOWN_GAPS: VerificationHost ...`.
 - **The template defect, before the fix:**
   `HostSecurityGroup CREATE_FAILED ... Value (HTTPS — SSM endpoints, ...) for parameter description is invalid. Valid characters: a-z, A-Z, 0-9, spaces, and ._-:/()#,@[]+=&;{}!$*`.
-- **Documentation:** coverage by resource and behaviour, the gap, the
-  real-AWS-only items (IAM, KMS and resource policies, runtime, cross-account
-  and cross-Region) and the command are in `docs/EC2-LINUX-VERIFICATION.md`. The
-  Floci wording is also updated in `docs/CONTAINER.md`, `docs/CONFIGURATION.md`,
-  `docs/CONTAINER-IMAGE.md`, `docs/IDLE-TASK-FRAMEWORK.md`,
-  `docs/BEST-PRACTICES-SCAN.md`, `DESIGN-PRINCIPLES.md` and
-  `CODING-STANDARDS.md`.
-- **Issue numbers cited:**
+- **Detector corpus run** (`workflowRunsAwsEmulator` with the repository script
+  reader over every `.github/workflows/*.yml`):
+  - At the head: `aws-emulator.yml` is true and the other 14 workflows are false.
+  - On `origin/main`: all 15 are false, `floci.yml` included. That workflow
+    counted through the separate Floci rule, not this one.
+  - No false positives or false negatives.
+- **Documentation:**
+  - `docs/EC2-LINUX-VERIFICATION.md` has the coverage by resource and
+    behaviour, the gap, the command, and the items left to real AWS: IAM, KMS
+    and resource policies, runtime, cross-account and cross-Region.
+  - The Floci and detector wording is updated in `docs/CONTAINER.md`,
+    `docs/CONFIGURATION.md`, `docs/CONTAINER-IMAGE.md`,
+    `docs/IDLE-TASK-FRAMEWORK.md`, `docs/BEST-PRACTICES-SCAN.md`,
+    `DESIGN-PRINCIPLES.md` and `CODING-STANDARDS.md`.
+- **Issue numbers the diff cites:**
+  - #3367: Install a digest-pinned native floci binary in the worker container.
+  - #3369: Add a Floci CI job for VibeCoder's own CloudFormation template.
+  - #3478: Add a Floci CI job for VibeCoder's own CloudFormation template
+    (#3369).
+  - #3727: Pre-PR gate: run the Floci CloudFormation deploy test locally for
+    infra changes.
   - #5109: Container: add the official AWS Emulator with an isolated test
     runner.
   - #5111: Standards: require AWS Emulator tests for new and changed AWS
@@ -140,51 +165,43 @@ flowchart LR
 - **partial** — A fresh worker container runs the reference command as `agent`,
   and CI runs the same applicable integration checks. — evidence:
   `.github/workflows/aws-emulator.yml`,
-  `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` — reviewer:
-  partial — reason: not run as `agent` in a fresh container (the real run used a
-  scratch helper as `vibe`); CI's `aws` CLI comes from the runner image, not the
-  pinned fragment; CI not yet verified
+  `infra/cloudformation/test-aws-emulator.sh` — reviewer: partial — reason: not
+  run as `agent` in a fresh container (the real run used a scratch helper as
+  `vibe`); CI's `aws` CLI comes from the runner image, not the pinned 2.40.3; CI
+  not yet verified
 - **met** — Evidence includes the pinned release, actual test commands,
   successful data assertions, a supported negative API result and cleanup. —
-  evidence: the real-run output above;
-  `infra/cloudformation/test-aws-emulator.sh` — reviewer: partial — reason: the
-  reviewer's gap, that the seeded AMI parameter's removal was not asserted, is
-  fixed: removal is now asserted and also attempted on early exit
+  evidence: the real-run output above; `infra/cloudformation/test-aws-emulator.sh`
+  — reviewer: met
 - **partial** — Focused tests prove startup/test failures propagate and missing
   required execution cannot become a green check. — evidence:
   `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts`,
   `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` — reviewer:
-  partial — reason: a failing data assertion now has a focused test
-  (`an aws
-  CLI that succeeds with no data fails the run on its first data assertion`,
-  exit 1, no PASS), added in the gate retry and not yet re-reviewed; a failed
-  cleanup and a template with no property checks still have no focused test;
-  "gap changed" was proven only by a manual run
+  partial — reason: the failure paths are tested, but `aws-emulator.yml` is
+  path-filtered and is not a need of the required `gate` check, so a red or
+  missing run can sit beside a green required check
 - **met** — Every existing template is accounted for as exercised or as a
   specific unsupported case with alternative validation; no unsupported/stubbed
   resource is reported as proven. — evidence:
-  `infra/cloudformation/test-aws-emulator.sh` (KNOWN_GAPS, UNSUPPORTED block),
-  `docs/EC2-LINUX-VERIFICATION.md` — reviewer: partial — reason: the reviewer
-  found the internet gateway and attachment claimed as property-checked without
-  a check, and gaps counted as PASS; both are fixed (attachment VpcId and State
-  are asserted; gaps are not counted)
+  `infra/cloudformation/test-aws-emulator.sh` (`KNOWN_GAPS`, UNSUPPORTED block,
+  no-property-checks refusal), `docs/EC2-LINUX-VERIFICATION.md` — reviewer: met
 - **met** — Any retained Floci test names the exact gap and removal/recheck
-  condition. — evidence: no Floci test is retained
+  condition. — evidence: no VibeCoder Floci test is retained
   (`worker/deno/tests/issue_3369_floci_script_test.ts` and
-  `worker/deno/tests/issue_3369_floci_workflow_test.ts` are removed) — reviewer:
-  met
+  `worker/deno/tests/issue_3369_floci_workflow_test.ts` are removed); the
+  pre-push Floci planner tests cover a gate feature for other repositories —
+  reviewer: met
 - **partial** — Existing branch/PR coverage, least-privilege permissions and
   required checks remain intact. CI actually runs the new command rather than
   merely installing the emulator. — evidence:
   `.github/workflows/aws-emulator.yml`,
   `worker/deno/lib/aws_emulator_workflow_check.ts` — reviewer: partial — reason:
   the push trigger on Develop/main was dropped under the fleet
-  `workflow-triggers` rule; the check name changed ("Floci" does not appear in
-  `infra/rulesets`); CI not yet verified
+  `workflow-triggers` rule; CI not yet verified
 - **partial** — Required local/CI checks pass; no automatic mutation or fuzzing
   campaign is added. — evidence: `./quality.sh` (see Test Plan) — reviewer:
-  missing — reason: the reviewer could not judge it from the diff; no mutation
-  or fuzzing is added; CI not yet verified
+  partial — reason: no mutation or fuzzing is added; CI not yet verified; the
+  local gate's one failure is a DNS fault fetching npm
 - **unrequested** — `BP-AWS-EMULATOR-MISSING` detector
   (`worker/deno/lib/aws_emulator_in_ci_check.ts`) also accepts the official AWS
   Emulator — reviewer: unrequested — reason: without it, removing `floci.yml`
@@ -192,8 +209,12 @@ flowchart LR
   migration stay with #5112
 - **unrequested** — em-dash fix in
   `infra/cloudformation/linux-verification-host.yaml` — reviewer: unrequested —
-  reason: a real template defect the emulator caught, and the stack cannot
-  deploy without the fix
+  reason: a real template defect the emulator caught; the stack cannot deploy
+  without it
+- **unrequested** — `worker/deno/lib/pre_push_gate.ts` comments and the test
+  "the AWS Emulator script is never planned" — reviewer: unrequested — reason:
+  they record that the gate cannot run the emulator test as `vibe` and keep
+  that absence deliberate
 - **unrequested** — `docs/audits/lib-sweep-coverage/top-up-3369.json` path
   update — reviewer: unrequested — reason: mechanical follow-through of
   replacing `floci_workflow_check.ts`
@@ -202,89 +223,79 @@ flowchart LR
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — An edited expectation must still go red without its guard —
-  evidence: `worker/deno/tests/pre_push_gate_test.ts:1992` — reason: fixed in
-  this diff (the fixture now tracks `test-floci.sh`; observed red against base
-  `pre_push_gate.ts`, with a markdownlint positive control)
-- **violation** — A workflow behaviour change extends the validator with a
-  negative test per invariant — evidence:
-  `worker/deno/lib/aws_emulator_workflow_check.ts:48` — reason: fixed in this
-  diff (negative tests for `infra/cloudformation/**`, the workflow and the
-  fragment paths)
-- **violation** — Record unsupported operations as coverage gaps, never passes —
-  evidence: `infra/cloudformation/test-aws-emulator.sh:392` — reason: fixed in
-  this diff (an uncounted `UNSUPPORTED (gap reproduced, not proven)` line)
-- **violation** — Doc claims must match head code (seeded parameter removal
-  asserted) — evidence: `infra/cloudformation/test-aws-emulator.sh:26` — reason:
-  fixed in this diff
-- **violation** — Detector migration is owned by #5112 — evidence:
-  `worker/deno/lib/aws_emulator_in_ci_check.ts:569` — reason: required by #5110
-  (removing `floci.yml` would otherwise make the detector flag VibeCoder); the
-  finding text and repo migration are left to #5112
-- **violation** — Doc comments outside the diff go stale — evidence:
-  `worker/deno/lib/idle_task_templates/best_practices_template.ts:36` — reason:
-  fixed in this diff (also `docs/IDLE-TASK-FRAMEWORK.md`,
-  `docs/CONTAINER-IMAGE.md`, `CODING-STANDARDS.md`)
+- **violation** — PR summary must match the head — evidence:
+  `docs/archive/pr-summaries/pr-summary-5110.md:17` — reason: fixed in this diff
+  (rewritten against the head: the Floci planner is kept, the `ResolvedValue`
+  claim is dropped, and the test names and counts are current)
+- **violation** — A Code Change Owes a Docs Change (install counted as
+  coverage) — evidence: `DESIGN-PRINCIPLES.md:1875` — reason: fixed in this diff
+- **violation** — Integration prerequisites and doc comments must be truthful
+  — evidence: `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts:663`
+  — reason: fixed in this diff (the comment now says the case runs only where an
+  ordinary account has the emulator; CI's real run is `aws-emulator.yml`, which
+  fails on a missing runtime)
+- **violation** — Writing a gate over text (variants, corpus run, reuse) —
+  evidence: `worker/deno/lib/aws_emulator_in_ci_check.ts:393` — reason: fixed in
+  this diff (if/then, `timeout`, `time`, `nice`, `command` and quoted variants
+  plus look-alikes are tested, and the corpus run is in Evidence; the in-repo
+  splitters were checked and do not fit, see Undiscoverable Facts)
+- **violation** — Never Fail Silently (bare `catch`) — evidence:
+  `worker/deno/lib/aws_emulator_in_ci_check.ts:469` — reason: fixed in this diff
+  (only `NotFound` reads as absent; any other error rejects with the path)
+- **violation** — `SIMPLE-ON-PURPOSE` marker on one line — evidence:
+  `infra/cloudformation/test-aws-emulator.sh:196` — reason: fixed in this diff
+- **violation** — Every outcome of a branch needs a test (job-level `if:`) —
+  evidence: `worker/deno/lib/aws_emulator_workflow_check.ts:189` — reason: fixed
+  in this diff
+- **violation** — An issue number cited as provenance is one you looked up —
+  evidence: `.github/workflows/aws-emulator.yml:30` — reason: fixed in this diff
+  (the unrelated #3360, #1300 and #2123 citations are removed; every remaining
+  number is listed in Evidence)
 - **clean** — Action SHA pins, `contents: read`, `persist-credentials: false`,
-  no fallback to real AWS (loopback-HTTPS and CA refusal), exit statuses
-  preserved, failure-reason tests assert the quoted cause, named tests exist,
-  Floci references removed outside the archive and audits. The reviewer found no
-  review-only rules to check.
+  the dropped push trigger (`workflow-triggers`), the pin from `tools.json`,
+  loopback-HTTPS and CA refusals, bounded timeouts, exit-status propagation and
+  the cleanup trap, gaps never counted as passes, private temp dirs, no secrets
+  staged. Review-only rules checked: Australian English, dummy and "how" tests,
+  refusal tests with positive controls, documentation-drift scoping, check where
+  you insert, macOS shell portability, path-confinement order.
 
 ## Test Plan
 
-- Added `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts`. It covers:
-  - the missing runner (exit 4);
-  - a re-exec under `aws-emulator-run`, with its exit status passed through;
-  - refusal of a non-loopback endpoint, plus an allowed control that reaches the
-    next check;
-  - a missing `aws`;
-  - a 501 reported as `UNSUPPORTED OPERATION`;
-  - an unexpected failure that quotes its cause;
-  - a real end-to-end case, ignored for `vibe` and root.
-
-  Result: 6 passed, 1 ignored.
-- Added `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`: the real
-  workflow has no findings, and there is a mutation per invariant. Result: 24
-  passed.
-- Extended `worker/deno/tests/aws_emulator_in_ci_check_test.ts` with positive
-  cases, look-alike negatives and the real workflow. Result: 55 passed.
-- `worker/deno/tests/pre_push_gate_test.ts`: removed the five Floci tests and
-  added "a changed CloudFormation template plans no cloudformation check". It
-  was red against the base `pre_push_gate.ts` and passes at the head.
-  - Removed from worker/deno/tests/pre_push_gate_test.ts:
-    `assertEquals(flociChecks, [{ label: FLOCI_CHECK, cwd: "/repo", command: FLOCI_COMMAND }])`
-    - Removed functionality: the pre-push Floci check (`FLOCI_TEST_SCRIPT` and
-      the planning block are deleted from `worker/deno/lib/pre_push_gate.ts`;
-      `test-floci.sh` no longer exists)
-  - Removed from worker/deno/tests/pre_push_gate_test.ts:
-    `assertEquals(blocked.error.command, FLOCI_COMMAND)`
-    - Removed functionality: as above; the push-blocking role now belongs to the
-      required CI workflow `aws-emulator.yml`
+- `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (new): the
+  missing runner (exit 4); the re-exec and its exit status passed through; a
+  non-loopback endpoint refused, with a loopback control; a missing `aws`; a 501
+  reported as `UNSUPPORTED OPERATION`; an unexpected failure quoting its cause;
+  an empty `aws` response failing the first data assertion; a failed
+  create-stack still cleaning up; a `ROLLBACK_COMPLETE` stack; a named gap that
+  now builds; an unexpected resource status; a failed describe-stack-resources;
+  the expected gap run reporting `UNSUPPORTED`; a role left behind failing the
+  cleanup assertion; a template with no property checks failing before any AWS
+  call, with a positive control. Result: 15 passed, 1 ignored. The ignored case
+  is the real end-to-end run, which needs an ordinary account with the emulator.
+  The last two tests pin current script behaviour and pass on the head by
+  design.
+- `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (new): the real
+  workflow has no findings, and each invariant has a mutation, including a
+  job-level `if:`. Result: 25 passed.
+- `worker/deno/tests/aws_emulator_in_ci_check_test.ts` (extended, additions
+  only): direct, wrapped, keyword-prefixed and quoted invocations; look-alikes
+  (`echo`, `command -v`, `which`, comments, install-only); script indirection
+  with `..`, absolute, `$`, symlink-out and oversized refusals; an unreadable
+  script rejecting, with a readable control. Result: 80 passed.
+- `worker/deno/tests/pre_push_gate_test.ts` (one test added, none removed):
+  "the AWS Emulator script is never planned". It passes on the base by design,
+  because it pins a deliberate absence. Result: 213 passed when run with the
+  session's injected `GIT_CONFIG_*` hook variables unset. With them set, 43
+  fixture pushes are refused by this session's own pre-push hook, which is an
+  environmental fault.
+- `worker/deno/tests/best_practices_template_test.ts`: 69 passed.
+  `worker/deno/tests/supply_chain_gate_test.ts`: 43 passed.
 - Removed `worker/deno/tests/issue_3369_floci_script_test.ts` and
   `worker/deno/tests/issue_3369_floci_workflow_test.ts`.
   - Removed functionality: `infra/cloudformation/test-floci.sh`,
     `.github/workflows/floci.yml` and `worker/deno/lib/floci_workflow_check.ts`
     are deleted. Still covered by:
-    `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts::the real workflow passes`
+    `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts::real aws-emulator.yml passes every check`
     and `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts`.
-- `worker/deno/tests/supply_chain_gate_test.ts`: passes after regenerating
-  `docs/audits/dependency-inventory.md`.
 - The real emulator run is in Evidence.
-- `./quality.sh` ran twice. Every stage passed except `deno tests`
-  (`config integration` and `checkov` were skipped).
-  - First run: two failures. The stale dependency inventory is fixed.
-  - Second run: 35117 passed, 2 failed.
-    `worker/deno/tests/best_practices_template_test.ts` ("AWS-emulator pre-check
-    skips filing and logs why") expected "floci" in the log line. The log line
-    is fixed and the test now passes when run on its own.
-  - Both runs: `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` failed
-    with `dns error: failed to lookup address information` fetching
-    `registry.npmjs.org`. This is an environmental network fault, not this
-    change.
-  - The full gate was not re-run after the log fix, for lack of run budget.
-
-<!-- vibe-quality-gate-skipped reason="final full re-run skipped for budget after a one-line log-string fix; the affected test passes when run on its own; the remaining failure is a DNS fault fetching npm" -->
-
-Not done: the script was not run as `agent` in a fresh container. CI has not run
-on this branch yet. CI's `aws` CLI is not pinned to the container's 2.40.3.
+- `./quality.sh`: see the result line below.
