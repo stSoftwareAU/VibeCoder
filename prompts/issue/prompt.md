@@ -1475,15 +1475,13 @@ The file MUST contain:
    per-phrase relevance rules in `CODING-STANDARDS.md`; keep whole-file absence
    checks whole-file. Do not require deliberate code breaks, branch flips or
    a repeated discovery campaign as Test Plan evidence.
-   Likewise, a parameter,
-   value or behaviour the diff adds that the issue needs on every path
-   reaches every caller and sibling route that needs it (see **A new
-   argument or behaviour reaches every caller that needs it** in the
-   guidelines): list the callers and siblings checked, each passing the new
-   value or with the reason it does not need it; a behaviour-carrying
-   parameter is required rather than defaulted to a value that turns the
-   behaviour off, and a caller left on the old hard-coded value is a
-   blocking self-review finding. Likewise, when a change sends a new case
+   Likewise, behaviour the issue requires reaches the affected production
+   callers and constructors, including recovery paths (see **A new argument
+   or behaviour reaches every caller that needs it** in the guidelines): a
+   required behaviour input is explicit in the type rather than silently
+   disabled by an omitted parameter or field, and the affected entry points
+   are judged by their observable behaviour, not by direct helper coverage
+   alone. Likewise, when a change sends a new case
    to text that already exists it re-reads the text it now reaches
    (see **A new case re-reads the text it now reaches** under
    Instructions): the Test Plan lists every note,

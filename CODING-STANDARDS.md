@@ -960,21 +960,14 @@ behaviour tests and a visual check. Name the relevant coverage in the Test
 Plan; a missing safety net for changed behaviour is a blocking self-review
 finding. Do not revert every caller or run automatic mutation checks.
 
-**A new argument or behaviour reaches every caller that needs it.** When a
-change adds a parameter, value or behaviour that the linked issue needs on
-every path (every caller of a shared function, every sibling outcome a router
-dispatches, every entry point that builds the value), list every caller and
-sibling first: grep for the function's name, and read the router's other
-arms. Then either pass the new value on each one or state in the PR summary
-why that caller does not need it. Do not give a behaviour-carrying parameter
-a default that silently turns the behaviour off (`= ""`, `= false`, `None`);
-make it required, so the compiler or type checker names each caller you
-missed. A caller that hard-codes the old value (`Scheduled`, `""`, `false`)
-where the new one belongs is a blocking self-review finding, and so is a test
-that hands the new value straight to the helper while no production caller
-passes it. Review the affected callers even when their wiring is outside
-the diff; an unchanged caller can still need the new behaviour. List the callers and siblings checked in the PR summary
-(Issue #3253).
+**A new argument or behaviour reaches every caller that needs it.** Carry
+behaviour required by the issue through affected production callers and
+constructors, including recovery paths. Required behaviour inputs should be
+explicit in the type rather than silently disabled by an omitted parameter or
+field. Where absence is intentional, preserve that contract. Judge the affected
+entry points by their observable behaviour under **Every changed call site
+needs a test that goes red without it** above; direct helper coverage alone
+does not establish production wiring (Issues #3253, #5205).
 
 **A new case re-reads the text it now reaches.** When a change sends a new
 case to text that already exists — a widened condition, a new arm or allowed
