@@ -606,6 +606,11 @@ esac
         "run",
         "--allow-all",
         "--cached-only",
+        // The stubbed runtime is docker, so the supervisor and its babysitter
+        // child are pinned to Linux (Issue #5245).
+        "--preload",
+        new URL("./fixtures/linux_host_platform_preload.ts", import.meta.url)
+          .pathname,
         "worker/deno/commands/fleet_pr_babysitter_supervisor.ts",
         "--check-container",
       ], {
