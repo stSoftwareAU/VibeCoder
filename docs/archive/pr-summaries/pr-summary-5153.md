@@ -17,9 +17,8 @@ parallel pass can't flip it. Closes #5153.
   widened it to a 10-second guard, but that is still a timer race. The issue
   asks for "no timer race", so the guard is removed and nothing replaces it.
 - The issue's first suggested fix was used: "await `first` while the scan stays
-  unresolved and assert that it settles". The test already asserts
-  `calls === 1` through the injected monitor, so no extra call-counting was
-  needed.
+  unresolved and assert that it settles". The test already asserts `calls === 1`
+  through the injected monitor, so no extra call-counting was needed.
 
 ### Essential Design Decisions
 
@@ -59,29 +58,38 @@ Backend test-only change; no UI files touched.
 
 ## Reproduction
 
-- **symptom** — `AssertionError: Expected actual: "blocked on scan" to contain: "host disk below its floor".` at `ephemeral_root_telemetry_5105_test.ts:407`, seen once under the `./quality.sh` parallel pass on a loaded host
-- **status** — `partial` — reason: the loaded-host timer race could not be recreated on demand. What was observed: the new timer-free test fails at once (the event loop drained with `first` still pending) when the probe is made to block on the scan, and passes on the head.
-- **regression test** — `worker/deno/tests/ephemeral_root_telemetry_5105_test.ts::Issue #5105 - the registered build probe returns low during one slow shared scan`
+- **symptom** —
+  `AssertionError: Expected actual: "blocked on scan" to contain: "host disk below its floor".`
+  at `ephemeral_root_telemetry_5105_test.ts:407`, seen once under the
+  `./quality.sh` parallel pass on a loaded host
+- **status** — `partial` — reason: the loaded-host timer race could not be
+  recreated on demand. What was observed: the new timer-free test fails at once
+  (the event loop drained with `first` still pending) when the probe is made to
+  block on the scan, and passes on the head.
+- **regression test** —
+  `worker/deno/tests/ephemeral_root_telemetry_5105_test.ts::Issue #5105 - the registered build probe returns low during one slow shared scan`
 
 ## Test Plan
 
-- Modified `worker/deno/tests/ephemeral_root_telemetry_5105_test.ts::Issue #5105 - the registered build probe returns low during one slow shared scan`:
+- Modified
+  `worker/deno/tests/ephemeral_root_telemetry_5105_test.ts::Issue #5105 - the registered build probe returns low during one slow shared scan`:
   - The `Promise.race` against the `setTimeout` guard is now `await first`.
   - Every assertion is kept: the first verdict contains "host disk below its
-    floor", a second park after `now = 120_000` still returns low, `calls === 1`,
-    and after the scan resolves the verdict contains "ephemeral cargo root
-    38.5 GB".
+    floor", a second park after `now = 120_000` still returns low,
+    `calls === 1`, and after the scan resolves the verdict contains "ephemeral
+    cargo root 38.5 GB".
   - No assertion was removed. The deleted lines were only the timer guard and
     its `clearTimeout`.
 - `deno fmt --check` and `deno lint` on the file: passed.
-- `deno task test:unit tests/ephemeral_root_telemetry_5105_test.ts`: 20 passed, 0 failed.
-- `./quality.sh < /dev/null` on the head: `Result: PASSED (with skipped checks)`.
-  Deno tests, lint, type check, fmt, markdownlint, semgrep and gitleaks passed.
-  Two stages were skipped because their tools are not installed here: checkov
-  (not on PATH) and config integration (no `.config.json`). An earlier run on
-  this branch failed one unrelated test,
-  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`. Its cleared-env
-  `deno task` child could not download `mdurl@1.0.1` because this container
-  cannot resolve `registry.npmjs.org`. Seeding the default Deno npm cache
-  (`~/.cache/deno`, outside the repository) from the warm `DENO_DIR` cache fixed
-  it, and that file then passed 11/11.
+- `deno task test:unit tests/ephemeral_root_telemetry_5105_test.ts`: 20 passed,
+  0 failed.
+- `./quality.sh < /dev/null` on the head:
+  `Result: PASSED (with skipped checks)`. Deno tests, lint, type check, fmt,
+  markdownlint, semgrep and gitleaks passed. Two stages were skipped because
+  their tools are not installed here: checkov (not on PATH) and config
+  integration (no `.config.json`). An earlier run on this branch failed one
+  unrelated test, `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`. Its
+  cleared-env `deno task` child could not download `mdurl@1.0.1` because this
+  container cannot resolve `registry.npmjs.org`. Seeding the default Deno npm
+  cache (`~/.cache/deno`, outside the repository) from the warm `DENO_DIR` cache
+  fixed it, and that file then passed 11/11.
