@@ -50,8 +50,6 @@ export interface CallbackIdentity {
   host: string;
   /** Operator-configured worker name, when set. */
   workerName?: string;
-  /** Agent provider configured for this worker, when set. */
-  provider?: string;
   /** Agent session id for this claim, when the run recorded one. */
   sessionId?: string;
   /** Home directory the transcript tee writes beneath. */
@@ -360,9 +358,7 @@ export function buildIssueRunCallbackContext(
     // Issue #2100: the workflow label the dispatch matched, so an archive can
     // compare implementation runs only. Absent when the loop named none.
     ...(present(run.mode) ? { mode: present(run.mode)! } : {}),
-    ...(present(identity.provider)
-      ? { provider: present(identity.provider)! }
-      : {}),
+    ...(present(run.provider) ? { provider: present(run.provider)! } : {}),
     ...(present(identity.sessionId)
       ? { sessionId: present(identity.sessionId)! }
       : {}),

@@ -1088,6 +1088,8 @@ export interface RunCoreDeps {
       rtk?: RtkOutputResult;
       /** What TokenEconomizer did and cost in the run (Issue #4958). */
       tokenEconomizer?: TokenEconomizerRunStats;
+      /** The agent provider that served the run (Issue #5163). */
+      provider?: string;
     }>
   >;
 
@@ -2525,6 +2527,8 @@ interface TerminalRun {
   rtk?: RtkOutputResult;
   /** What TokenEconomizer did and cost in the run (Issue #4958), when it ran. */
   tokenEconomizer?: TokenEconomizerRunStats;
+  /** The agent provider that served the run (Issue #5163). */
+  provider?: string;
   /**
    * The cycle's exactly-once guard. Every dispatch site for a claim shares
    * one, so a run reported by its own release is not reported again by the
@@ -2537,7 +2541,7 @@ interface TerminalRun {
  * Copy mode / outcome / telemetry / Graft / CodeGraph / RTK / phase from a
  * processIssue result onto a TerminalRun (`mode` added by Issue #2100,
  * `graft` by Issue #2104, `codegraph` by Issue #2162, `rtk` by Issue #2386,
- * `brief` by Issue #2603).
+ * `brief` by Issue #2603, `provider` by Issue #5163).
  */
 function withProcessCallbackFacts(
   ran: TerminalRun,
@@ -2553,6 +2557,7 @@ function withProcessCallbackFacts(
       codegraph?: CodegraphContextResult;
       rtk?: RtkOutputResult;
       tokenEconomizer?: TokenEconomizerRunStats;
+      provider?: string;
     };
   },
 ): TerminalRun {
@@ -2580,6 +2585,7 @@ function withProcessCallbackFacts(
     ...(value.tokenEconomizer
       ? { tokenEconomizer: value.tokenEconomizer }
       : {}),
+    ...(value.provider ? { provider: value.provider } : {}),
   };
 }
 
@@ -2630,6 +2636,7 @@ function dispatchIssueCallbacks(
         ...(ran.tokenEconomizer
           ? { tokenEconomizer: ran.tokenEconomizer }
           : {}),
+        ...(ran.provider ? { provider: ran.provider } : {}),
       });
     } catch (error) {
       deps.logError(

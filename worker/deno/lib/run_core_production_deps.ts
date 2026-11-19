@@ -5520,6 +5520,9 @@ export async function createProductionRunCoreDeps(
           ...(result.tokenEconomizer && !isExpectedSkip
             ? { tokenEconomizer: result.tokenEconomizer }
             : {}),
+          // The provider that served the run (Issue #5163); a skip spawned no
+          // agent and the issue worker already reports the configured one.
+          ...(result.provider ? { provider: result.provider } : {}),
         },
       };
     },
@@ -5975,7 +5978,6 @@ export async function createProductionRunCoreDeps(
           runId: run.runId ?? getRunId(),
           host: Deno.hostname(),
           ...(config.workerName ? { workerName: config.workerName } : {}),
-          ...(config.agentProvider ? { provider: config.agentProvider } : {}),
           ...(sessionId ? { sessionId } : {}),
           // Same fallback order the transcript writer itself uses.
           ...(homeDirectory(env) ? { home: homeDirectory(env)! } : {}),

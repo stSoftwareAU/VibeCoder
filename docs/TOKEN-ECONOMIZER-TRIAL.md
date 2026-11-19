@@ -413,9 +413,13 @@ block with `enabled: true` and status `off` is a run another provider served on
 the switched-on host: it is
 plugin-off (sections 2 and 5), so it is left out of the population and counted on
 its own exclusion line. The report shows a per-status breakdown of the population
-(on, fallback, stopped, not-run) and the persisted count. The record's
-`provider` is the host's configured provider, so a switch-off control run served
-by another provider cannot be excluded from the archive; the report says so.
+(on, fallback, stopped, not-run) and the persisted count. A record
+written since #5163 names the provider that served the run (one whose
+invocations named none or several carries no provider and is excluded with the
+no-provider runs); a record written before #5163 names the host's configured
+provider and nothing tells the two apart, so an earlier switch-off control run
+served by another provider cannot be excluded from the archive; the report says
+so.
 
 The cost per completed implementation run is the total cost of all runs,
 failures included, divided by the completed runs. A run whose
@@ -438,8 +442,8 @@ runs, trial host runs served by another provider (plugin off), concurrent hosts
 with a different RTK setting and one-sided repositories. It prints three
 explicit "not checked" lines: the run record carries no advisor/executor-split
 setting, no other-trial-window flag, and the provider of a switch-off control
-run is the host's configured one, so those §5 exclusions cannot be applied from
-the archive and are left to the reader (#4959). It then prints the verdict (see [The verdict](#the-verdict)).
+run recorded before #5163 is the host's configured one, so those §5
+exclusions cannot be applied from the archive and are left to the reader (#4959). It then prints the verdict (see [The verdict](#the-verdict)).
 
 Not yet: #5029 will account for billed capped and unfinished executor
 invocations in a run's totals. Until it lands, a run's cost total can omit those

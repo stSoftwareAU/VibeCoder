@@ -35,6 +35,7 @@ import { startPhaseProgress } from "./phase_progress.ts";
 import { recordStepDuration } from "./cycle_timings.ts";
 import {
   callbackTelemetryAbsenceReason,
+  servedRunProvider,
   summariseCallbackTelemetry,
 } from "./run_callback_telemetry.ts";
 import {
@@ -293,9 +294,15 @@ async function workOnIssueRecorded(
       state.claudeRunStats ?? [],
       ctx.config.agentProvider,
     );
+    const provider = servedRunProvider(
+      state.claudeRunStats ?? [],
+      ctx.config.agentProvider,
+    );
     return {
       ...result,
       outcome,
+      // Issue #5163: the provider that served the run, not the host's default.
+      ...(provider ? { provider } : {}),
       ...(telemetry ? { telemetry } : {}),
       ...(telemetryAbsentReason ? { telemetryAbsentReason } : {}),
       // What this run's Graft collection did (Issue #2104). Derived here for
