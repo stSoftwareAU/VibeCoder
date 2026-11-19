@@ -42,6 +42,10 @@ const REGISTRY_HOSTS = [
   "semgrep.dev",
 ];
 
+// Reference documentation an agent is asked to read, such as the Rust release
+// notes a toolchain-upgrade issue links to (Issue #5146).
+const DOCUMENTATION_HOSTS = ["releases.rs"];
+
 const PROVIDER_HOSTS: Readonly<Record<string, string[]>> = {
   claude: [
     "api.anthropic.com",
@@ -65,7 +69,7 @@ const PROVIDER_HOSTS: Readonly<Record<string, string[]>> = {
 
 const ALL_PROVIDER_HOSTS = Object.values(PROVIDER_HOSTS).flat();
 
-const BASE_ONLY = [...GITHUB_HOSTS, ...REGISTRY_HOSTS];
+const BASE_ONLY = [...GITHUB_HOSTS, ...REGISTRY_HOSTS, ...DOCUMENTATION_HOSTS];
 
 Deno.test("Actions storage allows current exact ranges and refuses gaps and lookalikes (Issue #4412)", () => {
   const hosts = resolveEgressAllowlist({
@@ -143,7 +147,12 @@ Deno.test("resolveEgressAllowlist - api.imgbb.com is present iff imgbb is config
     enabledProviderIds: [],
     imgbbConfigured: true,
   });
-  assertEquals(on, [...GITHUB_HOSTS, "api.imgbb.com", ...REGISTRY_HOSTS]);
+  assertEquals(on, [
+    ...GITHUB_HOSTS,
+    "api.imgbb.com",
+    ...REGISTRY_HOSTS,
+    ...DOCUMENTATION_HOSTS,
+  ]);
 
   const off = resolveEgressAllowlist({
     enabledProviderIds: [],
@@ -157,13 +166,19 @@ Deno.test("resolveEgressAllowlist - GitHub and registry hosts are always present
     enabledProviderIds: [],
     imgbbConfigured: false,
   });
-  assertEquals(out, [...GITHUB_HOSTS, ...REGISTRY_HOSTS]);
+  assertEquals(out, [
+    ...GITHUB_HOSTS,
+    ...REGISTRY_HOSTS,
+    ...DOCUMENTATION_HOSTS,
+  ]);
 
   const all = resolveEgressAllowlist({
     enabledProviderIds: Object.keys(PROVIDER_HOSTS),
     imgbbConfigured: true,
   });
-  for (const host of [...GITHUB_HOSTS, ...REGISTRY_HOSTS]) {
+  for (
+    const host of [...GITHUB_HOSTS, ...REGISTRY_HOSTS, ...DOCUMENTATION_HOSTS]
+  ) {
     assertEquals(all.includes(host), true, host);
   }
 });

@@ -647,6 +647,7 @@ other Azure accounts remain outside the built-in allowlist.
 | `dl.deno.land`                                 | Registry       | always                                     | Deno release downloads                                                                          |
 | `cdn.playwright.dev`                           | Registry       | always                                     | Playwright browser downloads                                                                    |
 | `semgrep.dev`                                  | Registry       | always                                     | Semgrep `p/default` rules for the quality gate's SAST stage (Issue #4412)                       |
+| `releases.rs`                                  | Documentation  | always                                     | Rust release notes, which toolchain-upgrade issues link to (Issue #5146)                        |
 | `api.anthropic.com`                            | Agent provider | `claude` provider enabled                  | Messages API                                                                                    |
 | `console.anthropic.com`                        | Agent provider | `claude` provider enabled                  | OAuth token refresh                                                                             |
 | `platform.claude.com`                          | Agent provider | `claude` provider enabled                  | OAuth token refresh (newer CLI)                                                                 |
