@@ -22,6 +22,7 @@ import type {
 import {
   RESOLUTION_GATE_BUDGET_MS,
   type ResolutionTask,
+  spawnTask,
   verifyResolvedTree,
 } from "../lib/milestone_resolution_gate.ts";
 import {
@@ -262,3 +263,56 @@ Deno.test("verifyResolvedTree - a type-check failure passed through keeps its ca
   assertEquals(outcome.status, "failed");
   assertEquals(outcome.cause, "check-timed-out");
 });
+
+for (const suite of ["manifest task", "quality script", "offline retry"]) {
+  Deno.test(`verifyResolvedTree - ${suite} startup failure keeps its fallback reason (Issue #5162)`, async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      if (suite === "manifest task") {
+        await Deno.writeTextFile(
+          `${dir}/deno.json`,
+          JSON.stringify({ tasks: { "test:unit": "deno test" } }),
+        );
+      } else if (suite === "quality script") {
+        await Deno.writeTextFile(`${dir}/quality.sh`, "exit 0\n");
+      } else {
+        await Deno.writeTextFile(
+          `${dir}/Cargo.toml`,
+          '[package]\nname = "x"\n',
+        );
+      }
+      const message = "credential provider unavailable";
+      const calls: string[][] = [];
+      const outcome = await verifyResolvedTree(
+        dir,
+        (task) => {
+          calls.push(task.args);
+          if (suite === "offline retry" && calls.length === 1) {
+            return Promise.resolve({
+              code: 1,
+              output: "unable to update registry `crates-io`\n" +
+                "[6] Could not resolve hostname (Could not resolve host: index.crates.io)",
+            });
+          }
+          return spawnTask(
+            task,
+            () => Promise.resolve({ ok: false, error: new Error(message) }),
+          );
+        },
+        passingTypeCheck,
+        undefined,
+        () => Promise.resolve(false),
+      );
+      if (suite === "offline retry") assert(calls[1]?.includes("--offline"));
+      assertEquals(outcome.status, "failed");
+      assertEquals(outcome.output, message);
+      assertEquals(outcome.cause, "check-could-not-run");
+      assertEquals(
+        judgeSyncFailure(escalation(outcome.cause), true).reason,
+        "the merge gate refused the resolution (the check could not be run)",
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+}

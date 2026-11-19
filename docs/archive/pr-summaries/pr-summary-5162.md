@@ -46,6 +46,12 @@ counted in `refusedCycles`. Closes #5162.
 
 ## Evidence
 
+Three command-boundary regression tests failed on the previous head. A manifest
+task, the quality script and a Cargo offline retry each labelled a startup error
+as a failed repository check. Each now records `check-could-not-run`, retains
+the startup diagnostic and reports the same cause in the fallback reason.
+All 13 tests in the resolution-gate cause suite passed locally.
+
 Backend-only change; there is no UI surface. The cause now flows as follows:
 
 ```mermaid
@@ -119,5 +125,5 @@ flowchart LR
   `DENO_DIR`, and this host has no DNS for the registry. Copying the warm npm
   cache into `~/.cache/deno`, outside the repository, made the test pass (11
   passed, 0 failed), and the re-run gate passed. The new test file passes at
-  head (10 passed, 0 failed), and `deno task pr-summary-check` on this summary
+  the previous head (10 passed, 0 failed), and `deno task pr-summary-check` on this summary
   blocked 0 gates.
