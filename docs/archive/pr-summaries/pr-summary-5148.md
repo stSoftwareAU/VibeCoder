@@ -53,4 +53,7 @@ Issue numbers the diff adds: #5148: Rewrite the #3761 hand-back sentence
 - Existing tests in that file are unchanged and nothing was removed from them. The #3382 no-violation test, which asserts that `CODE FIX` is absent, still runs against the changed template and passes.
 - `deno test --allow-all tests/summary_rule_gate_retry_test.ts` (from `worker/deno`): 22 passed, 0 failed.
 - `deno fmt --check`, `deno lint` and `deno check` on both changed files: clean.
-- `./quality.sh`: the first full run failed one unrelated test, `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`. Its cleared-environment `deno task` child tried to download `npm:commonmark` into an unwarmed cache. After `deno install --frozen` warmed the default cache, that file passed 11/11. The gate result from the re-run on the final head is recorded below.
+- `./quality.sh`: the first full run failed one unrelated test, `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`. Its cleared-environment `deno task` child tried to download `npm:commonmark` into an unwarmed cache. After `deno install --frozen` warmed the default cache, that file passed 11/11. The re-run with this summary committed passed:
+  `Result: PASSED (with skipped checks)`, with deno tests, lint, type check and
+  fmt passing. Two stages were skipped because their tools are not installed:
+  checkov (not on PATH) and config integration (no `.config.json`).
