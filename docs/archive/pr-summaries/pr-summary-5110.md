@@ -409,15 +409,18 @@ flowchart LR
     The branches now come from `quality.yml`'s `pull_request` filter, which
     includes `milestone/*`.
 - `./quality.sh` ran with the session's injected `GIT_CONFIG_*` hook variables
-  unset, at `75346ead5`. It passed every stage, including `deno tests`,
-  markdownlint, semgrep and gitleaks. `config integration` and `checkov` were
-  skipped: there is no `.config.json`, and no checkov or container runtime.
-  Since then only the validator, its test file, the detector's two exports and
-  one added case in `aws_emulator_cloudformation_5110_test.ts` have changed.
-  Their tests, `deno lint`, `deno check` and `deno fmt` were run on the final
-  head.
+  unset, on the head after the PR #5276 review fixes (`6cd68eaa4`). Every stage
+  passed except two. `completeness checks` failed because the new
+  `worker/deno/lib/shell_command_words.ts` was in no lib-sweep slice; it is now
+  listed in `docs/audits/lib-sweep-coverage/top-up-3366.json`, and
+  `deno task check:manifests` and `lib_sweep_coverage_test.ts` pass on that fix.
+  `deno tests` failed on `pr_summary_ci_workflow_3768_test.ts` (the npm DNS
+  fault under Undiscoverable Facts) and on the same lib-sweep test, which the
+  fix clears. `config integration` and `checkov` were skipped: there is no
+  `.config.json`, and no checkov or container runtime. The gate was not re-run
+  after the lib-sweep fix.
 
-<!-- vibe-quality-gate-skipped reason="the full gate ran at 75346ead5 and passed; only the workflow validator, its test file, two exports and one added script test changed after it, and those were re-tested, linted, type-checked and formatted on the final head" -->
+<!-- vibe-quality-gate-skipped reason="the full gate ran on the head after the review fixes; the one repository failure (lib-sweep coverage of the new module) was fixed after it and re-tested with deno task check:manifests and lib_sweep_coverage_test.ts; the other failure is the worker's npm DNS fault" -->
 
 Not checked:
 
