@@ -1080,12 +1080,13 @@ const MARKDOWNLINT_CONFIGS = [
  * CloudFormation test runs in CI via `.github/workflows/aws-emulator.yml`), so
  * this planner serves repositories that still track `test-floci.sh`. The AWS
  * Emulator test is not planned: the gate runs as the worker account `vibe`,
- * which `aws-emulator-run` refuses (Issue #5109). A push that changes a file under its directory runs it, so a
- * deterministic deploy error is caught before the push. The script fails
- * closed when Floci cannot be started, when the `aws` CLI is missing or when a
- * stack misses `CREATE_COMPLETE`; with no Docker socket (the worker container)
- * it prints `SKIPPED (needs Docker): <template>` for a template that creates an
- * `AWS::EC2::Instance` and leaves that template to CI.
+ * which `aws-emulator-run` refuses (Issue #5109). A push that changes a file
+ * under its directory runs it, so a deterministic deploy error is caught before
+ * the push. The script fails closed when Floci cannot be started, when the
+ * `aws` CLI is missing or when a stack misses `CREATE_COMPLETE`; with no Docker
+ * socket (the worker container) it prints `SKIPPED (needs Docker): <template>`
+ * for a template that creates an `AWS::EC2::Instance` and leaves that template
+ * to CI.
  */
 const FLOCI_TEST_SCRIPT = "infra/cloudformation/test-floci.sh";
 const FLOCI_TEST_DIR = "infra/cloudformation/";

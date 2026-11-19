@@ -360,8 +360,9 @@ count.
 **No finding is filed** when the repo does not use AWS, when no
 workflow loaded (status unknown — the same fail-safe reasoning as the
 [zero-workflows rule](#fail-safe--zero-workflows-loaded) for
-`BP-LINTER-<bucket>`), when Floci already runs in CI, or when a valid
-waiver exists; each skip is logged with its reason.
+`BP-LINTER-<bucket>`), when an emulator (Floci or the official AWS
+Emulator) already runs in CI, or when a valid waiver exists; each skip
+is logged with its reason.
 
 **Otherwise** the template files **one** issue with the fixed id
 `BP-AWS-EMULATOR-MISSING` at `severity:medium`, labelled
@@ -408,7 +409,7 @@ flowchart TD
     B -- no --> Z[No finding]
     B -- yes --> C{Workflows loaded?}
     C -- zero loaded --> Z
-    C -- loaded --> D{Floci runs in CI?}
+    C -- loaded --> D{An emulator runs in CI?}
     D -- yes --> Z
     D -- no --> E{Valid waiver?}
     E -- yes --> Z
@@ -447,7 +448,7 @@ sequenceDiagram
         end
     end
     Template->>Template: checkAwsEmulatorInCI(repo)<br/>(every bucket, before Claude)
-    opt uses AWS AND Floci not in CI AND no waiver
+    opt uses AWS AND no emulator in CI AND no waiver
         Template->>GH: file BP-AWS-EMULATOR-MISSING issue<br/>(`severity:medium`, counts toward 6-cap)
     end
     Template->>Claude: invoke with prompt + bucket guide<br/>(known-open ids include any pre-filed linter<br/>or AWS-emulator id)
@@ -476,7 +477,7 @@ flowchart TD
     Claim --> Before[Snapshot 1 — list open<br/>`best-practices` issues BEFORE]:::phase
     Before --> Lang{bucket is a language?}
     class Pick,Lang,CIGate,AwsCheck gate;
-    Lang -- general / design --> AwsCheck{AWS emulator check:<br/>uses AWS AND Floci<br/>not in CI AND no waiver?<br/>runs every bucket}
+    Lang -- general / design --> AwsCheck{AWS emulator check:<br/>uses AWS AND no emulator<br/>in CI AND no waiver?<br/>runs every bucket}
     Lang -- language --> CIGate{CI-gate check:<br/>linter AND compile gates<br/>both invoked in CI?}
     CIGate -- both present --> AwsCheck
     CIGate -- either missing --> FileLinter[File missing-CI-gate issue<br/>severity:high — names which gate(s)<br/>missing — counts to 6-cap]:::output
