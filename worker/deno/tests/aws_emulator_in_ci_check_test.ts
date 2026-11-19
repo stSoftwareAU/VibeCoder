@@ -1720,6 +1720,16 @@ Deno.test("checkAwsEmulatorInCI - a skipped brace group does not count as emulat
     [`true || {\n  ${RUNNER}\n}`, false],
     [`true && {\n  ${RUNNER}\n}`, true],
     [`false || {\n  ${RUNNER}\n}`, true],
+    [`false && { true; } && ${RUNNER}`, false],
+    [`true || { false; } || ${RUNNER}`, false],
+    [`false && { true; } || ${RUNNER}`, true],
+    [`true || { false; } && ${RUNNER}`, true],
+    [`true && { true; } && ${RUNNER}`, true],
+    [`false || { false; } || ${RUNNER}`, true],
+    [`false && { { true; }; } && ${RUNNER}`, false],
+    [`true && { false; } && ${RUNNER}`, false],
+    [`false || { true; } || ${RUNNER}`, false],
+    [`[ -n "$X" ] && { exit 0; }; ${RUNNER}`, true],
   ];
   for (const [script, expected] of cases) {
     for (const viaScript of [false, true]) {

@@ -116,6 +116,11 @@ container runs the command, so this is Part of #5110.
 
 ## Evidence
 
+The reviewer’s two skipped-group continuations reproduced on the previous head.
+The detector now restores the outer chain status when a skipped compound ends.
+The end-to-end regression checks both operators and reachable controls in direct
+workflow steps and repository scripts. The detector suite passed all 162 tests.
+
 The detector also skips compound groups opened behind a skipped chain:
 `false && {` ... `}` and `true || {` ... `}` (a standalone or one-line brace
 group), a `( ... )` subshell and an `if` after a skipped `&&`/`||` no longer

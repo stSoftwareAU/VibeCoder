@@ -298,6 +298,10 @@ function stripHeredocBodies(script: string): string {
 }
 
 interface Frame {
+  /** Status of the left operand when this compound was short-circuited. */
+  skippedStatus: boolean | null;
+  /** The compound is entered regardless of any runtime chain condition. */
+  entryCertain: boolean;
   /** Whether the construct itself is reached. */
   outer: boolean;
   /** Static truth of the condition (while: runs the body); null when unknown. */
@@ -330,7 +334,7 @@ function frameLive(f: Frame): boolean {
  * and an `exit` in it ends the script (false for a function body or subshell).
  */
 function frameCertain(f: Frame): boolean {
-  if (f.fn || f.sub) return false;
+  if (f.fn || f.sub || !f.entryCertain) return false;
   if (f.branch === "cond") return true;
   return f.branch === "body" ? f.truth === true : f.truth === false;
 }
@@ -361,10 +365,12 @@ export function reachableSegments(script: string): string[][] {
     !exited && (stack.at(-1) ? frameLive(stack.at(-1)!) : true);
   // Whether the command being read is skipped by the chain before it; a
   // compound it opens (`false && {`) inherits that, so its body never runs.
-  let chainSkipped = false;
+  let chainRuns: boolean | null = true;
   const push = (partial: Partial<Frame>) =>
     stack.push({
-      outer: live() && !chainSkipped,
+      outer: live() && chainRuns !== false,
+      skippedStatus: chainRuns === false ? prev : null,
+      entryCertain: chainRuns === true,
       truth: null,
       branch: "body",
       earlierTrue: false,
@@ -387,16 +393,24 @@ export function reachableSegments(script: string): string[][] {
       ? (prev === null ? null : !prev)
       : true;
     const skipped = runs === false;
-    chainSkipped = skipped;
+    chainRuns = runs;
     let closeAfter = false; // a one-line `( ... )` closes with its command
+    // A skipped compound leaves its caller's status intact. Its body can
+    // contain further groups, so recover that status from the matching frame.
+    let closedStatus: boolean | null = null;
     // Structural keywords first; what is left is a plain command.
     while (words.length > 0) {
       const w = words[0] ?? "";
       const top = stack.at(-1);
       if (w === "fi" || w === "done" || w === "esac") {
-        stack.pop();
+        closedStatus = stack.pop()?.skippedStatus ?? null;
       } else if (w === "}") {
-        if (top?.brace) stack.pop();
+        if (top?.brace) {
+          // A brace group that ran returns its final command's status.
+          closedStatus = top.skippedStatus ??
+            (top.entryCertain && !top.fn && !top.sub ? prev : null);
+          stack.pop();
+        }
       } else if (w === "if" || w === "while" || w === "until") {
         push({
           branch: "cond",
@@ -424,7 +438,10 @@ export function reachableSegments(script: string): string[][] {
           words = words.slice(0, -1);
         }
       } else if (w === ")") {
-        if (top?.sub) stack.pop();
+        if (top?.sub) {
+          closedStatus = top.skippedStatus;
+          stack.pop();
+        }
       } else if (
         w === "function" || FUNCTION_NAME.test(w) || words[1] === "()"
       ) {
@@ -444,9 +461,7 @@ export function reachableSegments(script: string): string[][] {
       words = words.slice(1);
     }
     if (words.length === 0) {
-      // A compound's status (`fi && exit`) is not tracked here.
-      prev = null;
-      if (closeAfter) stack.pop();
+      prev = closeAfter ? stack.pop()?.skippedStatus ?? null : closedStatus;
       continue;
     }
 
@@ -475,7 +490,7 @@ export function reachableSegments(script: string): string[][] {
         (head === "set" && readShellOptions(words.slice(at + 1)).noexec);
       if (stops && certain) exited = true;
     }
-    if (closeAfter) stack.pop();
+    if (closeAfter) prev = stack.pop()?.skippedStatus ?? prev;
   }
   return out;
 }
