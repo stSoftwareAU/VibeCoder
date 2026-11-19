@@ -455,19 +455,53 @@ function commandIndex(words: string[]): number {
   return i;
 }
 
+/** `aws-emulator-run` options that take a separate value word. */
+const EMULATOR_RUN_VALUE_OPTIONS = new Set(["--ready-timeout", "--timeout"]);
+/** Commands that run nothing, so `aws-emulator-run -- true` tests nothing. */
+const NO_OP_COMMANDS = new Set([
+  "true",
+  ":",
+  "/bin/true",
+  "/usr/bin/true",
+]);
+
 /**
- * True when one command segment actually invokes the emulator runner: its
- * command word (see {@link commandIndex}, with any surrounding quotes
- * removed) is `aws-emulator-run` or a path ending `/aws-emulator-run`. An
- * `echo aws-emulator-run`, `command -v aws-emulator-run`, an
- * `install ... /usr/local/bin/aws-emulator-run` and the install fragment
- * `container/toolchains/aws-emulator.sh` do not count: none of them runs a
- * test through the emulator.
+ * True when one command segment actually runs a repository test through
+ * the emulator runner (#5109's usage): its command word (see
+ * {@link commandIndex}, with any surrounding quotes removed) is
+ * `aws-emulator-run` or a path ending `/aws-emulator-run`, followed by
+ * optional `--ready-timeout N` / `--timeout N`, then `--` and a COMMAND that
+ * is not a no-op (`true`, `:`). The helper's own `--smoke` self-check,
+ * `--smoke-client`, `-h`/`--help`, a bare `--` and any unknown option do not
+ * count; nor do `echo aws-emulator-run`, `command -v aws-emulator-run`, an
+ * `install ... /usr/local/bin/aws-emulator-run` or the install fragment
+ * `container/toolchains/aws-emulator.sh`: none of them runs a test.
  */
 function segmentInvokesEmulatorRunner(words: string[]): boolean {
-  const command = words[commandIndex(words)];
-  return command !== undefined &&
-    AWS_EMULATOR_RUN_COMMAND.test(stripQuotes(command));
+  let i = commandIndex(words);
+  const command = words[i];
+  if (
+    command === undefined ||
+    !AWS_EMULATOR_RUN_COMMAND.test(stripQuotes(command))
+  ) {
+    return false;
+  }
+  i++;
+  while (i < words.length) {
+    const arg = stripQuotes(words[i] ?? "");
+    if (EMULATOR_RUN_VALUE_OPTIONS.has(arg)) {
+      if (i + 1 >= words.length) return false;
+      i += 2;
+    } else if (arg === "--") {
+      const testCommand = words[i + 1];
+      return testCommand !== undefined &&
+        stripQuotes(testCommand).length > 0 &&
+        !NO_OP_COMMANDS.has(stripQuotes(testCommand));
+    } else {
+      return false; // --smoke, --smoke-client, -h, --help or unknown
+    }
+  }
+  return false;
 }
 
 function stripQuotes(word: string): string {

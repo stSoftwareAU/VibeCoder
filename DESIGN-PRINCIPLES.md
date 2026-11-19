@@ -1872,8 +1872,11 @@ manifests, CloudFormation templates, or `.tf` files, and checks
 whether any GitHub Actions workflow runs an emulator: the `floci/floci`
 image as a service container, job container, `docker://` step, or
 `docker run` step, or the official AWS Emulator: a `run:` step in command
-position that invokes `aws-emulator-run`, directly or through a repository
-script that itself invokes it (one level deep). Merely installing the pinned
+position that runs a repository test through `aws-emulator-run`
+(`[--ready-timeout N] [--timeout N] -- COMMAND` with a COMMAND that is not a
+no-op such as `true` or `:`), directly or through a repository script that
+itself does so (one level deep). The helper's `--smoke` self-check,
+`--smoke-client` and `--help` run no repository test, so they do not count. Merely installing the pinned
 `container/toolchains/aws-emulator.sh` is not coverage. A repo that uses AWS
 without either emulator wired
 into CI, and without a valid `best-practice-ignore: BP-AWS-EMULATOR-MISSING`

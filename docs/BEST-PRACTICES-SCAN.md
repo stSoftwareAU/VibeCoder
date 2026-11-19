@@ -348,7 +348,11 @@ CloudFormation template, or any `.tf` file.
 via a `run:` step that invokes `aws-emulator-run` (the command word, once
 shell reserved words, `sudo`/`env`/`exec`, `VAR=value` and the
 `time`/`nice`/`timeout`/`command` wrappers are skipped and quotes are
-stripped, is `aws-emulator-run` or a path ending `/aws-emulator-run`), or
+stripped, is `aws-emulator-run` or a path ending `/aws-emulator-run`)
+in the helper's test form —
+`aws-emulator-run [--ready-timeout N] [--timeout N] -- COMMAND` with a
+non-empty COMMAND that is not a no-op (`true`, `:`, `/bin/true`,
+`/usr/bin/true`) — or
 that runs a repository script (a relative path, or the first argument of
 `bash`/`sh`) which itself invokes `aws-emulator-run` the same way — one
 level of indirection, with the script read from the checkout and confined
@@ -357,7 +361,10 @@ do not count). Merely installing the emulator
 (`container/toolchains/aws-emulator.sh`, or
 `install ... /usr/local/bin/aws-emulator-run`) is not coverage. An
 `echo aws-emulator-run`, `command -v aws-emulator-run`, a comment, or a
-mention in a string does not count.
+mention in a string does not count. Nor does an invocation that runs no
+repository test: the helper's own `--smoke` self-check, `--smoke-client`,
+`-h`/`--help`, a bare `--`, `-- true`, or a COMMAND without `--` (which the
+helper rejects).
 
 **No finding is filed** when the repo does not use AWS, when no
 workflow loaded (status unknown — the same fail-safe reasoning as the

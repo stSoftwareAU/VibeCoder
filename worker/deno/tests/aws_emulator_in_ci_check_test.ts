@@ -791,7 +791,7 @@ Deno.test("workflowRunsAwsEmulator - path ending in aws-emulator-run in command 
     `jobs:
   test:
     steps:
-      - run: /usr/local/bin/aws-emulator-run ./t.sh
+      - run: /usr/local/bin/aws-emulator-run -- ./t.sh
 `,
   );
   assert(workflowRunsAwsEmulator(doc));
@@ -807,6 +807,74 @@ Deno.test("workflowRunsAwsEmulator - real .github/workflows/aws-emulator.yml cou
   );
   // Without the script the install steps alone are not coverage.
   assertEquals(workflowRunsAwsEmulator(parseYaml(text)), false);
+});
+
+// Issue #5110 (pre-PR verifier): only `aws-emulator-run [options] -- COMMAND`
+// with a real COMMAND runs a repository test. The helper's own `--smoke`
+// self-check, `--help` and a no-op COMMAND must not satisfy the rule.
+for (
+  const [label, run] of [
+    ["--smoke self-check", "aws-emulator-run --smoke"],
+    [
+      "--smoke with timeouts",
+      "aws-emulator-run --ready-timeout 60 --timeout 300 --smoke",
+    ],
+    ["--smoke-client", "aws-emulator-run --smoke-client"],
+    ["--help", "aws-emulator-run --help"],
+    ["-h", "aws-emulator-run -h"],
+    ["-- true", "aws-emulator-run -- true"],
+    ["-- :", "aws-emulator-run -- :"],
+    [
+      "--timeout 900 -- /bin/true",
+      "aws-emulator-run --timeout 900 -- /bin/true",
+    ],
+    ["bare --", "aws-emulator-run --"],
+    ["no arguments", "aws-emulator-run"],
+    ["COMMAND without --", "aws-emulator-run ./ci/test.sh"],
+    ["--timeout with no value", "aws-emulator-run --timeout"],
+  ] as const
+) {
+  Deno.test(`workflowRunsAwsEmulator - aws-emulator-run ${label} does not count`, () => {
+    assertEquals(workflowRunsAwsEmulator(workflowRunBlock(run)), false);
+  });
+}
+
+Deno.test("workflowRunsAwsEmulator - aws-emulator-run -- ./ci/test.sh counts (positive control)", () => {
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("aws-emulator-run -- ./ci/test.sh"),
+    ),
+  );
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock(
+        "aws-emulator-run --ready-timeout 60 --timeout 900 -- ./ci/test.sh",
+      ),
+    ),
+  );
+});
+
+Deno.test("checkAwsEmulatorInCI - script that only runs aws-emulator-run --smoke does not count", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/ci`);
+    await Deno.writeTextFile(
+      `${dir}/ci/check.sh`,
+      "#!/usr/bin/env bash\naws-emulator-run --smoke\n",
+    );
+    const doc = workflowRunBlock("./ci/check.sh");
+    assertEquals(
+      workflowRunsAwsEmulator(doc, makeRepoScriptReader(dir)),
+      false,
+    );
+    await Deno.writeTextFile(
+      `${dir}/ci/check.sh`,
+      "#!/usr/bin/env bash\naws-emulator-run -- ./ci/test.sh\n",
+    );
+    assert(workflowRunsAwsEmulator(doc, makeRepoScriptReader(dir)));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("workflowRunsAwsEmulator - echo aws-emulator-run does not count", () => {

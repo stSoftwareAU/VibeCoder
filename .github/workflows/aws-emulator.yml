@@ -38,6 +38,7 @@ on:
       - '.github/workflows/aws-emulator.yml'
       - 'container/aws-emulator-run.sh'
       - 'container/toolchains/aws-emulator.sh'
+      - 'container/toolchains/aws-cli.sh'
       - 'container/tools.json'
   workflow_dispatch:
 
@@ -69,13 +70,16 @@ jobs:
             bash container/toolchains/aws-emulator.sh
           sudo install -m 0755 container/aws-emulator-run.sh /usr/local/bin/aws-emulator-run
 
-      - name: Check AWS CLI
+      - name: Install the pinned AWS CLI
+        # The runner image ships its own aws-cli; replace it with the 2.40.3
+        # the worker container uses, through the same sha256-checked fragment,
+        # so CI and the container run the same CLI (Issue #5110).
         run: |
           set -euo pipefail
-          if ! command -v aws >/dev/null 2>&1; then
-            echo "::error::aws CLI not found on the runner"
-            exit 1
-          fi
+          sudo rm -rf /usr/local/aws-cli /usr/local/bin/aws /usr/local/bin/aws_completer
+          sudo env CURL_RETRY="--retry 8 --retry-delay 3 --retry-all-errors --connect-timeout 20" \
+            TOOLCHAIN_MANIFEST="${GITHUB_WORKSPACE}/container/tools.json" \
+            bash container/toolchains/aws-cli.sh
           aws --version
 
       - name: Test CloudFormation templates against AWS Emulator

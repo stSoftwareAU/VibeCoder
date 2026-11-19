@@ -14,13 +14,14 @@
  *   `&&`, and neither the job nor that step sets `continue-on-error` or an
  *   `if:` (PR #3478 review);
  * - (b) a step runs `container/toolchains/aws-emulator.sh` (the pinned,
- *   checksum-verified install) and a step installs
- *   `container/aws-emulator-run.sh`, both before the test step;
+ *   checksum-verified install), a step runs `container/toolchains/aws-cli.sh`
+ *   (the pinned aws-cli, not the runner's own), and a step installs
+ *   `container/aws-emulator-run.sh`, all before the test step;
  * - (c) the job has no `services`, no step or volume mentions
  *   `/var/run/docker.sock`, and nothing references Floci;
  * - (d) `pull_request` watches `infra/cloudformation/**`, the workflow itself,
- *   `container/aws-emulator-run.sh`, `container/toolchains/aws-emulator.sh` and
- *   `container/tools.json`, and targets `milestone/*` branches;
+ *   `container/aws-emulator-run.sh`, `container/toolchains/aws-emulator.sh`,
+ *   `container/toolchains/aws-cli.sh` and `container/tools.json`, and targets `milestone/*` branches;
  * - (e) top-level `permissions.contents` is `read`;
  * - (f) every `actions/checkout` step sets `persist-credentials: false`.
  *
@@ -35,6 +36,8 @@
 export const SCRIPT_PATH = "infra/cloudformation/test-aws-emulator.sh";
 /** The pinned, checksum-verified install fragment. */
 const TOOLCHAIN_PATH = "container/toolchains/aws-emulator.sh";
+/** The pinned, checksum-verified aws-cli fragment (CI must not use the runner's). */
+const CLI_TOOLCHAIN_PATH = "container/toolchains/aws-cli.sh";
 /** The runner script the workflow must install onto the PATH. */
 const RUNNER_PATH = "container/aws-emulator-run.sh";
 const DOCKER_SOCK = "/var/run/docker.sock";
@@ -50,6 +53,7 @@ const REQUIRED_PATHS = [
   ".github/workflows/aws-emulator.yml",
   RUNNER_PATH,
   TOOLCHAIN_PATH,
+  CLI_TOOLCHAIN_PATH,
   "container/tools.json",
 ];
 
@@ -204,6 +208,18 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
     } else if (toolchainIndex > testIndex) {
       problems.push(
         `[pinned-install] ${TOOLCHAIN_PATH} must run before the test step`,
+      );
+    }
+    const cliIndex = steps.findIndex((s) =>
+      stepMatches(s, (l) => invokes(l, CLI_TOOLCHAIN_PATH))
+    );
+    if (cliIndex === -1) {
+      problems.push(
+        `[pinned-cli] no step runs ${CLI_TOOLCHAIN_PATH} (the pinned aws-cli the worker container uses) in command position with its exit status intact`,
+      );
+    } else if (cliIndex > testIndex) {
+      problems.push(
+        `[pinned-cli] ${CLI_TOOLCHAIN_PATH} must run before the test step`,
       );
     }
     const runnerIndex = steps.findIndex((s) => stepMatches(s, installsRunner));

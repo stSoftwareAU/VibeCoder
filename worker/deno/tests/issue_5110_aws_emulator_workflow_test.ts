@@ -67,6 +67,7 @@ const TEST_STEP_ANCHOR =
 const TEST_STEP_NAME =
   "      - name: Test CloudFormation templates against AWS Emulator\n";
 const TOOLCHAIN_ANCHOR = "bash container/toolchains/aws-emulator.sh";
+const CLI_TOOLCHAIN_ANCHOR = "bash container/toolchains/aws-cli.sh";
 const RUNNER_INSTALL_ANCHOR =
   "sudo install -m 0755 container/aws-emulator-run.sh /usr/local/bin/aws-emulator-run";
 
@@ -154,7 +155,7 @@ Deno.test("(b) refuses the test step placed before the install steps", () => {
   const install = REAL.indexOf(
     "      - name: Install the pinned AWS Emulator\n",
   );
-  const check = REAL.indexOf("      - name: Check AWS CLI\n");
+  const check = REAL.indexOf("      - name: Install the pinned AWS CLI\n");
   const test = REAL.indexOf(TEST_STEP_NAME);
   assert(
     install > 0 && check > install && test > check,
@@ -164,6 +165,7 @@ Deno.test("(b) refuses the test step placed before the install steps", () => {
     REAL.slice(install, test);
   expectFindings(reordered, [
     "[pinned-install] ",
+    "[pinned-cli] ",
     "[runner-install] ",
   ]);
 });
@@ -178,6 +180,19 @@ Deno.test("(b) refuses the pinned install with || true, which would swallow a ch
   expectFindings(
     mutate([TOOLCHAIN_ANCHOR, TOOLCHAIN_ANCHOR + " || true"]),
     ["[pinned-install] no step runs"],
+  );
+});
+
+Deno.test("(b) refuses a missing pinned aws-cli install (Issue #5110: CI must not use the runner's CLI)", () => {
+  expectFindings(mutate([CLI_TOOLCHAIN_ANCHOR, "true"]), [
+    "[pinned-cli] no step runs",
+  ]);
+});
+
+Deno.test("(d) refuses a pull_request path filter without the aws-cli fragment", () => {
+  expectFindings(
+    mutate(["      - 'container/toolchains/aws-cli.sh'\n", ""]),
+    ["container/toolchains/aws-cli.sh"],
   );
 });
 
