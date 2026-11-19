@@ -293,23 +293,6 @@ have. This complements the worker's own final-mile push verification described
 in **The final mile** below, which re-checks the push at the git level after
 the agent runs.
 
-#### Answer every ask in a finding (Issue #3348)
-
-A change-request finding often carries several asks: lettered parts, "also",
-"as well as", "the same way", a second input or path, or a request to record
-observed output in the PR summary alongside a code change. The pr_feedback
-prompt has the agent break each finding into its asks before changing
-anything, and list them under the finding in `.pr_response_message`, each with
-the commit, test or line that settles it or a rebuttal with evidence. Before
-replying, the agent counts the asks it listed against the sentences in the
-finding's **Fix** that request something. An ask with neither a fix nor a
-rebuttal leaves the finding partly fixed, so it does not count as **fixed**
-under **Every finding ends fixed or rebutted** above. Fixing the main ask and
-skipping the rest sent VibeCoder#3312, VibeCoder#3318 and GRQ-AutoTrader#2699
-back for another round ("one part of the earlier review is still not done").
-This complements **Fix the defect everywhere it lives** below, which finds
-instances the finding did not name; this rule covers the parts it did name.
-
 #### A request-changes review is never answered with "no change" (Issue #3246)
 
 A claimed `CHANGES_REQUESTED` review (`commentType: "pr_review"`) is dismissed
@@ -486,10 +469,14 @@ labels the PR nor disarms auto-merge (Issue #4291).
 A review fix that adds, removes or renames a test changes the archived PR
 summary's Test Plan, even when nothing else in the summary moves. The
 pr_feedback prompt's "keep the PR summary true to the head" rule tells the
-agent to recount from the head: the list of tests, every per-file test count
-and every quoted total ("N tests", "N passed", "N pinned phrases"),
-re-running the commands the summary cites on the final head so the figures
-are that run's. A number is never carried over from the earlier iteration.
+agent to recount from the head: the list of tests, then correcting or
+removing every per-file test count and every quoted total ("N tests",
+"N passed", "N pinned phrases") the push makes stale — a redundant
+inventory or total may simply go, provided the command, its observed result
+and the regression evidence stay (Issue #5223) — and re-running the
+commands the summary cites on the final head for each figure kept as a
+current-head result. A historical run keeps its provenance, and a number is
+never carried over from the earlier iteration.
 Review-fix heads had edited the summary in the same push yet left a stale
 count or test list (VibeCoder#3075, #3105, #3108). The PR-body sync
 (Issue #3089) copies such a count faithfully, so the recount has to land
@@ -606,8 +593,10 @@ The drift-check stages are listed below; removed and retired checks are marked:
    files whose runs differ, a red result with no file and no sole changed test
    file while the PR changed a countable test file (with none, it is out of
    scope), several counts that do not each follow the test file they count, or
-   different counts for one test file. Each unchecked figure is drift, not a
-   log line: it goes to the recovery turn below.
+   different counts for one test file. An unchecked figure is a limit of the
+   recount, not evidence the figure is wrong (Issue #5223): it is logged
+   and listed in the reply as not verified, but never starts the recovery
+   turn below on its own.
 3. **Docs sweep re-check** — removed (Issue #4234). A feedback push still updates the manuals the change makes false. The worker does not re-check a Docs sweep line.
 4. **Deterministic quoted-sentence check (Issue #3244)** — on every
    non-skipped push, the change request this push answers is parsed for its
@@ -628,10 +617,11 @@ The drift-check stages are listed below; removed and retired checks are marked:
    [Diff-scoped mutation check (retired)](../mutation-check.md).
 
 Any hit gets **one** recovery turn — a Test Plan figure the recount could not
-check is a hit too (Issue #3740) — and the agent, with full tools, is asked
-to rewrite the listed sentences, recount the Test Plan, restate each unchecked
-figure as "`<file>` (N tests at head)" or remove it, and rewrite or remove
-each stale quoted sentence, without changing code. The checks are then re-run;
+check is not a hit (Issue #3740 made it one; Issue #5223 retired that) — and
+the agent, with full tools, is asked to rewrite the listed sentences, recount
+the Test Plan, and rewrite or remove each stale quoted sentence, without
+changing code. The recovery prompt does not list unchecked figures or ask
+for tests to be re-run to restate them. The checks are then re-run;
 a prose finding counts
 as fixed only when its quoted sentence was present before the recovery turn
 and is gone after it — a finding whose file was not one of the files the
@@ -650,15 +640,16 @@ The residual lists the change-request quotes still present, the prose findings
 and Test Plan counts still standing, a model pass that returned
 no verdict, a named summary the quote check could not read, and — under the heading "Test Plan
 figures the drift check could not verify" (Issue #3740) — each Test Plan figure
-still unchecked after the recovery turn, with its reason. A push whose only
-drift is an unchecked figure is therefore not reported clean.
+still unchecked when the check ends, with its reason. A push whose only
+drift is an unchecked figure gets no recovery turn and is not reported
+clean: its figures go straight to the reply note, marked not verified.
 
 ```mermaid
 flowchart TD
     A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount,<br/>quoted-sentence check"]
     D --> H{"Any hits?"}
     H -- no --> P["Commit and push"]
-    H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]
+    H -- "no verdict or only<br/>unchecked figures" --> N["Residual appended to<br/>.pr_response_message"]
     H -- yes --> R["One recovery turn"]
     R --> C["Re-check"]
     C --> L{"Anything left?"}
