@@ -36,8 +36,12 @@ directory. Closes #5238.
   `markdownlint-cli2 --no-globs y.md '!sub/**'` still lints `y.md`.
 - An unreadable or unparseable config gives no exclusions. That fails closed:
   dropping a negation only lints more of the pushed paths, never fewer, and
-  markdownlint-cli2 itself exits 2 on a config it cannot parse. A `.cjs`/`.mjs`
-  config is not read, because reading it would mean executing it.
+  markdownlint-cli2 itself exits 2 on a config it cannot parse. Executable
+  `.cjs`/`.mjs` configs are loaded in the check subprocess,
+  never in the planner. Node loads the config and the installed
+  markdownlint-cli2 API in one process, so the module cache evaluates it once.
+  The API receives only the pushed paths and the config negations, with
+  `noGlobs: true`. Config precedence remains JSONC, YAML, CJS, then MJS.
 - `markdownlintExclusions` is an optional option of `planChangedFileChecks`, not
   a required one. `runPrePushGate` is the only production caller that can plan
   markdownlint, and it always passes the option. The other production caller,
@@ -136,7 +140,21 @@ the code.
 Not done or not checked: `worker/deno/lib/markdownlint_check.ts` (the whole-tree
 quality-gate stage) still runs on the config's `globs` and was not changed,
 because it is out of this issue's scope. The five private-repo refusals the
-issue mentions were not examined. A negated entry in a `.cjs`/`.mjs` config is
-not re-applied.
+issue mentions were not examined. All four supported root options formats preserve their negated entries.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## Review correction and base refresh
+
+Resolved the test-import conflict with the current base, retaining both the
+directory-listing test selector and the markdownlint exclusion loader.
+
+Two added real-tool tests cover executable CJS and MJS configs. Each pushes
+clean Markdown alongside invalid but excluded vendor Markdown and passes.
+Untracked invalid Markdown and an invalid Graft card do not widen the check;
+an invalid, unexcluded pushed file still blocks it. Both tests failed on the
+previous code with MD018/MD041 on the excluded vendor file, then passed with
+the correction. The complete merged `pre_push_gate_test.ts` suite passed:
+212 passed, 0 failed, with markdownlint-cli2 0.24.1 installed. This local run
+used npm mirrors for the standard-library imports because JSR was unreachable;
+no dependency manifest or lockfile change is included.

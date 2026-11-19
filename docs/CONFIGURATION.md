@@ -5296,7 +5296,8 @@ pre-flight commands keep their own spec. The completion phase's
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the first stage below: deno fmt/lint,
-`deno test` of the changed and referencing tests (the whole `test:unit` suite
+`deno test` of the changed, referencing and, when the push adds, deletes or
+renames a file, directory-listing tests (the whole `test:unit` suite
 when a `prompts/` file or a root's `deno.json`, `deno.jsonc` or `deno.lock`
 changes), cargo fmt, markdownlint, cspell, ShellCheck and the Floci
 CloudFormation deploy test), the CI cargo clippy and test-target compile (which
@@ -5420,7 +5421,21 @@ gates do (see that bullet):
      the directory, so the tests that import it are selected. A push that changes
      only tests selects nothing for it. The check is a text match, so a string or
      code comment that spells such a call does the same. Prompt loaders are
-     already covered by the prompts rule. A data file read
+     already covered by the prompts rule. When the push adds, deletes or renames
+     a file under the directory, the check also runs that directory's
+     directory-listing tests (Issue #5169), because a test of the set of files
+     (a manifest of test files, a coverage ledger of modules) can break on a
+     file it never names. A `_test.ts` is selected when it, or a file under
+     `tests/` or another `_test.ts` that it imports directly or transitively,
+     lists a directory itself or directly imports a `.ts` module under the
+     directory that does. A file lists a directory when its text calls
+     `Deno.readDir`, `Deno.readDirSync`, `walk`, `walkSync`, `expandGlob` or
+     `expandGlobSync`, or quotes `ls-files`; as a text match, a comment that
+     spells such a call also selects, and so does a tracked `.ts` file that
+     cannot be read (it fails closed). A module that reaches a listing only
+     through another non-test module is not followed, so such a test can still
+     be missed. A push that only modifies existing files selects none of these
+     tests. A data file read
      through a path the scan cannot see (no name, directory or template-literal
      token) can still be missed, and CI's shards remain the backstop. This is a
      dependency heuristic, and a widely imported module can select most of the
@@ -5605,9 +5620,10 @@ gates do (see that bullet):
      first, else the one on `PATH`, run with `--no-globs` so the config's
      `globs` do not add files beyond the pushed paths (the config's rules and
      `ignores` still apply) (Issue #5238). The negated `globs` entries (`!…`
-     or `#…`) of the root `.markdownlint-cli2.jsonc` or `.yaml` config are
-     passed on the command line too, so a path the config excludes stays
-     excluded; a `.cjs` or `.mjs` config's globs are not read;
+     or `#…`) of the root `.markdownlint-cli2.jsonc`, `.yaml`, `.cjs` or `.mjs`
+     config are passed to the tool too, so a path the config excludes stays
+     excluded. Executable configs are loaded only inside the check subprocess,
+     using the installed tool's API;
    - `cspell` on changed `.md`, `.markdown`, `.html`, `.js`, `.ts`, `.css` and
      `.sh` files (the Spelling workflow's glob) when the repo tracks a cspell
      config and its own CI runs cspell: a tracked workflow under
