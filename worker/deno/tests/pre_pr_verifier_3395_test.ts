@@ -558,9 +558,16 @@ Deno.test("gate comment and block reason name the findings", () => {
     comment,
     "closed only by fixing it or disputing it with evidence",
   );
-  assertStringIncludes(comment, "Marking a criterion `partial`");
-  assertStringIncludes(comment, "listing a known gap or open limitation");
-  assertStringIncludes(comment, '"not red-checked" does not close a finding');
+  assertStringIncludes(
+    comment,
+    "Marking a criterion `partial` closes only a finding about that entry's `met` status",
+  );
+  assertStringIncludes(
+    comment,
+    "Listing a known gap or open limitation in the PR summary",
+  );
+  assertStringIncludes(comment, '"not red-checked", closes no finding');
+  assert(!comment.includes("does not close a finding"));
   const reason = prePrVerifierBlockReason(review);
   assertStringIncludes(reason, "2 blocking finding(s)");
   assertStringIncludes(reason, "x.ts:7 — multi line problem");
@@ -1821,8 +1828,14 @@ Deno.test("the closure gap finding's fix agrees with the gate comment's procedur
   const comment = buildPrePrVerifierGateComment(review);
   assertStringIncludes(comment, "dispute the verdict");
   assertStringIncludes(comment, "was rated partial");
-  assertStringIncludes(comment, "Marking a criterion `partial`");
-  assert(!comment.includes("mark the entry `partial`"));
+  assertStringIncludes(
+    comment,
+    "Marking a criterion `partial` closes only a finding about that entry's `met` status",
+  );
+  assertStringIncludes(
+    comment,
+    "mark the entry `partial` with a `reason:` naming that case",
+  );
 });
 
 Deno.test("runPrePrVerifier: earlier findings need complete fixed verdicts even when findings is empty", async () => {

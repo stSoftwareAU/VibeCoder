@@ -397,14 +397,23 @@ for (
   });
 }
 
-Deno.test("closureGapFindings: the fix offers delivery or a dispute, never a partial downgrade", () => {
+Deno.test("closureGapFindings: the fix offers delivery, an honest partial with a reason, or a dispute (Issue #5147)", () => {
   const out = closureGapFindings(
     ITEMS,
     [v("Every run files a follow-up", "partial")],
     PATH,
   );
-  assert(!/partial|missing/.test(out[0]!.fix));
-  assertStringIncludes(out[0]!.fix, "dispute");
+  assertStringIncludes(
+    out[0]!.fix,
+    "Deliver the case the note names, with its test, and keep `met`",
+  );
+  assertStringIncludes(
+    out[0]!.fix,
+    "mark the entry `partial` with a `reason:` naming that case",
+  );
+  assertStringIncludes(out[0]!.fix, "`Part of #N`");
+  assertStringIncludes(out[0]!.fix, "dispute the verdict");
+  assert(!/missing/.test(out[0]!.fix));
 });
 
 Deno.test("closureGapFindings: case, whitespace and backtick differences still match", () => {

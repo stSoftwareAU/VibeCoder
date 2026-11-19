@@ -8,7 +8,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { buildSummaryRuleRetryPrompt } from "../lib/summary_rule_gate_retry.ts";
 
 const VERDICT = {
@@ -30,9 +35,16 @@ Deno.test("summary-rule retry - verifier findings need a fix or evidence-backed 
     exception,
     "closed only by fixing it or disputing it with evidence",
   );
-  assertStringIncludes(exception, "Marking a criterion `partial`");
-  assertStringIncludes(exception, "listing a known gap or open limitation");
-  assertStringIncludes(exception, '"not red-checked" does not close a finding');
+  assertStringIncludes(
+    exception,
+    "Marking a criterion `partial` closes only a finding about that entry's `met` status",
+  );
+  assertStringIncludes(
+    exception,
+    "Listing a known gap or open limitation in the PR summary",
+  );
+  assertStringIncludes(exception, '"not red-checked", closes no finding');
+  assert(!exception.includes("does not close a finding"));
   assertStringIncludes(
     prompt.slice(0, prompt.indexOf("One exception (Issue #3395)")),
     "the code on the branch has already passed the quality gate, so do not change it",
