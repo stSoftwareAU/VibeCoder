@@ -11,7 +11,13 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { join } from "node:path";
-import { servedRunProvider } from "../lib/run_callback_telemetry.ts";
+import {
+  type AgentLaunch,
+  servedRunProvider,
+} from "../lib/run_callback_telemetry.ts";
+import { trackAgentLaunches } from "../lib/agent_launch_tracking.ts";
+import { HostDiskParkError } from "../lib/heavy_build_gate.ts";
+import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import { workOnIssue } from "../lib/issue_worker.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -37,37 +43,133 @@ const REPO = "org/repo";
 const hostEnv = envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: "claude,deepseek" });
 
 Deno.test("servedRunProvider - the rule", () => {
-  const named = (provider?: string) => ({ runStats: { provider } });
   assertEquals(servedRunProvider([], "codex"), "codex");
   assertEquals(servedRunProvider([], undefined), undefined);
   assertEquals(servedRunProvider([], "  "), undefined);
-  assertEquals(servedRunProvider([named("deepseek")], "claude"), "deepseek");
+  assertEquals(servedRunProvider([{ provider: "deepseek" }], "x"), "deepseek");
   assertEquals(
-    servedRunProvider([named("deepseek"), named("deepseek")], "claude"),
+    servedRunProvider(
+      [{ provider: "deepseek" }, { provider: "deepseek" }],
+      "x",
+    ),
     "deepseek",
   );
   assertEquals(
-    servedRunProvider([named("claude"), named("codex")], "claude"),
+    servedRunProvider([{ provider: "claude" }, { provider: "codex" }], "x"),
     undefined,
   );
-  assertEquals(servedRunProvider([{ runStats: {} }], "claude"), undefined);
+  assertEquals(servedRunProvider([{}], "claude"), undefined);
   assertEquals(
-    servedRunProvider([{}, named("deepseek")], "claude"),
-    "deepseek",
-  ); // A review-only pass (the pre-PR verifier) on the host's provider is left
-  // out, so a pinned run still names the pinned provider.
-  const review = { runStats: { provider: "claude" }, reviewOnly: true };
-  assertEquals(
-    servedRunProvider([named("deepseek"), review], "claude"),
-    "deepseek",
+    servedRunProvider([{}, { provider: "deepseek" }], "claude"),
+    undefined,
   );
-  assertEquals(servedRunProvider([review], "codex"), "codex");
+  assertEquals(
+    servedRunProvider([{ provider: "  " }, { provider: "deepseek" }], "claude"),
+    undefined,
+  );
+});
+
+type Runner = (options: { agentProvider?: string }) => Promise<unknown>;
+
+/** Track a scripted runner and return the tracked call plus the launches. */
+function tracked(runner: Runner) {
+  const launches: AgentLaunch[] = [];
+  const input = createMockDeps({
+    claude: { runClaudeWithRetry: runner as never },
+  });
+  const deps = trackAgentLaunches(input, launches);
+  const call = () => (deps.claude.runClaudeWithRetry as Runner)({});
+  return { launches, call, input, deps };
+}
+
+const okWith = (stats?: { provider: string }) =>
+  Promise.resolve({
+    ok: true,
+    value: {
+      output: "",
+      exitCode: 0,
+      timedOut: false,
+      ...(stats
+        ? {
+          runStats: {
+            servedModels: [],
+            requestedModel: "m",
+            wallClockMs: 1,
+            ...stats,
+          },
+        }
+        : {}),
+    },
+  });
+
+Deno.test("trackAgentLaunches - an ok launch records its provider", async () => {
+  const t = tracked(() => okWith({ provider: "deepseek" }));
+  await t.call();
+  assertEquals(t.launches, [{ provider: "deepseek" }]);
+});
+
+Deno.test("trackAgentLaunches - an ok launch without stats records none", async () => {
+  const t = tracked(() => okWith());
+  await t.call();
+  assertEquals(t.launches, [{}]);
+});
+
+Deno.test("trackAgentLaunches - a host-disk park records none and passes the result", async () => {
+  const result = { ok: false, error: new HostDiskParkError("disk full", true) };
+  const t = tracked(() => Promise.resolve(result));
+  assert(await t.call() === result);
+  assertEquals(t.launches, [{}]);
+});
+
+Deno.test("trackAgentLaunches - a turn-cap error records its billed provider", async () => {
+  const billed = {
+    output: "",
+    exitCode: 0,
+    timedOut: false,
+    runStats: {
+      servedModels: [],
+      requestedModel: "m",
+      wallClockMs: 1,
+      provider: "deepseek",
+    },
+  };
+  const t = tracked(() =>
+    Promise.resolve({
+      ok: false,
+      error: new AgentTurnLimitError("cap", billed as never),
+    })
+  );
+  await t.call();
+  assertEquals(t.launches, [{ provider: "deepseek" }]);
+});
+
+Deno.test("trackAgentLaunches - a throwing runner records none and rethrows", async () => {
+  const boom = new Error("boom");
+  const t = tracked(() => Promise.reject(boom));
+  const thrown = await t.call().then(() => undefined, (e) => e);
+  assert(thrown === boom);
+  assertEquals(t.launches, [{}]);
+});
+
+Deno.test("trackAgentLaunches - mixed launches leave the provider unknown", async () => {
+  const providers = ["deepseek", "claude"];
+  const t = tracked(() => okWith({ provider: providers.shift()! }));
+  await t.call();
+  await t.call();
+  assertEquals(servedRunProvider(t.launches, "claude"), undefined);
+});
+
+Deno.test("trackAgentLaunches - other deps pass through unchanged", () => {
+  const t = tracked(() => okWith());
+  assert(t.deps.github === t.input.github);
 });
 
 /** Run one issue on a Claude host; `pin` is the repo's agent provider. */
 async function runIssue(
   pin: string | undefined,
   invoked: unknown[],
+  runner?: Runner,
+  extra?: Parameters<typeof createMockDeps>[0],
 ): Promise<WorkOnIssueResult> {
   const config = buildDefaultWorkerConfig();
   config.agentProvider = "claude";
@@ -78,6 +180,7 @@ async function runIssue(
       prepareRtkRun: healthyRtkSeam(100, 140).prepare as never,
       runClaudeWithRetry: ((options: { agentProvider?: string }) => {
         invoked.push(options);
+        if (runner) return runner(options);
         return Promise.resolve({
           ok: true,
           value: {
@@ -103,6 +206,7 @@ async function runIssue(
       findExistingPrForIssue: () =>
         Promise.resolve({ ok: false, error: new Error("No PR found") }),
     },
+    ...extra,
   });
   return workOnIssue({
     repo: REPO,
@@ -152,6 +256,104 @@ for (
         const invoked: unknown[] = [];
         const result = await runIssue(pin, invoked);
         assert(invoked.length >= 1, "the runner must be invoked");
+        assertEquals(result.provider, expected);
+        assertEquals(publishedProvider(result), expected);
+      } finally {
+        setConfiguredAgentProviderId(undefined);
+        setConfiguredEnabledAgentProviderIds(undefined);
+      }
+    },
+  });
+}
+
+for (
+  const [label, runner] of [
+    ["a host-disk park after an agent ran", () =>
+      Promise.resolve({
+        ok: false,
+        error: new HostDiskParkError("disk full", true),
+      })],
+    ["a launch that reported no stats", () => okWith()],
+  ] as const
+) {
+  Deno.test({
+    name: `#5163 - workOnIssue: ${label} leaves the provider unknown`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      setConfiguredAgentProviderId("claude");
+      setConfiguredEnabledAgentProviderIds(["claude", "deepseek"]);
+      try {
+        const invoked: { agentProvider?: string }[] = [];
+        const result = await runIssue("deepseek", invoked, runner);
+        assert(invoked.length >= 1, "the runner must be invoked");
+        assertEquals(invoked[0]!.agentProvider, "deepseek");
+        assertEquals(result.provider, undefined);
+        assertEquals(publishedProvider(result), undefined);
+      } finally {
+        setConfiguredAgentProviderId(undefined);
+        setConfiguredEnabledAgentProviderIds(undefined);
+      }
+    },
+  });
+}
+
+// The quality gate fails once after the execute call, so the remediation
+// phase launches a second agent through the runner (the reviewer's finding 3).
+for (
+  const [label, later, expected] of [
+    ["a later agent on another provider", "claude", undefined],
+    ["a later agent on the same provider", "deepseek", "deepseek"],
+  ] as const
+) {
+  Deno.test({
+    name: `#5163 - workOnIssue: ${label} counts toward the served provider`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      setConfiguredAgentProviderId("claude");
+      setConfiguredEnabledAgentProviderIds(["claude", "deepseek"]);
+      try {
+        const invoked: unknown[] = [];
+        const providers = ["deepseek", later];
+        let failed = false;
+        const runner: Runner = () =>
+          okWith({ provider: providers[invoked.length - 1] ?? later });
+        const gate = (passed: boolean) =>
+          Promise.resolve({
+            ok: true as const,
+            value: {
+              checks: [],
+              summary: { text: passed ? "passed" : "failed", passed },
+              passed,
+              output: passed ? "all good" : "lint error",
+            },
+          });
+        const result = await runIssue("deepseek", invoked, runner, {
+          quality: {
+            runQualityGate: () => {
+              if (invoked.length >= 1 && !failed) {
+                failed = true;
+                return gate(false);
+              }
+              return gate(true);
+            },
+          },
+          // The execute agent changed a file, so the run reaches the gate.
+          git: {
+            runGitCommand: (args: string[]) =>
+              Promise.resolve({
+                ok: true as const,
+                value: {
+                  code: 0,
+                  stdout: args[0] === "diff" ? "fix.ts\n" : "",
+                  stderr: "",
+                },
+              }),
+          },
+        } as never);
+        assert(failed, "the quality gate must have failed once");
+        assert(invoked.length >= 2, "a later agent must launch");
         assertEquals(result.provider, expected);
         assertEquals(publishedProvider(result), expected);
       } finally {

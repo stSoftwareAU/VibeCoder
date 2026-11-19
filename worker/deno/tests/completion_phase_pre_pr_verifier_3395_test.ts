@@ -18,7 +18,6 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import type { RunOutcome } from "../lib/run_outcome.ts";
 import type { FailureCategory } from "../lib/failure_diagnosis.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
-import { servedRunProvider } from "../lib/run_callback_telemetry.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
@@ -625,44 +624,6 @@ Deno.test(
     );
     assertEquals(recorded.length, 1);
     assertEquals(recorded[0]!.runStats?.wallClockMs, 4321);
-  },
-);
-
-// Issue #5163: the verifier runs on the host's provider whatever the run was
-// pinned to, so its recorded run is review-only and the callback still names
-// the provider that did the implementation work.
-Deno.test(
-  "completion - the verifier run is recorded review-only and does not mix the served provider (Issue #5163)",
-  async () => {
-    const run = {
-      exitCode: 0,
-      output: "",
-      stderr: "",
-      timedOut: false,
-      runStats: {
-        servedModels: [],
-        requestedModel: "verifier-requested-model",
-        wallClockMs: 5163,
-        provider: "claude",
-      },
-    } as unknown as NonNullable<PrePrVerifierResult["run"]>;
-    const outcome = await runCompletion({
-      summary: SUMMARY_CLEAN,
-      verifier: [{ ...checked([]), run } as PrePrVerifierResult],
-    });
-
-    assertEquals(outcome.status, "continue");
-    const recorded = (outcome.claudeRunStats ?? []).filter((e) =>
-      e.runStats?.wallClockMs === 5163
-    );
-    assertEquals(recorded.length, 1);
-    assertEquals(recorded[0]!.reviewOnly, true);
-    // The pinned execute-phase invocation plus the recorded verifier run.
-    const pinned = { runStats: { provider: "deepseek" } };
-    assertEquals(
-      servedRunProvider([pinned, ...(outcome.claudeRunStats ?? [])], "claude"),
-      "deepseek",
-    );
   },
 );
 

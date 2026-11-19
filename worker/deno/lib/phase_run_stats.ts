@@ -82,12 +82,6 @@ export interface PhaseClaudeResult {
    * `recordClaudeRunStats` records each as its own entry beside this result.
    */
   orchestrationCalls?: PhaseClaudeResult[];
-  /**
-   * A review-only pass (the pre-PR verifier) rather than implementation work
-   * (Issue #5163). It runs on the host's configured provider whatever the run
-   * was pinned or rerouted to, so `servedRunProvider` leaves it out.
-   */
-  reviewOnly?: boolean;
 }
 
 /** Post-a-comment callback (decoupled from any specific GitHub client). */

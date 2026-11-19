@@ -485,8 +485,6 @@ function statsEntryOf(result: PhaseClaudeResult): PhaseClaudeResult {
     // Extension telemetry (Issue #4298) — the per-issue stats comment reports
     // how often the re-armable deadline fired.
     ...(result.extensions ? { extensions: result.extensions } : {}),
-    // Issue #5163: a review-only pass is left out of the served provider.
-    ...(result.reviewOnly ? { reviewOnly: true } : {}),
   };
 }
 
@@ -651,11 +649,10 @@ interface WorkOnIssueResultBase {
   tokenEconomizer?: TokenEconomizerRunStats;
   /**
    * Agent provider that served the run (Issue #5163), from
-   * `servedRunProvider` over {@link PhaseState.claudeRunStats}: the host's
-   * configured provider when the run spawned no implementation agent, absent
-   * when its implementation invocations named none or more than one.
-   * Review-only passes such as the pre-PR verifier are left out. Carried to the post-run callback
-   * context.
+   * `servedRunProvider`: the one provider every agent launch through the
+   * runner reported; the host's configured provider when the run launched no
+   * agent; absent when a launch reported none, the launches reported several,
+   * or the run never reported. Carried to the post-run callback context.
    */
   provider?: string;
 }

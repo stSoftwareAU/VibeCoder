@@ -29,11 +29,13 @@ import {
 } from "./lifecycle_recording.ts";
 
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
+import { trackAgentLaunches } from "./agent_launch_tracking.ts";
 import { stopHeartbeat } from "./heartbeat.ts";
 import { detachLaneWorktreeHead } from "./lane_worktree.ts";
 import { startPhaseProgress } from "./phase_progress.ts";
 import { recordStepDuration } from "./cycle_timings.ts";
 import {
+  type AgentLaunch,
   callbackTelemetryAbsenceReason,
   servedRunProvider,
   summariseCallbackTelemetry,
@@ -201,6 +203,9 @@ async function workOnIssueRecorded(
   ctx: IssueContext,
   deps: WorkerDeps,
 ): Promise<WorkOnIssueResult> {
+  // Agent launches the run made, for the served provider (Issue #5163).
+  const launches: AgentLaunch[] = [];
+  const trackedDeps = trackAgentLaunches(deps, launches);
   const startedAtMs = Date.now();
   const state: PhaseState = {
     branchName: "",
@@ -217,7 +222,7 @@ async function workOnIssueRecorded(
   let outcome: RunOutcome | undefined;
   let deferTerminalRelease = false;
   try {
-    let result = await workOnIssueCore(ctx, deps, state);
+    let result = await workOnIssueCore(ctx, trackedDeps, state);
     if (state.repoPath) {
       result = {
         ...result,
@@ -233,7 +238,7 @@ async function workOnIssueRecorded(
     // Preserve a failure already booked by a phase; a later merge must not
     // relabel that recorded decision as an uncharged skip.
     if (state.failureLadderApplied) result = { ...result, ladderApplied: true };
-    result = await reconcileAlreadyLandedFailure(result, ctx, deps);
+    result = await reconcileAlreadyLandedFailure(result, ctx, trackedDeps);
     deferTerminalRelease = ctx.deferTerminalRelease === true &&
       ((!result.success && !result.expectedSkip) ||
         (result.outcome?.kind === "claim_stale" &&
@@ -249,8 +254,8 @@ async function workOnIssueRecorded(
       issueNumber: ctx.issueNumber,
       reapproval: state.postMergeReapproval,
       outcome: result.outcome,
-      ghFn: deps.github.runGhCommand,
-      logger: deps.logger,
+      ghFn: trackedDeps.github.runGhCommand,
+      logger: trackedDeps.logger,
     });
     if (closeNote) {
       state.releaseNotes = [...(state.releaseNotes ?? []), closeNote];
@@ -294,10 +299,7 @@ async function workOnIssueRecorded(
       state.claudeRunStats ?? [],
       ctx.config.agentProvider,
     );
-    const provider = servedRunProvider(
-      state.claudeRunStats ?? [],
-      ctx.config.agentProvider,
-    );
+    const provider = servedRunProvider(launches, ctx.config.agentProvider);
     return {
       ...result,
       outcome,
@@ -366,7 +368,10 @@ async function workOnIssueRecorded(
     // only `HEAD` moves. Best-effort, same as the PR-branch-update lane's
     // detach (Issue #394); the shared clone (no lane id) is left as it is.
     if (ctx.laneId !== undefined && state.repoPath !== "") {
-      await detachLaneWorktreeHead(state.repoPath, deps.git.runGitCommand);
+      await detachLaneWorktreeHead(
+        state.repoPath,
+        trackedDeps.git.runGitCommand,
+      );
     }
   }
 }

@@ -414,9 +414,9 @@ the switched-on host: it is
 plugin-off (sections 2 and 5), so it is left out of the population and counted on
 its own exclusion line. The report shows a per-status breakdown of the population
 (on, fallback, stopped, not-run) and the persisted count. A record
-written since #5163 names the provider that served the run (one whose
-invocations named none or several carries no provider and is excluded with the
-no-provider runs); a record written before #5163 names the host's configured
+written since #5163 names the provider that served the run (one with a
+launch that reported no provider, or launches on several providers, carries no
+provider and is excluded with the no-provider runs); a record written before #5163 names the host's configured
 provider and nothing tells the two apart, so an earlier switch-off control run
 served by another provider cannot be excluded from the archive; the report says
 so.
