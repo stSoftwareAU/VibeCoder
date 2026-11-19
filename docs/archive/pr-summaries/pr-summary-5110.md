@@ -115,6 +115,13 @@ container runs the command, so this is Part of #5110.
 
 ## Evidence
 
+At `2413cf34`, the detector preserves the exit status of short-circuited
+compound conditions. The regression test checks both reported false conditions
+and reachable controls in a workflow step and in a script invoked by Bash.
+A Node harness passed all 53 focused detector tests it ran. For 500 three-command
+conditions combining `&&` and `||`, the scanner disagreed with Bash in 200 cases
+before the fix and agreed in all 500 afterwards.
+
 **Run as `agent` on the head script.** `infra/cloudformation/` was copied to a
 world-readable scratch directory, then run with:
 
@@ -227,7 +234,7 @@ flowchart LR
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts` (disabled and unreachable
   runner invocations, including `true && exit 0` and `false || exit 0` before
   the runner and `bash -n ./test.sh`, in the workflow and in a repository
-  script, each with a credited control) — reviewer: partial then met — reason:
+  script, plus false compound conditions and their reachable controls) — evidence:
   the review at the earlier head found a negated test step accepted and a
   disabled, guaranteed-exit or no-exec runner credited; all are refused at this
   head
