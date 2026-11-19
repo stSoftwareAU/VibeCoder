@@ -40,6 +40,7 @@ import type { SyncClaim } from "./milestone_sync_claim.ts";
 import { validateGitHubMilestonesJson } from "./validation.ts";
 import {
   describeMergeGateCause,
+  isMergeGateCause,
   isMergeGateFailure,
   MERGE_GATE_UNVERIFIED_CAUSES,
   mergeGateFailureCause,
@@ -917,6 +918,14 @@ export const CONFLICT_RESOLVER_DECLINED = "the conflict resolver declined";
 export const MERGE_GATE_REFUSED_TREE = "the merge gate refused the merged tree";
 
 /**
+ * Ledger reason when the gate refused a resolution the worker made. The gate's
+ * cause follows in parentheses when the refusal carried one (Issue #5162); an
+ * older escalation with no cause gives the bare reason.
+ */
+export const MERGE_GATE_REFUSED_RESOLUTION =
+  "the merge gate refused the resolution";
+
+/**
  * Ledger reason when the merge gate could not verify the merged tree (Issue
  * #4847). Verification was unavailable (a timed-out or unrunnable check, an
  * unreadable tree, a toolchain too old for the tree), so this is not a verdict
@@ -1042,7 +1051,11 @@ export function judgeSyncFailure(
     if (error.gateFailure) {
       return {
         outcome: "not-charged",
-        reason: "the merge gate refused the resolution",
+        reason: isMergeGateCause(error.gateCause)
+          ? `${MERGE_GATE_REFUSED_RESOLUTION} (${
+            describeMergeGateCause(error.gateCause)
+          })`
+          : MERGE_GATE_REFUSED_RESOLUTION,
         refusal: true,
       };
     }
@@ -3358,7 +3371,7 @@ export async function syncMilestoneBranches(
             } else if (!agentAllowed && conflictError?.gateFailure) {
               log(
                 `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
-                  `the merge gate refused the resolution; this refusal is ` +
+                  `${judged.reason}; this refusal is ` +
                   `counted toward the roll-back (Issue #4328)`,
               );
             }

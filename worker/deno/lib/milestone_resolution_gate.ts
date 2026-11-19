@@ -53,6 +53,7 @@ import {
   detectRustToolchainGap,
   findProjectManifests,
   isCargoOfflineRegistryGap,
+  type MergeGateCause,
   type MergeGateFn,
   type MergeGateOutcome,
   type ProjectKind,
@@ -268,6 +269,11 @@ export const spawnTask = async (
   return { code, output };
 };
 
+/** A step killed at its time limit is a timeout, not a verdict (Issue #5162). */
+function stepFailureCause(timedOut: boolean | undefined): MergeGateCause {
+  return timedOut ? "check-timed-out" : "tree-check-failed";
+}
+
 /**
  * Verify a tree whose conflicts the worker resolved itself.
  *
@@ -311,6 +317,7 @@ export async function verifyResolvedTree(
         detail: `merged tree '${repoDir}' is not a directory — nothing ` +
           `verified the resolution`,
         output: "",
+        cause: "tree-unreadable",
       };
     }
   } catch (err) {
@@ -319,6 +326,7 @@ export async function verifyResolvedTree(
       detail: `merged tree '${repoDir}' could not be read — nothing verified ` +
         `the resolution`,
       output: tail(err instanceof Error ? err.message : String(err)),
+      cause: "tree-unreadable",
     };
   }
 
@@ -401,6 +409,7 @@ export async function verifyResolvedTree(
             `${RESOLUTION_GATE_BUDGET_MS}ms verification budget — the ` +
             `resolution is unverified, so it is not pushed`,
           output: "",
+          cause: "check-timed-out",
         };
       }
       let result: {
@@ -417,6 +426,7 @@ export async function verifyResolvedTree(
           status: "failed",
           detail: `${where} could not be run`,
           output: tail(err instanceof Error ? err.message : String(err)),
+          cause: "check-could-not-run",
         };
       }
       // The cause the first attempt named when it could not reach the crate
@@ -439,6 +449,7 @@ export async function verifyResolvedTree(
               `${RESOLUTION_GATE_BUDGET_MS}ms verification budget — the ` +
               `resolution is unverified, so it is not pushed`,
             output: "",
+            cause: "check-timed-out",
           };
         }
         try {
@@ -452,6 +463,7 @@ export async function verifyResolvedTree(
             status: "failed",
             detail: `${where} could not be run`,
             output: tail(err instanceof Error ? err.message : String(err)),
+            cause: "check-could-not-run",
           };
         }
         // Still no registry after the offline retry: the step is left to CI,
@@ -508,12 +520,14 @@ export async function verifyResolvedTree(
             detail: describeRustToolchainGap(where, result.code, gap),
             output: tail(result.output),
             toolchainGap: gap,
+            cause: "rust-toolchain-too-old",
           };
         }
         return {
           status: "failed",
           detail: `${where} failed (exit ${result.code})`,
           output: tail(result.output),
+          cause: stepFailureCause(result.timedOut),
         };
       }
       // A step that passed only on the offline retry says so (Issue #4786).
@@ -555,9 +569,15 @@ export async function verifyResolvedTree(
           `${RESOLUTION_GATE_BUDGET_MS}ms verification budget — the ` +
           `resolution is unverified, so it is not pushed`,
         output: "",
+        cause: "check-timed-out",
       };
     }
-    let result: { code: number; output: string; accountUnavailable?: string };
+    let result: {
+      code: number;
+      output: string;
+      accountUnavailable?: string;
+      timedOut?: boolean;
+    };
     try {
       result = await runner({ ...step, timeoutMs });
     } catch (err) {
@@ -565,6 +585,7 @@ export async function verifyResolvedTree(
         status: "failed",
         detail: `${where} could not be run`,
         output: tail(err instanceof Error ? err.message : String(err)),
+        cause: "check-could-not-run",
       };
     }
     if (result.accountUnavailable) {
@@ -575,6 +596,7 @@ export async function verifyResolvedTree(
         status: "failed",
         detail: `${where} failed (exit ${result.code})`,
         output: tail(result.output),
+        cause: stepFailureCause(result.timedOut),
       };
     }
     if (!result.accountUnavailable) {
