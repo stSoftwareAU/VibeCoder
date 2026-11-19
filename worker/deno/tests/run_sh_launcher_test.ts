@@ -44,6 +44,7 @@ import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { formatReleaseNotice } from "../lib/release_notice.ts";
+import { parseHardKillEvidence } from "../lib/hard_kill_report.ts";
 import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import {
   HOST_DISK_REFRESH_FILE,
@@ -617,6 +618,20 @@ async function hardKillRecords(dir: string, prefix: string): Promise<string[]> {
   return found.sort();
 }
 
+/** True while the stub runtime still holds the container (Issue #5161). */
+async function containerExists(
+  harness: { recordDir: string },
+  name: string,
+): Promise<boolean> {
+  try {
+    await Deno.stat(`${harness.recordDir}/containers/${name}`);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
 Deno.test("run.sh - reaps a container that outlives the watchdog deadline", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
@@ -710,6 +725,271 @@ Deno.test("run.sh - reaps a container that outlives the watchdog deadline", asyn
       text.includes(WEDGE_LOG_TOKEN),
       false,
       "the hard-kill record must not carry the worker's token",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - reaps a silent guest that stops answering before the watchdog deadline (Issue #5161)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "900",
+    STUB_EXEC_EXIT: "1",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "120",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "1",
+    VIBE_GUEST_SILENCE_SECONDS: "1",
+  });
+  try {
+    await Deno.mkdir(harness.logDir, { recursive: true });
+    const log = `${harness.logDir}/worker-1.log`;
+    await Deno.writeTextFile(log, "last line before the guest wedged\n");
+    const past = new Date(Date.now() - 10 * 60 * 1000);
+    await Deno.utime(log, past, past);
+
+    const outcome = await runLauncher(harness);
+    assertEquals(
+      outcome.code,
+      CONTAINER_WEDGED_EXIT_STATUS,
+      outcome.stderr,
+    );
+    assertStringIncludes(outcome.stderr, "stopped answering");
+
+    const args = await recorded(harness, "run");
+    assert(args, "the container never started");
+    const name = args[args.indexOf("--name") + 1]!;
+    assertEquals(
+      await containerExists(harness, name),
+      false,
+      `the silent guest is still in the runtime's table: ${outcome.stderr}`,
+    );
+
+    // The deadline path writes a different reason, so this proves the early
+    // path did the reaping.
+    const records = await hardKillRecords(
+      harness.logDir,
+      `hard-kill-${name}-`,
+    );
+    assertEquals(records.length, 1, outcome.stderr);
+    const evidence: Record<string, unknown> = JSON.parse(
+      await Deno.readTextFile(records[0]!),
+    );
+    assert(
+      /^the launcher's watchdog found the guest silent for \d+s and not answering$/
+        .test(String(evidence.reason)),
+      `unexpected reason: ${String(evidence.reason)}`,
+    );
+    assertEquals(evidence.trigger, "watchdog");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - an early reap cut short by the deadline is finished, not trusted (Issue #5161)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "900",
+    STUB_EXEC_EXIT: "1",
+    // The first evidence read stalls past the early command's remaining-deadline
+    // bound; the probes fail at once, so the reap is already authorised.
+    STUB_LOGS_FIRST_SLEEP: "30",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "8",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "1",
+    VIBE_GUEST_SILENCE_SECONDS: "1",
+  });
+  try {
+    await Deno.mkdir(harness.logDir, { recursive: true });
+    const log = `${harness.logDir}/worker-1.log`;
+    await Deno.writeTextFile(log, "last line before the guest wedged\n");
+    const past = new Date(Date.now() - 10 * 60 * 1000);
+    await Deno.utime(log, past, past);
+
+    const outcome = await runLauncher(harness);
+    assertEquals(
+      outcome.code,
+      CONTAINER_WEDGED_EXIT_STATUS,
+      outcome.stderr,
+    );
+    assertStringIncludes(outcome.stderr, "before it finished");
+
+    const args = await recorded(harness, "run");
+    assert(args, "the container never started");
+    const name = args[args.indexOf("--name") + 1]!;
+    assertEquals(
+      await containerExists(harness, name),
+      false,
+      `the interrupted early reap left the container standing: ${outcome.stderr}`,
+    );
+
+    // The reap that finished the job wrote the only evidence record: the
+    // interrupted early command died inside its capture, before writing one.
+    const records = await hardKillRecords(
+      harness.logDir,
+      `hard-kill-${name}-`,
+    );
+    assertEquals(records.length, 1, outcome.stderr);
+    const evidence: Record<string, unknown> = JSON.parse(
+      await Deno.readTextFile(records[0]!),
+    );
+    assert(
+      /^the launcher's early silent-guest reap exited \d+ before it finished$/
+        .test(String(evidence.reason)),
+      `unexpected reason: ${String(evidence.reason)}`,
+    );
+    // The hard-kill report must be able to read the record, or it is kept
+    // for ever and never filed (PR #5266 review).
+    const parsed = parseHardKillEvidence(await Deno.readTextFile(records[0]!));
+    assertEquals(parsed.trigger, "watchdog");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - interrupted reap finishes helper cleanup after client death (Issue #5161)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "900",
+    STUB_EXEC_EXIT: "1",
+    STUB_KILL_FIRST_EXIT: "1",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "8",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "1",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "1",
+    VIBE_GUEST_SILENCE_SECONDS: "1",
+  });
+  const helper = new Deno.Command("sleep", {
+    args: ["900"],
+    stdin: "null",
+    stdout: "null",
+    stderr: "null",
+  }).spawn();
+  const helperStatus = helper.status;
+  try {
+    // Only the process-table boundary is simulated. The real reaper kills the
+    // attached client, stalls while discovering the helper, then must resume
+    // cleanup in the launcher's completing reap. Never expose real host PIDs.
+    await Deno.writeTextFile(
+      `${harness.tmpDir}/bin/ps`,
+      `#!/bin/bash
+set -eu
+r="$VIBE_STUB_RECORD"
+[[ -f "$r/run.pid" ]] || exit 0
+runtime=$(cat "$r/runtime.path")
+if [[ ! -f "$r/helper-name" ]]; then
+  for state in "$r"/containers/*; do
+    [[ -f "$state" ]] || continue
+    basename "$state" > "$r/helper-name"
+  done
+fi
+client=$(cat "$r/run.pid")
+if ! kill -0 "$client" 2>/dev/null && [[ ! -e "$r/scan-interrupted" ]]; then
+  : > "$r/scan-interrupted"
+  sleep 30 >/dev/null 2>&1
+fi
+[[ -f "$r/helper-name" ]] || exit 0
+printf '%s %s-helper --name %s\n' '${helper.pid}' "$runtime" "$(cat "$r/helper-name")"
+`,
+    );
+    await Deno.chmod(`${harness.tmpDir}/bin/ps`, 0o755);
+    await Deno.mkdir(harness.logDir, { recursive: true });
+    const log = `${harness.logDir}/worker-1.log`;
+    await Deno.writeTextFile(log, "last line before the guest wedged\n");
+    const past = new Date(Date.now() - 10 * 60 * 1000);
+    await Deno.utime(log, past, past);
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, CONTAINER_WEDGED_EXIT_STATUS, outcome.stderr);
+    await Deno.stat(`${harness.recordDir}/scan-interrupted`);
+    const args = await recorded(harness, "run");
+    assert(args);
+    const name = args[args.indexOf("--name") + 1]!;
+    assertEquals(await containerExists(harness, name), false, outcome.stderr);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const status = await Promise.race([
+        helperStatus,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("helper survived cleanup")),
+            1000,
+          );
+        }),
+      ]);
+      assertEquals(status.signal, "SIGKILL", outcome.stderr);
+    } finally {
+      clearTimeout(timer);
+    }
+  } finally {
+    try {
+      helper.kill("SIGKILL");
+    } catch { /* already reaped */ }
+    await helperStatus;
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a silent guest that still answers is left to the deadline (Issue #5161)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "900",
+    STUB_KILL_EXIT: "1",
+    STUB_EXEC_EXIT: "0",
+    STUB_EXEC_SLEEP: "2",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "6",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "1",
+    VIBE_GUEST_SILENCE_SECONDS: "1",
+  });
+  try {
+    await Deno.mkdir(harness.logDir, { recursive: true });
+    const log = `${harness.logDir}/worker-1.log`;
+    await Deno.writeTextFile(log, "last line before the silence\n");
+    const past = new Date(Date.now() - 10 * 60 * 1000);
+    await Deno.utime(log, past, past);
+
+    const outcome = await runLauncher(harness);
+    assertEquals(
+      outcome.code,
+      CONTAINER_WEDGED_EXIT_STATUS,
+      outcome.stderr,
+    );
+    assertEquals(
+      outcome.stderr.includes("stopped answering"),
+      false,
+      "an answering guest must not be reaped early",
+    );
+    assertStringIncludes(
+      outcome.stderr,
+      "without reaping",
+      "the early check was cut short and said so",
+    );
+
+    const args = await recorded(harness, "run");
+    assert(args, "the container never started");
+    const name = args[args.indexOf("--name") + 1]!;
+    const records = await hardKillRecords(
+      harness.logDir,
+      `hard-kill-${name}-`,
+    );
+    assertEquals(records.length, 1, outcome.stderr);
+    const evidence: Record<string, unknown> = JSON.parse(
+      await Deno.readTextFile(records[0]!),
+    );
+    const runtimeStarted = Number(
+      await Deno.readTextFile(`${harness.recordDir}/run.started`),
+    );
+    const reapStarted = Date.parse(String(evidence.capturedAt)) / 1000;
+    assert(
+      reapStarted - runtimeStarted < 10,
+      "slow probes extended the six-second watchdog deadline",
+    );
+    assertEquals(
+      evidence.reason,
+      "the launcher's 6s watchdog deadline expired",
     );
   } finally {
     await harness.cleanup();

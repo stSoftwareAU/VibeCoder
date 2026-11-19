@@ -396,14 +396,17 @@ Deno.test("Issue #5105 - the registered build probe returns low during one slow 
   const first = parkRunningBuild();
   try {
     await started.promise;
-    // A task turn lets ready promises settle, without completing the scan.
-    // This tests ordering, not elapsed time on a loaded host.
+    // The scan never completes here, so a probe blocked on it never settles.
+    // The guard only bounds that hang: a single zero-delay task turn lost the
+    // race on a loaded parallel pass (Issue #5161 pre-push gate).
+    let guard: ReturnType<typeof setTimeout> | undefined;
     const verdict = await Promise.race([
       first,
-      new Promise<"blocked on scan">((resolve) =>
-        setTimeout(() => resolve("blocked on scan"), 0)
-      ),
+      new Promise<"blocked on scan">((resolve) => {
+        guard = setTimeout(() => resolve("blocked on scan"), 10_000);
+      }),
     ]);
+    clearTimeout(guard);
     assertStringIncludes(verdict ?? "", "host disk below its floor");
     now = 120_000; // Even a scan longer than the interval must not overlap.
     assertStringIncludes(
