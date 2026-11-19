@@ -234,7 +234,7 @@ never inspects `cargo install`.
 
 ## Test Plan
 
-- Added `worker/deno/tests/renovate_release_age_test.ts`, 42 tests at head
+- Added `worker/deno/tests/renovate_release_age_test.ts`, 43 tests at head
   covering:
   - the five fixtures;
   - the first-party matcher, accepted and refused;
@@ -291,7 +291,7 @@ never inspects `cargo install`.
   - the security-scan prompt and `docs/SECURITY-SCAN.md`, both updated; both
     previously accepted `stabilityDays` as a legacy alias and now say the gate
     refuses it, as `docs/SUPPLY-CHAIN-GATE.md` does.
-- Results on the final head:
+- Results before the subsequent review fixes:
   - `deno task test tests/renovate_release_age_test.ts tests/supply_chain_gate_test.ts tests/renovate_config_test.ts tests/deno_minimum_dependency_age_test.ts`:
     103 passed, 0 failed.
   - `tests/semgrep_check_test.ts`: 31 passed.
@@ -303,6 +303,21 @@ never inspects `cargo install`.
     network: "dns error: failed to lookup address information" fetching
     `commonmark`/`entities` from registry.npmjs.org;
   - this diff does not touch that test.
+
+## Review fixes and current validation
+
+The matcher also rejects parent-directory glob segments and rule-level
+`extends`. Those constructs can widen an apparently first-party rule to
+external packages. The added regression exercises five parent-glob variants
+and a preset expansion through `evaluateRenovatePolicy`, beside an accepted
+`stSoftwareAU/**` control. The latest code commit only formats this test.
+
+For code head `77a8d474`, Quality run 44413742381 passed all four unit-test
+shards, launcher tests with and without a container runtime, integration tests,
+supply-chain validation, formatting, lint, type checking and security scans.
+Its only underlying failure was summary freshness: this file still described
+the older test set. This update corrects that count and records the added
+coverage. No production code or test is changed by this summary update.
 
 ## Not done / not checked
 
