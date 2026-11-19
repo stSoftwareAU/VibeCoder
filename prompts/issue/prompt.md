@@ -558,10 +558,15 @@ prompt defines:
 - **Waiting for data that cannot exist yet:** the `vibe-defer-until` marker.
 - **Several independent PRs:** the planning marker below.
 
-Anything else — the remaining work is on another branch, in another repository
-you can reach, or bigger than you hoped — is work to do in this run. Bring the
-change you need onto this branch, fix an internal dependency through the
-cross-repo path in the guidelines, and keep going.
+Anything else — the remaining work is on another branch, in an internal
+dependency this repo's own manifest declares on its default branch and you can
+clone and push, or bigger than you hoped — is work to do in this run. Bring the
+change you need onto this branch, fix that dependency through the cross-repo
+path in the guidelines, and keep going. Work in a `stSoftwareAU/*` repo this
+repo's manifests do not declare, such as one a script checks out, is not on that
+path: follow the guidelines' undeclared-repo rule — push nothing there, do this
+repo's part, link or name the owning repository's work, and record the rest as
+`partial` or `missing`.
 
 ### Too large for one PR → emit the planning marker, and the worker plans it
 
