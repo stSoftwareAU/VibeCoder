@@ -785,13 +785,16 @@ separate.
   readings too. A ratio between two timings is still a timing threshold: a
   loaded host skews the two readings differently, and a ratio assertion has
   gone red reading 30 ms against 355 ms for work that is linear.
-- **Guard super-linear cost by output, then by counted work.** First assert
-  what the code **produces** on the hostile input: catastrophic backtracking
-  on an input of real size never returns, so the case hangs on every host.
-  When the output cannot tell the two apart, count **deterministic work**
-  through an injected observer or counter (steps, comparisons, nodes visited)
-  at size N and 4N and assert the count grows linearly — the count is the
-  same on every host under every load. Timing comparisons belong in the
+- **Guard super-linear cost by output, then by counted work.** Catastrophic
+  backtracking on an input of real size never returns, so for that cost first
+  assert what the code **produces** on the hostile input: on the unfixed code
+  the case hangs on every host. A polynomial cost, such as a quadratic rescan
+  or lookup, still returns the same output in seconds at any size a unit test
+  builds, so an output-only test passes on the unfixed code. There, and
+  wherever else the output cannot tell the two apart, count **deterministic
+  work** through an injected observer or counter (steps, comparisons, nodes
+  visited) at size N and 4N and assert the count grows linearly — the count is
+  the same on every host under every load. Timing comparisons belong in the
   repository's benchmark harness. A wall-clock ratio inside a unit test is a
   last resort, used only where the repository's own standard explicitly
   allows ratio tests and neither the output nor a work count distinguishes
@@ -817,12 +820,12 @@ separate.
   hostile case per pattern: a long run of the shared character followed by a
   character the pattern rejects. A parser with several patterns needs a case for
   each. Each case asserts the pattern's result on an input long enough that
-  catastrophic backtracking never returns, so it hangs on every host, or a
-  deterministic step count: guard super-linear cost by output, then by counted
-  work, as the timing bullets above say. It is not a wall-clock ratio where the
-  repository's own testing standard keeps timing out of unit tests.
-  Capping one pattern and leaving its sibling in the same file with the same
-  defect is the usual miss.
+  catastrophic backtracking never returns, so it hangs on every host, or,
+  where the cost is polynomial and still returns, a deterministic step count:
+  guard super-linear cost by output, then by counted work, as the timing bullets
+  above say. It is not a wall-clock ratio where the repository's own testing
+  standard keeps timing out of unit tests. Capping one pattern and leaving its
+  sibling in the same file with the same defect is the usual miss.
 - **Keep iteration counts honest** — do not shrink them to make a "performance
   test" fit inside a unit test. Write a proper benchmark and report the results
   in the PR summary as indicative evidence (see **Performance Task Workflow**).
@@ -1598,21 +1601,14 @@ behaviour tests and a visual check. Name the relevant coverage in the Test
 Plan; a missing safety net for changed behaviour is a blocking self-review
 finding. Do not revert every caller or run automatic mutation checks.
 
-**A new argument or behaviour reaches every caller that needs it.** When a
-change adds a parameter, value or behaviour that the linked issue needs on
-every path (every caller of a shared function, every sibling outcome a router
-dispatches, every entry point that builds the value), list every caller and
-sibling first: grep for the function's name, and read the router's other
-arms. Then either pass the new value on each one or state in the PR summary
-why that caller does not need it. Do not give a behaviour-carrying parameter
-a default that silently turns the behaviour off (`= ""`, `= false`, `None`);
-make it required, so the compiler or type checker names each caller you
-missed. A caller that hard-codes the old value (`Scheduled`, `""`, `false`)
-where the new one belongs is a blocking self-review finding, and so is a test
-that hands the new value straight to the helper while no production caller
-passes it. Review the affected callers even when their wiring is outside
-the diff; an unchanged caller can still need the new behaviour. List the callers and siblings checked in the PR summary
-(Issue #3253).
+**A new argument or behaviour reaches every caller that needs it.** Carry
+behaviour required by the issue through affected production callers and
+constructors, including recovery paths. Required behaviour inputs should be
+explicit in the type rather than silently disabled by an omitted parameter or
+field. Where absence is intentional, preserve that contract. Judge the affected
+entry points by their observable behaviour under **Every changed call site
+needs a test that goes red without it** above; direct helper coverage alone
+does not establish production wiring (Issues #3253, #5205).
 
 **A new case re-reads the text it now reaches.** When a change sends a new
 case to text that already exists — a widened condition, a new arm or allowed

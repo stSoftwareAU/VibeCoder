@@ -45,14 +45,14 @@
  * non-Markdown docs still gets no model pass.
  *
  * Issue #3740 found that a Test Plan figure the recount cannot check
- * (`findUncheckedRunResults`) was only logged, so a review-fix push could leave
- * an unverifiable figure in the summary and nothing would report it. Such a
- * figure is now a hit like the others: it is fenced into the one recovery turn,
- * which is asked to re-run the tests and restate the figure in a checkable form
- * or remove it, and it is reported in the residual if it survives. A partial
- * addition such as "Added 5 tests to `tests/a_test.ts`" is one such figure: the
- * recount never compares it with the file, so it is reported unchecked
- * (Issue #3983).
+ * (`findUncheckedRunResults`) was only logged, so #3740 made such a figure a
+ * hit that drove the one recovery turn. Issue #5223 retired that trigger: an
+ * unchecked figure is a limit of the recount, not evidence it is false, so it
+ * is logged and reported in the residual as unverified but never starts the
+ * recovery turn on its own, and the recovery prompt no longer lists it or asks
+ * for reruns to restate it. A partial addition such as "Added 5 tests to
+ * `tests/a_test.ts`" is one such figure: the recount never compares it with
+ * the file, so it is reported unchecked (Issue #3983).
  *
  * ```mermaid
  * flowchart TD
@@ -67,6 +67,7 @@
  *     F --> H
  *     G --> H
  *     H -- no --> I["clean"]
+ *     H -- "only unverified:<br/>unchecked figures<br/>or no verdict" --> N
  *     H -- yes --> J["One recovery turn<br/>(full tools)"]
  *     J --> K["Re-check findings,<br/>re-run deterministic checks"]
  *     K --> L{"Anything left?"}
@@ -503,8 +504,6 @@ export function buildDriftRecoveryPrompt(opts: {
   docsSweepProblems: readonly string[];
   staleQuotes?: readonly string[];
   staleCitations?: readonly string[];
-  /** Test Plan figures the recount could not check (Issue #3740). */
-  uncheckedFigures?: readonly string[];
   boundaryId?: string;
 }): string {
   const boundaryId = isBoundaryId(opts.boundaryId)
@@ -542,20 +541,6 @@ export function buildDriftRecoveryPrompt(opts: {
     );
     lines.push("");
     blocks.push("the Test Plan mismatches");
-  }
-
-  const uncheckedFigures = opts.uncheckedFigures ?? [];
-  if (uncheckedFigures.length > 0) {
-    const body = uncheckedFigures.map((u) => `- ${u}`).join("\n");
-    lines.push(
-      ...fenceUntrustedIssueText(
-        body,
-        "Test Plan figures the recount could not check:",
-        boundaryId,
-      ),
-    );
-    lines.push("");
-    blocks.push("the Test Plan figures the recount could not check");
   }
 
   if (opts.docsSweepProblems.length > 0) {
@@ -609,14 +594,6 @@ export function buildDriftRecoveryPrompt(opts: {
     steps.push(
       "Recount the Test Plan from the head: re-derive the counts the " +
         "summary quotes and fix any that disagree.",
-    );
-  }
-  if (uncheckedFigures.length > 0) {
-    steps.push(
-      "For each listed Test Plan figure the recount could not check, re-run " +
-        "the tests it names on the head and restate the figure in a " +
-        "checkable form, such as `<file>` (N tests at head) for a single " +
-        "test file, or remove it.",
     );
   }
   if (opts.docsSweepProblems.length > 0) {
@@ -686,7 +663,9 @@ export interface DriftResidual {
   /**
    * Test Plan figures the recount could not check, each as
    * `${path}: ${reason} — "${line}"` (Issue #3740). Reported as its own group,
-   * not as a drift hit in the "found text…" intro.
+   * not as a drift hit in the "found text…" intro. They are unverified, not
+   * found false, so on their own they never start the recovery turn
+   * (Issue #5223).
    */
   testPlanUnchecked?: string[];
   /** Set when the model pass returned no usable verdict at all. */
@@ -1014,7 +993,8 @@ async function computeHeadCounts(
  * The deterministic checks' problems, given the current summaries and head
  * counts. `testPlanUnchecked` lists the Test Plan figures the recount could not
  * check (Issue #3740), each as `${path}: ${reason} — "${line}"`; the recount
- * already bounds `line` to 300 characters.
+ * already bounds `line` to 300 characters. They keep a run from being `clean`
+ * and go to the residual, but never start the recovery turn (Issue #5223).
  */
 function collect(
   summaries: readonly LoadedSummary[],
@@ -1266,8 +1246,9 @@ export async function runPrFeedbackDriftCheck(
   const headCounts = await computeHeadCounts(repoPath, prFiles);
   const initialChecks = collect(summaries, headCounts);
   // A figure the recount cannot check is reported, not passed silently
-  // (Issue #3381), and is a drift hit that drives the recovery turn and the
-  // residual (Issue #3740, `collect`). The warning is kept as it was.
+  // (Issue #3381): it is logged here and listed in the residual as unverified
+  // (Issue #3740, `collect`), but never starts the recovery turn on its own
+  // (Issue #5223).
   for (const s of summaries) {
     const unchecked = findUncheckedRunResults({
       summary: s.content,
@@ -1454,13 +1435,15 @@ export async function runPrFeedbackDriftCheck(
   // One recovery turn, only when there is a genuine hit to recover from.
   // An unchecked (unreadable) named summary is reported but never drives
   // this turn on its own (Issue #3244) — there is nothing a recovery turn
-  // could fix about a file this check could not even read.
+  // could fix about a file this check could not even read. A Test Plan figure
+  // the recount could not check does not drive the turn on its own either
+  // (Issue #5223): it is a limit of the recount, not evidence the figure is
+  // false, so it goes to the residual as unverified.
   let recoveryRan = false;
   if (
     findingsWithStatus.length > 0 ||
     initialChecks.mismatches.length > 0 ||
     initialChecks.docsSweepProblems.length > 0 ||
-    initialChecks.testPlanUnchecked.length > 0 ||
     initialStaleQuotes.stale.length > 0
   ) {
     logger.warn(
@@ -1482,7 +1465,6 @@ export async function runPrFeedbackDriftCheck(
         findings: findingsWithStatus.map((f) => f.finding),
         mismatches: initialChecks.mismatches,
         docsSweepProblems: initialChecks.docsSweepProblems,
-        uncheckedFigures: initialChecks.testPlanUnchecked,
         staleQuotes: initialStaleQuotes.stale,
       }),
       readOnly: false,

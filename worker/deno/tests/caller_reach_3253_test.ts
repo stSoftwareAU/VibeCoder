@@ -7,11 +7,15 @@
  * passed; GRQ-AutoTrader#2282 added `RunOrigin` but every production caller
  * hard-coded `RunOrigin::Scheduled`; and VibeCoder#3095 fixed two of three
  * declared hand-off outcomes and left `handOffToPlanning` unchanged.
- * CODING-STANDARDS.md and the coding_guidelines prompt must both carry the
- * same "a new argument or behaviour reaches every caller that needs it"
- * rule, inside the test-coverage section, word for word once wrapping is
- * ignored; and the issue prompt's Test Plan step must require listing every
- * caller and sibling route checked.
+ * Issue #5205 replaced the long caller-inventory and PR-summary caller-list
+ * obligations with a shorter rule: behaviour the issue requires is carried
+ * through affected production callers, constructors and recovery paths;
+ * required behaviour inputs are explicit in the type; and the entry points are
+ * judged by their observable behaviour. CODING-STANDARDS.md and the
+ * coding_guidelines prompt must both carry that rule, inside the test-coverage
+ * section, word for word once wrapping is ignored; the issue prompt's Test
+ * Plan step must carry the same wording. This test pins that wording and the
+ * retirement of the caller list on all three surfaces.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -40,17 +44,20 @@ function callerReachParagraph(
 }
 
 const KEY_PHRASES = [
+  "through affected production callers and constructors, including recovery paths",
+  "explicit in the type rather than silently disabled by an omitted parameter or field",
+  "Where absence is intentional, preserve that contract",
+  "Every changed call site needs a test that goes red without it",
+  "direct helper coverage alone does not establish production wiring",
+];
+
+const RETIRED_PHRASES = [
   "list every caller and sibling first",
-  "every sibling outcome a router dispatches",
   "state in the PR summary why that caller does not need it",
-  "a default that silently turns the behaviour off",
-  "so the compiler or type checker names each caller you missed",
-  "hard-codes the old value",
-  "while no production caller passes it",
   "List the callers and siblings checked in the PR summary",
 ];
 
-Deno.test("both surfaces carry the caller-reach rule (Issue #3253)", async () => {
+Deno.test("both surfaces carry the caller-reach rule (Issues #3253, #5205)", async () => {
   const standards = section(
     await readRepoDoc("CODING-STANDARDS.md"),
     "Test coverage expectations",
@@ -73,6 +80,12 @@ Deno.test("both surfaces carry the caller-reach rule (Issue #3253)", async () =>
         `${surface} is missing "${phrase}" from the caller-reach rule: ${paragraph}`,
       );
     }
+    for (const phrase of RETIRED_PHRASES) {
+      assert(
+        !paragraph.includes(phrase),
+        `${surface} still carries the retired "${phrase}": ${paragraph}`,
+      );
+    }
   }
 
   assertEquals(
@@ -82,19 +95,31 @@ Deno.test("both surfaces carry the caller-reach rule (Issue #3253)", async () =>
   );
 });
 
-Deno.test("issue prompt Test Plan step requires listing callers and siblings checked (Issue #3253)", async () => {
+Deno.test("issue prompt Test Plan step carries the short caller-reach rule and retires the caller list (Issue #5205)", async () => {
   const text = flat(
     section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
   );
 
-  assert(
-    text.includes("reaches every caller and sibling route that needs it"),
-    `PR Summary File section is missing the caller-reach requirement: ${text}`,
-  );
-  assert(
-    text.includes(
-      "a caller left on the old hard-coded value is a blocking self-review finding",
-    ),
-    `PR Summary File section is missing the hard-coded-caller finding: ${text}`,
-  );
+  for (
+    const phrase of [
+      "reaches the affected production callers and constructors, including recovery paths",
+      "not by direct helper coverage alone",
+    ]
+  ) {
+    assert(
+      text.includes(phrase),
+      `PR Summary File section is missing "${phrase}": ${text}`,
+    );
+  }
+  for (
+    const phrase of [
+      "list the callers and siblings checked",
+      "reaches every caller and sibling route that needs it",
+    ]
+  ) {
+    assert(
+      !text.includes(phrase),
+      `PR Summary File section still carries the retired "${phrase}": ${text}`,
+    );
+  }
 });

@@ -48,7 +48,6 @@ const recovery = {
   docsSweep: makeCanary("RecoveryDocsSweep"),
   staleQuote: makeCanary("RecoveryStaleQuote"),
   staleCitation: makeCanary("RecoveryStaleCitation"),
-  uncheckedFigure: makeCanary("RecoveryUncheckedFigure"),
 };
 const rebase = {
   branch: makeCanary("RebaseBranch"),
@@ -125,7 +124,6 @@ const rows: FenceCoverageRow[] = [
         docsSweepProblems: [recovery.docsSweep],
         staleQuotes: [recovery.staleQuote],
         staleCitations: [recovery.staleCitation],
-        uncheckedFigures: [recovery.uncheckedFigure],
         boundaryId: BOUNDARY_ID,
       }),
   },
