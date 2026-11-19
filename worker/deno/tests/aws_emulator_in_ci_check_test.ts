@@ -16,6 +16,7 @@ import {
   checkAwsEmulatorInCI,
   isCfnTemplate,
   isFlociImage,
+  makeRepoScriptReader,
   packageJsonUsesAws,
   pomXmlUsesAws,
   requirementsUsesAws,
@@ -741,12 +742,34 @@ Deno.test("workflowRunsFloci - no jobs does not throw and returns false", () => 
 // Official AWS Emulator (Issue #5110) — workflowRunsAwsEmulator
 // ---------------------------------------------------------------------------
 
-Deno.test("workflowRunsAwsEmulator - step runs pinned install fragment via sudo env", () => {
+Deno.test("workflowRunsAwsEmulator - pinned install fragment alone does not count", () => {
   const doc = parseYaml(
     `jobs:
   test:
     steps:
       - run: sudo env X=1 bash container/toolchains/aws-emulator.sh
+      - run: container/toolchains/aws-emulator.sh
+`,
+  );
+  assertEquals(workflowRunsAwsEmulator(doc), false);
+  // Even with a reader, the install fragment contains no aws-emulator-run
+  // invocation in command position.
+  assertEquals(
+    workflowRunsAwsEmulator(
+      doc,
+      () =>
+        "install -m 0755 container/aws-emulator-run.sh /usr/local/bin/aws-emulator-run\n",
+    ),
+    false,
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - exec and env prefixes before aws-emulator-run count", () => {
+  const doc = parseYaml(
+    `jobs:
+  test:
+    steps:
+      - run: exec aws-emulator-run --timeout 900 -- ./t.sh
 `,
   );
   assert(workflowRunsAwsEmulator(doc));
@@ -774,11 +797,16 @@ Deno.test("workflowRunsAwsEmulator - path ending in aws-emulator-run in command 
   assert(workflowRunsAwsEmulator(doc));
 });
 
-Deno.test("workflowRunsAwsEmulator - real .github/workflows/aws-emulator.yml counts", async () => {
+Deno.test("workflowRunsAwsEmulator - real .github/workflows/aws-emulator.yml counts via the repo script", async () => {
   const text = await Deno.readTextFile(
     new URL("../../../.github/workflows/aws-emulator.yml", import.meta.url),
   );
-  assert(workflowRunsAwsEmulator(parseYaml(text)));
+  const repoRoot = new URL("../../../", import.meta.url).pathname;
+  assert(
+    workflowRunsAwsEmulator(parseYaml(text), makeRepoScriptReader(repoRoot)),
+  );
+  // Without the script the install steps alone are not coverage.
+  assertEquals(workflowRunsAwsEmulator(parseYaml(text)), false);
 });
 
 Deno.test("workflowRunsAwsEmulator - echo aws-emulator-run does not count", () => {
@@ -840,6 +868,14 @@ Resources:
       new URL("../../../" + workflowPath, import.meta.url),
     );
     await writeFile(root, workflowPath, workflowText);
+    const scriptPath = "infra/cloudformation/test-aws-emulator.sh";
+    await writeFile(
+      root,
+      scriptPath,
+      await Deno.readTextFile(
+        new URL("../../../" + scriptPath, import.meta.url),
+      ),
+    );
 
     const withWorkflow = await checkAwsEmulatorInCI(root);
     assertEquals(withWorkflow.usesAws, true);
@@ -849,6 +885,200 @@ Resources:
     const withoutWorkflow = await checkAwsEmulatorInCI(root);
     assertEquals(withoutWorkflow.usesAws, true);
     assertEquals(withoutWorkflow.emulatorConfigured, false);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Emulator coverage must be an actual test invocation (Issue #5110 review)
+// ---------------------------------------------------------------------------
+
+const CFN_TEMPLATE = `AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+`;
+
+const RUNNER_SCRIPT = `#!/usr/bin/env bash
+set -euo pipefail
+if [[ -z "\${AWS_EMULATOR_ACTIVE:-}" ]]; then
+    exec aws-emulator-run --timeout 900 -- "\${SCRIPT_SELF}" "$@"
+fi
+`;
+
+function workflowWithRun(run: string): string {
+  return `jobs:
+  test:
+    steps:
+      - run: ${run}
+`;
+}
+
+async function setupAwsRepo(
+  root: string,
+  run: string,
+): Promise<void> {
+  await writeFile(root, "infra/cloudformation/host.yaml", CFN_TEMPLATE);
+  await writeFile(root, ".github/workflows/ci.yml", workflowWithRun(run));
+}
+
+Deno.test("checkAwsEmulatorInCI - install-only workflow is not emulator coverage", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "infra/cloudformation/host.yaml", CFN_TEMPLATE);
+    await writeFile(
+      root,
+      ".github/workflows/ci.yml",
+      `jobs:
+  test:
+    steps:
+      - run: |
+          sudo env AWS_EMULATOR_VERSION=1 \\
+            bash container/toolchains/aws-emulator.sh
+          sudo install -m 0755 container/aws-emulator-run.sh /usr/local/bin/aws-emulator-run
+`,
+    );
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.usesAws, true);
+    assertEquals(result.emulatorConfigured, false);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - ./script that execs aws-emulator-run counts", async () => {
+  const root = await makeTempRepo();
+  try {
+    await setupAwsRepo(root, "./infra/cloudformation/test-aws-emulator.sh");
+    await writeFile(
+      root,
+      "infra/cloudformation/test-aws-emulator.sh",
+      RUNNER_SCRIPT,
+    );
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.emulatorConfigured, true);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - bash script that execs aws-emulator-run counts", async () => {
+  const root = await makeTempRepo();
+  try {
+    await setupAwsRepo(root, "bash infra/cloudformation/test-aws-emulator.sh");
+    await writeFile(
+      root,
+      "infra/cloudformation/test-aws-emulator.sh",
+      RUNNER_SCRIPT,
+    );
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.emulatorConfigured, true);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - script that only checks for aws-emulator-run does not count", async () => {
+  const root = await makeTempRepo();
+  try {
+    await setupAwsRepo(root, "./infra/cloudformation/test-aws-emulator.sh");
+    await writeFile(
+      root,
+      "infra/cloudformation/test-aws-emulator.sh",
+      `#!/usr/bin/env bash
+# aws-emulator-run would go here
+if ! command -v aws-emulator-run > /dev/null 2>&1; then
+    echo aws-emulator-run is missing
+fi
+`,
+    );
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.emulatorConfigured, false);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - script path with .. does not count", async () => {
+  const parent = await makeTempRepo();
+  try {
+    const root = `${parent}/repo`;
+    await Deno.mkdir(root);
+    await setupAwsRepo(root, "bash ../outside/run.sh");
+    await writeFile(parent, "outside/run.sh", RUNNER_SCRIPT);
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.usesAws, true);
+    assertEquals(result.emulatorConfigured, false);
+  } finally {
+    await Deno.remove(parent, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - absolute and expanded script paths do not count", async () => {
+  const outside = await makeTempRepo();
+  try {
+    await writeFile(outside, "run.sh", RUNNER_SCRIPT);
+    for (
+      const run of [
+        `bash ${outside}/run.sh`,
+        "bash ${{ github.workspace }}/x.sh",
+        'bash "$DIR/run.sh"',
+      ]
+    ) {
+      const root = await makeTempRepo();
+      try {
+        await setupAwsRepo(root, JSON.stringify(run));
+        await writeFile(root, "x.sh", RUNNER_SCRIPT);
+        const result = await checkAwsEmulatorInCI(root);
+        assertEquals(result.emulatorConfigured, false, run);
+      } finally {
+        await Deno.remove(root, { recursive: true });
+      }
+    }
+  } finally {
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - in-repo symlink to an outside script does not count", async () => {
+  const root = await makeTempRepo();
+  const outside = await makeTempRepo();
+  try {
+    await setupAwsRepo(root, "bash ci/run.sh");
+    await writeFile(outside, "run.sh", RUNNER_SCRIPT);
+    await Deno.mkdir(`${root}/ci`);
+    await Deno.symlink(`${outside}/run.sh`, `${root}/ci/run.sh`);
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.emulatorConfigured, false);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - nonexistent script does not count and does not throw", async () => {
+  const root = await makeTempRepo();
+  try {
+    await setupAwsRepo(root, "./infra/missing.sh");
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.emulatorConfigured, false);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - script over 1 MiB is not read", async () => {
+  const root = await makeTempRepo();
+  try {
+    await setupAwsRepo(root, "./big.sh");
+    await writeFile(
+      root,
+      "big.sh",
+      "#" + "x".repeat(1024 * 1024) + "\n" + RUNNER_SCRIPT,
+    );
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.emulatorConfigured, false);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

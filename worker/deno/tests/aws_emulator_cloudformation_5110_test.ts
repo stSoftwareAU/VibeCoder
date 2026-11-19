@@ -11,7 +11,12 @@
  * Uses Australian English spelling (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertMatch,
+  assertStringIncludes,
+} from "@std/assert";
 
 const SCRIPT_PATH = new URL(
   "../../../infra/cloudformation/test-aws-emulator.sh",
@@ -273,6 +278,274 @@ Deno.test(
       assert(
         !r.output.includes("PASS"),
         `an empty response must not be reported as a pass:\n${r.output}`,
+      );
+    });
+  },
+);
+
+/**
+ * A stateful fake `aws` that answers by its argv, so wrong wiring in the script
+ * gives a wrong outcome. FAKE_DIR holds its state and call log; FAKE_MODE picks
+ * the CloudFormation behaviour (gap, create_fail, stack_rollback,
+ * resource_failed, resources_error, gap_gone). Reply shapes mirror what the aws
+ * CLI v2 prints for the --query/--output the script passes:
+ *  - `--output text` on a scalar query prints the bare value;
+ *  - `--output text` on a list of lists prints one tab-separated row per item;
+ *  - create-stack, put-parameter print their JSON (StackId, Version/Tier);
+ *  - failures print "An error occurred (Code) when calling the Op operation:
+ *    message" on stderr and exit 254 (the CLI's service-error status).
+ */
+const FAKE_AWS = String.raw`
+LOG="$FAKE_DIR/calls.log"
+echo "$*" >> "$LOG"
+mkdir -p "$FAKE_DIR/ssm"
+arg() {
+  local flag="$1"
+  shift
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "$flag" ]; then printf '%s' "$2"; return; fi
+    shift
+  done
+}
+fail() { echo "An error occurred ($1) when calling the $2 operation: $3" >&2; exit 254; }
+key() { printf '%s' "$1" | tr '/' '_'; }
+svc="$1"
+op="$2"
+case "$svc $op" in
+  "ssm put-parameter")
+    name="$(arg --name "$@")"
+    printf '%s' "$(arg --value "$@")" > "$FAKE_DIR/ssm/$(key "$name")"
+    echo '{"Version": 1, "Tier": "Standard"}' ;;
+  "ssm get-parameter")
+    f="$FAKE_DIR/ssm/$(key "$(arg --name "$@")")"
+    [ -f "$f" ] || fail ParameterNotFound GetParameter "Parameter $(arg --name "$@") not found."
+    cat "$f"; echo ;;
+  "ssm delete-parameter")
+    f="$FAKE_DIR/ssm/$(key "$(arg --name "$@")")"
+    [ -f "$f" ] || fail ParameterNotFound DeleteParameter "Parameter not found."
+    rm -f "$f" ;;
+  "cloudformation create-stack")
+    stack="$(arg --stack-name "$@")"
+    if [ "$FAKE_MODE" = create_fail ]; then
+      fail AlreadyExistsException CreateStack "Stack [$stack] already exists"
+    fi
+    case "$*" in *"--on-failure DO_NOTHING"*) ;; *) fail ValidationError CreateStack "missing --on-failure DO_NOTHING" ;; esac
+    ami="$(printf '%s' "$*" | sed -n 's/.*ParameterValue=\([^ ]*\).*/\1/p')"
+    [ -f "$FAKE_DIR/ssm/$(key "$ami")" ] || fail ValidationError CreateStack "Parameter $ami not found in SSM"
+    printf '%s' "$(arg --template-body "$@")" | sed 's#^file://##' > "$FAKE_DIR/template"
+    echo "{\"StackId\": \"arn:aws:cloudformation:us-east-1:000000000000:stack/$stack/1111\"}" ;;
+  "cloudformation wait")
+    [ "$3" = stack-delete-complete ] && exit 0
+    [ "$FAKE_MODE" = gap_gone ] && exit 0
+    echo "Waiter StackCreateComplete failed: terminal failure state" >&2
+    exit 255 ;;
+  "cloudformation describe-stacks")
+    if [ -f "$FAKE_DIR/deleted" ]; then
+      fail ValidationError DescribeStacks "Stack with id $(arg --stack-name "$@") does not exist"
+    fi
+    case "$FAKE_MODE" in
+      stack_rollback) echo ROLLBACK_COMPLETE ;;
+      gap_gone) echo CREATE_COMPLETE ;;
+      *) echo CREATE_FAILED ;;
+    esac ;;
+  "cloudformation describe-stack-resources")
+    [ "$FAKE_MODE" = resources_error ] &&
+      fail ValidationError DescribeStackResources "Stack does not exist: describe failed upstream"
+    tpl="$(cat "$FAKE_DIR/template")"
+    awk '
+      /^Resources:/ { r = 1; next }
+      r && /^[^ #]/ { r = 0 }
+      !r { next }
+      /^  [A-Za-z0-9]+:[ ]*$/ { id = $0; sub(/^  /, "", id); sub(/:.*$/, "", id); next }
+      /^    Type:/ { print id "\t" $2 }
+    ' "$tpl" | while IFS=$'\t' read -r lid rtype; do
+      status=CREATE_COMPLETE; reason=none
+      if [ "$lid" = VerificationHost ] && [ "$FAKE_MODE" != gap_gone ]; then
+        status=CREATE_FAILED
+        reason="Resource handler returned message: this emulator does not apply the MetadataOptions property of AWS::EC2::Instance"
+      fi
+      if [ "$lid" = HostRole ] && [ "$FAKE_MODE" = resource_failed ]; then
+        status=CREATE_FAILED; reason="Role creation rejected by the fake emulator"
+      fi
+      printf '%s\t%s\t%s\t%s\n' "$lid" "$rtype" "$status" "$reason"
+    done ;;
+  "cloudformation describe-stack-resource")
+    echo "phys-$(arg --logical-resource-id "$@")" ;;
+  "cloudformation delete-stack") touch "$FAKE_DIR/deleted" ;;
+  "ec2 describe-vpcs")
+    [ -f "$FAKE_DIR/deleted" ] && fail InvalidVpcID.NotFound DescribeVpcs "The vpc ID does not exist"
+    echo 10.42.0.0/16 ;;
+  "ec2 describe-vpc-attribute") echo True ;;
+  "ec2 describe-subnets")
+    case "$*" in
+      *CidrBlock*) echo 10.42.0.0/24 ;;
+      *VpcId*) echo phys-VerificationVpc ;;
+      *MapPublicIpOnLaunch*) echo True ;;
+    esac ;;
+  "ec2 describe-internet-gateways") printf 'phys-VerificationVpc\tavailable\n' ;;
+  "ec2 describe-route-tables")
+    case "$*" in
+      *DestinationCidrBlock*) echo phys-InternetGateway ;;
+      *) echo phys-PublicRouteTable ;;
+    esac ;;
+  "ec2 describe-security-groups")
+    case "$*" in
+      *"length("*) echo 0 ;;
+      *)
+        printf 'tcp\t443\t443\t0.0.0.0/0\ntcp\t80\t80\t0.0.0.0/0\nudp\t53\t53\t0.0.0.0/0\n'
+        printf 'tcp\t53\t53\t0.0.0.0/0\nudp\t123\t123\t0.0.0.0/0\n' ;;
+    esac ;;
+  "iam get-role")
+    [ -f "$FAKE_DIR/deleted" ] && fail NoSuchEntity GetRole "The role cannot be found."
+    echo ec2.amazonaws.com ;;
+  "iam list-attached-role-policies") echo arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore ;;
+  "iam get-instance-profile") echo phys-HostRole ;;
+  *) fail UnknownOperation Fake "fake aws has no answer for: $*" ;;
+esac
+`;
+
+/** Runs the script inside the fake emulator with the stateful fake aws. */
+async function runWithFakeCfn(
+  sb: Sandbox,
+  mode: string,
+): Promise<{ r: RunResult; log: string }> {
+  await writeFake(sb, "aws", FAKE_AWS);
+  const r = await runScript(sb, `${sb.bin}:${SYSTEM_PATH}`, {
+    ...insideEnv(sb, "https://127.0.0.1:45871"),
+    FAKE_DIR: sb.root,
+    FAKE_MODE: mode,
+  });
+  let log = "";
+  try {
+    log = await Deno.readTextFile(`${sb.root}/calls.log`);
+  } catch {
+    // The fake was never called.
+  }
+  return { r, log };
+}
+
+/** Asserts the run got past the SSM round trip and seeding to create-stack. */
+function assertReachedCloudFormation(r: RunResult, log: string) {
+  assertStringIncludes(r.output, "PASS: SSM round trip value");
+  assertStringIncludes(r.output, "PASS: seeded SSM parameter");
+  assertStringIncludes(log, "cloudformation create-stack --stack-name vc5110-");
+}
+
+Deno.test(
+  "aws-emulator-cloudformation 5110: a failed create-stack exits 1 with its cause and still cleans up",
+  async () => {
+    await withSandbox(async (sb) => {
+      const { r, log } = await runWithFakeCfn(sb, "create_fail");
+      assertEquals(r.code, 1, r.output);
+      assertReachedCloudFormation(r, log);
+      assertStringIncludes(r.output, "cloudformation create-stack");
+      assertStringIncludes(r.output, "AlreadyExistsException");
+      assertStringIncludes(r.output, "already exists");
+      assert(!log.includes("describe-stacks"), "must stop at create-stack");
+      assertStringIncludes(
+        log,
+        "cloudformation delete-stack --stack-name vc5110-",
+      );
+      assertStringIncludes(
+        log,
+        "ssm delete-parameter --name /vibe-coder-test/ubuntu-ami-id-",
+      );
+      assert(!r.output.includes("all "), r.output);
+    });
+  },
+);
+
+Deno.test(
+  "aws-emulator-cloudformation 5110: an unexpected stack status (ROLLBACK_COMPLETE) exits 1 and names it",
+  async () => {
+    await withSandbox(async (sb) => {
+      const { r, log } = await runWithFakeCfn(sb, "stack_rollback");
+      assertEquals(r.code, 1, r.output);
+      assertReachedCloudFormation(r, log);
+      assertStringIncludes(log, "describe-stack-resources");
+      assertStringIncludes(r.output, "gap changed: update KNOWN_GAPS");
+      assertStringIncludes(r.output, "is ROLLBACK_COMPLETE");
+      assertStringIncludes(r.output, "expected CREATE_FAILED");
+      assert(!r.output.includes("PASS: stack vc5110-"), r.output);
+    });
+  },
+);
+
+Deno.test(
+  "aws-emulator-cloudformation 5110: a named gap that now builds (stack and resource CREATE_COMPLETE) is reported as a changed gap",
+  async () => {
+    await withSandbox(async (sb) => {
+      const { r, log } = await runWithFakeCfn(sb, "gap_gone");
+      assertEquals(r.code, 1, r.output);
+      assertReachedCloudFormation(r, log);
+      assertStringIncludes(r.output, "gap changed: update KNOWN_GAPS");
+      assertStringIncludes(
+        r.output,
+        "VerificationHost (AWS::EC2::Instance) is CREATE_COMPLETE",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "aws-emulator-cloudformation 5110: an unexpected resource status exits 1 and names the resource, status and reason",
+  async () => {
+    await withSandbox(async (sb) => {
+      const { r, log } = await runWithFakeCfn(sb, "resource_failed");
+      assertEquals(r.code, 1, r.output);
+      assertReachedCloudFormation(r, log);
+      assertStringIncludes(log, "describe-stack-resources");
+      assertStringIncludes(
+        r.output,
+        "HostRole (AWS::IAM::Role) is CREATE_FAILED: Role creation rejected by the fake emulator",
+      );
+      assert(!r.output.includes("PASS: stack vc5110-"), r.output);
+    });
+  },
+);
+
+Deno.test(
+  "aws-emulator-cloudformation 5110: a failed describe-stack-resources exits 1 with its cause",
+  async () => {
+    await withSandbox(async (sb) => {
+      const { r, log } = await runWithFakeCfn(sb, "resources_error");
+      assertEquals(r.code, 1, r.output);
+      assertReachedCloudFormation(r, log);
+      assertStringIncludes(log, "cloudformation describe-stacks");
+      assertStringIncludes(r.output, "cloudformation describe-stack-resources");
+      assertStringIncludes(r.output, "ValidationError");
+      assertStringIncludes(r.output, "describe failed upstream");
+      assert(!r.output.includes("PASS: stack vc5110-"), r.output);
+    });
+  },
+);
+
+Deno.test(
+  "aws-emulator-cloudformation 5110: the expected named-gap run exits 0 and reports the gap as UNSUPPORTED, never a pass",
+  async () => {
+    await withSandbox(async (sb) => {
+      const { r, log } = await runWithFakeCfn(sb, "gap");
+      assertEquals(r.code, 0, r.output);
+      assertReachedCloudFormation(r, log);
+      assertMatch(
+        r.output,
+        /PASS: stack vc5110-linux-verification-host-[0-9a-f]+ CREATE_FAILED: \d+ resources CREATE_COMPLETE, 1 named gap\(s\)/,
+      );
+      assertStringIncludes(
+        r.output,
+        "UNSUPPORTED (gap reproduced, not proven): VerificationHost CREATE_FAILED",
+      );
+      assertStringIncludes(
+        r.output,
+        "exercised: 10 resources (properties checked)",
+      );
+      assertStringIncludes(r.output, "UNSUPPORTED (not proven, named gaps):");
+      assertStringIncludes(r.output, "VerificationHost (AWS::EC2::Instance)");
+      assert(!/PASS:[^\n]*VerificationHost/.test(r.output), r.output);
+      assertStringIncludes(r.output, "removed: ValidationError (as expected)");
+      assertStringIncludes(
+        log,
+        "cloudformation delete-stack --stack-name vc5110-",
       );
     });
   },

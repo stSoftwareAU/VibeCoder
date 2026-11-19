@@ -5,7 +5,9 @@
  * use AWS at all (dependency manifests, CloudFormation templates, or
  * Terraform), and — independently — does any GitHub Actions workflow run
  * an emulator: the `floci/floci` image, or the official AWS Emulator
- * (`aws-emulator-run`, or the pinned install `container/toolchains/aws-emulator.sh`).
+ * (a `run:` step invoking `aws-emulator-run`, directly or through a
+ * repository script that itself invokes it). Merely installing the emulator
+ * (`container/toolchains/aws-emulator.sh`) is not coverage.
  * Modelled on `linter_in_ci_check.ts`:
  * no LLM judgement, just text/structure matching against files already in
  * the checkout.
@@ -23,7 +25,7 @@ export interface AwsEmulatorCheckResult {
   usesAws: boolean;
   /** Repo-relative paths ("/"-separated) of every file that triggered, sorted and deduplicated. */
   awsEvidence: string[];
-  /** True iff any loaded workflow runs the `floci/floci` image or the official AWS Emulator. Computed independently of `usesAws`. */
+  /** True iff any loaded workflow runs the `floci/floci` image or tests through the official AWS Emulator (`aws-emulator-run` invoked directly or by a repo script it runs; an install-only step does not count). Computed independently of `usesAws`. */
   emulatorConfigured: boolean;
   /** False when `loadWorkflows` returned none (Issue #2880 diagnostic guard). */
   workflowsLoaded: boolean;
@@ -316,8 +318,11 @@ export function workflowRunsFloci(parsedYaml: unknown): boolean {
 const SHELL_SEPARATORS = new Set([";", "|", "&"]);
 const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const AWS_EMULATOR_RUN_COMMAND = /(?:^|\/)aws-emulator-run$/;
-const AWS_EMULATOR_PINNED_INSTALL =
-  /(?:^|\/)container\/toolchains\/aws-emulator\.sh$/;
+/** Largest repository script read for the one-level indirection check. */
+const MAX_SCRIPT_BYTES = 1024 * 1024;
+
+/** Reads a repo-relative script's text, or null when it is unavailable. */
+export type ScriptReader = (relPath: string) => string | null;
 
 /**
  * Split a `run:` body into command segments, each a list of words. Quotes
@@ -384,41 +389,102 @@ function shellSegments(script: string): string[][] {
   return segments;
 }
 
-/**
- * True when one command segment runs the official AWS Emulator: its command
- * word (after optional `sudo`, `env`, and leading `VAR=value` words) is
- * `aws-emulator-run` or a path ending `/aws-emulator-run`, or it runs the
- * pinned install `container/toolchains/aws-emulator.sh` directly or via
- * `bash`/`sh`. An `echo aws-emulator-run` or a bare `install ... /usr/local/bin/aws-emulator-run`
- * does not count.
- */
-function segmentRunsAwsEmulator(words: string[]): boolean {
+/** Index of the command word: skips `sudo`, `env` and leading `VAR=value` words. */
+function commandIndex(words: string[]): number {
   let i = 0;
   while (i < words.length) {
     const w = words[i] ?? "";
-    if (w === "sudo" || w === "env" || SHELL_ASSIGNMENT.test(w)) {
+    if (
+      w === "sudo" || w === "env" || w === "exec" || SHELL_ASSIGNMENT.test(w)
+    ) {
       i++;
       continue;
     }
     break;
   }
-  const command = words[i];
-  if (command === undefined) return false;
-  if (AWS_EMULATOR_RUN_COMMAND.test(command)) return true;
-  if (AWS_EMULATOR_PINNED_INSTALL.test(command)) return true;
-  if (command === "bash" || command === "sh") {
-    const script = words.slice(i + 1).find((w) => !w.startsWith("-"));
-    return script !== undefined && AWS_EMULATOR_PINNED_INSTALL.test(script);
-  }
-  return false;
+  return i;
 }
 
 /**
- * True when a parsed workflow document runs the official AWS Emulator in a
- * `run:` step (see `segmentRunsAwsEmulator`). Floci is detected separately
- * by `workflowRunsFloci`.
+ * True when one command segment actually invokes the emulator runner: its
+ * command word (after optional `sudo`, `env`, `exec` and leading `VAR=value`
+ * words) is `aws-emulator-run` or a path ending `/aws-emulator-run`. An
+ * `echo aws-emulator-run`, an `install ... /usr/local/bin/aws-emulator-run`
+ * and the install fragment `container/toolchains/aws-emulator.sh` do not
+ * count: none of them runs a test through the emulator.
  */
-export function workflowRunsAwsEmulator(parsedYaml: unknown): boolean {
+function segmentInvokesEmulatorRunner(words: string[]): boolean {
+  const command = words[commandIndex(words)];
+  return command !== undefined && AWS_EMULATOR_RUN_COMMAND.test(command);
+}
+
+function stripQuotes(word: string): string {
+  return word.replace(/^(["'])(.*)\1$/, "$2");
+}
+
+/**
+ * The repo-relative script a segment runs: its command word when that is a
+ * relative path (contains `/`), or the first non-flag argument of
+ * `bash`/`sh`. Null when none.
+ */
+function segmentScriptPath(words: string[]): string | null {
+  const i = commandIndex(words);
+  const command = words[i];
+  if (command === undefined) return null;
+  if (command === "bash" || command === "sh") {
+    const arg = words.slice(i + 1).find((w) => !w.startsWith("-"));
+    return arg === undefined ? null : stripQuotes(arg);
+  }
+  const path = stripQuotes(command);
+  return path.includes("/") ? path : null;
+}
+
+/** True when `script` text has a segment that invokes the emulator runner. */
+function scriptInvokesEmulatorRunner(script: string): boolean {
+  return shellSegments(script).some((w) => segmentInvokesEmulatorRunner(w));
+}
+
+/**
+ * Build a `ScriptReader` confined to `repoRoot`. Rejects absolute paths,
+ * `~`, `..` segments and `$` expansions; resolves symlinks and requires the
+ * real path to sit inside the real repo root. Missing, unreadable,
+ * out-of-repo, non-file or over-1-MiB scripts read as null.
+ */
+export function makeRepoScriptReader(repoRoot: string): ScriptReader {
+  return (relPath: string): string | null => {
+    if (
+      relPath.length === 0 || relPath.startsWith("/") ||
+      relPath.startsWith("~") || relPath.includes("$") ||
+      relPath.includes("\0") || relPath.split("/").includes("..")
+    ) {
+      return null;
+    }
+    try {
+      const realRoot = Deno.realPathSync(repoRoot);
+      const real = Deno.realPathSync(`${realRoot}/${relPath}`);
+      if (!real.startsWith(realRoot.replace(/\/+$/, "") + "/")) return null;
+      const info = Deno.statSync(real);
+      if (!info.isFile || info.size > MAX_SCRIPT_BYTES) return null;
+      return Deno.readTextFileSync(real);
+    } catch {
+      return null; // NotFound or any other error: the script does not count
+    }
+  };
+}
+
+/**
+ * True when a parsed workflow document runs tests through the official AWS
+ * Emulator in a `run:` step: either a segment invokes `aws-emulator-run`
+ * directly, or it runs a repository script (a relative path, or the first
+ * argument of `bash`/`sh`) that `readScript` returns and that itself has a
+ * segment invoking `aws-emulator-run` (one level of indirection only).
+ * Without `readScript` only direct invocations count. Floci is detected
+ * separately by `workflowRunsFloci`.
+ */
+export function workflowRunsAwsEmulator(
+  parsedYaml: unknown,
+  readScript?: ScriptReader,
+): boolean {
   if (!isRecord(parsedYaml)) return false;
   const jobs = parsedYaml.jobs;
   if (!isRecord(jobs)) return false;
@@ -429,10 +495,13 @@ export function workflowRunsAwsEmulator(parsedYaml: unknown): boolean {
     if (!Array.isArray(steps)) continue;
     for (const step of steps) {
       if (!isRecord(step) || typeof step.run !== "string") continue;
-      if (
-        shellSegments(step.run).some((words) => segmentRunsAwsEmulator(words))
-      ) {
-        return true;
+      for (const words of shellSegments(step.run)) {
+        if (segmentInvokesEmulatorRunner(words)) return true;
+        if (readScript === undefined) continue;
+        const path = segmentScriptPath(words);
+        if (path === null) continue;
+        const text = readScript(path);
+        if (text !== null && scriptInvokesEmulatorRunner(text)) return true;
       }
     }
   }
@@ -551,8 +620,9 @@ async function readFileOrSkip(path: string): Promise<string | null> {
 
 /**
  * Check a repository checked out at `repoPath` for AWS usage and for a
- * GitHub Actions workflow that runs an emulator (`floci/floci`, or the
- * official AWS Emulator).
+ * GitHub Actions workflow that runs an emulator (`floci/floci`, or tests
+ * through the official AWS Emulator via `aws-emulator-run`, directly or in a
+ * repository script a `run:` step executes).
  * A missing or unreadable `repoPath` rejects rather than reading as "no
  * AWS" — a wrong path must never be mistaken for a genuine absence.
  */
@@ -566,9 +636,10 @@ export async function checkAwsEmulatorInCI(
   // loadWorkflows only keeps workflows that parsed, so a throw here would
   // be a genuine fault (not a reachable "unparseable" case) and should
   // surface rather than be swallowed.
+  const readScript = makeRepoScriptReader(repoPath);
   const emulatorConfigured = workflows.some((w) => {
     const doc = parseYaml(w.rawContent);
-    return workflowRunsFloci(doc) || workflowRunsAwsEmulator(doc);
+    return workflowRunsFloci(doc) || workflowRunsAwsEmulator(doc, readScript);
   });
 
   const awsEvidence = Array.from(evidence).sort();

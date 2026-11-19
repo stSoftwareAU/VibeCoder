@@ -24,6 +24,8 @@ than `vibe`. The script re-execs itself under `aws-emulator-run --timeout 900`,
 which starts a private loopback HTTPS emulator with a per-run CA, telemetry off
 and emulator-only credentials. `vibe` is always refused by `aws-emulator-run`,
 so the pre-push gate cannot run this check and CI is the enforcing gate.
+(The gate's separate Floci check, Issue #3727, still serves a repository that
+tracks `test-floci.sh`; VibeCoder no longer does.)
 
 CI runs the same script in
 [`.github/workflows/aws-emulator.yml`](../.github/workflows/aws-emulator.yml)

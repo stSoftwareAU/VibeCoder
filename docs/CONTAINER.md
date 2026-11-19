@@ -97,7 +97,7 @@ calls it. Its row says so, and it is deliberately absent from
 | `pyyaml` 6.0.3 (wheel in the system interpreter's `purelib`) | *module* `yaml` — no command | NEAT-AI-core's workflow-assertion BATS suites, which parse workflow YAML with `python3 -c "import yaml"` |
 | `codegraph` 1.6.2 (bundle in `/opt/codegraph`, symlinked onto the PATH) | `codegraph` | The CodeGraph repo-context trial (Issue #2145) — the worker's own runs, not a monitored repository's gate |
 | `rtk` 1.0.1 (bare binary  in `/usr/local/bin`)      | `rtk`                                     | The RTK trial (Issue #2328) — the worker's own runs, not a monitored repository's gate           |
-| `floci` 2.3.0 (native binary from the digest-pinned `floci/floci` image) | `floci`                | This repo's worker **runtime** for the worker's own runs (Issue #3367): the LocalStack drop-in on port 4566, not started by the entrypoint. No VibeCoder test uses it since Issue #5110 moved the CloudFormation test to the AWS Emulator; the former `floci.yml` CI job (Issue #3369) and the pre-push Floci check (Issue #3727) are removed |
+| `floci` 2.3.0 (native binary from the digest-pinned `floci/floci` image) | `floci`                | This repo's worker **runtime** for the worker's own runs (Issue #3367): the LocalStack drop-in on port 4566, not started by the entrypoint. The pre-push gate's Floci check (Issue #3727) still runs `infra/cloudformation/test-floci.sh`, which starts it on demand, in a repository that tracks that script. VibeCoder's own CloudFormation test moved to the AWS Emulator (Issue #5110) and its `floci.yml` CI job (Issue #3369) was removed |
 | `tokeneconomizer` 0.1.0 (Apache-2.0, commit `264e7a7f32f0112a06aa83a97b9c2c4681563968`, `plugin/` and `tokeneconomizer/` under `/opt/tokeneconomizer`) | `tokeneconomizer` | The TokenEconomizer trial (Issue #4955, parent #4953) — the worker's own runs, not a monitored repository's gate; off by default: a host that sets `token_economizer.enabled` makes the worker load the plugin into its implementation, PR-feedback and CI-fix Claude runs; the image itself does not run it |
 | `aws-cli` 2.40.3 (official AWS CLI v2 zip, installed under `/usr/local/aws-cli`) | `aws` | The pinned client the AWS Emulator smoke test and the `aws-emulator-run` helper use (Issue #5109); not a monitored repository's gate. Its checksums were computed on GitHub-hosted runners because the worker container's egress proxy refuses `awscli.amazonaws.com` |
 | `aws-emulator` 1.0.385-1 (official prebuilt Debian package, extracted to `/opt/aws-emulator`) | `aws-emulator` | The AWS Emulator for isolated test runs (Issue #5109), run through the `aws-emulator-run` helper rather than started by hand or by the entrypoint; this repo's user of it is `infra/cloudformation/test-aws-emulator.sh` (Issue #5110); Floci stays installed alongside it during migration. See [AWS Emulator and `aws-emulator-run`](CONTAINER-IMAGE.md#aws-emulator-and-aws-emulator-run) |
@@ -233,9 +233,10 @@ Ten consequences worth knowing:
   response, then stops the process and removes the copied binary — so a
   broken image fails on the pull request rather than the worker's first run.
   Like `codegraph`, it exists for the worker's own runs, not a monitored
-  repository's gate; `container/entrypoint.sh`
+  repository's gate, except that the pre-push gate's Floci check (Issue #3727)
+  runs `test-floci.sh` in a repository that tracks it; `container/entrypoint.sh`
   does not start it, and whatever needs the LocalStack drop-in on port 4566
-  starts it itself.
+  (the script included) starts it itself.
 - **`aws-cli` and `aws-emulator` are the Issue #5109 pair.** `aws-emulator` is
   the official prebuilt Debian package, extracted to `/opt/aws-emulator` with
   `/usr/local/bin/aws-emulator`; `aws-cli` is the pinned AWS CLI v2. Both pins
