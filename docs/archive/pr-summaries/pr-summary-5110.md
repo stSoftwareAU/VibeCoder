@@ -52,8 +52,8 @@ required check.
   alike. A step whose `shell:` (or the job's or workflow's `defaults.run.shell`)
   is `bash -n {0}` or another no-exec mode, and a script run by `bash -n`,
   `bash -o noexec`, `--noexec` or `bash -c`, earn no credit either. The shell
-  helpers (including `readShellOptions`, which reads those option clusters)
-  live in `worker/deno/lib/shell_command_words.ts`.
+  helpers (including `readShellOptions`, which reads those option clusters) live
+  in `worker/deno/lib/shell_command_words.ts`.
 
 Two criteria stay partial until CI has run on this branch and a freshly started
 container runs the command, so this is Part of #5110.
@@ -378,8 +378,8 @@ flowchart LR
     by the plain splitter, 23 of these cases fail;
   - a guaranteed exit through a static chain (`true && exit 0`,
     `false || exit 0`) or `set -n` ends the script, while a runtime test in
-    front of the chain keeps later commands credited; a script run by
-    `bash -n`, `-o noexec` or `--noexec`, and a step with a no-exec `shell:` or
+    front of the chain keeps later commands credited; a script run by `bash -n`,
+    `-o noexec` or `--noexec`, and a step with a no-exec `shell:` or
     `defaults.run.shell`, earn no credit, with `bash -eo pipefail ./test.sh` as
     a credited control;
   - hostile long inputs (a long `<` run and whitespace run for the here-document
