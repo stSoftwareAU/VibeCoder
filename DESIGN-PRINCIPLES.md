@@ -1869,10 +1869,12 @@ monitored repo because no `deno check` ran in CI.
 **every** best-practices scan, whatever bucket the draw picked, before
 Claude runs. `checkAwsEmulatorInCI()` detects AWS usage from dependency
 manifests, CloudFormation templates, or `.tf` files, and checks
-whether any GitHub Actions workflow runs the `floci/floci` emulator
+whether any GitHub Actions workflow runs an emulator: the `floci/floci`
 image as a service container, job container, `docker://` step, or
-`docker run` step. A repo that uses AWS without Floci wired into CI,
-and without a valid `best-practice-ignore: BP-AWS-EMULATOR-MISSING`
+`docker run` step, or the official AWS Emulator (`aws-emulator-run`, or
+the pinned `container/toolchains/aws-emulator.sh` install) in a `run:`
+command position. A repo that uses AWS without either emulator wired
+into CI, and without a valid `best-practice-ignore: BP-AWS-EMULATOR-MISSING`
 waiver, gets one `severity:medium` finding with the fixed id
 `BP-AWS-EMULATOR-MISSING`, deduplicated through the same
 `fileFindingOnce` mechanism as `BP-LINTER-<bucket>` and added to the

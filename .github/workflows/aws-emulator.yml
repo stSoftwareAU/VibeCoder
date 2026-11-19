@@ -1,0 +1,82 @@
+# AWS Emulator CloudFormation deployment test (Issue #5110).
+#
+# Deploys every CloudFormation template under infra/cloudformation/ into the
+# official AWS Emulator via infra/cloudformation/test-aws-emulator.sh, and
+# asserts each stack reaches CREATE_COMPLETE, so a template that cannot be
+# deployed fails the PR rather than the first real deployment. The script
+# reports named unsupported gaps separately and exits non-zero on any failure.
+#
+# The emulator is installed by container/toolchains/aws-emulator.sh, which
+# reads the pinned version and the per-architecture sha256 from
+# container/tools.json and refuses a package whose checksum does not match.
+# This workflow restates no pin, so CI and the container image cannot drift.
+#
+# Floci is no longer used. The job has no services block and does not mount
+# the docker socket: the emulator runs as a local process, not a service
+# container.
+#
+# There is deliberately no push trigger. Test workflows must not run on push
+# to the default branch (fleet rule `workflow-triggers`); pull request runs
+# cover every change that can alter a template, the runner or the pin.
+#
+# Third-party actions are pinned to 40-character commit SHAs (Issue
+# #2123) so a hijacked tag cannot inject code into the workflow. The
+# version tag each SHA corresponds to is captured in a leading comment.
+
+name: AWS Emulator CloudFormation
+
+on:
+  pull_request:
+    # Issue #3360 — milestone sub-issue PRs target a shared
+    # `milestone/<name>` branch (Issue #1300); include it so the check
+    # runs before those PRs merge, not only on Develop/main PRs.
+    branches: [Develop, main, 'milestone/*']
+    paths:
+      - 'infra/cloudformation/**'
+      - '.github/workflows/aws-emulator.yml'
+      - 'container/aws-emulator-run.sh'
+      - 'container/toolchains/aws-emulator.sh'
+      - 'container/tools.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs; only the latest commit's result matters.
+concurrency:
+  group: aws-emulator-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cloudformation:
+    name: Test CloudFormation against AWS Emulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned AWS Emulator
+        run: |
+          set -euo pipefail
+          sudo env CURL_RETRY="--retry 8 --retry-delay 3 --retry-all-errors --connect-timeout 20" \
+            TOOLCHAIN_MANIFEST="${GITHUB_WORKSPACE}/container/tools.json" \
+            bash container/toolchains/aws-emulator.sh
+          sudo install -m 0755 container/aws-emulator-run.sh /usr/local/bin/aws-emulator-run
+
+      - name: Check AWS CLI
+        run: |
+          set -euo pipefail
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "::error::aws CLI not found on the runner"
+            exit 1
+          fi
+          aws --version
+
+      - name: Test CloudFormation templates against AWS Emulator
+        run: |
+          set -euo pipefail
+          ./infra/cloudformation/test-aws-emulator.sh

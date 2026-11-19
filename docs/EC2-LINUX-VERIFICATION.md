@@ -14,19 +14,94 @@ check for this path, and that is the point: it exercises the documented manual
 route in [Setup](SETUP.md#linux-debianubuntu-as-the-worked-example) exactly as
 a reader would follow it.
 
-The template itself is deployed against the Floci emulator in CI by
-[`.github/workflows/floci.yml`](../.github/workflows/floci.yml) via
-[`infra/cloudformation/test-floci.sh`](../infra/cloudformation/test-floci.sh)
-(Issue #3369). CI deploys it into Floci and fails unless the stack reaches
-`CREATE_COMPLETE`; resource types Floci only stubs are reported as `::warning::`
-annotations rather than proven. This does not show that the launcher works on
-the host. The worker's pre-push gate also runs the script when a push changes
-`infra/cloudformation/` (Issue #3727), but this template creates an instance and
-needs Docker, so inside the worker container it is reported
-`SKIPPED (needs Docker)` and CI remains the check.
+## Testing the template against AWS Emulator (Issue #5110)
+
+The template is tested against the official AWS Emulator. Floci no longer runs
+any VibeCoder test. The reference command is
+[`infra/cloudformation/test-aws-emulator.sh`](../infra/cloudformation/test-aws-emulator.sh).
+Run it as `agent` in the worker container, or as any non-root account other
+than `vibe`. The script re-execs itself under `aws-emulator-run --timeout 900`,
+which starts a private loopback HTTPS emulator with a per-run CA, telemetry off
+and emulator-only credentials. `vibe` is always refused by `aws-emulator-run`,
+so the pre-push gate cannot run this check and CI is the enforcing gate.
+
+CI runs the same script in
+[`.github/workflows/aws-emulator.yml`](../.github/workflows/aws-emulator.yml)
+("AWS Emulator CloudFormation"). The workflow installs the pinned aws-emulator
+1.0.385 through
+[`container/toolchains/aws-emulator.sh`](../container/toolchains/aws-emulator.sh),
+with its sha256 pins from [`container/tools.json`](../container/tools.json), and
+installs the helper too. It runs on pull requests to `Develop`, `main` and
+`milestone/*` when `infra/cloudformation/**`, the workflow, the helper, the
+fragment or `container/tools.json` changes. It needs no Docker socket and no
+service container.
+
+```mermaid
+flowchart LR
+    S["test-aws-emulator.sh"] --> R["aws-emulator-run<br/>--timeout 900"]
+    R --> M["SSM round trip<br/>write, read, delete, ParameterNotFound"]
+    M --> D["Deploy every template<br/>--on-failure DO_NOTHING"]
+    D --> P["Property checks<br/>per created resource"]
+    P --> G["UNSUPPORTED gap report<br/>not proven"]
+    G --> C["Delete stack<br/>cleanup check"]
+```
+
+### What is proven
+
+- An SSM parameter write, read and delete round trip, plus the negative case:
+  reading the deleted parameter must fail with `ParameterNotFound`.
+- Every template in `infra/cloudformation/` is deployed with
+  `--on-failure DO_NOTHING`, so resources that do create are kept and checked
+  even when a named gap fails.
+- The material properties of each created resource are checked (see the
+  coverage table).
+- The stack is deleted and cleanup is checked.
+- The script exits non-zero on any failure, on a missing runner or CLI, or when
+  a named gap's observed failure changes.
+
+### Coverage on aws-emulator 1.0.385
+
+| Resource type | Result | Notes |
+| --- | --- | --- |
+| `AWS::EC2::VPC` | Created, properties checked | |
+| `AWS::EC2::InternetGateway`, `AWS::EC2::VPCGatewayAttachment` | Created, properties checked | The gateway's attachment VpcId and State are checked through `describe-internet-gateways` |
+| `AWS::EC2::Subnet`, `AWS::EC2::RouteTable`, `AWS::EC2::Route`, `AWS::EC2::SubnetRouteTableAssociation` | Created, properties checked | |
+| `AWS::EC2::SecurityGroup` | Created, properties checked | Egress descriptions must not contain em dashes (see below) |
+| `AWS::IAM::Role`, `AWS::IAM::InstanceProfile` | Created, properties checked | Permissions are not proven (real AWS only) |
+| `AWS::EC2::Instance` (`VerificationHost`) | Named gap, fails | Not proven; see the next section |
+
+| Behaviour | Status |
+| --- | --- |
+| SSM write, read, delete and `ParameterNotFound` | Proven |
+| Public `/aws/service/...` SSM parameter | Not proven: it cannot be seeded (`ParameterPatternMismatchException`), so the test supplies the AMI parameter value itself |
+| IAM and KMS permissions | Real AWS only |
+| Real deployment and runtime compatibility | Real AWS only |
+| Cross-account and cross-Region behaviour | Real AWS only |
+
+### Named gap: `VerificationHost`
+
+`VerificationHost` (`AWS::EC2::Instance`) fails on this emulator with
+`this emulator does not apply the MetadataOptions property of AWS::EC2::Instance`.
+The script reports it in the separate `UNSUPPORTED (not proven, named gaps)`
+block and does not count it as a pass. Validate the instance another way:
+
+- the checkov static scan in `.github/workflows/checkov.yml`;
+- the repo's template tests;
+- a real-AWS deployment by the manual route in [Launch](#launch).
+
+Recheck the gap whenever the aws-emulator pin in `container/tools.json`
+changes. The script fails if the observed failure changes, so a pin that fixes
+or alters the gap is caught and the gap entry must then be re-assessed.
+
+### Defect the emulator caught
+
+The emulator found em dashes (—) in the `Description` of three security-group
+egress rules, which EC2 rejects. They are fixed in this change. Floci had
+accepted them, so the Floci run never showed the defect.
 
 ## 📋 Table of Contents
 
+- [Testing the template against AWS Emulator](#testing-the-template-against-aws-emulator-issue-5110)
 - [What the stack creates](#what-the-stack-creates)
 - [Before you launch](#before-you-launch)
 - [Launch](#launch)

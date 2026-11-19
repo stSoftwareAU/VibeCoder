@@ -4,7 +4,9 @@
  * A deterministic, file-based check answering two questions: does the repo
  * use AWS at all (dependency manifests, CloudFormation templates, or
  * Terraform), and — independently — does any GitHub Actions workflow run
- * the `floci/floci` emulator image. Modelled on `linter_in_ci_check.ts`:
+ * an emulator: the `floci/floci` image, or the official AWS Emulator
+ * (`aws-emulator-run`, or the pinned install `container/toolchains/aws-emulator.sh`).
+ * Modelled on `linter_in_ci_check.ts`:
  * no LLM judgement, just text/structure matching against files already in
  * the checkout.
  *
@@ -21,7 +23,7 @@ export interface AwsEmulatorCheckResult {
   usesAws: boolean;
   /** Repo-relative paths ("/"-separated) of every file that triggered, sorted and deduplicated. */
   awsEvidence: string[];
-  /** True iff any loaded workflow runs the `floci/floci` emulator image. Computed independently of `usesAws`. */
+  /** True iff any loaded workflow runs the `floci/floci` image or the official AWS Emulator. Computed independently of `usesAws`. */
   emulatorConfigured: boolean;
   /** False when `loadWorkflows` returned none (Issue #2880 diagnostic guard). */
   workflowsLoaded: boolean;
@@ -311,6 +313,132 @@ export function workflowRunsFloci(parsedYaml: unknown): boolean {
   return false;
 }
 
+const SHELL_SEPARATORS = new Set([";", "|", "&"]);
+const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const AWS_EMULATOR_RUN_COMMAND = /(?:^|\/)aws-emulator-run$/;
+const AWS_EMULATOR_PINNED_INSTALL =
+  /(?:^|\/)container\/toolchains\/aws-emulator\.sh$/;
+
+/**
+ * Split a `run:` body into command segments, each a list of words. Quotes
+ * keep a word together (`X="a b"` is one word), a backslash-newline joins
+ * lines, a newline or `;`/`|`/`&` starts a new segment, and a `#` that
+ * starts a word ends the line. This finds command words only; it is not a
+ * shell parser.
+ */
+function shellSegments(script: string): string[][] {
+  const text = script.replace(/\\\r?\n/g, " ");
+  const segments: string[][] = [];
+  let words: string[] = [];
+  let word = "";
+  let inWord = false;
+  let quote: string | null = null;
+
+  const endWord = () => {
+    if (inWord) words.push(word);
+    word = "";
+    inWord = false;
+  };
+  const endSegment = () => {
+    endWord();
+    if (words.length > 0) segments.push(words);
+    words = [];
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charAt(i);
+    if (quote !== null) {
+      word += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      word += ch;
+      inWord = true;
+      continue;
+    }
+    if (ch === "\n") {
+      endSegment();
+      continue;
+    }
+    if (ch === " " || ch === "\t" || ch === "\r") {
+      endWord();
+      continue;
+    }
+    if (ch === "#" && !inWord) {
+      const newline = text.indexOf("\n", i);
+      if (newline === -1) break;
+      i = newline - 1; // the loop's i++ lands on the newline
+      continue;
+    }
+    if (SHELL_SEPARATORS.has(ch)) {
+      endSegment();
+      if (text.charAt(i + 1) === ch) i++; // `&&` and `||`
+      continue;
+    }
+    word += ch;
+    inWord = true;
+  }
+  endSegment();
+  return segments;
+}
+
+/**
+ * True when one command segment runs the official AWS Emulator: its command
+ * word (after optional `sudo`, `env`, and leading `VAR=value` words) is
+ * `aws-emulator-run` or a path ending `/aws-emulator-run`, or it runs the
+ * pinned install `container/toolchains/aws-emulator.sh` directly or via
+ * `bash`/`sh`. An `echo aws-emulator-run` or a bare `install ... /usr/local/bin/aws-emulator-run`
+ * does not count.
+ */
+function segmentRunsAwsEmulator(words: string[]): boolean {
+  let i = 0;
+  while (i < words.length) {
+    const w = words[i] ?? "";
+    if (w === "sudo" || w === "env" || SHELL_ASSIGNMENT.test(w)) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  const command = words[i];
+  if (command === undefined) return false;
+  if (AWS_EMULATOR_RUN_COMMAND.test(command)) return true;
+  if (AWS_EMULATOR_PINNED_INSTALL.test(command)) return true;
+  if (command === "bash" || command === "sh") {
+    const script = words.slice(i + 1).find((w) => !w.startsWith("-"));
+    return script !== undefined && AWS_EMULATOR_PINNED_INSTALL.test(script);
+  }
+  return false;
+}
+
+/**
+ * True when a parsed workflow document runs the official AWS Emulator in a
+ * `run:` step (see `segmentRunsAwsEmulator`). Floci is detected separately
+ * by `workflowRunsFloci`.
+ */
+export function workflowRunsAwsEmulator(parsedYaml: unknown): boolean {
+  if (!isRecord(parsedYaml)) return false;
+  const jobs = parsedYaml.jobs;
+  if (!isRecord(jobs)) return false;
+
+  for (const job of Object.values(jobs)) {
+    if (!isRecord(job)) continue;
+    const steps = job.steps;
+    if (!Array.isArray(steps)) continue;
+    for (const step of steps) {
+      if (!isRecord(step) || typeof step.run !== "string") continue;
+      if (
+        shellSegments(step.run).some((words) => segmentRunsAwsEmulator(words))
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Local recursive walker
 // ---------------------------------------------------------------------------
@@ -423,7 +551,8 @@ async function readFileOrSkip(path: string): Promise<string | null> {
 
 /**
  * Check a repository checked out at `repoPath` for AWS usage and for a
- * GitHub Actions workflow that runs the `floci/floci` emulator image.
+ * GitHub Actions workflow that runs an emulator (`floci/floci`, or the
+ * official AWS Emulator).
  * A missing or unreadable `repoPath` rejects rather than reading as "no
  * AWS" — a wrong path must never be mistaken for a genuine absence.
  */
@@ -437,9 +566,10 @@ export async function checkAwsEmulatorInCI(
   // loadWorkflows only keeps workflows that parsed, so a throw here would
   // be a genuine fault (not a reachable "unparseable" case) and should
   // surface rather than be swallowed.
-  const emulatorConfigured = workflows.some((w) =>
-    workflowRunsFloci(parseYaml(w.rawContent))
-  );
+  const emulatorConfigured = workflows.some((w) => {
+    const doc = parseYaml(w.rawContent);
+    return workflowRunsFloci(doc) || workflowRunsAwsEmulator(doc);
+  });
 
   const awsEvidence = Array.from(evidence).sort();
   return {
