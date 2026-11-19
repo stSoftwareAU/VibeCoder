@@ -276,6 +276,23 @@ bounded by the remaining budget. `docs/TROUBLESHOOTING.md` is updated.
 
 Validation on this head: `tests/hard_kill_report_test.ts` 71 passed, 0 failed;
 the three Issue #5161 launcher tests in `tests/run_sh_launcher_test.ts` pass;
-`shellcheck run.sh` clean. The skip-second-capture branch has no launcher test
-of its own: the stub runtime cannot make the early command write a record and
-then fail. The full `./quality.sh` was not run in this round.
+`shellcheck run.sh` clean. The later regression below now exercises interruption after the evidence
+record is written and the attached client is killed. The full `./quality.sh` was not run in this round.
+
+## Client-death cleanup regression
+
+The launcher keeps its watchdog alive while an authorised reap completes,
+and the completing reap no longer requires the attached client to be alive.
+The new launcher test interrupts the real reaper after its client SIGKILL,
+during the process-table read and before helper cleanup. The test supplies
+only its own helper PID through the simulated process table and uses a real
+sleep process as that helper; no unrelated host process is exposed to killing.
+It asserts the container table is cleared, the helper exits from SIGKILL,
+and the launcher exits 87. A bounded wait catches a surviving helper.
+
+The regression fails against `727f6152`'s launcher because the container is
+left standing, and passes against `91a8bc5b`. All four Issue #5161 launcher
+tests pass together (4 passed, 0 failed). Existing assertions are retained.
+These local runs use temporary standard-library mappings and `--no-check`;
+the dependency files are restored and are not part of the commit. Hosted CI
+must validate type checking with the normal dependencies.

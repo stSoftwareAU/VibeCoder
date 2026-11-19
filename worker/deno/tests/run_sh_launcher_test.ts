@@ -849,6 +849,88 @@ Deno.test("run.sh - an early reap cut short by the deadline is finished, not tru
   }
 });
 
+Deno.test("run.sh - interrupted reap finishes helper cleanup after client death (Issue #5161)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "900",
+    STUB_EXEC_EXIT: "1",
+    STUB_KILL_FIRST_EXIT: "1",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "8",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "1",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "1",
+    VIBE_GUEST_SILENCE_SECONDS: "1",
+  });
+  const helper = new Deno.Command("sleep", {
+    args: ["900"],
+    stdin: "null",
+    stdout: "null",
+    stderr: "null",
+  }).spawn();
+  const helperStatus = helper.status;
+  try {
+    // Only the process-table boundary is simulated. The real reaper kills the
+    // attached client, stalls while discovering the helper, then must resume
+    // cleanup in the launcher's completing reap. Never expose real host PIDs.
+    await Deno.writeTextFile(
+      `${harness.tmpDir}/bin/ps`,
+      `#!/bin/bash
+set -eu
+r="$VIBE_STUB_RECORD"
+[[ -f "$r/run.pid" ]] || exit 0
+runtime=$(cat "$r/runtime.path")
+if [[ ! -f "$r/helper-name" ]]; then
+  for state in "$r"/containers/*; do
+    [[ -f "$state" ]] || continue
+    basename "$state" > "$r/helper-name"
+  done
+fi
+client=$(cat "$r/run.pid")
+if ! kill -0 "$client" 2>/dev/null && [[ ! -e "$r/scan-interrupted" ]]; then
+  : > "$r/scan-interrupted"
+  sleep 30 >/dev/null 2>&1
+fi
+[[ -f "$r/helper-name" ]] || exit 0
+printf '%s %s-helper --name %s\n' '${helper.pid}' "$runtime" "$(cat "$r/helper-name")"
+`,
+    );
+    await Deno.chmod(`${harness.tmpDir}/bin/ps`, 0o755);
+    await Deno.mkdir(harness.logDir, { recursive: true });
+    const log = `${harness.logDir}/worker-1.log`;
+    await Deno.writeTextFile(log, "last line before the guest wedged\n");
+    const past = new Date(Date.now() - 10 * 60 * 1000);
+    await Deno.utime(log, past, past);
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, CONTAINER_WEDGED_EXIT_STATUS, outcome.stderr);
+    await Deno.stat(`${harness.recordDir}/scan-interrupted`);
+    const args = await recorded(harness, "run");
+    assert(args);
+    const name = args[args.indexOf("--name") + 1]!;
+    assertEquals(await containerExists(harness, name), false, outcome.stderr);
+    let timer: number | undefined;
+    try {
+      const status = await Promise.race([
+        helperStatus,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("helper survived cleanup")),
+            1000,
+          );
+        }),
+      ]);
+      assertEquals(status.signal, "SIGKILL", outcome.stderr);
+    } finally {
+      clearTimeout(timer);
+    }
+  } finally {
+    try {
+      helper.kill("SIGKILL");
+    } catch { /* already reaped */ }
+    await helperStatus;
+    await harness.cleanup();
+  }
+});
+
 Deno.test("run.sh - a silent guest that still answers is left to the deadline (Issue #5161)", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",

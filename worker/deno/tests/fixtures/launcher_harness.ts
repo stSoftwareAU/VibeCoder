@@ -264,6 +264,10 @@ case "\${sub}" in
     exit "\${STUB_EXEC_EXIT:-0}"
     ;;
   kill)
+    if [[ -n "\${STUB_KILL_FIRST_EXIT:-}" && ! -e "\${record_dir}/first-kill" ]]; then
+      : > "\${record_dir}/first-kill"
+      exit "\${STUB_KILL_FIRST_EXIT}"
+    fi
     # The wedge the watchdog exists for: the runtime cannot reap its own
     # container, exactly as observed on host-23 (Issue #4173). A kill the
     # runtime accepts removes the container from the stub's table, so a test
@@ -305,6 +309,8 @@ case "\${sub}" in
     exit "\${STUB_INIT_EXIT:-0}"
     ;;
   run)
+    printf '%s' "\$\$" > "\${record_dir}/run.pid"
+    printf '%s' "\$0" > "\${record_dir}/runtime.path"
     # The mode of the container-stderr capture FIFO (Issue #1299), recorded
     # from inside the run: the launcher removes the FIFO on the way out, so
     # this is the only moment it exists to be inspected. GNU stat first, BSD
