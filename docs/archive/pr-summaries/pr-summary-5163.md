@@ -130,12 +130,13 @@ flowchart LR
 - `./quality.sh` on the final code, after merging `main`, passed: the parallel
   pass in 9m16s and the serial pass in 4m08s. config-integration and checkov
   were skipped on this host. The first run that day failed one test,
-  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`, with `dns error:
+  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`, with
+  `dns error:
   failed to lookup address information: Temporary failure in name resolution`
   (`entities@3.0.1`), while 35,250 others passed. That test runs
   `deno task pr-summary-check` in a cleared environment, which uses the default
-  `~/.cache/deno`. That cache lacked the npm packages, and this container has
-  no network. After the run's own npm cache was copied there (outside the
+  `~/.cache/deno`. That cache lacked the npm packages, and this container has no
+  network. After the run's own npm cache was copied there (outside the
   repository), the test passed (11/11) and so did the gate. This is a host
   fault, not a fault in this change.
 - `deno task pr-summary-check` on this summary: 0 gates blocked.
