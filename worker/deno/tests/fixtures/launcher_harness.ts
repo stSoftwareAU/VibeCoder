@@ -149,6 +149,7 @@ printf '%s\\0' "\$@" > "\${record_dir}/\${sub}.args"
 # Which step ran before which is behaviour too (Issue #492): the per-command
 # .args files cannot answer it, so keep an ordered log beside them.
 printf '%s\\n' "\${sub}" >> "\${record_dir}/order.log"
+date +%s > "\${record_dir}/\${sub}.started"
 # Stall one sub-command (\`run\` unless \`STUB_READY_DELAY_SUB\` names another)
 # between its readiness record and the work it gates (Issue #668). A CI runner
 # carrying four shards deschedules this stub for exactly this long, so a test
@@ -177,6 +178,13 @@ case "\${sub}" in
     exit 0
     ;;
   logs)
+    # The first flagged log read (the evidence capture's, not the proxy's) stalls
+    # for STUB_LOGS_FIRST_SLEEP seconds (Issue #5161): evidence capture that
+    # crosses the watchdog deadline. Later reads answer at once, so the reap that finishes the job is not slowed again.
+    if [[ -n "\${STUB_LOGS_FIRST_SLEEP:-}" && "\${2:-}" == --* && ! -f "\${record_dir}/logs.stalled" ]]; then
+      : > "\${record_dir}/logs.stalled"
+      sleep "\${STUB_LOGS_FIRST_SLEEP}" >/dev/null 2>&1
+    fi
     # The readiness line is printed only after the proxy run was recorded, so
     # a poll that races the start retries instead of succeeding first.
     if [[ -f "\${record_dir}/run-proxy.args" ]]; then
@@ -249,9 +257,24 @@ case "\${sub}" in
   stop)
     exit 0
     ;;
+  exec)
+    # The guest-answering probe of the early silent-guest check (Issue #5161):
+    # a wedged guest does not answer, so a test sets STUB_EXEC_EXIT non-zero.
+    sleep "\${STUB_EXEC_SLEEP:-0}"
+    exit "\${STUB_EXEC_EXIT:-0}"
+    ;;
   kill)
+    if [[ -n "\${STUB_KILL_FIRST_EXIT:-}" && ! -e "\${record_dir}/first-kill" ]]; then
+      : > "\${record_dir}/first-kill"
+      exit "\${STUB_KILL_FIRST_EXIT}"
+    fi
     # The wedge the watchdog exists for: the runtime cannot reap its own
-    # container, exactly as observed on host-23 (Issue #4173).
+    # container, exactly as observed on host-23 (Issue #4173). A kill the
+    # runtime accepts removes the container from the stub's table, so a test
+    # reads the state the reap left behind, not the call that asked for it.
+    if [[ "\${STUB_KILL_EXIT:-0}" == "0" ]]; then
+      rm -f "\${record_dir}/containers/\${2:-none}"
+    fi
     exit "\${STUB_KILL_EXIT:-0}"
     ;;
   list|ps)
@@ -286,6 +309,8 @@ case "\${sub}" in
     exit "\${STUB_INIT_EXIT:-0}"
     ;;
   run)
+    printf '%s' "\$\$" > "\${record_dir}/run.pid"
+    printf '%s' "\$0" > "\${record_dir}/runtime.path"
     # The mode of the container-stderr capture FIFO (Issue #1299), recorded
     # from inside the run: the launcher removes the FIFO on the way out, so
     # this is the only moment it exists to be inspected. GNU stat first, BSD
@@ -320,6 +345,16 @@ case "\${sub}" in
       done &
       stderr_pid=\$!
     fi
+    # The container table (Issue #5161): the worker's container exists from
+    # the moment its run starts, until a runtime kill removes it.
+    prev=""
+    for a in "\$@"; do
+      if [[ "\${prev}" == "--name" ]]; then
+        mkdir -p "\${record_dir}/containers"
+        : > "\${record_dir}/containers/\${a}"
+      fi
+      prev="\${a}"
+    done
     if [[ -n "\${STUB_RUN_SLEEP:-}" ]]; then
       # Streams detached: when this stub is SIGKILLed (the watchdog path of
       # Issue #4173) the orphaned sleep must not hold the launcher's stdout

@@ -69,7 +69,7 @@ const BOOT_LOG_TAIL_LINES = 200;
 /** Lines of guest command output kept for each guest field. */
 const GUEST_TAIL_LINES = 500;
 
-const WORKER_LOG_RE = /^worker(?:-\d+)*\.log$/;
+export const WORKER_LOG_RE = /^worker(?:-\d+)*\.log$/;
 const TRANSCRIPT_RE = /^agent-.+\.jsonl$/;
 const RUN_ID_RE = /\bvibe-[0-9a-z]+-[0-9a-f]{6}\b/g;
 const TRANSCRIPT_RUN_ID_RE =
@@ -288,7 +288,7 @@ function messageOf(error: unknown): string {
  * Run one step against a timer. Never throws: a timeout, a rejection or a
  * throwing seam is reported as a cause.
  */
-async function bounded<T>(
+export async function bounded<T>(
   seams: EvidenceSeams,
   work: () => Promise<T>,
   ms: number,
@@ -321,7 +321,7 @@ interface ListedFile {
 }
 
 /** The newest listed file whose name matches, ties broken by name, descending. */
-function newestMatching(
+export function newestMatching(
   files: readonly ListedFile[],
   pattern: RegExp,
 ): ListedFile | undefined {
