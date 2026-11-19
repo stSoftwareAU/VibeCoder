@@ -2591,8 +2591,10 @@ never overlap:
   `minimumReleaseAge: "24 hours"` and `VIBE_BUMP_QUARANTINE_HOURS` (default
   `24`, governing `bump-deps.sh`). `renovate.json` disables Renovate's `deno`
   manager so it never double-gates the deps Deno now owns, while keeping the 24h
-  window and the `stSoftwareAU/*` 0h exemption for the ecosystems it still
-  manages.
+  window for the ecosystems it still manages. A first-party
+  `minimumReleaseAge: null` rule is added only where Renovate manages a
+  matching `stSoftwareAU` package (Issue #5120), matched by first-party names
+  only.
 
   The `bump-deps.sh` window is **verified rather than advised**.
   Exporting `VIBE_BUMP_QUARANTINE_HOURS` into a repo-supplied script left the

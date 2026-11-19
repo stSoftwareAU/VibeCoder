@@ -8,13 +8,20 @@
  * `renovate.json` closes the gap identified by the security-scan
  * dependency-update quarantine audit (`supply-chain:quarantine-missing`):
  * every external bump must wait at least `VIBE_BUMP_QUARANTINE_HOURS`
- * (default 24h) after publish, while internal `stSoftwareAU/*` packages
- * bypass the wait.
+ * (default 24h) after publish. An internal `stSoftwareAU/*` package may bypass
+ * the wait with a `null` age, but only where the config manages one (Issue
+ * #5120): the file carries that exemption exactly when a workflow uses a
+ * stSoftwareAU action.
  *
  * Australian English used throughout (behaviour, organisation, etc.).
  */
 
 import { assertEquals, assertNotEquals } from "@std/assert";
+import { extractUsesValue } from "../lib/action_pin_scanner.ts";
+import {
+  isScopedToFirstParty,
+  parseRenovateDurationHours,
+} from "../lib/renovate_release_age.ts";
 
 interface PackageRule {
   description?: string;
@@ -22,7 +29,7 @@ interface PackageRule {
   matchPackageNames?: string[];
   matchPackagePatterns?: string[];
   matchSourceUrlPrefixes?: string[];
-  minimumReleaseAge?: string;
+  minimumReleaseAge?: string | null;
   enabled?: boolean;
 }
 
@@ -35,34 +42,77 @@ interface RenovateConfig {
 
 const RENOVATE_URL = new URL("../../../renovate.json", import.meta.url);
 
+/** The workflow and composite-action trees whose `uses:` owners decide the exemption. */
+const WORKFLOW_DIRS = [
+  new URL("../../../.github/workflows/", import.meta.url),
+  new URL("../../../.github/actions/", import.meta.url),
+];
+
 async function loadRenovateConfig(): Promise<RenovateConfig> {
   const text = await Deno.readTextFile(RENOVATE_URL);
   return JSON.parse(text) as RenovateConfig;
 }
 
-/**
- * Parse a Renovate-style duration string ("24 hours", "7 days", "30
- * minutes", "0") into hours. Returns null for unrecognised input.
- */
-function parseReleaseAgeHours(value: string | undefined): number | null {
-  if (value === undefined) return null;
-  const trimmed = value.trim().toLowerCase();
-  if (trimmed === "0" || trimmed === "") return 0;
-  const match = /^(\d+(?:\.\d+)?)\s*(minute|hour|day|week)s?$/.exec(trimmed);
-  if (!match) return null;
-  const n = Number(match[1]);
-  switch (match[2]) {
-    case "minute":
-      return n / 60;
-    case "hour":
-      return n;
-    case "day":
-      return n * 24;
-    case "week":
-      return n * 24 * 7;
-    default:
-      return null;
+/** Every `*.yml` / `*.yaml` under `dir`, recursively; a missing directory has none. */
+async function listYamlFiles(dir: URL): Promise<URL[]> {
+  const entries: Deno.DirEntry[] = [];
+  try {
+    for await (const entry of Deno.readDir(dir)) entries.push(entry);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return [];
+    throw error;
   }
+  const found: URL[] = [];
+  for (const entry of entries) {
+    const child = new URL(
+      entry.isDirectory ? `${entry.name}/` : entry.name,
+      dir,
+    );
+    if (entry.isDirectory) {
+      found.push(...await listYamlFiles(child));
+    } else if (/\.ya?ml$/.test(entry.name)) {
+      found.push(child);
+    }
+  }
+  return found;
+}
+
+/**
+ * Lower-cased owners of every `uses:` in the workflows and composite actions.
+ * Local `./` actions and `docker://` images have no GitHub owner, so skip them.
+ */
+async function usesOwners(): Promise<Set<string>> {
+  const owners = new Set<string>();
+  for (const dir of WORKFLOW_DIRS) {
+    for (const file of await listYamlFiles(dir)) {
+      const lines = (await Deno.readTextFile(file)).split("\n");
+      for (const line of lines) {
+        const value = extractUsesValue(line);
+        if (
+          value === null || value.startsWith("./") ||
+          value.startsWith("docker://")
+        ) {
+          continue;
+        }
+        const owner = value.split("/")[0];
+        if (owner) owners.add(owner.toLowerCase());
+      }
+    }
+  }
+  return owners;
+}
+
+/**
+ * True when a packageRules entry lifts the quarantine (a `null` or zero age)
+ * and is scoped to first-party names by the production `isScopedToFirstParty`.
+ */
+function holdsFirstPartyExemption(rules: PackageRule[]): boolean {
+  return rules.some((rule) => {
+    const age = rule.minimumReleaseAge;
+    const lifts = age === null ||
+      (typeof age === "string" && parseRenovateDurationHours(age) === 0);
+    return lifts && isScopedToFirstParty(rule as Record<string, unknown>);
+  });
 }
 
 Deno.test("renovate.json - exists and is valid JSON", async () => {
@@ -73,7 +123,7 @@ Deno.test("renovate.json - exists and is valid JSON", async () => {
 
 Deno.test("renovate.json - top-level minimumReleaseAge gates every ecosystem", async () => {
   const config = await loadRenovateConfig();
-  const hours = parseReleaseAgeHours(config.minimumReleaseAge);
+  const hours = parseRenovateDurationHours(config.minimumReleaseAge ?? "");
   assertNotEquals(
     hours,
     null,
@@ -87,34 +137,17 @@ Deno.test("renovate.json - top-level minimumReleaseAge gates every ecosystem", a
 });
 
 Deno.test(
-  "renovate.json - packageRules excludes stSoftwareAU/* from the quarantine",
+  "renovate.json - carries a first-party exemption exactly when it manages a stSoftwareAU action",
   async () => {
     const config = await loadRenovateConfig();
-    const rules = config.packageRules ?? [];
-    assertNotEquals(rules.length, 0, "packageRules must not be empty");
-
-    const matchesInternal = (rule: PackageRule): boolean => {
-      const candidates: string[] = [
-        ...(rule.matchPackageNames ?? []),
-        ...(rule.matchPackagePatterns ?? []),
-        ...(rule.matchSourceUrlPrefixes ?? []),
-      ];
-      return candidates.some((p) => p.toLowerCase().includes("stsoftwareau"));
-    };
-
-    const internalRule = rules.find(matchesInternal);
-    assertNotEquals(
-      internalRule,
-      undefined,
-      "expected a packageRules entry targeting stSoftwareAU/* packages",
-    );
-    const hours = parseReleaseAgeHours(internalRule!.minimumReleaseAge);
+    const managesFirstParty = (await usesOwners()).has("stsoftwareau");
+    const hasExemption = holdsFirstPartyExemption(config.packageRules ?? []);
     assertEquals(
-      hours,
-      0,
-      `internal stSoftwareAU/* rule must set minimumReleaseAge to 0 (bypass); got "${
-        internalRule!.minimumReleaseAge
-      }"`,
+      hasExemption,
+      managesFirstParty,
+      managesFirstParty
+        ? 'a workflow or action uses a stSoftwareAU action but renovate.json has no first-party exemption; add a packageRules entry with "minimumReleaseAge": null matched by first-party names only (Issue #5120)'
+        : "renovate.json carries a first-party exemption but no workflow or action uses a stSoftwareAU action; remove the exemption rule until one is managed (Issue #5120)",
     );
   },
 );
@@ -142,41 +175,16 @@ Deno.test(
 );
 
 Deno.test(
-  "renovate.json - retains the 24h window and internal exemption for non-Deno ecosystems",
+  "renovate.json - retains the 24h window for non-Deno ecosystems",
   async () => {
     const config = await loadRenovateConfig();
 
     // Top-level 24h window unchanged for the ecosystems Renovate still owns.
-    const topHours = parseReleaseAgeHours(config.minimumReleaseAge);
+    const topHours = parseRenovateDurationHours(config.minimumReleaseAge ?? "");
     assertEquals(
       topHours! >= 24,
       true,
       "top-level minimumReleaseAge must remain at least 24 hours for non-Deno ecosystems",
-    );
-
-    // The internal exemption rule must not be the deno-disable rule.
-    const rules = config.packageRules ?? [];
-    const internalRule = rules.find((rule) =>
-      [
-        ...(rule.matchPackageNames ?? []),
-        ...(rule.matchPackagePatterns ?? []),
-        ...(rule.matchSourceUrlPrefixes ?? []),
-      ].some((p) => p.toLowerCase().includes("stsoftwareau"))
-    );
-    assertNotEquals(
-      internalRule,
-      undefined,
-      "the stSoftwareAU/* exemption must survive the Deno change",
-    );
-    assertEquals(
-      parseReleaseAgeHours(internalRule!.minimumReleaseAge),
-      0,
-      "internal stSoftwareAU/* rule must still bypass the quarantine",
-    );
-    assertNotEquals(
-      (internalRule!.matchManagers ?? []).includes("deno"),
-      true,
-      "the internal exemption rule must be distinct from the deno-manager rule",
     );
   },
 );

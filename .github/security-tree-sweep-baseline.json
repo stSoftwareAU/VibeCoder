@@ -136,14 +136,6 @@
   ],
   "accepted": [
     {
-      "path": "renovate.json",
-      "rule": "package_managers.renovate.renovate-missing-minimum-release-age.renovate-missing-minimum-release-age",
-      "line": 69,
-      "snippet": "\"minimumReleaseAge\": \"0\"",
-      "reason": "The `minimumReleaseAge: \"0\"` the rule flags is the documented first-party exemption for stSoftwareAU/* packages only (Issue #2124); every third-party ecosystem keeps the 24 hours set at the top of the file. Not the emergency override path (docs/security-advisory-triage.md).",
-      "issue": 2124
-    },
-    {
       "path": "worker/deno/lib/file_lock.ts",
       "rule": "trivial-conditional",
       "line": 250,
