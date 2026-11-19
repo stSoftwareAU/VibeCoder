@@ -154,6 +154,46 @@ for (
   });
 }
 
+// PR #5276 review: `!` inverts the script's failure to exit 0 and is exempt
+// from errexit, so a negated call must not count as running the script.
+for (
+  const [label, prefix] of [
+    ["a negated call", "! "],
+    ["a negated call after time", "time ! "],
+    ["a call under until, which retries a failure", "until "],
+    ["a call as a while condition", "while "],
+    ["a call as an if condition", "if "],
+  ] as const
+) {
+  Deno.test(`(a) refuses ${label}`, () => {
+    expectFindings(
+      mutate([
+        TEST_STEP_ANCHOR,
+        "\n          set -euo pipefail\n          " + prefix +
+        "./infra/cloudformation/test-aws-emulator.sh\n",
+      ]),
+      ["[test-step] no step runs"],
+    );
+  });
+}
+
+Deno.test("(a) accepts the normal call after set -euo pipefail (control for the negated cases)", () => {
+  expectFindings(
+    mutate([
+      TEST_STEP_ANCHOR,
+      "\n          set -euo pipefail\n          ./infra/cloudformation/test-aws-emulator.sh\n",
+    ]),
+    [],
+  );
+});
+
+Deno.test("(b) refuses a negated pinned install, which would swallow a checksum failure", () => {
+  expectFindings(
+    mutate([TOOLCHAIN_ANCHOR, "! " + TOOLCHAIN_ANCHOR]),
+    ["[pinned-install] no step runs"],
+  );
+});
+
 Deno.test("(a) refuses the call only in a comment line", () => {
   expectFindings(
     mutate([

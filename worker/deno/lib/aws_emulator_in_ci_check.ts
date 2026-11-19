@@ -18,6 +18,11 @@
 import { parse as parseYaml } from "@std/yaml/parse";
 import { loadWorkflows } from "./linter_in_ci_check.ts";
 import { parseCfnDocument } from "./cfn_cost_checks.ts";
+import {
+  commandIndex,
+  reachableSegments,
+  stripQuotes,
+} from "./shell_command_words.ts";
 
 /** Result of checking a repository for AWS usage and emulator wiring. */
 export interface AwsEmulatorCheckResult {
@@ -315,146 +320,12 @@ export function workflowRunsFloci(parsedYaml: unknown): boolean {
   return false;
 }
 
-const SHELL_SEPARATORS = new Set([";", "|", "&"]);
-const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const AWS_EMULATOR_RUN_COMMAND = /(?:^|\/)aws-emulator-run$/;
 /** Largest repository script read for the one-level indirection check. */
 const MAX_SCRIPT_BYTES = 1024 * 1024;
 
 /** Reads a repo-relative script's text, or null when it is unavailable. */
 export type ScriptReader = (relPath: string) => string | null;
-
-/**
- * Split a `run:` body into command segments, each a list of words. Quotes
- * keep a word together (`X="a b"` is one word), a backslash-newline joins
- * lines, a newline or `;`/`|`/`&` starts a new segment, and a `#` that
- * starts a word ends the line. This finds command words only; it is not a
- * shell parser. Exported because aws_emulator_workflow_check.ts also uses it.
- */
-export function shellSegments(script: string): string[][] {
-  const text = script.replace(/\\\r?\n/g, " ");
-  const segments: string[][] = [];
-  let words: string[] = [];
-  let word = "";
-  let inWord = false;
-  let quote: string | null = null;
-
-  const endWord = () => {
-    if (inWord) words.push(word);
-    word = "";
-    inWord = false;
-  };
-  const endSegment = () => {
-    endWord();
-    if (words.length > 0) segments.push(words);
-    words = [];
-  };
-
-  for (let i = 0; i < text.length; i++) {
-    const ch = text.charAt(i);
-    if (quote !== null) {
-      word += ch;
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      word += ch;
-      inWord = true;
-      continue;
-    }
-    if (ch === "\n") {
-      endSegment();
-      continue;
-    }
-    if (ch === " " || ch === "\t" || ch === "\r") {
-      endWord();
-      continue;
-    }
-    if (ch === "#" && !inWord) {
-      const newline = text.indexOf("\n", i);
-      if (newline === -1) break;
-      i = newline - 1; // the loop's i++ lands on the newline
-      continue;
-    }
-    if (SHELL_SEPARATORS.has(ch)) {
-      endSegment();
-      if (text.charAt(i + 1) === ch) i++; // `&&` and `||`
-      continue;
-    }
-    word += ch;
-    inWord = true;
-  }
-  endSegment();
-  return segments;
-}
-
-/**
- * Shell reserved words and plain prefix words that may sit in front of the
- * command word. A word counts only when it stands alone (`then`, not
- * `then;`, which `shellSegments` already splits).
- */
-const SHELL_PREFIX_WORDS = new Set([
-  "if",
-  "then",
-  "elif",
-  "else",
-  "do",
-  "while",
-  "until",
-  "!",
-  "{",
-  "(",
-  "sudo",
-  "env",
-  "exec",
-]);
-/** `timeout` options that take a separate value word (`-k 5`, `-s KILL`). */
-const TIMEOUT_VALUE_OPTIONS = new Set([
-  "-k",
-  "-s",
-  "--kill-after",
-  "--signal",
-]);
-
-/**
- * Index of the command word. Skips shell reserved words, `sudo`, `env`,
- * `exec`, leading `VAR=value` words, and the wrappers `time` (with `-p`),
- * `nice` (with `-n N` or `-N`), `timeout` (with its options and its duration
- * word) and `command`. `command -v`/`-V` only looks a command up, so it stops
- * the scan at `command` itself. Returns `words.length` when none is found.
- * Exported because aws_emulator_workflow_check.ts also uses it.
- */
-export function commandIndex(words: string[]): number {
-  let i = 0;
-  while (i < words.length) {
-    const w = words[i] ?? "";
-    if (SHELL_PREFIX_WORDS.has(w) || SHELL_ASSIGNMENT.test(w)) {
-      i++;
-    } else if (w === "time") {
-      i++;
-      if (words[i] === "-p") i++;
-    } else if (w === "nice") {
-      i++;
-      const next = words[i];
-      if (next === "-n") i += 2;
-      else if (next !== undefined && /^-n?\d+$/.test(next)) i++;
-    } else if (w === "timeout") {
-      i++;
-      while (i < words.length && (words[i] ?? "").startsWith("-")) {
-        i += TIMEOUT_VALUE_OPTIONS.has(words[i] ?? "") ? 2 : 1;
-      }
-      i++; // the duration
-    } else if (w === "command") {
-      const next = words[i + 1];
-      if (next === "-v" || next === "-V") break;
-      i++;
-    } else {
-      break;
-    }
-  }
-  return i;
-}
 
 /** `aws-emulator-run` options that take a separate value word. */
 const EMULATOR_RUN_VALUE_OPTIONS = new Set(["--ready-timeout", "--timeout"]);
@@ -505,10 +376,6 @@ function segmentInvokesEmulatorRunner(words: string[]): boolean {
   return false;
 }
 
-function stripQuotes(word: string): string {
-  return word.replace(/^(["'])(.*)\1$/, "$2");
-}
-
 /**
  * The repo-relative script a segment runs: its command word (see
  * {@link commandIndex}) when that is a relative path (contains `/`), or the
@@ -526,9 +393,27 @@ function segmentScriptPath(words: string[]): string | null {
   return command.includes("/") ? command : null;
 }
 
-/** True when `script` text has a segment that invokes the emulator runner. */
+/**
+ * True when `script` text has a reachable segment that invokes the emulator
+ * runner (see {@link reachableSegments}).
+ */
 function scriptInvokesEmulatorRunner(script: string): boolean {
-  return shellSegments(script).some((w) => segmentInvokesEmulatorRunner(w));
+  return reachableSegments(script).some((w) => segmentInvokesEmulatorRunner(w));
+}
+
+/**
+ * True when a workflow `if:` value is statically false (`false`, `${{ false }}`,
+ * `0`, `''`, `null`, `!true`), so the job or step never runs. Any other
+ * expression is decided at run time and keeps its credit.
+ */
+function ifIsStaticallyFalse(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (value === false || value === null || value === 0) return true;
+  if (typeof value !== "string") return false;
+  const text = value.trim();
+  const wrapped = /^\$\{\{([^}]*)\}\}$/.exec(text);
+  const expr = (wrapped?.[1] ?? text).trim().toLowerCase();
+  return ["false", "0", "''", '""', "null", "!true"].includes(expr);
 }
 
 /**
@@ -573,8 +458,12 @@ export function makeRepoScriptReader(repoRoot: string): ScriptReader {
  * directly, or it runs a repository script (a relative path, or the first
  * argument of `bash`/`sh`) that `readScript` returns and that itself has a
  * segment invoking `aws-emulator-run` (one level of indirection only).
- * Without `readScript` only direct invocations count. Floci is detected
- * separately by `workflowRunsFloci`.
+ * Without `readScript` only direct invocations count. A job or step whose
+ * `if:` is statically false, and a command that cannot run (after `exit`,
+ * behind `false &&`, in a false branch, in a function body or here-document;
+ * see {@link reachableSegments}), earns no credit, in the workflow's `run:`
+ * and in the repository script alike. Floci is detected separately by
+ * `workflowRunsFloci`.
  */
 export function workflowRunsAwsEmulator(
   parsedYaml: unknown,
@@ -585,12 +474,13 @@ export function workflowRunsAwsEmulator(
   if (!isRecord(jobs)) return false;
 
   for (const job of Object.values(jobs)) {
-    if (!isRecord(job)) continue;
+    if (!isRecord(job) || ifIsStaticallyFalse(job.if)) continue;
     const steps = job.steps;
     if (!Array.isArray(steps)) continue;
     for (const step of steps) {
       if (!isRecord(step) || typeof step.run !== "string") continue;
-      for (const words of shellSegments(step.run)) {
+      if (ifIsStaticallyFalse(step.if)) continue;
+      for (const words of reachableSegments(step.run)) {
         if (segmentInvokesEmulatorRunner(words)) return true;
         if (readScript === undefined) continue;
         const path = segmentScriptPath(words);

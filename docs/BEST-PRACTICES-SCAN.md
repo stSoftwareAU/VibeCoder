@@ -357,7 +357,16 @@ that runs a repository script (a relative path, or the first argument of
 `bash`/`sh`) which itself invokes `aws-emulator-run` the same way — one
 level of indirection, with the script read from the checkout and confined
 to it (absolute paths, `..`, `$` expansions and symlinks out of the repo
-do not count). Merely installing the emulator
+do not count). The invocation must also be able to run: a job or step
+whose `if:` is statically false (`false`, `${{ false }}`, `0`) earns no
+credit, nor does a command after an unconditional `exit`, behind
+`false &&` or `true ||`, in an `if`/`elif`/`else` branch or `while`/`until`
+body whose condition is statically false (`false`, `! true`, `:`, `true`),
+in a function body, or in a here-document — in the workflow and in the
+repository script alike (the helpers are in
+[`worker/deno/lib/shell_command_words.ts`](../worker/deno/lib/shell_command_words.ts)).
+A condition decided at run time (`[ -n "$X" ]`, `github.event_name == 'push'`)
+keeps its credit. Merely installing the emulator
 (`container/toolchains/aws-emulator.sh`, or
 `install ... /usr/local/bin/aws-emulator-run`) is not coverage. An
 `echo aws-emulator-run`, `command -v aws-emulator-run`, a comment, or a

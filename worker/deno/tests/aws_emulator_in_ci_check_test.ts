@@ -1317,3 +1317,243 @@ Deno.test({
     }
   },
 });
+
+// ---------------------------------------------------------------------------
+// PR #5276 review: runner text that cannot run earns no credit
+// ---------------------------------------------------------------------------
+
+const RUNNER = "aws-emulator-run -- ./t.sh";
+
+/** A one-job, one-step workflow document built directly (no YAML parse). */
+function docWithStep(
+  run: string,
+  step: Record<string, unknown> = {},
+  job: Record<string, unknown> = {},
+): unknown {
+  return { jobs: { test: { ...job, steps: [{ run, ...step }] } } };
+}
+
+const NOT_EXECUTED: [
+  string,
+  string,
+  Record<string, unknown>,
+  Record<string, unknown>,
+][] = [
+  ["a step with if: false", RUNNER, { if: false }, {}],
+  ["a step with if: ${{ false }}", RUNNER, { if: "${{ false }}" }, {}],
+  ["a step with if: '0'", RUNNER, { if: "0" }, {}],
+  ["a job with if: false", RUNNER, {}, { if: false }],
+  ["a false if branch", `if false; then ${RUNNER}; fi`, {}, {}],
+  [
+    "a false if branch on its own lines",
+    `if false\nthen\n  ${RUNNER}\nfi`,
+    {},
+    {},
+  ],
+  ["a negated true if branch", `if ! true; then ${RUNNER}; fi`, {}, {}],
+  [
+    "the else of an if true",
+    `if true; then echo ok; else ${RUNNER}; fi`,
+    {},
+    {},
+  ],
+  [
+    "an elif after a taken true branch",
+    `if true; then echo ok; elif [ -n "$X" ]; then ${RUNNER}; fi`,
+    {},
+    {},
+  ],
+  ["a while false body", `while false; do ${RUNNER}; done`, {}, {}],
+  ["an until true body", `until true; do ${RUNNER}; done`, {}, {}],
+  ["code after exit 0", `exit 0\n${RUNNER}`, {}, {}],
+  [
+    "code after an exit in an if true",
+    `if true; then exit 0; fi\n${RUNNER}`,
+    {},
+    {},
+  ],
+  ["a false && chain", `false && ${RUNNER}`, {}, {}],
+  ["a true || chain", `true || ${RUNNER}`, {}, {}],
+  [
+    "a function body that is never called",
+    `run_tests() {\n  ${RUNNER}\n}\necho done`,
+    {},
+    {},
+  ],
+  [
+    "a function body with the brace on the next line",
+    `function run_tests\n{\n  ${RUNNER}\n}`,
+    {},
+    {},
+  ],
+  ["a here-document body", `cat <<EOF\n${RUNNER}\nEOF`, {}, {}],
+  [
+    "a tab-stripped here-document body",
+    `cat <<-'EOF'\n\t${RUNNER}\n\tEOF`,
+    {},
+    {},
+  ],
+];
+
+for (const [label, run, step, job] of NOT_EXECUTED) {
+  Deno.test(`workflowRunsAwsEmulator - does not credit ${label}`, () => {
+    assertEquals(workflowRunsAwsEmulator(docWithStep(run, step, job)), false);
+    // The same text with the construct removed is credited.
+    assertEquals(workflowRunsAwsEmulator(docWithStep(RUNNER)), true);
+  });
+}
+
+const EXECUTED: [
+  string,
+  string,
+  Record<string, unknown>,
+  Record<string, unknown>,
+][] = [
+  ["a plain invocation", RUNNER, {}, {}],
+  [
+    "a step if decided at run time",
+    RUNNER,
+    { if: "github.event_name == 'push'" },
+    {},
+  ],
+  ["a job if decided at run time", RUNNER, {}, { if: "always()" }],
+  ["a step with if: true", RUNNER, { if: true }, {}],
+  ["an if on a runtime test", `if [ -n "$X" ]; then ${RUNNER}; fi`, {}, {}],
+  [
+    "the else of an if false",
+    `if false; then echo no; else ${RUNNER}; fi`,
+    {},
+    {},
+  ],
+  [
+    "an elif after a false branch",
+    `if false; then echo no; elif true; then ${RUNNER}; fi`,
+    {},
+    {},
+  ],
+  ["a true && chain", `true && ${RUNNER}`, {}, {}],
+  ["a false || chain", `false || ${RUNNER}`, {}, {}],
+  [
+    "code after a guarded exit",
+    `[ -z "$X" ] && exit 0\n${RUNNER}`,
+    {},
+    {},
+  ],
+  [
+    "code after an exit in an if on a runtime test",
+    `if [ -z "$X" ]; then exit 0; fi\n${RUNNER}`,
+    {},
+    {},
+  ],
+  ["a for loop body", `for t in a b; do ${RUNNER}; done`, {}, {}],
+  ["code after a here-string", `cat <<< x\n${RUNNER}`, {}, {}],
+  ["code after a here-document", `cat <<EOF\nx\nEOF\n${RUNNER}`, {}, {}],
+  ["code after a function definition", `f() {\n  echo x\n}\n${RUNNER}`, {}, {}],
+];
+
+for (const [label, run, step, job] of EXECUTED) {
+  Deno.test(`workflowRunsAwsEmulator - credits ${label}`, () => {
+    assertEquals(workflowRunsAwsEmulator(docWithStep(run, step, job)), true);
+  });
+}
+
+Deno.test("workflowRunsAwsEmulator - a repository script's unreachable runner earns no credit, a reachable one does", () => {
+  const doc = docWithStep("./ci/t.sh");
+  const read = (text: string) => (path: string) =>
+    path === "./ci/t.sh" ? text : null;
+  for (
+    const text of [
+      `exit 0\n${RUNNER}\n`,
+      `if false; then ${RUNNER}; fi\n`,
+      `false && ${RUNNER}\n`,
+      `cat <<EOF\n${RUNNER}\nEOF\n`,
+    ]
+  ) {
+    assertEquals(workflowRunsAwsEmulator(doc, read(text)), false, text);
+  }
+  assertEquals(workflowRunsAwsEmulator(doc, read(`${RUNNER}\n`)), true);
+  assertEquals(
+    workflowRunsAwsEmulator(
+      doc,
+      read(`[ -z "$X" ] && exit 0\n${RUNNER}\n`),
+    ),
+    true,
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - an unreachable step calling a script that runs the emulator earns no credit", () => {
+  const read = () => `${RUNNER}\n`;
+  assertEquals(
+    workflowRunsAwsEmulator(docWithStep("exit 0\n./ci/t.sh"), read),
+    false,
+  );
+  assertEquals(
+    workflowRunsAwsEmulator(docWithStep("./ci/t.sh", { if: false }), read),
+    false,
+  );
+  assertEquals(workflowRunsAwsEmulator(docWithStep("./ci/t.sh"), read), true);
+});
+
+Deno.test("checkAwsEmulatorInCI - a disabled or unreachable runner does not count as emulator coverage", async () => {
+  for (
+    const run of [
+      "exit 0\n          aws-emulator-run -- ./t.sh",
+      "if false; then aws-emulator-run -- ./t.sh; fi",
+    ]
+  ) {
+    const root = await makeTempRepo();
+    try {
+      await writeFile(root, "infra/cloudformation/host.yaml", CFN_TEMPLATE);
+      await writeFile(
+        root,
+        ".github/workflows/ci.yml",
+        `jobs:\n  test:\n    steps:\n      - run: |\n          ${run}\n`,
+      );
+      const result = await checkAwsEmulatorInCI(root);
+      assertEquals(result.usesAws, true);
+      assertEquals(result.emulatorConfigured, false, run);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "infra/cloudformation/host.yaml", CFN_TEMPLATE);
+    await writeFile(
+      root,
+      ".github/workflows/ci.yml",
+      `jobs:\n  test:\n    steps:\n      - if: false\n        run: aws-emulator-run -- ./t.sh\n`,
+    );
+    assertEquals((await checkAwsEmulatorInCI(root)).emulatorConfigured, false);
+    // Positive control: the same step without the `if: false`.
+    await writeFile(
+      root,
+      ".github/workflows/ci.yml",
+      `jobs:\n  test:\n    steps:\n      - run: aws-emulator-run -- ./t.sh\n`,
+    );
+    assertEquals((await checkAwsEmulatorInCI(root)).emulatorConfigured, true);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("workflowRunsAwsEmulator - hostile long inputs finish with the right answer", () => {
+  const spaces = " ".repeat(100_000);
+  // A long run of `<` and of whitespace after `<<`, ending in a char the
+  // here-document pattern rejects: no delimiter, so nothing is dropped.
+  const heredocLike = `x ${"<".repeat(50_000)}${spaces}!\n${RUNNER}`;
+  assertEquals(workflowRunsAwsEmulator(docWithStep(heredocLike)), true);
+  // A long whitespace run inside `${{ }}` and a stray `}` for the `if:` pattern.
+  assertEquals(
+    workflowRunsAwsEmulator(
+      docWithStep(RUNNER, { if: `\${{${spaces}false${spaces}}}}` }),
+    ),
+    true,
+  );
+  assertEquals(
+    workflowRunsAwsEmulator(
+      docWithStep(RUNNER, { if: `\${{${spaces}false${spaces}}}` }),
+    ),
+    false,
+  );
+});

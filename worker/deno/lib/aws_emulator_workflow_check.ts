@@ -13,7 +13,9 @@
  *   script fails the job: the step's code (comment lines dropped) has no `|`,
  *   `;` or `&`, so nothing follows, pipes or backgrounds the call; the step
  *   consists only of `set -euo pipefail` (optional) and that one call, so no
- *   `if`, `exit` or second command can skip or replace it; and neither the
+ *   `if`, `exit` or second command can skip or replace it; no `!` or
+ *   `if`/`while`/`until` word precedes the call, because `! ./script` turns
+ *   a failure into success (PR #5276 review); and neither the
  *   job nor that step sets `continue-on-error` or an `if:` (PR #3478 review);
  * - (b) a step runs `container/toolchains/aws-emulator.sh` (the pinned,
  *   checksum-verified install), a step runs `container/toolchains/aws-cli.sh`
@@ -39,7 +41,10 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
-import { commandIndex, shellSegments } from "./aws_emulator_in_ci_check.ts";
+import {
+  shellSegments,
+  statusPreservingCommandIndex,
+} from "./shell_command_words.ts";
 
 /** The test script the workflow must run in command position. */
 export const SCRIPT_PATH = "infra/cloudformation/test-aws-emulator.sh";
@@ -91,10 +96,14 @@ function segmentsOf(step: unknown): string[][] {
 
 /**
  * Whether a segment runs `path` in command position: the command word ends
- * with `path`, or is `bash`/`sh` and the next word does.
+ * with `path`, or is `bash`/`sh` and the next word does. A `!`, or an
+ * `if`/`while`/`until` condition, in front of the command does not count: the
+ * script's exit status would no longer decide the step (`! ./test.sh` turns a
+ * failure into success and is exempt from `set -e`).
  */
 function segmentInvokes(words: string[], path: string): boolean {
-  const i = commandIndex(words);
+  const i = statusPreservingCommandIndex(words);
+  if (i === -1) return false;
   const head = words[i] ?? "";
   if (head.endsWith(path)) return true;
   return (head === "bash" || head === "sh") &&
@@ -106,7 +115,8 @@ function segmentInvokes(words: string[], path: string): boolean {
  * runner script as a later word. An `echo` naming it does not count.
  */
 function segmentInstallsRunner(words: string[]): boolean {
-  const i = commandIndex(words);
+  const i = statusPreservingCommandIndex(words);
+  if (i === -1) return false;
   const head = words[i] ?? "";
   return (head === "install" || head === "cp") &&
     words.slice(i + 1).some((w) => w.endsWith(RUNNER_PATH));

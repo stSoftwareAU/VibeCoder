@@ -26,7 +26,9 @@ required check.
   - `workflow_call` is a trigger, and there is no `pull_request` trigger and no
     concurrency group;
   - the test step is only `set -euo pipefail` and the script, so an `if false`
-    wrapper or an earlier `exit 0` is refused;
+    wrapper or an earlier `exit 0` is refused, and a `!`, `if`, `while` or
+    `until` in front of the call is refused too (`! ./script` turns a failure
+    into success and is exempt from `set -e`);
   - the pinned installs run first;
   - there is no Docker socket, no service container and no Floci;
   - least-privilege permissions;
@@ -41,7 +43,12 @@ required check.
 - **Fleet detector:** `BP-AWS-EMULATOR-MISSING` also accepts a workflow that
   runs a test through `aws-emulator-run [options] -- COMMAND`, directly or
   through a repository script. Without this, VibeCoder would flag itself once
-  `floci.yml` is gone.
+  `floci.yml` is gone. The invocation must be able to run: a job or step with a
+  statically false `if:`, and a command after an unconditional `exit`, behind
+  `false &&` or `true ||`, in a false `if`/`elif`/`else` branch or
+  `while`/`until` body, in a function body or in a here-document, earns no
+  credit, in the workflow and in the repository script alike. The shell helpers
+  live in `worker/deno/lib/shell_command_words.ts`.
 
 Two criteria stay partial until CI has run on this branch and a freshly started
 container runs the command, so this is Part of #5110.
@@ -207,10 +214,16 @@ flowchart LR
 - **met** — Focused tests prove startup/test failures propagate and missing
   required execution cannot become a green check. — evidence:
   `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (including "a
-  directory with no templates exits 1 before any AWS call"),
+  directory with no templates exits 1 before any AWS call"; the cleanup cases
+  assert the fake's resulting parameter and stack state),
   `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (if-false and
-  `exit 0` wrappers, separators, `[gate-call]`, `[gate-needs]`),
-  `worker/deno/tests/aws_emulator_in_ci_check_test.ts` — reviewer: met
+  `exit 0` wrappers, separators, negated and condition-wrapped calls,
+  `[gate-call]`, `[gate-needs]`),
+  `worker/deno/tests/aws_emulator_in_ci_check_test.ts` (disabled and
+  unreachable runner invocations, each with a credited control) — reviewer:
+  partial then met — reason: the review at the earlier head found a negated
+  test step accepted and a disabled or unreachable runner credited; both are
+  refused at this head
 - **met** — Every existing template is accounted for as exercised or as a
   specific unsupported case with alternative validation; no unsupported/stubbed
   resource is reported as proven. — evidence:
@@ -299,12 +312,17 @@ flowchart LR
 
 ## Test Plan
 
-- `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (new): 36 passed.
+- `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (new): 43 passed.
   - The real workflow has no findings.
   - Each invariant has a mutation, and so does each evasion: the `if false`
     wrapper, `exit 0`, `; true`, `&`, `| tee`, `&& echo`, and a commented-out
     call.
-  - Positive controls: `continue-on-error: false`, and the YAML 1.1 `true` key.
+  - Negated and condition-wrapped calls (`! `, `time ! `, `until `, `while `,
+    `if `) and a negated pinned install are each refused with the single
+    `[test-step]` or `[pinned-install]` finding. Red-checked: with the plain
+    `commandIndex` (which skips `!`) in the validator, those six cases fail.
+  - Positive controls: `continue-on-error: false`, the YAML 1.1 `true` key, and
+    the plain call after `set -euo pipefail`.
   - Also covered: a missing `workflow_call`, a re-added `pull_request` trigger,
     a concurrency block, and the `quality.yml` checks (`[gate-call]`,
     `[gate-needs]`, with the real file as a positive control).
@@ -312,7 +330,7 @@ flowchart LR
     findings, `[pinned-install]` and `[runner-install]`. The separator check is
     per step, and the real emulator install and runner install share one `run:`
     step, so `|| true` there disproves both.
-- `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (new): 16 passed,
+- `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (new): 17 passed,
   1 ignored. The cases:
   - the missing runner (exit 4), and the re-exec with its exit status passed
     through;
@@ -321,12 +339,15 @@ flowchart LR
   - a 501 reported as `UNSUPPORTED OPERATION`, and an unexpected failure quoting
     its cause;
   - an empty response failing the first data assertion;
-  - a failed create-stack still cleaning up;
+  - a failed create-stack leaving no stack and no SSM parameter in the fake's
+    state, and a cleanup that removes nothing (`cleanup_noop`) leaving state the
+    same helpers see, with no call-log or call-order assertion;
   - `ROLLBACK_COMPLETE`;
   - a gap that now builds, and an unexpected resource status;
   - a failed describe-stack-resources;
   - the expected gap reported as `UNSUPPORTED`;
-  - a role left behind failing cleanup;
+  - a role left behind failing cleanup (exit 1 and the `NoSuchEntity` cause,
+    with the stack deleted in the fake's state);
   - a template with no property checks failing first, with a positive control;
   - a directory with no templates exiting 1 with
     `::error::No CloudFormation templates`, with no `aws` call and no `PASS`.
@@ -337,7 +358,21 @@ flowchart LR
   The ignored case is the real end-to-end run. It is skipped for `vibe` and
   root, and was run as `agent` in Evidence instead.
 - `worker/deno/tests/aws_emulator_in_ci_check_test.ts` (extended, additions
-  only): 94 passed. Coverage:
+  only): 132 passed. Coverage:
+  - runner text that cannot run earns no credit (19 not-credited cases: a step
+    or job `if: false`, `${{ false }}` and `'0'`, a false or negated-true `if`,
+    the `else` of `if true`, an `elif` after a taken branch, `while false`,
+    `until true`, code after `exit 0` or after an exit in an `if true`,
+    `false &&`, `true ||`, function bodies, here-documents), each paired with a
+    credited plain invocation, plus 15 credited controls (a runtime `if:`, a
+    runtime `if` test, `else` of `if false`, `elif true` after a false branch,
+    a guarded `exit`, a `for` body, a here-string, code after a here-document or
+    a function definition, and others), the same for the repository script and
+    for an unreachable step that calls it, and an end-to-end
+    `checkAwsEmulatorInCI` case. Red-checked: with the reachability walk and
+    the `if:` check replaced by the plain splitter, 23 of these cases fail;
+  - hostile long inputs (a long `<` run and whitespace run for the here-document
+    pattern, a long whitespace run in `${{ }}`) return the right answer;
   - direct, wrapped, keyword-prefixed and quoted invocations;
   - look-alikes;
   - runner invocations that run no test, with positive controls;
@@ -345,11 +380,15 @@ flowchart LR
 - `worker/deno/tests/pre_push_gate_test.ts` (one test added, none removed): "the
   AWS Emulator script is never planned". It passes on the base by design,
   because it pins a deliberate absence.
-- A combined run of the files above with
-  `worker/deno/tests/checkov_workflow_test.ts`,
-  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` and
-  `worker/deno/tests/best_practices_template_test.ts` on the final head: 443
-  passed, 0 failed.
+- On the head after the PR #5276 review fixes, run one file at a time:
+  `aws_emulator_in_ci_check_test.ts` 132 passed;
+  `issue_5110_aws_emulator_workflow_test.ts` 43 passed;
+  `aws_emulator_cloudformation_5110_test.ts` 17 passed, 1 ignored;
+  `checkov_workflow_test.ts` 20 passed; `best_practices_template_test.ts` 69
+  passed; `lib_sweep_record_test.ts` and `lib_sweep_top_up_files_test.ts` 11
+  passed. `pre_push_gate_test.ts` was also run and 43 of its 213 tests fail; it
+  imports none of the files this review touched, and its one test about this PR
+  ("the AWS Emulator script is never planned") passes.
 - Removed `worker/deno/tests/issue_3369_floci_script_test.ts` and
   `worker/deno/tests/issue_3369_floci_workflow_test.ts`.
   - Removed functionality: `infra/cloudformation/test-floci.sh`,

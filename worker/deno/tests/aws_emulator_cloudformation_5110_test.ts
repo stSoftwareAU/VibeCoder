@@ -290,7 +290,9 @@ Deno.test(
  * A stateful fake `aws` that answers by its argv, so wrong wiring in the script
  * gives a wrong outcome. FAKE_DIR holds its state and call log; FAKE_MODE picks
  * the CloudFormation behaviour (gap, create_fail, stack_rollback,
- * resource_failed, resources_error, gap_gone, role_lingers). Reply shapes
+ * resource_failed, resources_error, gap_gone, role_lingers, cleanup_noop, where
+ * create-stack fails and the deletes of the stack and the seeded AMI parameter
+ * succeed without removing anything). Reply shapes
  * mirror what the aws CLI v2 prints for the --query/--output the script passes:
  *  - `--output text` on a scalar query prints the bare value;
  *  - `--output text` on a list of lists prints one tab-separated row per item;
@@ -326,10 +328,11 @@ case "$svc $op" in
   "ssm delete-parameter")
     f="$FAKE_DIR/ssm/$(key "$(arg --name "$@")")"
     [ -f "$f" ] || fail ParameterNotFound DeleteParameter "Parameter not found."
+    case "$f" in *ubuntu-ami-id*) [ "$FAKE_MODE" = cleanup_noop ] && exit 0 ;; esac
     rm -f "$f" ;;
   "cloudformation create-stack")
     stack="$(arg --stack-name "$@")"
-    if [ "$FAKE_MODE" = create_fail ]; then
+    if [ "$FAKE_MODE" = create_fail ] || [ "$FAKE_MODE" = cleanup_noop ]; then
       fail AlreadyExistsException CreateStack "Stack [$stack] already exists"
     fi
     case "$*" in *"--on-failure DO_NOTHING"*) ;; *) fail ValidationError CreateStack "missing --on-failure DO_NOTHING" ;; esac
@@ -374,7 +377,7 @@ case "$svc $op" in
     done ;;
   "cloudformation describe-stack-resource")
     echo "phys-$(arg --logical-resource-id "$@")" ;;
-  "cloudformation delete-stack") touch "$FAKE_DIR/deleted" ;;
+  "cloudformation delete-stack") [ "$FAKE_MODE" = cleanup_noop ] || touch "$FAKE_DIR/deleted" ;;
   "ec2 describe-vpcs")
     [ -f "$FAKE_DIR/deleted" ] && fail InvalidVpcID.NotFound DescribeVpcs "The vpc ID does not exist"
     echo 10.42.0.0/16 ;;
@@ -409,52 +412,70 @@ esac
 `;
 
 /** Runs the script inside the fake emulator with the stateful fake aws. */
-async function runWithFakeCfn(
-  sb: Sandbox,
-  mode: string,
-): Promise<{ r: RunResult; log: string }> {
+async function runWithFakeCfn(sb: Sandbox, mode: string): Promise<RunResult> {
   await writeFake(sb, "aws", FAKE_AWS);
-  const r = await runScript(sb, `${sb.bin}:${SYSTEM_PATH}`, {
+  return await runScript(sb, `${sb.bin}:${SYSTEM_PATH}`, {
     ...insideEnv(sb, "https://127.0.0.1:45871"),
     FAKE_DIR: sb.root,
     FAKE_MODE: mode,
   });
-  let log = "";
-  try {
-    log = await Deno.readTextFile(`${sb.root}/calls.log`);
-  } catch {
-    // The fake was never called.
+}
+
+/** Names of the SSM parameters the fake still holds (its state, not its call log). */
+async function ssmParametersLeft(sb: Sandbox): Promise<string[]> {
+  const names: string[] = [];
+  for await (const entry of Deno.readDir(`${sb.root}/ssm`)) {
+    names.push(entry.name);
   }
-  return { r, log };
+  return names.sort();
+}
+
+/** Whether the fake's stack was deleted (its `deleted` state marker exists). */
+async function stackDeleted(sb: Sandbox): Promise<boolean> {
+  try {
+    await Deno.stat(`${sb.root}/deleted`);
+    return true;
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return false;
+    throw err;
+  }
 }
 
 /** Asserts the run got past the SSM round trip and seeding to create-stack. */
-function assertReachedCloudFormation(r: RunResult, log: string) {
+function assertReachedCloudFormation(r: RunResult) {
   assertStringIncludes(r.output, "PASS: SSM round trip value");
   assertStringIncludes(r.output, "PASS: seeded SSM parameter");
-  assertStringIncludes(log, "cloudformation create-stack --stack-name vc5110-");
 }
 
 Deno.test(
-  "aws-emulator-cloudformation 5110: a failed create-stack exits 1 with its cause and still cleans up",
+  "aws-emulator-cloudformation 5110: a failed create-stack exits 1 with its cause and leaves no stack or parameter behind",
   async () => {
     await withSandbox(async (sb) => {
-      const { r, log } = await runWithFakeCfn(sb, "create_fail");
+      const r = await runWithFakeCfn(sb, "create_fail");
       assertEquals(r.code, 1, r.output);
-      assertReachedCloudFormation(r, log);
+      assertReachedCloudFormation(r);
       assertStringIncludes(r.output, "cloudformation create-stack");
       assertStringIncludes(r.output, "AlreadyExistsException");
       assertStringIncludes(r.output, "already exists");
-      assert(!log.includes("describe-stacks"), "must stop at create-stack");
-      assertStringIncludes(
-        log,
-        "cloudformation delete-stack --stack-name vc5110-",
-      );
-      assertStringIncludes(
-        log,
-        "ssm delete-parameter --name /vibe-coder-test/ubuntu-ami-id-",
-      );
+      assert(!r.output.includes("PASS: stack"), r.output);
+      assertEquals(await ssmParametersLeft(sb), [], r.output);
+      assert(await stackDeleted(sb), `the stack was not deleted:\n${r.output}`);
       assert(!r.output.includes("all "), r.output);
+    });
+  },
+);
+
+Deno.test(
+  "aws-emulator-cloudformation 5110: a cleanup that removes nothing leaves state the check can see",
+  async () => {
+    await withSandbox(async (sb) => {
+      const r = await runWithFakeCfn(sb, "cleanup_noop");
+      assertEquals(r.code, 1, r.output);
+      assertStringIncludes(r.output, "AlreadyExistsException");
+      const left = await ssmParametersLeft(sb);
+      assertEquals(left.length, 1, `${left}\n${r.output}`);
+      assertMatch(left[0] ?? "", /^_vibe-coder-test_ubuntu-ami-id-/);
+      assert(!(await stackDeleted(sb)), "the no-op delete-stack deleted it");
     });
   },
 );
@@ -463,10 +484,9 @@ Deno.test(
   "aws-emulator-cloudformation 5110: an unexpected stack status (ROLLBACK_COMPLETE) exits 1 and names it",
   async () => {
     await withSandbox(async (sb) => {
-      const { r, log } = await runWithFakeCfn(sb, "stack_rollback");
+      const r = await runWithFakeCfn(sb, "stack_rollback");
       assertEquals(r.code, 1, r.output);
-      assertReachedCloudFormation(r, log);
-      assertStringIncludes(log, "describe-stack-resources");
+      assertReachedCloudFormation(r);
       assertStringIncludes(r.output, "gap changed: update KNOWN_GAPS");
       assertStringIncludes(r.output, "is ROLLBACK_COMPLETE");
       assertStringIncludes(r.output, "expected CREATE_FAILED");
@@ -479,9 +499,9 @@ Deno.test(
   "aws-emulator-cloudformation 5110: a named gap that now builds (stack and resource CREATE_COMPLETE) is reported as a changed gap",
   async () => {
     await withSandbox(async (sb) => {
-      const { r, log } = await runWithFakeCfn(sb, "gap_gone");
+      const r = await runWithFakeCfn(sb, "gap_gone");
       assertEquals(r.code, 1, r.output);
-      assertReachedCloudFormation(r, log);
+      assertReachedCloudFormation(r);
       assertStringIncludes(r.output, "gap changed: update KNOWN_GAPS");
       assertStringIncludes(
         r.output,
@@ -495,10 +515,9 @@ Deno.test(
   "aws-emulator-cloudformation 5110: an unexpected resource status exits 1 and names the resource, status and reason",
   async () => {
     await withSandbox(async (sb) => {
-      const { r, log } = await runWithFakeCfn(sb, "resource_failed");
+      const r = await runWithFakeCfn(sb, "resource_failed");
       assertEquals(r.code, 1, r.output);
-      assertReachedCloudFormation(r, log);
-      assertStringIncludes(log, "describe-stack-resources");
+      assertReachedCloudFormation(r);
       assertStringIncludes(
         r.output,
         "HostRole (AWS::IAM::Role) is CREATE_FAILED: Role creation rejected by the fake emulator",
@@ -512,10 +531,9 @@ Deno.test(
   "aws-emulator-cloudformation 5110: a failed describe-stack-resources exits 1 with its cause",
   async () => {
     await withSandbox(async (sb) => {
-      const { r, log } = await runWithFakeCfn(sb, "resources_error");
+      const r = await runWithFakeCfn(sb, "resources_error");
       assertEquals(r.code, 1, r.output);
-      assertReachedCloudFormation(r, log);
-      assertStringIncludes(log, "cloudformation describe-stacks");
+      assertReachedCloudFormation(r);
       assertStringIncludes(r.output, "cloudformation describe-stack-resources");
       assertStringIncludes(r.output, "ValidationError");
       assertStringIncludes(r.output, "describe failed upstream");
@@ -528,9 +546,9 @@ Deno.test(
   "aws-emulator-cloudformation 5110: the expected named-gap run exits 0 and reports the gap as UNSUPPORTED, never a pass",
   async () => {
     await withSandbox(async (sb) => {
-      const { r, log } = await runWithFakeCfn(sb, "gap");
+      const r = await runWithFakeCfn(sb, "gap");
       assertEquals(r.code, 0, r.output);
-      assertReachedCloudFormation(r, log);
+      assertReachedCloudFormation(r);
       assertMatch(
         r.output,
         /PASS: stack vc5110-linux-verification-host-[0-9a-f]+ CREATE_FAILED: \d+ resources CREATE_COMPLETE, 1 named gap\(s\)/,
@@ -547,10 +565,8 @@ Deno.test(
       assertStringIncludes(r.output, "VerificationHost (AWS::EC2::Instance)");
       assert(!/PASS:[^\n]*VerificationHost/.test(r.output), r.output);
       assertStringIncludes(r.output, "removed: ValidationError (as expected)");
-      assertStringIncludes(
-        log,
-        "cloudformation delete-stack --stack-name vc5110-",
-      );
+      assert(await stackDeleted(sb), `the stack was not deleted:\n${r.output}`);
+      assertEquals(await ssmParametersLeft(sb), [], r.output);
     });
   },
 );
@@ -559,25 +575,11 @@ Deno.test(
   "aws-emulator-cloudformation 5110: a role left behind after delete-stack fails the cleanup assertion",
   async () => {
     await withSandbox(async (sb) => {
-      const { r, log } = await runWithFakeCfn(sb, "role_lingers");
+      const r = await runWithFakeCfn(sb, "role_lingers");
       assertEquals(r.code, 1, r.output);
-      assertReachedCloudFormation(r, log);
+      assertReachedCloudFormation(r);
       assertStringIncludes(r.output, "removed: ValidationError (as expected)");
-      assertStringIncludes(
-        log,
-        "cloudformation delete-stack --stack-name vc5110-",
-      );
-      const calls = log.split("\n");
-      const deleteAt = calls.findIndex((line) =>
-        line.startsWith("cloudformation delete-stack --stack-name vc5110-")
-      );
-      assert(deleteAt >= 0, log);
-      assert(
-        calls.slice(deleteAt + 1).some((line) =>
-          line.startsWith("iam get-role ")
-        ),
-        `no iam get-role call after delete-stack:\n${log}`,
-      );
+      assert(await stackDeleted(sb), `the stack was not deleted:\n${r.output}`);
       assertStringIncludes(
         r.output,
         "role phys-HostRole removed: expected a failure containing 'NoSuchEntity', but the call succeeded",
