@@ -10,10 +10,9 @@ required check.
   real AWS CLI calls:
   - an SSM write, read and delete round trip;
   - a supported negative case (`ParameterNotFound`);
-  - a deploy of every template, checking the material properties of each
-    created resource.
-  It reports emulator gaps as `UNSUPPORTED (not proven)`, apart from the pass
-  count. It then deletes the stack and asserts the cleanup.
+  - a deploy of every template, checking the material properties of each created
+    resource. It reports emulator gaps as `UNSUPPORTED (not proven)`, apart from
+    the pass count. It then deletes the stack and asserts the cleanup.
 - **CI:** `.github/workflows/aws-emulator.yml` replaces `floci.yml`. It is now a
   reusable workflow that `quality.yml` calls as the `aws-emulator` job, and
   `gate` needs that job. There is no path filter, so every pull request to
@@ -44,8 +43,8 @@ required check.
   through a repository script. Without this, VibeCoder would flag itself once
   `floci.yml` is gone.
 
-Two criteria stay partial until CI has run on this branch and a freshly
-started container runs the command, so this is Part of #5110.
+Two criteria stay partial until CI has run on this branch and a freshly started
+container runs the command, so this is Part of #5110.
 
 ## Spec
 
@@ -99,8 +98,8 @@ started container runs the command, so this is Part of #5110.
   failure is `Failed caching npm package 'mdurl@1.0.1'`, with a DNS error. In
   the worker's own account the cleared-environment test
   `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` was fixed by warming
-  the default Deno cache, and it now passes. The gate's run still fails, so
-  this run's push was refused. The gate was not bypassed.
+  the default Deno cache, and it now passes. The gate's run still fails, so this
+  run's push was refused. The gate was not bypassed.
 
 ## Evidence
 
@@ -111,8 +110,7 @@ world-readable scratch directory, then run with:
 sudo -n -u agent env -i HOME=/tmp PATH=/usr/local/bin:/usr/bin:/bin ./cloudformation/test-aws-emulator.sh
 ```
 
-This used the installed `/usr/local/bin/aws-emulator-run` and exited 0.
-Excerpt:
+This used the installed `/usr/local/bin/aws-emulator-run` and exited 0. Excerpt:
 
 ```text
 agent
@@ -156,15 +154,14 @@ UNSUPPORTED (not proven, named gaps):
     - how CI runs it through `quality.yml`'s `gate`;
     - what is left to real AWS: IAM, KMS and resource policies, runtime,
       cross-account and cross-Region.
-  - `CONTRIBUTING.md` lists `aws-emulator.yml` among the CI-enforced
-    workflows.
+  - `CONTRIBUTING.md` lists `aws-emulator.yml` among the CI-enforced workflows.
   - The Floci and detector wording is updated in `docs/CONTAINER.md`,
     `docs/CONFIGURATION.md`, `docs/CONTAINER-IMAGE.md`,
     `docs/IDLE-TASK-FRAMEWORK.md`, `docs/BEST-PRACTICES-SCAN.md`,
     `DESIGN-PRINCIPLES.md` and `CODING-STANDARDS.md`.
   - These files are edited by hand. An earlier whole-file reflow of
-    `DESIGN-PRINCIPLES.md` and `docs/BEST-PRACTICES-SCAN.md` was undone,
-    because it put `#NNNN` at line starts (markdownlint MD018).
+    `DESIGN-PRINCIPLES.md` and `docs/BEST-PRACTICES-SCAN.md` was undone, because
+    it put `#NNNN` at line starts (markdownlint MD018).
 - **Issue numbers the diff cites:**
   - #3367: Install a digest-pinned native floci binary in the worker container.
   - #3369: Add a Floci CI job for VibeCoder's own CloudFormation template.
@@ -200,8 +197,8 @@ flowchart LR
   and CI runs the same applicable integration checks. — evidence: the `agent`
   run in Evidence; `.github/workflows/aws-emulator.yml` called from
   `.github/workflows/quality.yml` — reviewer: partial — reason: the `agent` run
-  used this worker container, not a freshly started one, and CI not yet
-  verified on this branch
+  used this worker container, not a freshly started one, and CI not yet verified
+  on this branch
 - **met** — Evidence includes the pinned release, actual test commands,
   successful data assertions, a supported negative API result and cleanup. —
   evidence: the `agent` run output above;
@@ -227,14 +224,13 @@ flowchart LR
   meaningful coverage.
 - **partial** — Existing branch/PR coverage, least-privilege permissions and
   required checks remain intact. CI actually runs the new command rather than
-  merely installing the emulator. — evidence:
-  `.github/workflows/quality.yml` (`gate.needs`),
-  `.github/workflows/aws-emulator.yml`,
-  `worker/deno/lib/aws_emulator_workflow_check.ts` — reviewer: partial —
-  reason: CI not yet verified — remaining: merge-verification-only. The dropped
-  push trigger is forbidden by the fleet `workflow-triggers` rule, and every
-  pull request to `Develop`, `main` and `milestone/*` now runs the check with no
-  path filter.
+  merely installing the emulator. — evidence: `.github/workflows/quality.yml`
+  (`gate.needs`), `.github/workflows/aws-emulator.yml`,
+  `worker/deno/lib/aws_emulator_workflow_check.ts` — reviewer: partial — reason:
+  CI not yet verified — remaining: merge-verification-only. The dropped push
+  trigger is forbidden by the fleet `workflow-triggers` rule, and every pull
+  request to `Develop`, `main` and `milestone/*` now runs the check with no path
+  filter.
 - **partial** — Required local/CI checks pass; no automatic mutation or fuzzing
   campaign is added. — evidence: `./quality.sh` passed locally (see Test Plan);
   no mutation or fuzzing is added — reviewer: partial — reason: CI not yet
@@ -295,9 +291,9 @@ flowchart LR
   - the issue citations;
   - no dangling Floci references.
 
-  Review-only rules checked: Australian English, the `SIMPLE-ON-PURPOSE`
-  format, dummy and "how" tests, fakes only at the `aws` boundary, no
-  source-grep tests, no test-only members.
+  Review-only rules checked: Australian English, the `SIMPLE-ON-PURPOSE` format,
+  dummy and "how" tests, fakes only at the `aws` boundary, no source-grep tests,
+  no test-only members.
 
 ## Test Plan
 
@@ -306,23 +302,22 @@ flowchart LR
   - Each invariant has a mutation, and so does each evasion: the `if false`
     wrapper, `exit 0`, `; true`, `&`, `| tee`, `&& echo`, and a commented-out
     call.
-  - Positive controls: `continue-on-error: false`, and the YAML 1.1 `true`
-    key.
+  - Positive controls: `continue-on-error: false`, and the YAML 1.1 `true` key.
   - Also covered: a missing `workflow_call`, a re-added `pull_request` trigger,
     a concurrency block, and the `quality.yml` checks (`[gate-call]`,
     `[gate-needs]`, with the real file as a positive control).
   - In "(b) refuses the pinned install with || true" the expectation is two
     findings, `[pinned-install]` and `[runner-install]`. The separator check is
-    per step, and the real emulator install and runner install share one
-    `run:` step, so `|| true` there disproves both.
+    per step, and the real emulator install and runner install share one `run:`
+    step, so `|| true` there disproves both.
 - `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (new): 15 passed,
   1 ignored. The cases:
   - the missing runner (exit 4), and the re-exec with its exit status passed
     through;
   - a non-loopback endpoint refused, with a loopback control;
   - a missing `aws`;
-  - a 501 reported as `UNSUPPORTED OPERATION`, and an unexpected failure
-    quoting its cause;
+  - a 501 reported as `UNSUPPORTED OPERATION`, and an unexpected failure quoting
+    its cause;
   - an empty response failing the first data assertion;
   - a failed create-stack still cleaning up;
   - `ROLLBACK_COMPLETE`;
@@ -346,8 +341,8 @@ flowchart LR
 - A combined run of the files above with
   `worker/deno/tests/checkov_workflow_test.ts`,
   `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` and
-  `worker/deno/tests/best_practices_template_test.ts` on the final head:
-  443 passed, 0 failed.
+  `worker/deno/tests/best_practices_template_test.ts` on the final head: 443
+  passed, 0 failed.
 - Removed `worker/deno/tests/issue_3369_floci_script_test.ts` and
   `worker/deno/tests/issue_3369_floci_workflow_test.ts`.
   - Removed functionality: `infra/cloudformation/test-floci.sh`,
