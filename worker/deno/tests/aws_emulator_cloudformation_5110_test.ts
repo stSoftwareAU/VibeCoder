@@ -96,15 +96,17 @@ interface RunResult {
 
 /**
  * Runs the script under bash with a clean environment. `path` is the whole
- * PATH; `extra` adds variables on top of HOME and TMPDIR (both the sandbox).
+ * PATH; `extra` adds variables on top of HOME and TMPDIR (both the sandbox);
+ * `script` defaults to the script under test.
  */
 async function runScript(
   sb: Sandbox,
   path: string,
   extra: Record<string, string> = {},
+  script: string = SCRIPT_PATH,
 ): Promise<RunResult> {
   const out = await new Deno.Command(BASH, {
-    args: [SCRIPT_PATH],
+    args: [script],
     clearEnv: true,
     env: { PATH: path, HOME: sb.root, TMPDIR: sb.root, ...extra },
     stdin: "null",
@@ -287,8 +289,8 @@ Deno.test(
  * A stateful fake `aws` that answers by its argv, so wrong wiring in the script
  * gives a wrong outcome. FAKE_DIR holds its state and call log; FAKE_MODE picks
  * the CloudFormation behaviour (gap, create_fail, stack_rollback,
- * resource_failed, resources_error, gap_gone). Reply shapes mirror what the aws
- * CLI v2 prints for the --query/--output the script passes:
+ * resource_failed, resources_error, gap_gone, role_lingers). Reply shapes
+ * mirror what the aws CLI v2 prints for the --query/--output the script passes:
  *  - `--output text` on a scalar query prints the bare value;
  *  - `--output text` on a list of lists prints one tab-separated row per item;
  *  - create-stack, put-parameter print their JSON (StackId, Version/Tier);
@@ -396,7 +398,8 @@ case "$svc $op" in
         printf 'tcp\t53\t53\t0.0.0.0/0\nudp\t123\t123\t0.0.0.0/0\n' ;;
     esac ;;
   "iam get-role")
-    [ -f "$FAKE_DIR/deleted" ] && fail NoSuchEntity GetRole "The role cannot be found."
+    [ -f "$FAKE_DIR/deleted" ] && [ "$FAKE_MODE" != role_lingers ] &&
+      fail NoSuchEntity GetRole "The role cannot be found."
     echo ec2.amazonaws.com ;;
   "iam list-attached-role-policies") echo arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore ;;
   "iam get-instance-profile") echo phys-HostRole ;;
@@ -546,6 +549,110 @@ Deno.test(
       assertStringIncludes(
         log,
         "cloudformation delete-stack --stack-name vc5110-",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "aws-emulator-cloudformation 5110: a role left behind after delete-stack fails the cleanup assertion",
+  async () => {
+    await withSandbox(async (sb) => {
+      const { r, log } = await runWithFakeCfn(sb, "role_lingers");
+      assertEquals(r.code, 1, r.output);
+      assertReachedCloudFormation(r, log);
+      assertStringIncludes(r.output, "removed: ValidationError (as expected)");
+      assertStringIncludes(
+        log,
+        "cloudformation delete-stack --stack-name vc5110-",
+      );
+      const calls = log.split("\n");
+      const deleteAt = calls.findIndex((line) =>
+        line.startsWith("cloudformation delete-stack --stack-name vc5110-")
+      );
+      assert(deleteAt >= 0, log);
+      assert(
+        calls.slice(deleteAt + 1).some((line) =>
+          line.startsWith("iam get-role ")
+        ),
+        `no iam get-role call after delete-stack:\n${log}`,
+      );
+      assertStringIncludes(
+        r.output,
+        "role phys-HostRole removed: expected a failure containing 'NoSuchEntity', but the call succeeded",
+      );
+      assert(!r.output.includes("assertions passed"), r.output);
+    });
+  },
+);
+
+Deno.test(
+  "aws-emulator-cloudformation 5110: a template with no property checks fails before any AWS call",
+  async () => {
+    await withSandbox(async (sb) => {
+      const dir = `${sb.root}/cfn`;
+      const copied = `${dir}/test-aws-emulator.sh`;
+      const realTemplate = new URL(
+        "../../../infra/cloudformation/linux-verification-host.yaml",
+        import.meta.url,
+      ).pathname;
+      const minimal = [
+        'AWSTemplateFormatVersion: "2010-09-09"',
+        "Resources:",
+        "  Marker:",
+        "    Type: AWS::SSM::Parameter",
+        "    Properties:",
+        "      Type: String",
+        "      Value: marker",
+        "",
+      ].join("\n");
+      await Deno.mkdir(dir);
+      await Deno.copyFile(SCRIPT_PATH, copied);
+      await Deno.copyFile(realTemplate, `${dir}/linux-verification-host.yaml`);
+      await Deno.writeTextFile(`${dir}/extra.yaml`, minimal);
+      await writeFake(sb, "aws", FAKE_AWS);
+      const fakeEnv = (state: string) => ({
+        ...insideEnv(sb, "https://127.0.0.1:45871"),
+        FAKE_DIR: state,
+        FAKE_MODE: "gap",
+      });
+
+      const failState = `${sb.root}/state-extra`;
+      await Deno.mkdir(failState);
+      const r = await runScript(
+        sb,
+        `${sb.bin}:${SYSTEM_PATH}`,
+        fakeEnv(failState),
+        copied,
+      );
+      assertEquals(r.code, 1, r.output);
+      assertStringIncludes(
+        r.output,
+        "no property checks for extra.yaml; add them",
+      );
+      let calls = "";
+      try {
+        calls = await Deno.readTextFile(`${failState}/calls.log`);
+      } catch {
+        // The fake was never called.
+      }
+      assertEquals(calls, "", `the fake aws must not be called:\n${calls}`);
+      assert(!r.output.includes("PASS"), r.output);
+
+      // Positive control: the same copy without extra.yaml runs the real flow.
+      await Deno.remove(`${dir}/extra.yaml`);
+      const okState = `${sb.root}/state-ok`;
+      await Deno.mkdir(okState);
+      const ok = await runScript(
+        sb,
+        `${sb.bin}:${SYSTEM_PATH}`,
+        fakeEnv(okState),
+        copied,
+      );
+      assertEquals(ok.code, 0, ok.output);
+      assertStringIncludes(
+        ok.output,
+        "exercised: 10 resources (properties checked)",
       );
     });
   },
