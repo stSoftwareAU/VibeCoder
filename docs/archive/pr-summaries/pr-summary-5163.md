@@ -99,6 +99,18 @@ flowchart LR
   the configured value), `reportHardKills` and the slot catch / shutdown drain
   (no invocation record, so no provider), and the `callback-conformance`
   command (its fixtures name no provider).
+- `./quality.sh` on the final code: every stage passed except `deno tests`. It
+  had one failure, `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`
+  ("PR summary CI task runs git with restricted environment permissions"). That
+  test shells `deno task pr-summary-check`, which failed to fetch npm packages:
+  `dns error: failed to lookup address information: Temporary failure in name
+  resolution` (`commonmark@0.31.2`). It is a network failure in this container,
+  not this change. Because that parallel pass failed, the gate did not run its
+  serial pass. Those 40 parallel-unsafe tests
+  (`worker/deno/lib/parallel_unsafe_test_manifest.ts`) were run separately with
+  `deno task test --parallel=false`, giving 948 passed and 0 failed. The
+  pre-push hook refused the push for the same DNS failure (`minimist@1.2.8`).
+- `deno task pr-summary-check` on this summary: 0 gates blocked.
 - Docs read and updated: `docs/CALLBACKS.md` (the `VIBECODER_PROVIDER` row and
   the paragraph on omitted facts) and `docs/TOKEN-ECONOMIZER-TRIAL.md` (the
   population paragraph and the "not checked" paragraph). The report's own
