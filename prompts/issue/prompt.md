@@ -211,7 +211,7 @@ guessing.
    weakening assertions, adding skips or lowering quality thresholds. A
    legitimate contract change or a test that only pins incidental implementation
    may require changing or deleting a test; document why and what still protects
-   the behaviour (see the removal entries in the Test Plan). Replacing or
+   the behaviour (see the Test Plan rule under **PR Summary File**). Replacing or
    removing an obsolete test is approved by the owner, and independent review
    decides whether meaningful regression protection remains; a test change is
    never by itself a reason to hold the pull request for a human. For UI/PWA tests prefer user-visible browser behaviour and
@@ -1432,36 +1432,21 @@ The file MUST contain:
    repository root before raising the PR. A
    named-but-absent test is a blocking self-review finding: add the test or
    drop the claim, and never commit a code anchor or comment that references a
-   test that does not exist. For every existing test the diff edits, list each
-   assertion it removes with the issue requirement that makes it untrue, or with
-   the coverage that still proves the behaviour; an assertion removed with
-   neither is a blocking self-review finding — restore it, or move it to a
-   test that still covers the behaviour and name that test. Give each removal
-   its own list entry: `Removed from <path>: <assertion>`, copying the
-   assertion as it appears in the diff, then one indented justification line:
-   - `Required by: "<verbatim quote from the linked issue's title or body>"`
-     when the issue makes the assertion untrue (never a comment);
-   - `Moved to: <path>` when the same assertion is added to a named file with
-     its original guards and coverage preserved;
-   - `Obsolete: <old behaviour that is gone or intentionally changed>` followed
-     by `Still covered by: <repo-relative path::test name>` when the required
-     behaviour remains; this existing entry also covers obsolete call-count
-     and call-order assertions; or `Removed functionality: <symbol, and the
-     evidence that its callers are gone>` when the behaviour was removed outright.
-   Independent review checks each entry against the code at the head. Your
-   own assertion that a removal is justified is not proof, and a removal the
-   reviewer cannot verify is sent back; a fabricated replacement test is never
-   required for removed functionality. For a replacement, also add
-   `Replaced by:` and name each new assertion in inline code; each must be
-   added in the same test file. The Standards reviewer
-   compares the old and new checks for lost coverage. Include a `## Test Plan`
-   heading whenever
-   the diff touches a test; it is required. The worker counts as removed a
-   multi-line assertion with any line changed, and an assertion re-added under
-   a new condition, loop or callback, into a skipped or ignored test, or after
-   a new early `return`. Review edited expectations for lost protection,
-   discriminating fixtures and assertions on real results. Record the
-   remaining coverage, not a per-expectation mutation log.
+   test that does not exist. For every existing test the diff edits, record what
+   `CODING-STANDARDS.md` TDD rule 3 asks independent review to establish: which
+   old behaviour is obsolete or intentionally changed (or the issue requirement
+   that makes it untrue, quoted from the issue itself), which required
+   behaviour remains, and which replacement or existing coverage proves it. For
+   genuinely removed functionality, the evidence that the behaviour and its
+   callers are gone is the proof, and no replacement test is required. A
+   behaviour assertion removed with none of these is a blocking self-review
+   finding: restore it, or name the test that still covers the behaviour.
+   Independent review checks this record against the code at the head; your own
+   assertion that a removal is justified is not proof. Include a `## Test Plan`
+   heading whenever the diff touches a test; it is required. Review edited
+   expectations for lost protection, discriminating fixtures and assertions on
+   real results. Record the remaining coverage, not a per-expectation mutation
+   log.
    For a bug fix, record the failing regression test against unfixed code and
    the passing result after the fix. A test that only pins current behaviour
    for an unreproduced or already-fixed issue is expected green on base; say so.
