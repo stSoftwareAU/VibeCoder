@@ -83,11 +83,14 @@ Documentation and rule text only; no runtime code changed.
   35238 tests passed and 1 failed. The failure was
   `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`, which failed with
   `dns error: failed to lookup address information: Temporary failure in name
-  resolution` while fetching `registry.npmjs.org`. The sandbox has no network.
-  The test reads neither changed document, and it fails the same way when run
-  alone.
+  resolution` while fetching `registry.npmjs.org`. That test runs `deno task`
+  with `clearEnv: true`, which drops the sandbox's proxy, so it can only use
+  the default deno cache, and that cache lacked `commonmark`. The test reads
+  neither changed document. After the default cache was filled through the
+  proxy (an environment change, not a repo change), it passed when run alone
+  (11 passed), and the pre-push gate passed.
 
-Not checked: that failing test was not run with network access. Remaining risk:
-none known.
+Not checked: the full `./quality.sh` was not re-run after the cache was filled.
+Only the one failing test was re-run. Remaining risk: none known.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
