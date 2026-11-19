@@ -35,6 +35,7 @@ import { startPhaseProgress } from "./phase_progress.ts";
 import { recordStepDuration } from "./cycle_timings.ts";
 import {
   callbackTelemetryAbsenceReason,
+  servedRunProvider,
   summariseCallbackTelemetry,
 } from "./run_callback_telemetry.ts";
 import {
@@ -78,7 +79,6 @@ import {
   seedClaimedIssueGuard,
 } from "./claimed_issue_guard.ts";
 import { listTemplates } from "./idle_task_template.ts";
-import { servedRunProvider } from "./run_callback_provider.ts";
 import { tokenEconomizerNotRun } from "./token_economizer_run_stats.ts";
 // Importing the security-scan template ensures it is registered when
 // the idle-task pre-flight check below consults the registry. Issue

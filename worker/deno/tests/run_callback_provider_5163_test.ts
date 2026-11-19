@@ -11,7 +11,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { join } from "node:path";
-import { servedRunProvider } from "../lib/run_callback_provider.ts";
+import { servedRunProvider } from "../lib/run_callback_telemetry.ts";
 import { workOnIssue } from "../lib/issue_worker.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
