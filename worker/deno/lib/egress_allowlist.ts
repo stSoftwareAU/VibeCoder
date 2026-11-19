@@ -1,7 +1,8 @@
 /**
  * Egress allowlist (Issue #4045): the single list of hosts the container may
  * reach. GitHub and the package registries are always on; agent-provider
- * hosts follow the enabled providers; the imgbb host follows imgbb being
+ * hosts follow the enabled providers; reference documentation such as the
+ * Rust release notes is always on; the imgbb host follows imgbb being
  * configured; the ANTHROPIC_BASE_URL host and operator `egress_allow_hosts`
  * extras are appended last.
  *
@@ -24,7 +25,12 @@ import {
 import { DEEPSEEK_ANTHROPIC_BASE_URL } from "./deepseek_env.ts";
 
 /** Why a host is on the list. */
-export type EgressPurpose = "github" | "agent-provider" | "imgbb" | "registry";
+export type EgressPurpose =
+  | "github"
+  | "agent-provider"
+  | "imgbb"
+  | "registry"
+  | "documentation";
 
 /** One host the container may reach, with its purpose. */
 export interface EgressHostRule {
@@ -152,6 +158,14 @@ export const BUILTIN_EGRESS_RULES: readonly EgressHostRule[] = [
     host: "semgrep.dev",
     purpose: "registry",
     reason: "Semgrep rule registry for the quality gate",
+  },
+  // Reference documentation
+  {
+    // Rust release notes, one page per version: toolchain-upgrade issues
+    // link here and ask what has to change (Issue #5146).
+    host: "releases.rs",
+    purpose: "documentation",
+    reason: "Rust release notes",
   },
 ];
 
@@ -379,6 +393,7 @@ export function resolveEgressAllowlist(input: {
     for (const rule of IMGBB_EGRESS_RULES) add(rule.host);
   }
   builtinFor("registry");
+  builtinFor("documentation");
 
   const baseHost = anthropicBaseUrlHost(input.anthropicBaseUrl);
   if (baseHost !== undefined) add(baseHost);
