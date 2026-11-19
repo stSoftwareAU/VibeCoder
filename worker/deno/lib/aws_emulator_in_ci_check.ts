@@ -21,6 +21,7 @@ import { parseCfnDocument } from "./cfn_cost_checks.ts";
 import {
   commandIndex,
   reachableSegments,
+  readShellOptions,
   stripQuotes,
 } from "./shell_command_words.ts";
 
@@ -379,7 +380,9 @@ function segmentInvokesEmulatorRunner(words: string[]): boolean {
 /**
  * The repo-relative script a segment runs: its command word (see
  * {@link commandIndex}) when that is a relative path (contains `/`), or the
- * first non-flag argument of `bash`/`sh`. Null when none.
+ * first operand of `bash`/`sh` after its options. Null when none, and for
+ * a `bash`/`sh` that would not run the script: `-n` / `-o noexec` /
+ * `--noexec` only checks syntax, and `-c` takes a command string.
  */
 function segmentScriptPath(words: string[]): string | null {
   const i = commandIndex(words);
@@ -387,7 +390,10 @@ function segmentScriptPath(words: string[]): string | null {
   if (word === undefined) return null;
   const command = stripQuotes(word);
   if (command === "bash" || command === "sh") {
-    const arg = words.slice(i + 1).find((w) => !w.startsWith("-"));
+    const args = words.slice(i + 1);
+    const options = readShellOptions(args);
+    if (options.noexec || options.commandString) return null;
+    const arg = args[options.operand];
     return arg === undefined ? null : stripQuotes(arg);
   }
   return command.includes("/") ? command : null;
@@ -414,6 +420,26 @@ function ifIsStaticallyFalse(value: unknown): boolean {
   const wrapped = /^\$\{\{([^}]*)\}\}$/.exec(text);
   const expr = (wrapped?.[1] ?? text).trim().toLowerCase();
   return ["false", "0", "''", '""', "null", "!true"].includes(expr);
+}
+
+/** A `defaults.run.shell` value, when the record has one. */
+function defaultShell(record: Record<string, unknown>): unknown {
+  const defaults = record.defaults;
+  if (!isRecord(defaults) || !isRecord(defaults.run)) return undefined;
+  return defaults.run.shell;
+}
+
+/**
+ * True when a step's `shell:` value (`bash -n {0}`, `sh -o noexec {0}`)
+ * reads the `run:` body without running it. Other shells, and a missing
+ * value, run it.
+ */
+function shellIsNoexec(shell: unknown): boolean {
+  if (typeof shell !== "string") return false;
+  const words = shell.trim().split(/\s+/);
+  const command = (words[0] ?? "").replace(/^.*\//, "");
+  if (command !== "bash" && command !== "sh") return false;
+  return readShellOptions(words.slice(1)).noexec;
 }
 
 /**
@@ -462,7 +488,9 @@ export function makeRepoScriptReader(repoRoot: string): ScriptReader {
  * `if:` is statically false, and a command that cannot run (after `exit`,
  * behind `false &&`, in a false branch, in a function body or here-document;
  * see {@link reachableSegments}), earns no credit, in the workflow's `run:`
- * and in the repository script alike. Floci is detected separately by
+ * and in the repository script alike, as does a step whose shell (`shell:`,
+ * or the job's or workflow's `defaults.run.shell`) is `bash -n` or another
+ * mode that never runs commands, and a script run by such a `bash`/`sh`. Floci is detected separately by
  * `workflowRunsFloci`.
  */
 export function workflowRunsAwsEmulator(
@@ -473,13 +501,16 @@ export function workflowRunsAwsEmulator(
   const jobs = parsedYaml.jobs;
   if (!isRecord(jobs)) return false;
 
+  const workflowShell = defaultShell(parsedYaml);
   for (const job of Object.values(jobs)) {
     if (!isRecord(job) || ifIsStaticallyFalse(job.if)) continue;
     const steps = job.steps;
     if (!Array.isArray(steps)) continue;
+    const jobShell = defaultShell(job) ?? workflowShell;
     for (const step of steps) {
       if (!isRecord(step) || typeof step.run !== "string") continue;
       if (ifIsStaticallyFalse(step.if)) continue;
+      if (shellIsNoexec(step.shell ?? jobShell)) continue;
       for (const words of reachableSegments(step.run)) {
         if (segmentInvokesEmulatorRunner(words)) return true;
         if (readScript === undefined) continue;

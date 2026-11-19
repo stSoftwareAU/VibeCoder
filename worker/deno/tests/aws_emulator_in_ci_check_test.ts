@@ -1374,6 +1374,18 @@ const NOT_EXECUTED: [
   ],
   ["a false && chain", `false && ${RUNNER}`, {}, {}],
   ["a true || chain", `true || ${RUNNER}`, {}, {}],
+  ["code after true && exit 0", `true && exit 0\n${RUNNER}`, {}, {}],
+  ["code after false || exit 0", `false || exit 0\n${RUNNER}`, {}, {}],
+  ["code after : && exit 0 on one line", `: && exit 0; ${RUNNER}`, {}, {}],
+  ["code after set -n", `set -n\n${RUNNER}`, {}, {}],
+  ["code after set -o noexec", `set -o noexec\n${RUNNER}`, {}, {}],
+  ["a step whose shell is bash -n", RUNNER, { shell: "bash -n {0}" }, {}],
+  [
+    "a job whose default shell is bash --noexec",
+    RUNNER,
+    {},
+    { defaults: { run: { shell: "bash --noexec {0}" } } },
+  ],
   [
     "a function body that is never called",
     `run_tests() {\n  ${RUNNER}\n}\necho done`,
@@ -1449,6 +1461,33 @@ const EXECUTED: [
   ["code after a here-string", `cat <<< x\n${RUNNER}`, {}, {}],
   ["code after a here-document", `cat <<EOF\nx\nEOF\n${RUNNER}`, {}, {}],
   ["code after a function definition", `f() {\n  echo x\n}\n${RUNNER}`, {}, {}],
+  ["code after false && exit 0", `false && exit 0\n${RUNNER}`, {}, {}],
+  [
+    "code after an exit behind a runtime test and true",
+    `[ -z "$X" ] && true && exit 0\n${RUNNER}`,
+    {},
+    {},
+  ],
+  [
+    "code after a skipped true then a runtime exit",
+    `[ -z "$X" ] && true || exit 0\n${RUNNER}`,
+    {},
+    {},
+  ],
+  [
+    "code after an exit chained to fi",
+    `if [ -z "$X" ]; then echo; fi && exit 0\n${RUNNER}`,
+    {},
+    {},
+  ],
+  ["code after set -euo pipefail", `set -euo pipefail\n${RUNNER}`, {}, {}],
+  ["code after set +n", `set +n\n${RUNNER}`, {}, {}],
+  [
+    "a step whose shell is bash with errexit",
+    RUNNER,
+    { shell: "bash --noprofile --norc -eo pipefail {0}" },
+    {},
+  ],
 ];
 
 for (const [label, run, step, job] of EXECUTED) {
@@ -1481,6 +1520,48 @@ Deno.test("workflowRunsAwsEmulator - a repository script's unreachable runner ea
   );
 });
 
+Deno.test("workflowRunsAwsEmulator - a repository script after a guaranteed short-circuit exit earns no credit", () => {
+  const doc = docWithStep("./ci/t.sh");
+  const read = (text: string) => (path: string) =>
+    path === "./ci/t.sh" ? text : null;
+  assertEquals(
+    workflowRunsAwsEmulator(doc, read(`true && exit 0\n${RUNNER}\n`)),
+    false,
+  );
+  // Positive control: the exit behind a runtime test leaves the runner live.
+  assertEquals(
+    workflowRunsAwsEmulator(doc, read(`[ -n "$X" ] && exit 0\n${RUNNER}\n`)),
+    true,
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - a script run by a shell in a non-executing mode earns no credit", () => {
+  const read = (path: string) => path === "./test.sh" ? `${RUNNER}\n` : null;
+  for (
+    const run of [
+      "bash -n ./test.sh",
+      "bash -xn ./test.sh",
+      "sh -n ./test.sh",
+      "bash --noexec ./test.sh",
+      "bash -o noexec ./test.sh",
+      "bash -c ./test.sh",
+    ]
+  ) {
+    assertEquals(workflowRunsAwsEmulator(docWithStep(run), read), false, run);
+  }
+  for (
+    const run of [
+      "bash ./test.sh",
+      "bash -e ./test.sh",
+      "bash -eo pipefail ./test.sh",
+      "bash --noprofile ./test.sh",
+      "sh -x ./test.sh",
+    ]
+  ) {
+    assertEquals(workflowRunsAwsEmulator(docWithStep(run), read), true, run);
+  }
+});
+
 Deno.test("workflowRunsAwsEmulator - an unreachable step calling a script that runs the emulator earns no credit", () => {
   const read = () => `${RUNNER}\n`;
   assertEquals(
@@ -1499,11 +1580,18 @@ Deno.test("checkAwsEmulatorInCI - a disabled or unreachable runner does not coun
     const run of [
       "exit 0\n          aws-emulator-run -- ./t.sh",
       "if false; then aws-emulator-run -- ./t.sh; fi",
+      "true && exit 0\n          aws-emulator-run -- ./t.sh",
+      "bash -n ./test.sh",
     ]
   ) {
     const root = await makeTempRepo();
     try {
       await writeFile(root, "infra/cloudformation/host.yaml", CFN_TEMPLATE);
+      await writeFile(
+        root,
+        "test.sh",
+        "aws-emulator-run -- ./integration.sh\n",
+      );
       await writeFile(
         root,
         ".github/workflows/ci.yml",
@@ -1512,6 +1600,13 @@ Deno.test("checkAwsEmulatorInCI - a disabled or unreachable runner does not coun
       const result = await checkAwsEmulatorInCI(root);
       assertEquals(result.usesAws, true);
       assertEquals(result.emulatorConfigured, false, run);
+      // Positive control: the same repo, running the script for real.
+      await writeFile(
+        root,
+        ".github/workflows/ci.yml",
+        "jobs:\n  test:\n    steps:\n      - run: bash ./test.sh\n",
+      );
+      assertEquals((await checkAwsEmulatorInCI(root)).emulatorConfigured, true);
     } finally {
       await Deno.remove(root, { recursive: true });
     }

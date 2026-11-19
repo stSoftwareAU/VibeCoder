@@ -5,7 +5,7 @@
  * These find command words in a GitHub Actions `run:` body; they are not a
  * shell parser. `shellSegments` splits a body into commands, `commandIndex`
  * finds a command's word, and `reachableSegments` drops commands that cannot
- * run (after an unconditional `exit`, behind `false &&`, in a branch or loop
+ * run (after an unconditional `exit` or `set -n`, behind `false &&`, in a branch or loop
  * whose condition is statically false, in any function body, or inside
  * a here-document). A construct it cannot judge counts as reachable only when
  * a runtime value decides it, so an unknown condition keeps its commands.
@@ -219,6 +219,57 @@ function staticStatus(words: string[]): boolean | null {
   return negations % 2 === 1 ? !base : base;
 }
 
+/** What a shell's option words (a `bash`/`sh` invocation, or `set`) ask for. */
+export interface ShellOptions {
+  /** `-n`, `-o noexec` or `--noexec`: commands are read but never run. */
+  noexec: boolean;
+  /** `-c`: the first operand is a command string, not a script path. */
+  commandString: boolean;
+  /** Index of the first operand (the script path, for an invocation). */
+  operand: number;
+}
+
+/** Long options of `bash` that take a separate value word. */
+const SHELL_LONG_VALUE_OPTIONS = new Set(["--rcfile", "--init-file"]);
+
+/**
+ * Read the option words of a `bash`/`sh` invocation or a `set` command
+ * (`args` starts after the command word). Short clusters such as `-xn` and
+ * `-eo pipefail` are read letter by letter; `+n` turns an option back off.
+ * Stops at `--`, `-` or the first word that is not an option.
+ */
+export function readShellOptions(args: string[]): ShellOptions {
+  let noexec = false;
+  let commandString = false;
+  let i = 0;
+  while (i < args.length) {
+    const w = stripQuotes(args[i] ?? "");
+    if (w === "--" || w === "-") {
+      i++;
+      break;
+    }
+    if (w.startsWith("--")) {
+      if (w === "--noexec") noexec = true;
+      i += SHELL_LONG_VALUE_OPTIONS.has(w) ? 2 : 1;
+      continue;
+    }
+    if (!/^[-+][A-Za-z]+$/.test(w)) break;
+    const on = w.startsWith("-");
+    let consumed = 1;
+    for (const letter of w.slice(1)) {
+      if (letter === "n") noexec = on;
+      else if (letter === "c") commandString = commandString || on;
+      else if (letter === "o" || letter === "O") {
+        const name = stripQuotes(args[i + consumed] ?? "");
+        if (letter === "o" && name === "noexec") noexec = on;
+        consumed++;
+      }
+    }
+    i += consumed;
+  }
+  return { noexec, commandString, operand: i };
+}
+
 /**
  * Drop here-document bodies (`<<EOF` ... `EOF`, `<<-EOF` with tab-stripped
  * delimiter lines): their text is data for a command, not commands. A `<<<`
@@ -285,12 +336,14 @@ const FUNCTION_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*\(\)$/;
 
 /**
  * The commands of a `run:` body that can run: it drops commands after an
- * unconditional `exit`, behind `false &&` or `true ||`, in an `if`/`elif`/
+ * unconditional `exit` or `set -n` / `set -o noexec`, behind `false &&` or `true ||`, in an `if`/`elif`/
  * `else` branch or a `while`/`until` body whose condition is statically false
  * (`false`, `! true`, `:` and `true` are the static commands), in a function
  * body (the function may never be called) and in here-document bodies. An
  * `exit` that a condition guards (`[ -z "$X" ] && exit 0`, or inside an
- * unknown `if`) does not end the script here, so later commands still count.
+ * unknown `if`) does not end the script here, so later commands still count;
+ * one a static chain always reaches (`true && exit 0`, `false || exit 0`)
+ * does.
  * Returns each reachable command's words, keywords such as `then` included.
  */
 export function reachableSegments(script: string): string[][] {
@@ -367,17 +420,27 @@ export function reachableSegments(script: string): string[][] {
       }
       words = words.slice(1);
     }
-    if (words.length === 0) continue;
+    if (words.length === 0) {
+      // A compound's status (`fi && exit`) is not tracked here.
+      prev = null;
+      continue;
+    }
 
-    // Short-circuit chains: `false && x` and `true || x` skip x.
-    const skipped = (sep === "&&" && prev === false) ||
-      (sep === "||" && prev === true);
+    // Short-circuit chains: `false && x` and `true || x` skip x, while
+    // `true && x` and `false || x` always run it. `runs` is null when a
+    // runtime status decides.
+    const runs: boolean | null = sep === "&&"
+      ? (prev === null ? null : prev)
+      : sep === "||"
+      ? (prev === null ? null : !prev)
+      : true;
+    const skipped = runs === false;
     const frameOpen = stack.at(-1);
     if (frameOpen && frameOpen.branch === "cond" && !skipped) {
       frameOpen.condCommands++;
     }
     if (!skipped) {
-      prev = sep === "|" ? null : staticStatus(words);
+      prev = sep === "|" || runs === null ? null : staticStatus(words);
     }
     const reached = live() && !skipped;
     if (frameOpen && frameOpen.branch === "cond") {
@@ -388,12 +451,13 @@ export function reachableSegments(script: string): string[][] {
     }
     if (reached) {
       out.push(words);
-      const head = stripQuotes(words[commandIndex(words)] ?? "");
-      const unguarded = sep !== "&&" && sep !== "||" && sep !== "|" &&
-        sep !== "&";
-      if (head === "exit" && unguarded && stack.every(frameCertain)) {
-        exited = true;
-      }
+      const at = commandIndex(words);
+      const head = stripQuotes(words[at] ?? "");
+      const certain = runs === true && sep !== "|" && sep !== "&" &&
+        stack.every(frameCertain);
+      const stops = head === "exit" ||
+        (head === "set" && readShellOptions(words.slice(at + 1)).noexec);
+      if (stops && certain) exited = true;
     }
   }
   return out;
