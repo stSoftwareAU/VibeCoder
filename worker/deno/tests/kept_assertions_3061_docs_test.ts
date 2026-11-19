@@ -8,11 +8,14 @@
  * than re-counted or restored, while the outcome assertions that still prove
  * the behaviour are named. The Test Plan records why each other removed
  * assertion is justified, or treats it as a blocking self-review finding.
+ * Issue #5209 replaced the per-assertion `Removed from`/`Required by`/
+ * `Moved to`/`Replaced by` inventory with a reference to TDD rule 3, so the PR
+ * Summary test pins that reference and the inventory's absence.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assertStringIncludes } from "@std/assert";
+import { assert, assertStringIncludes } from "@std/assert";
 import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const codingStandards = () => readRepoDoc("CODING-STANDARDS.md");
@@ -67,13 +70,31 @@ Deno.test("issue prompt - Instructions keep the change-only-what-the-issue-chang
   );
 });
 
-Deno.test("issue prompt - PR Summary Test Plan requires covering removed assertions", async () => {
+Deno.test("issue prompt - PR Summary Test Plan defers removed-assertion evidence to TDD rule 3", async () => {
   const text = flat(section(await issuePrompt(), "PR Summary File"));
 
   assertStringIncludes(text, "blocking self-review finding");
   assertStringIncludes(text, "the issue requirement that makes it untrue");
+  assertStringIncludes(text, "`CODING-STANDARDS.md` TDD rule 3");
+  assertStringIncludes(text, "which required behaviour remains");
   assertStringIncludes(
     text,
-    "this existing entry also covers obsolete call-count and call-order assertions",
+    "which replacement or existing coverage proves it",
   );
+  assertStringIncludes(
+    text,
+    "the evidence that the behaviour and its callers are gone",
+  );
+
+  const RETIRED_PHRASES = [
+    "Removed from <path>",
+    "Give each removal its own list entry",
+    "Replaced by:",
+    "added in the same test file",
+    "The worker counts as removed",
+    "this existing entry also covers obsolete call-count and call-order assertions",
+  ];
+  for (const phrase of RETIRED_PHRASES) {
+    assert(!text.includes(phrase), `retired phrase still present: ${phrase}`);
+  }
 });
