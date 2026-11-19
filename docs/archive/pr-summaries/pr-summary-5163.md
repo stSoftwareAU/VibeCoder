@@ -126,21 +126,18 @@ flowchart LR
 - After the verifier fix, `deno test` on `run_callback_provider_5163_test.ts`,
   `completion_phase_pre_pr_verifier_3395_test.ts` and
   `run_core_callbacks_test.ts` gave 55 passed and 0 failed. `deno check` on the
-  changed modules and tests is clean. The full `./quality.sh` run below came
-  before this fix, and the worker re-runs it.
-- `./quality.sh` on the code before the verifier fix: every stage passed except
-  `deno tests`. It had one failure,
-  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` ("PR summary CI task
-  runs git with restricted environment permissions"). That test shells
-  `deno task pr-summary-check`, which failed to fetch npm packages:
-  `dns error: failed to lookup address information: Temporary failure in name
-  resolution`
-  (`commonmark@0.31.2`). It is a network failure in this container, not this
-  change. Because that parallel pass failed, the gate did not run its serial
-  pass. Those 40 parallel-unsafe tests
-  (`worker/deno/lib/parallel_unsafe_test_manifest.ts`) were run separately with
-  `deno task test --parallel=false`, giving 948 passed and 0 failed. The
-  pre-push hook refused the push for the same DNS failure (`minimist@1.2.8`).
+  changed modules and tests is clean.
+- `./quality.sh` on the final code, after merging `main`, passed: the parallel
+  pass in 9m16s and the serial pass in 4m08s. config-integration and checkov
+  were skipped on this host. The first run that day failed one test,
+  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`, with `dns error:
+  failed to lookup address information: Temporary failure in name resolution`
+  (`entities@3.0.1`), while 35,250 others passed. That test runs
+  `deno task pr-summary-check` in a cleared environment, which uses the default
+  `~/.cache/deno`. That cache lacked the npm packages, and this container has
+  no network. After the run's own npm cache was copied there (outside the
+  repository), the test passed (11/11) and so did the gate. This is a host
+  fault, not a fault in this change.
 - `deno task pr-summary-check` on this summary: 0 gates blocked.
 - Docs read and updated: `docs/CALLBACKS.md` (the `VIBECODER_PROVIDER` row,
   which now says review-only passes are left out, and the paragraph on omitted
