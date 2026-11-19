@@ -45,9 +45,14 @@ required check.
   through a repository script. Without this, VibeCoder would flag itself once
   `floci.yml` is gone. The invocation must be able to run: a job or step with a
   statically false `if:`, and a command after an unconditional `exit`, behind
-  `false &&` or `true ||`, in a false `if`/`elif`/`else` branch or
-  `while`/`until` body, in a function body or in a here-document, earns no
-  credit, in the workflow and in the repository script alike. The shell helpers
+  `false &&` or `true ||`, after a chain that always reaches `exit`
+  (`true && exit 0`, `false || exit 0`) or after `set -n`, in a false
+  `if`/`elif`/`else` branch or `while`/`until` body, in a function body or in a
+  here-document, earns no credit, in the workflow and in the repository script
+  alike. A step whose `shell:` (or the job's or workflow's `defaults.run.shell`)
+  is `bash -n {0}` or another no-exec mode, and a script run by `bash -n`,
+  `bash -o noexec`, `--noexec` or `bash -c`, earn no credit either. The shell
+  helpers (including `readShellOptions`, which reads those option clusters)
   live in `worker/deno/lib/shell_command_words.ts`.
 
 Two criteria stay partial until CI has run on this branch and a freshly started
@@ -358,7 +363,7 @@ flowchart LR
   The ignored case is the real end-to-end run. It is skipped for `vibe` and
   root, and was run as `agent` in Evidence instead.
 - `worker/deno/tests/aws_emulator_in_ci_check_test.ts` (extended, additions
-  only; 132 tests at head). Coverage:
+  only; 148 tests at head). Coverage:
   - runner text that cannot run earns no credit (19 not-credited cases: a step
     or job `if: false`, `${{ false }}` and `'0'`, a false or negated-true `if`,
     the `else` of `if true`, an `elif` after a taken branch, `while false`,
@@ -371,6 +376,12 @@ flowchart LR
     an unreachable step that calls it, and an end-to-end `checkAwsEmulatorInCI`
     case. Red-checked: with the reachability walk and the `if:` check replaced
     by the plain splitter, 23 of these cases fail;
+  - a guaranteed exit through a static chain (`true && exit 0`,
+    `false || exit 0`) or `set -n` ends the script, while a runtime test in
+    front of the chain keeps later commands credited; a script run by
+    `bash -n`, `-o noexec` or `--noexec`, and a step with a no-exec `shell:` or
+    `defaults.run.shell`, earn no credit, with `bash -eo pipefail ./test.sh` as
+    a credited control;
   - hostile long inputs (a long `<` run and whitespace run for the here-document
     pattern, a long whitespace run in `${{ }}`) return the right answer;
   - direct, wrapped, keyword-prefixed and quoted invocations;
@@ -381,7 +392,7 @@ flowchart LR
   AWS Emulator script is never planned". It passes on the base by design,
   because it pins a deliberate absence.
 - On the head after the PR #5276 review fixes, run one file at a time (tests at
-  head, all passing unless noted): `aws_emulator_in_ci_check_test.ts` (132);
+  head, all passing unless noted): `aws_emulator_in_ci_check_test.ts` (148);
   `issue_5110_aws_emulator_workflow_test.ts` (43);
   `aws_emulator_cloudformation_5110_test.ts` (18: 17 pass, 1 ignored);
   `checkov_workflow_test.ts` (20); `best_practices_template_test.ts` (69);
