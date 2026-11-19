@@ -32,7 +32,9 @@
  *    deploy test and the `deno test` run are cheap. The `deno test` check runs
  *    the changed test files, the same-named and co-located tests of changed
  *    sources and the tests whose text names a changed file or that import such
- *    a file, via the repo's own `test:unit` task so integration suites like
+ *    a file; a push that adds, deletes or renames a file under a root also runs
+ *    that root's directory-listing tests ({@link loadDirectoryListingTests}),
+ *    via the repo's own `test:unit` task so integration suites like
  *    CI's shards are excluded. A change under `prompts/`, or to a root's
  *    `deno.json`, `deno.jsonc` or `deno.lock`, has readers a name scan cannot
  *    find, so it runs that root's whole `test:unit` suite
@@ -46,7 +48,9 @@
  *    is accounted for and its serial pass ran.
  * 2. Then runs the CI cargo checks (Issue #4630): the `cargo clippy` and
  *    test-target `cargo test --no-run` commands the repo's pull-request
- *    workflows run, for each crate directory a pushed Rust file touches. Only
+ *    workflows run, for each crate directory a pushed Rust file in or below it
+ *    touches, or a pushed Rust config file (manifest, lock, toolchain pin or
+ *    clippy config) in it or an ancestor directory touches. Only
  *    when the push changes a Rust-relevant file, and only after a probe that
  *    the Rust toolchain runs here. Where cargo is not a rustup proxy and
  *    refuses a `+toolchain` word, the probe and the commands run without it
@@ -247,38 +251,16 @@ function pushedBranches(refs: readonly PrePushRef[]): string[] | undefined {
   return names.length === 0 ? undefined : names;
 }
 
-/**
- * List the files the push introduces: those touched by commits (including
- * the paths a merge commit itself changed: a conflict resolution or a fix
- * folded into the merge, never the files it merely brings in from the base)
- * reachable from the pushed tips but not from `baseRef` — by default no
- * remote-tracking ref (`--remotes`) — minus deletions, and only those that
- * still exist as regular files in the working tree. Files reached through a
- * symlinked parent directory are skipped too, since they resolve outside the
- * checkout. Sorted and unique. `includeDeleted` retains all touched paths
- * (unfiltered by the working tree) for configuration invalidation; callers
- * must filter execution targets separately.
- *
- * `baseRef` widens the range to everything the branch has ahead of that ref,
- * including commits a WIP checkpoint already pushed (Issue #3689). It must be
- * a ref the caller resolved itself; a value git could read as an option is
- * refused.
- *
- * `containToCheckout` (default true) is the symlinked-parent skip above. The CI
- * cargo planner passes false: it must still see a Rust file reached through a
- * symlinked crate directory, so the working-directory containment check can
- * refuse it as an infrastructure fault instead of the file being dropped
- * unseen (Issue #4630).
- */
-export async function listPushedFiles(
+/** The unique paths the pushed commits touch, as `filterArgs` selects them. */
+async function pushedNames(
   refs: PrePushRef[],
   cwd: string,
   git: PrePushGit,
-  baseRef?: string,
-  includeDeleted = false,
-  containToCheckout = true,
-): Promise<Result<string[], string>> {
-  if (refs.length === 0) return { ok: true, value: [] };
+  baseRef: string | undefined,
+  filterArgs: string[],
+): Promise<Result<Set<string>, string>> {
+  const names = new Set<string>();
+  if (refs.length === 0) return { ok: true, value: names };
   if (baseRef !== undefined && (baseRef === "" || baseRef.startsWith("-"))) {
     return { ok: false, error: `unsafe base ref ${JSON.stringify(baseRef)}` };
   }
@@ -289,7 +271,7 @@ export async function listPushedFiles(
       "--name-only",
       "-z",
       "--format=",
-      ...(includeDeleted ? [] : ["--diff-filter=d"]),
+      ...filterArgs,
       ...refs.map((r) => r.localSha),
       "--not",
       baseRef ?? "--remotes",
@@ -304,11 +286,70 @@ export async function listPushedFiles(
   }
   // Observed shape: names separated by NUL, no commit separators with
   // `--format=`; stripping stray newlines keeps this robust regardless.
-  const names = new Set<string>();
   for (const part of result.stdout.split("\0")) {
     const name = part.replace(/^\n+|\n+$/g, "");
     if (name !== "") names.add(name);
   }
+  return { ok: true, value: names };
+}
+
+/**
+ * The sorted unique paths the pushed commits add or delete (a rename counts as
+ * both), the push's change to a directory's set of files (Issue #5169). The
+ * range and `baseRef` rules are those of {@link listPushedFiles}.
+ */
+export async function listAddedOrDeletedFiles(
+  refs: PrePushRef[],
+  cwd: string,
+  git: PrePushGit,
+  baseRef?: string,
+): Promise<Result<string[], string>> {
+  const pushed = await pushedNames(refs, cwd, git, baseRef, [
+    "--no-renames",
+    "--diff-filter=AD",
+  ]);
+  return pushed.ok ? { ok: true, value: [...pushed.value].sort() } : pushed;
+}
+
+/**
+ * List the files the push introduces: those touched by commits (including
+ * the paths a merge commit itself changed: a conflict resolution or a fix
+ * folded into the merge, never the files it merely brings in from the base)
+ * reachable from the pushed tips but not from `baseRef` — by default no
+ * remote-tracking ref (`--remotes`) — minus deletions, and only those that
+ * still exist as regular files in the working tree. Files reached through a
+ * symlinked parent directory are skipped too, since they resolve outside the
+ * checkout. Sorted and unique. `includeDeleted` retains all touched paths
+ * (unfiltered by the working tree) for configuration invalidation; callers
+ * must filter execution targets separately. It is also the list the CI cargo
+ * and cargo-deny triggers use (Issue #5169), so a deleted or renamed-away
+ * Rust-relevant path or cargo-deny input still runs those checks.
+ *
+ * `baseRef` widens the range to everything the branch has ahead of that ref,
+ * including commits a WIP checkpoint already pushed (Issue #3689). It must be
+ * a ref the caller resolved itself; a value git could read as an option is
+ * refused.
+ */
+export async function listPushedFiles(
+  refs: PrePushRef[],
+  cwd: string,
+  git: PrePushGit,
+  baseRef?: string,
+  includeDeleted = false,
+): Promise<Result<string[], string>> {
+  const pushed = await pushedNames(
+    refs,
+    cwd,
+    git,
+    baseRef,
+    // A rename is listed under its new name only by default, which hides
+    // a renamed-away `.rs`, `clippy.toml` or `deny.toml` from the CI cargo
+    // and cargo-deny triggers, so the deleted-path list reports both sides
+    // (Issue #5169).
+    includeDeleted ? ["--no-renames"] : ["--diff-filter=d"],
+  );
+  if (!pushed.ok) return pushed;
+  const names = pushed.value;
   if (includeDeleted) return { ok: true, value: [...names].sort() };
   if (names.size === 0) return { ok: true, value: [] };
   let realCwd: string;
@@ -330,7 +371,6 @@ export async function listPushedFiles(
       // A symlinked parent directory (`dir -> /elsewhere`) makes `dir/file`
       // resolve outside the checkout even though its own lstat is a file.
       if (
-        containToCheckout &&
         (await Deno.realPath(`${cwd}/${name}`)) !== `${realCwd}/${name}`
       ) {
         continue;
@@ -1060,6 +1100,7 @@ function quoteForTokeniser(value: string): string | null {
 /**
  * Whether a changed path can change what a CI cargo command builds or checks:
  * a `.rs` file, a cargo manifest or lock, a toolchain pin, or a clippy config.
+ * The config names also apply from an ancestor directory ({@link governsCargoDir}).
  * The same set gates whether the CI cargo checks are read at all.
  */
 const RUST_CONFIG_NAMES = [
@@ -1074,6 +1115,22 @@ const RUST_CONFIG_NAMES = [
 function isRustRelevant(path: string): boolean {
   if (hasExtension(path, [".rs"])) return true;
   return RUST_CONFIG_NAMES.includes(path.slice(path.lastIndexOf("/") + 1));
+}
+
+/**
+ * Whether a changed path governs a CI cargo check run in `dir` (normalised: "."
+ * or a slash-joined relative path). A Rust-relevant file under `dir` does; so
+ * does a config file in an ancestor of `dir`, because rustup and clippy read
+ * `rust-toolchain` and `clippy.toml` from parent directories and a workspace's
+ * `Cargo.toml` and `Cargo.lock` sit above its member crates. A `.rs` file in an
+ * ancestor does not (Issue #5169).
+ */
+function governsCargoDir(path: string, dir: string): boolean {
+  if (!isRustRelevant(path)) return false;
+  if (dir === "." || path.startsWith(`${dir}/`)) return true;
+  const slash = path.lastIndexOf("/");
+  if (!RUST_CONFIG_NAMES.includes(path.slice(slash + 1))) return false;
+  return slash < 0 || dir.startsWith(`${path.slice(0, slash)}/`);
 }
 
 /**
@@ -1156,7 +1213,9 @@ function quoteArguments(args: string[]): Result<string, string> {
  * outside `tests/`, its `tests/<name>_test.ts` sibling and its co-located
  * `<dir>/<name>_test.ts` sibling (a source under `tests/`, such as a support
  * helper, has no sibling); and the `referenced` tests
- * ({@link loadReferencedUnitTests}) whose text names a changed file. Only files
+ * ({@link loadReferencedUnitTests}) whose text names a changed file, plus a
+ * root's directory-listing tests ({@link loadDirectoryListingTests}) when the
+ * push adds or deletes a file under it. Only files
  * `tracked` still holds count, so a deleted test is not run. Deduplicated and
  * sorted.
  */
@@ -1201,13 +1260,16 @@ function plannedUnitTestFiles(
  * whose changed tests get a `deno test` check (see
  * {@link loadDenoUnitTestRoots}); absent means no `deno test` check. The check
  * runs the changed test files, the same-named and co-located tests of changed
- * sources and the `denoReferencedTests` beside them, via the repo's own
+ * sources and the `denoReferencedTests` (those naming a changed file, and the
+ * directory-listing tests of a root that gained or lost a file) beside them, via the repo's own
  * `test:unit` task, so
  * integration suites like CI's shards are not run here.
  *
  * `ciCargo` (Issue #4630) is the CI cargo scan. Each of its checks is planned,
- * after the cargo fmt check, when the push changes a Rust-relevant file under
- * the check's working directory (`.` is anywhere). Absent means no CI cargo
+ * after the cargo fmt check, when the push changes a Rust-relevant file in or
+ * below the check's working directory (`.` is anywhere), or a
+ * `RUST_CONFIG_NAMES` file (a manifest, lock, toolchain pin or clippy config)
+ * in an ancestor of it ({@link governsCargoDir}). Absent means no CI cargo
  * checks are planned. Only `runPrePushGate` supplies it, and only when its
  * caller passes `findCiCargo` (see the module header).
  */
@@ -1233,7 +1295,9 @@ export function planChangedFileChecks(
     denoUnitTestRoots?: string[];
     /**
      * Per deno root, the root-relative tests whose text names a changed file
-     * (see {@link loadReferencedUnitTests}); they run beside the changed tests.
+     * (see {@link loadReferencedUnitTests}) and, for a root that gained or lost
+     * a file, its directory-listing tests ({@link loadDirectoryListingTests});
+     * they run beside the changed tests.
      */
     denoReferencedTests?: Record<string, string[]>;
     /**
@@ -1246,9 +1310,9 @@ export function planChangedFileChecks(
     ciCargo?: CiCargoScan;
     /**
      * The changed files the CI cargo checks are planned from. Defaults to
-     * `changed`; the gate passes the list that keeps a file reached through a
-     * symlinked parent directory, so a crate directory that resolves outside the
-     * checkout is refused rather than skipped (Issue #4630).
+     * `changed`; the gate passes the list that keeps deleted paths and files
+     * under a symlinked parent directory, so a crate directory that resolves
+     * outside the checkout is refused rather than skipped (Issue #4630).
      */
     cargoChanged?: string[];
     shellcheckPolicy?: ShellcheckPolicy | null;
@@ -1473,9 +1537,7 @@ export function planChangedFileChecks(
   const cargoChanged = opts.cargoChanged ?? changed;
   for (const check of cargoCheckOrder(opts.ciCargo?.checks ?? [])) {
     const dir = check.workingDirectory;
-    const touched = cargoChanged.some((p) =>
-      isRustRelevant(p) && (dir === "." || p.startsWith(`${dir}/`))
-    );
+    const touched = cargoChanged.some((p) => governsCargoDir(p, dir));
     if (!touched) continue;
     const command = argvCommand(check.argv);
     if (!command.ok) return command;
@@ -2965,17 +3027,17 @@ export async function runPrePushGate(opts: {
     opts.baseRef,
   );
   if (!contained.ok) return infrastructureFail(contained.error);
-  const uncontained = await listPushedFiles(
+  const fileSetChanges = await listAddedOrDeletedFiles(
     refs.value,
     opts.cwd,
     git,
     opts.baseRef,
-    false,
-    false,
   );
-  if (!uncontained.ok) return infrastructureFail(uncontained.error);
+  if (!fileSetChanges.ok) return infrastructureFail(fileSetChanges.error);
   const formatterCandidates = contained.value;
-  const ciCargoPaths = uncontained.value;
+  // The unfiltered touched list: it keeps deleted paths (Issue #5169) and files
+  // under a symlinked crate directory (Issue #4630).
+  const ciCargoPaths = touched.value;
 
   const lsFiles = await git(["ls-files", "-z"], opts.cwd);
   if (lsFiles.code !== 0) {
@@ -3022,9 +3084,9 @@ export async function runPrePushGate(opts: {
     cspellBinary = await find(opts.cwd);
   }
 
-  // The CI cargo scan is read only when a Rust-relevant file changed. A command
-  // the scan cannot reproduce fails the push before anything runs, so it is
-  // never dropped from the checked set without a word.
+  // The CI cargo scan is read only when a Rust-relevant file changed or was
+  // deleted. A command the scan cannot reproduce fails the push before
+  // anything runs, so it is never dropped from the checked set without a word.
   let ciCargo: CiCargoScan | undefined;
   if (opts.findCiCargo && ciCargoPaths.some(isRustRelevant)) {
     const scan = await opts.findCiCargo(opts.cwd, tracked);
@@ -3058,6 +3120,27 @@ export async function runPrePushGate(opts: {
       touched.value.some((p) => root === "." || p.startsWith(`${root}/`))
     ),
   );
+  const referencedTests = await loadReferencedUnitTests(
+    opts.cwd,
+    tracked,
+    // Deleted and renamed-away paths too: a test can still name them.
+    touched.value,
+    denoUnitTestRoots,
+  );
+  // A test that checks a directory's file set breaks on a file it never names
+  // (Issue #5169), so a root that gained or lost a file runs those tests too.
+  const listingTests = await loadDirectoryListingTests(
+    opts.cwd,
+    tracked,
+    denoUnitTestRoots.filter((root) =>
+      fileSetChanges.value.some((p) => root === "." || p.startsWith(`${root}/`))
+    ),
+  );
+  for (const [root, tests] of Object.entries(listingTests)) {
+    referencedTests[root] = [
+      ...new Set([...(referencedTests[root] ?? []), ...tests]),
+    ];
+  }
   const plan = planChangedFileChecks(formatterSelection, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
@@ -3069,13 +3152,7 @@ export async function runPrePushGate(opts: {
       needsFullUnitSuite(touched.value, root) || unfollowable.includes(root)
     ),
     validationChanged: contained.value,
-    denoReferencedTests: await loadReferencedUnitTests(
-      opts.cwd,
-      tracked,
-      // Deleted and renamed-away paths too: a test can still name them.
-      touched.value,
-      denoUnitTestRoots,
-    ),
+    denoReferencedTests: referencedTests,
     ciCargo,
     cargoChanged: ciCargoPaths,
   });
@@ -3235,7 +3312,8 @@ export async function runPrePushGate(opts: {
 
   const cargoDeny = await runCargoDenyGate({
     cwd: opts.cwd,
-    changed: contained.value,
+    // Deleted and renamed-away inputs change CI's cargo-deny result (Issue #5169).
+    changed: touched.value,
     always: !opts.repairChecksWithCiCargo &&
       opts.baseRef !== undefined,
     // The touched paths decide a workflow's `paths` filter only over the whole
@@ -3270,4 +3348,73 @@ export async function runPrePushGate(opts: {
   if (!preFlight.ok) return { ok: false, error: preFlight.error };
 
   return { ok: true, value: { checksRun } };
+}
+
+/** A text match: a comment spelling such a call also matches, which over-selects and fails closed. */
+const LISTS_DIRECTORY =
+  /\bDeno\.readDir(?:Sync)?\s*\(|\b(?:walk|walkSync|expandGlob|expandGlobSync)\s*\(|["'`]ls-files["'`]/;
+
+/**
+ * Per deno root, the root-relative `_test.ts` files that check the set of files
+ * in a directory (Issue #5169): such a test can break on a file it never names,
+ * so a push that adds, deletes or renames a file runs it. A file lists a
+ * directory when its text matches {@link LISTS_DIRECTORY}. A test-tree file (a
+ * `_test.ts` or one under `tests/`) is a seed when it lists a directory or
+ * imports (relative `.ts` specifier) a tracked file that does; a test is
+ * selected when it is a seed or imports one, directly or transitively. A module
+ * that reaches a listing only through another non-test module is not followed,
+ * so CI's shards stay the backstop. A tracked `.ts` file that cannot be read
+ * counts as listing a directory (fails closed).
+ */
+export async function loadDirectoryListingTests(
+  repoRoot: string,
+  tracked: string[],
+  roots: string[],
+): Promise<Record<string, string[]>> {
+  const found: Record<string, string[]> = {};
+  for (const root of roots) {
+    const prefix = root === "." ? "" : `${root}/`;
+    const texts = new Map<string, string>();
+    const unreadable = new Set<string>();
+    for (const path of tracked) {
+      if (!path.startsWith(prefix) || !path.endsWith(".ts")) continue;
+      try {
+        texts.set(path, await readRepoFile(repoRoot, path));
+      } catch {
+        unreadable.add(path); // Fails closed: it may list a directory.
+        texts.set(path, "");
+      }
+    }
+    const lists = (path: string) =>
+      unreadable.has(path) || LISTS_DIRECTORY.test(texts.get(path) ?? "");
+    const importers = new Map<string, string[]>();
+    const seeds: string[] = [];
+    // SIMPLE-ON-PURPOSE: one import hop from the test tree, fine while listers are imported directly — upgrade when a listing test is missed through a second non-test module
+    for (const [path, text] of texts) {
+      const imports = relativeTsSpecifiers(text).map((s) =>
+        resolveSpecifier(path, s)
+      );
+      for (const target of imports) {
+        importers.set(target, [...(importers.get(target) ?? []), path]);
+      }
+      const inTestTree = path.endsWith("_test.ts") ||
+        path.startsWith(`${prefix}tests/`);
+      if (inTestTree && (lists(path) || imports.some(lists))) seeds.push(path);
+    }
+    const reached = new Set(seeds);
+    const queue = [...seeds];
+    for (const file of queue) {
+      for (const importer of importers.get(file) ?? []) {
+        if (!reached.has(importer)) {
+          reached.add(importer);
+          queue.push(importer);
+        }
+      }
+    }
+    found[root] = [...texts.keys()]
+      .filter((p) => p.endsWith("_test.ts") && reached.has(p))
+      .map((p) => p.slice(prefix.length))
+      .sort();
+  }
+  return found;
 }

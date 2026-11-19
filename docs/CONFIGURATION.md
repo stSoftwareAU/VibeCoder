@@ -3069,7 +3069,8 @@ before creating the PR. A CI fix attempts that gate when Claude leaves
 uncommitted changes after its attempt, then runs configured pre-flight commands
 before the worker push; with no such changes and no pre-flight commands, it runs
 only the repair checks before that push: the ShellCheck publication check, the
-CI cargo-deny check when the pushed paths include a cargo input, the
+CI cargo-deny check when the pushed paths, including deleted and renamed-away
+ones, include a cargo input (Issue #5169), the
 dependency-selected unit tests and configured markdownlint for the pushed paths
 (Issue #4930), and the changed-file `deno fmt --check` (Issue #5169). PR feedback and spelling fixes do not run the full
 gate before the worker push. Configured pre-flight commands also enable
@@ -3079,11 +3080,11 @@ A fleet babysitter repair is gated inside its container before it reports
 ready (`repairChecksWithCiCargo`): the unit tests selected for its uncommitted
 changes, markdownlint when configured, the ShellCheck policy, the cargo-deny
 gate, the repo CI's cargo clippy and test-target compile when a Rust-relevant
-file changed, `deno fmt --check` on the changed files it covers (Issue #5169)
-and the gitleaks secret scan (Issue #5121) run there, but no other formatter
-check, and no linter other than CI's cargo clippy (Issue #4930). Its `.git` is read-only,
-so its cargo checks have no PR-base comparison and a failing CI cargo check
-always blocks the repair (see
+file changed or was deleted, `deno fmt --check` on the changed files it covers
+(Issue #5169) and the gitleaks secret scan (Issue #5121) run there, but no
+other formatter check, and no linter other than CI's cargo clippy
+(Issue #4930). Its `.git` is read-only, so its cargo checks have no PR-base
+comparison and a failing CI cargo check always blocks the repair (see
 [babysitter container repairs](workflows/fleet-pr-babysitter.md#container-repairs)).
 Custom PR prompts use the agent's pre-push hook, which runs changed-file checks
 and configured pre-flight commands when the agent pushes; the worker verifies
@@ -5287,7 +5288,7 @@ PR-feedback repair processors pass the repair-with-CI-cargo spec
 (`REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT`) when the repo has no pre-flight
 commands (Issue #4630), so their repair pushes run only the repo
 CI's cargo clippy and test-target compile, the ShellCheck policy
-(Issue #4631), cargo deny for changed cargo inputs (Issue #4626) and the
+(Issue #4631), cargo deny for changed, deleted or renamed-away cargo inputs (Issue #4626) and the
 pushed paths' `deno test` and markdownlint checks (Issue #4930) and their
 `deno fmt --check` (Issue #5169), through Step 1b, and not the other
 changed-file checks listed below. Repos with
@@ -5295,7 +5296,8 @@ pre-flight commands keep their own spec. The completion phase's
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the first stage below: deno fmt/lint,
-`deno test` of the changed and referencing tests (the whole `test:unit` suite
+`deno test` of the changed, referencing and, when the push adds, deletes or
+renames a file, directory-listing tests (the whole `test:unit` suite
 when a `prompts/` file or a root's `deno.json`, `deno.jsonc` or `deno.lock`
 changes), cargo fmt, markdownlint, cspell, ShellCheck and the Floci
 CloudFormation deploy test), the CI cargo clippy and test-target compile (which
@@ -5419,7 +5421,21 @@ gates do (see that bullet):
      the directory, so the tests that import it are selected. A push that changes
      only tests selects nothing for it. The check is a text match, so a string or
      code comment that spells such a call does the same. Prompt loaders are
-     already covered by the prompts rule. A data file read
+     already covered by the prompts rule. When the push adds, deletes or renames
+     a file under the directory, the check also runs that directory's
+     directory-listing tests (Issue #5169), because a test of the set of files
+     (a manifest of test files, a coverage ledger of modules) can break on a
+     file it never names. A `_test.ts` is selected when it, or a file under
+     `tests/` or another `_test.ts` that it imports directly or transitively,
+     lists a directory itself or directly imports a `.ts` module under the
+     directory that does. A file lists a directory when its text calls
+     `Deno.readDir`, `Deno.readDirSync`, `walk`, `walkSync`, `expandGlob` or
+     `expandGlobSync`, or quotes `ls-files`; as a text match, a comment that
+     spells such a call also selects, and so does a tracked `.ts` file that
+     cannot be read (it fails closed). A module that reaches a listing only
+     through another non-test module is not followed, so such a test can still
+     be missed. A push that only modifies existing files selects none of these
+     tests. A data file read
      through a path the scan cannot see (no name, directory or template-literal
      token) can still be missed, and CI's shards remain the backstop. This is a
      dependency heuristic, and a widely imported module can select most of the
@@ -5484,9 +5500,13 @@ gates do (see that bullet):
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
    - **CI's cargo clippy and test-target compile** (Issue #4630), when the push
-     changes a Rust-relevant file (a `.rs` file, `Cargo.toml`, `Cargo.lock`,
-     `rust-toolchain` or `rust-toolchain.toml`, `clippy.toml` or
-     `.clippy.toml`) in a directory the repo's CI runs cargo in. These run in
+     changes, deletes or renames away a Rust-relevant file (a `.rs` file,
+     `Cargo.toml`, `Cargo.lock`, `rust-toolchain` or `rust-toolchain.toml`,
+     `clippy.toml` or `.clippy.toml`) for a directory the repo's CI runs cargo
+     in. A `.rs` file counts only in or below that directory; a config file
+     counts in, below or above it, because rustup reads the toolchain pin and
+     clippy its config from parent directories and a workspace's `Cargo.toml`
+     and `Cargo.lock` sit above its member crates (Issue #5169). These run in
      the worker's own gates (Step 1b, the completion gate and the repair
      processors' repair-with-CI-cargo spec) and in the agent's own pre-push hook: before
      the agent runs, the worker scans the workflows and writes the derived
@@ -5616,9 +5636,9 @@ gates do (see that bullet):
    - **`cargo deny`** (Issue #4626), for the whole-branch completion check.
      Intermediate push hooks and the repair spec (`repairChecksWithCiCargo`,
      used by the CI-fix, PR-feedback, spelling and merge-conflict repairs and
-     the babysitter's tree gate) run it when pushed changes include a `Cargo.toml`,
-     `Cargo.lock`, `deny.toml`, `.deny.toml`, `.cargo/config.toml` or
-     `.cargo/deny.toml`. It reads the repo's own `.github/workflows/*.yml` and
+     the babysitter's tree gate) run it when pushed changes add, change, delete or
+     rename away a `Cargo.toml`, `Cargo.lock`, `deny.toml`, `.deny.toml`,
+     `.cargo/config.toml` or `.cargo/deny.toml` (Issue #5169). It reads the repo's own `.github/workflows/*.yml` and
      `*.yaml` files for each `run:` step whose command is `cargo deny` with a
      `check` argument, and for each `EmbarkStudios/cargo-deny-action` step,
      whose inputs (with the action's own defaults) give the argv the action

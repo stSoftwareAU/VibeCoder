@@ -183,7 +183,8 @@ function hostEnvironment(host: RepairHost): Record<string, string> {
  * A real launch plan for the repair, built by `buildLaunchPlanForCommand` over
  * the host: the worker checkout mount, the staged config, the log mount and the
  * enabled provider credential mount, as production builds them. `extraRunArgs`
- * go before the image.
+ * go before the image. The runtime is podman on any host: the injected probe
+ * reports only podman, and the platform is pinned to Linux (Issue #5245).
  */
 export async function repairPlan(
   host: RepairHost,
@@ -194,8 +195,10 @@ export async function repairPlan(
   const plan = await buildLaunchPlanForCommand(host.baseDir, containerName, {
     env: (name) => environment[name],
     now: () => 1_900_000_000_000,
-    // Only podman is on PATH, so the plan's runtime is podman, as the repair
-    // tests expect.
+    // Only podman answers the probe, and the platform is pinned to Linux so
+    // the plan does not depend on the host OS (Issue #5245): the plan's
+    // runtime is podman, as the repair tests expect.
+    platform: "linux",
     probe: (candidate) =>
       Promise.resolve({
         available: candidate.executable === "podman",

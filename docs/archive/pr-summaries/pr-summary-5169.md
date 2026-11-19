@@ -2,284 +2,210 @@
 
 ## Summary
 
-The fleet babysitter's repair gate was the last publication path still on
-`repairChecksOnly`. In that mode the pre-push gate plans no CI cargo check, so a
-babysitter repair to a fleet PR reached CI without the repo's `cargo clippy` or
-test-target compile (the build step behind `cargo llvm-cov`). The issue's
-`E0252`, `E0308` and clippy codes come from those two steps.
+Closes the "targeted subset" bypass behind the public VibeCoder incidents on
+#5169 (the #5230 group). The pre-push gate's `deno test` check runs only the
+tests it selects: changed tests, the same-named tests of changed sources, and
+tests whose text names or imports a changed file. A test that checks the set of
+files in a directory never names a new file, so it was never selected. Two
+examples are `worker/deno/tests/parallel_unsafe_test_manifest_test.ts` (scans
+`tests/`) and `worker/deno/tests/lib_sweep_coverage_test.ts` (walks `lib/`
+through `lib/lib_sweep_coverage.ts`). PR #5232 added a test file and #5251 added
+a module. Both pushes passed the local gate and then failed those tests in CI.
 
-- `worker/deno/lib/babysitter_tree_gate.ts`: `runBabysitterTreeGate` now calls
-  the gate with `repairChecksWithCiCargo: true` and `findCiCargo`, which by
-  default is the real workflow scan `repoCiCargoChecks`. This is the repair mode
-  the CI-fix, PR-feedback, spelling and merge-conflict repairs already use
-  (Issue #4630; PR #5226 for this issue). The CI cargo checks run when a
-  Rust-relevant file changed.
-- No `compareRef` is passed. The base comparison fetches into the clone and
-  makes a worktree outside the gate's temp root, and the babysitter clone's
-  `.git` is read-only. A failing CI cargo check therefore always blocks a
-  babysitter repair. CI runs on the PR's own tree, so such a repair would fail
-  CI anyway.
-- `worker/deno/lib/pre_push_gate.ts` and `worker/deno/lib/git_push.ts`: the
-  `repairChecksOnly` option and spec field had no production caller left, so
-  they are removed. `repairChecksWithCiCargo` is now the only repair mode.
-- `worker/deno/lib/pre_push_gate.ts`: the `repairChecksWithCiCargo` repair mode
-  now also keeps the changed-file `deno fmt --check` the full gate runs. Before,
-  a repair push ran no `deno fmt` at all, the issue's `deno fmt
-  --check` step.
-  Its file selection now also takes the files `deno fmt` covers, and the cspell
-  lookup is skipped in that mode, so no check the mode skips (deno lint, cargo
-  fmt, cspell, Floci) can block the push. This covers the CI-fix, PR-feedback,
-  spelling and merge-conflict repairs and the babysitter's tree gate.
-- Docs updated: `docs/CONFIGURATION.md`, `docs/INTERNALS.md` and
-  `docs/workflows/fleet-pr-babysitter.md`.
+Now, when a push adds, deletes or renames a file under a Deno root with a
+`test:unit` task, `runPrePushGate` also runs that root's directory-listing
+tests:
 
-The rest of the issue is still open (see Acceptance Criteria). Part of #5169.
+- `listAddedOrDeletedFiles` lists the paths the pushed commits add or delete
+  (`--no-renames --diff-filter=AD`, so a rename counts as both).
+- `loadDirectoryListingTests` selects a `_test.ts` when it, or a test-tree file
+  it imports, lists a directory or directly imports a module that does. Listing
+  means calling `Deno.readDir`, `walk` or `expandGlob` (or their `Sync` forms),
+  or quoting `ls-files`. A tracked `.ts` file that cannot be read counts as
+  listing, so it fails closed.
+
+These tests join the existing selected list. No new gate is added.
+
+Parts of the issue are still not done (see Acceptance Criteria). Part of #5169.
 
 ## Spec
 
 ### Intent and Rationale
 
-- PR #5226 closed the bypass for spelling and merge-conflict repairs, and
-  deliberately left the babysitter tree gate on `repairChecksOnly`. The
-  babysitter pushes repairs to fleet PRs, the population this issue counts.
-  Among the repair push paths, it was the last one where a Rust edit met no CI
-  cargo check.
-- The fix reuses the existing gate mode and workflow scan. No new gate is added,
-  as the issue asks.
+- Running the whole `test:unit` suite whenever the file set changes would never
+  miss a test, but most pushes add a file. This rule runs fewer tests: on this
+  repository's tree it selects 674 of the 2,382 test files, including both
+  incident tests.
+- The rule extends the existing `denoReferencedTests` selection. That matches
+  the issue's "Do not create parallel language-specific gates".
 
 ### Essential Design Decisions
 
-- The babysitter has no PR-base comparison for its cargo checks, because of the
-  read-only `.git`. A base that already fails clippy blocks the repair, and the
-  repair agent is told why. The CI-fix and other repairs keep their comparison.
-- A CI cargo command the gate cannot reproduce, a missing toolchain, a full disk
-  or an unreachable registry is an `infrastructure` outcome. It spends no repair
-  attempt and never passes. This is `runPrePushGate`'s existing
-  `PrePushGateInfrastructureError` path.
-- Cargo may write `target/` in the clone. The tree gate's status read excludes
-  ignored files. An unignored `target/` turns a pass into `blocked` through the
-  existing settle step, so it is never staged by the host's `git add -A`.
+- It follows one import hop out of the test tree. A test that reaches a listing
+  only through a second non-test module is not selected. This limit is marked
+  `SIMPLE-ON-PURPOSE`, and CI's shards remain the backstop.
+- Any add or delete under a root runs all of that root's listing tests, not just
+  those for the changed directory. A text match also counts a comment that
+  spells a listing call. Both rules over-select, so they fail closed.
 
 ### Undiscoverable Facts
 
-- The 22 Rust/Deno PRs and #5151's three ShellCheck PRs are in a private
-  repository. No shift-left ledger (`shift-left-ledger.json`) exists on this
-  host, so this run could not read their jobs. The bypass was found by tracing
-  the publication paths in code.
-- `cargo llvm-cov` is not installed in the worker container (`cargo llvm-cov`
-  gives `error: no such command: llvm-cov`). The coverage threshold therefore
-  cannot be measured locally; only the test-target compile is.
+- PRs #5226, #5252, #5257 and #5263 (all merged) delivered the earlier gate
+  fixes for this issue. This branch starts from `main` at 56dd3ada1.
 
 ## Evidence
 
-Backend only: no UI file is touched.
+Backend-only change: no UI files are touched.
 
 ```mermaid
-flowchart TD
-    A["babysitter repair: BABYSITTER_READY + uncommitted edits"] --> G["runBabysitterTreeGate"]
-    G -- before --> O["repairChecksOnly: unit tests, markdownlint, ShellCheck, cargo deny"]
-    G -- after --> C["repairChecksWithCiCargo + findCiCargo: the same checks + CI cargo clippy and test-target compile"]
-    C -- "check fails" --> B["blocked: READY withheld"]
-    C -- "cannot run (toolchain, disk, network)" --> I["infrastructure: no attempt spent"]
-    C -- pass --> L["gitleaks, then READY"]
-    G -- after --> F["deno fmt --check on the changed files deno fmt covers"]
-    F -- "not formatted" --> B
+flowchart LR
+    P[push refs] --> AD["listAddedOrDeletedFiles<br/>(--no-renames --diff-filter=AD)"]
+    AD -->|a root gained or lost a file| L[loadDirectoryListingTests]
+    P --> R[loadReferencedUnitTests]
+    L --> M[union per root]
+    R --> M
+    M --> T["deno task test:unit &lt;files&gt;"]
 ```
 
-- Issue numbers this diff cites: #5169 ("Fix local quality-check bypasses before
-  fleet publication (Rust, Deno and ShellCheck)"). Existing citations (#4630,
-  #4930, #5121, #4626, #4631) are kept as they were.
-- Doc sweep: I grepped `docs/` and `worker/deno/lib/` for `repairChecksOnly`,
-  "tree gate" and "formatters or linters". The babysitter "Pre-push gate"
-  paragraph and the summary under "Container repairs" in
-  `docs/workflows/fleet-pr-babysitter.md`, the babysitter paragraph and the
-  unit-test and `cargo deny` bullets and the CI-fix push-guarantee paragraph in
-  `docs/CONFIGURATION.md`, and the publication-paths passage in
-  `docs/INTERNALS.md` now name the CI cargo checks. Each now says the gate runs
-  no linter other than CI's cargo clippy.
-  `grep -rn repairChecksOnly worker/ docs/ --include=*.ts --include=*.md`,
-  excluding `docs/archive`, finds nothing.
+- Incident trace (public jobs, read with `gh run view` / `gh api .../logs` in an
+  earlier run on this issue):
+  - #5232, run 44001699372, head `576028085`, Deno tests (shard 3 of 4):
+    `tests/parallel_unsafe_test_manifest_test.ts` failed because the new
+    `tests/dummy_test_scan_5016_test.ts` was not in `WALL_CLOCK_TEST_FILES`.
+  - #5251, run 44114964923, Deno tests (shard 1 of 4):
+    `tests/lib_sweep_coverage_test.ts` failed because
+    `docs/audits/lib-sweep-coverage.json` was out of date.
+- On this repository's real tree, `loadDirectoryListingTests` returns 674 tests
+  for `worker/deno`. They include `tests/parallel_unsafe_test_manifest_test.ts`
+  (through `tests/support/test_source_graph.ts`, which calls `Deno.readDir`) and
+  `tests/lib_sweep_coverage_test.ts`. I checked this with a throwaway script
+  that imported the function; the script is not committed.
+- Red before the fix: with `lib/pre_push_gate.ts` restored from `origin/main`
+  (plus a stub `loadDirectoryListingTests` returning `{}`), the three new tests
+  in the first commit failed. The selection was `[]` or missed the listing test.
+  With `--no-renames` removed, the rename case failed (`[]`). Without the
+  fail-closed change, the unreadable-module test failed (`"worker/deno": []`).
+- Issue and PR numbers cited as provenance: #5169 (this issue), #5230 and #5151
+  (incident reports consolidated here), #5232 and #5251 (the incident PRs), and
+  #5226, #5252, #5257 and #5263 (earlier PRs on this issue).
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — "Do not create parallel language-specific gates" — evidence:
-  `worker/deno/lib/babysitter_tree_gate.ts` — reviewer: met — reason: reuses
-  `repairChecksWithCiCargo` and `repoCiCargoChecks`, and removes
-  `repairChecksOnly`.
-- **partial** — "focused behavioural regressions for the actual publication
-  paths, plus successful valid-path controls" — evidence:
-  `worker/deno/tests/babysitter_tree_gate_test.ts::a repair changing a Rust file with a failing CI clippy blocks with its diagnostic (Issue #5169)`
-  — reviewer: partial — reason: clippy block/pass tests exist for the babysitter
-  gate and fmt block/pass tests for `runPrePushGate`, but there is no fmt-block
-  test through `runBabysitterTreeGate` or `commitAndPushPending`, and no
-  ShellCheck or llvm-cov test.
-- **missing** — "Acceptance requires evidence for both incident groups" —
-  reviewer: missing — reason: both groups' failing jobs are in a private
-  repository this run could not read, and this host has no shift-left ledger.
+- **partial** — "Find the path that skipped it (a disk-budget deferral that
+  leaves checks to CI, a targeted subset) and close it" — evidence:
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a push that only adds a test file also runs the tests that list the tests directory (Issue #5169)`
+  — reviewer: partial — reason: the targeted-subset gap for directory-listing
+  tests is closed, but a listing reached through a second non-test module is
+  still missed, and the milestone merge-only sync (Issue #4326) still pushes a
+  cargo-only merge with an `UNGATED:` note.
+- **partial** — "Acceptance requires evidence for both incident groups" —
+  evidence: `## Evidence` (runs 44001699372 and 44114964923) — reviewer: partial
+  — reason: the VibeCoder group's two Deno shard failures are traced to this
+  gap, but the private group's 22 jobs cannot be read from this run.
 - **missing** — "incorporating #5151's three ShellCheck failures" — reviewer:
-  missing — reason: no ShellCheck change or test. #5151's failed step was "Run
-  script tests", and it was not investigated.
+  missing — reason: #5151's jobs are in a private repository and were not
+  diagnosed; this diff does not touch ShellCheck.
 - **missing** — "A disk/resource deferral must retain WIP and resume
   automatically, not publish unvalidated work as passed" — reviewer: missing —
-  reason: the milestone merge-only sync (Issue #4326) still pushes an `UNGATED:`
-  cargo-only merge. This PR does not change that path.
-- **partial** — "cargo llvm-cov" — evidence:
-  `worker/deno/tests/babysitter_tree_gate_test.ts::a repair changing a Rust file with a passing CI clippy passes (Issue #5169)`
-  — reviewer: partial — reason: the babysitter gate now runs CI's test-target
-  compile, but the coverage threshold is not measured. cargo-llvm-cov is not
-  installed in the worker container.
-- **partial** — "deno fmt" — evidence:
-  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repairChecksWithCiCargo blocks a repair whose changed .ts file fails deno fmt --check, as CI's deno fmt step would (Issue #5169)`
-  — reviewer: partial — reason: every repair push now runs the changed-file
-  `deno fmt --check` (red on the unfixed gate), but not CI's whole-tree command.
-- **unrequested** — the cspell lookup is skipped in repair mode — reviewer:
-  unrequested — reason: needed so that taking the `deno fmt` files into repair
-  mode cannot make a missing cspell block a repair that never runs cspell.
-- **unrequested** — fixture `deno.json` files in `pre_push_gate_test.ts` are
-  written formatted — reviewer: unrequested — reason: a host pre-push hook now
-  runs `deno fmt` on the fixtures' own pushes.
+  reason: this diff touches no deferral path; the milestone merge-only sync
+  (`worker/deno/lib/milestone_merge_only.ts`) is unchanged.
+- **missing** — "cargo llvm-cov" — reviewer: missing — reason: no gate measures
+  CI's line-coverage threshold, and `cargo-llvm-cov` is not installed in the
+  worker container.
+- **met** — "focused behavioural regressions for the actual publication paths,
+  plus successful valid-path controls" — evidence:
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a push that adds, deletes or renames a source runs the tests whose imported module walks a directory (Issue #5169)`
+  and
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a push that only adds a test file also runs the tests that list the tests directory (Issue #5169)`
+  (each drives the real `runPrePushGate` publication path over a real git push;
+  the valid-path control in the second test, editing an existing test, runs only
+  that test) — reviewer: met — reason: the process-boundary fixture now models
+  directory-invariant failures: additions, deletions and renames block with the
+  diagnostic, and valid file-set controls pass.
+- **met** — "Do not create parallel language-specific gates" — evidence:
+  `worker/deno/lib/pre_push_gate.ts:3132` (`runPrePushGate` calls
+  `loadDirectoryListingTests` and merges the result into the existing
+  `denoReferencedTests` option at line 3155, consumed by the existing
+  `deno task test:unit` check at line 1379; no new gate or check type is added)
+  — reviewer: met
+- **unrequested** — the `pushedNames` helper, now shared by `listPushedFiles`
+  and `listAddedOrDeletedFiles` — reviewer: unrequested — reason: the reviewer
+  judged it traceable; it lets both functions share one `git log` call, and
+  `listPushedFiles` behaves as before.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — A Code Change Owes a Docs Change: doc comments and docs still
-  described repair mode without `deno fmt` — evidence:
-  `worker/deno/lib/git_push.ts:63` — reason: fixed in this diff, along with
-  `git_push.ts` (field doc and `resolveRepairPreFlightSpec`), `pre_push_gate.ts`
-  (the `runPrePushGate` doc comment), `babysitter_tree_gate.ts`,
-  `docs/INTERNALS.md` and four passages in `docs/CONFIGURATION.md`. The doc
-  comments on `PreFlightGateSpec` and `REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT`
-  now say the babysitter tree gate sets `repairChecksWithCiCargo` directly for
-  every repo and that the constant is used by the four repair processors only.
-- **clean** — the `repairChecksOnly` removal (no hits outside `docs/archive`),
-  the updated CONFIGURATION.md, INTERNALS.md and fleet-pr-babysitter.md
-  paragraphs, test isolation (private temp dirs), the PR summary's records of
-  edited and removed tests, spelling, and fail-closed handling (infrastructure
-  faults never pass).
+- **violation** — the rename case had no test that failed without `--no-renames`
+  — evidence: `worker/deno/lib/pre_push_gate.ts:308` — reason: fixed in this
+  diff (rename case added; it fails with `--no-renames` removed)
+- **violation** — an unreadable tracked `.ts` was skipped with `continue`, a
+  silent pass — evidence: `worker/deno/lib/pre_push_gate.ts:3384` — reason:
+  fixed in this diff (it now counts as listing a directory, pinned by a new
+  test)
+- **clean** — `LISTS_DIRECTORY` has no overlapping quantifiers. Doc comments are
+  updated (module header, `plannedUnitTestFiles`, `planChangedFileChecks`,
+  `denoReferencedTests`, `listPushedFiles`). Review-enforced rules checked:
+  insertion points (Check where you insert), avoid over-engineering (reuses
+  `relativeTsSpecifiers`, `resolveSpecifier`, `readRepoFile`), Australian
+  English. No existing test was edited, and a git failure fails loud as
+  infrastructure.
 
 ## Test Plan
 
-- `deno fmt` repair check (this round): new red/green test above, with a passing
-  control. Updated old-policy assertions that said a repair runs no `deno fmt`:
-  `worker/deno/tests/babysitter_tree_gate_test.ts` (new test file, invalid and
-  unreadable Deno config cases), `worker/deno/tests/git_push_preflight_test.ts`
-  (`.ts` repair), `worker/deno/tests/babysitter_repair_4738_test.ts` (the runner
-  now fails only the unit tests), and the
-  `worker/deno/tests/pre_push_gate_test.ts` repair and docs-only tests. Fixture
-  `deno.json` files are now written formatted. Results: those three files gave
-  146 passed, 0 failed. The `PR #5034 review` tests gave 13 passed with the host
-  pre-push hook disabled. With the host hook on, they fail because the fixtures'
-  own `git push` meets that hook.
-- Before the review revisions, run from `worker/deno` with the host pre-push hook disabled
-  (`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath
-  GIT_CONFIG_VALUE_0=/dev/null`):
-  `deno test -A tests/pre_push_gate_test.ts tests/shellcheck_publication_test.ts`
-  gave 192 passed, 2 failed (re-run on the head). Both failures are
-  `pre-push CLI:` tests that could not download
-  `https://jsr.io/@std/yaml/meta.json` (no network here).
+- Added to `worker/deno/tests/pre_push_gate_test.ts`, with a small
+  `unitCommandsAfterBase` helper (makes a pushed base, then the push under
+  test):
+  - `loadDirectoryListingTests: a test that lists a directory, or imports a file that does, is selected; a plain test and prose are not (Issue #5169)`
+  - `loadDirectoryListingTests: an unreadable tracked module counts as listing a directory, so its importer runs (Issue #5169)`
+    (control: a plain test is not selected).
+  - `runPrePushGate: a push that only adds a test file also runs the tests that list the tests directory (Issue #5169)`
+    (control: editing an existing test runs only that test).
+  - `runPrePushGate: a push that adds, deletes or renames a source runs the tests whose imported module walks a directory (Issue #5169)`
+- The helper's base push to its throwaway local remote uses `--no-verify`, as
+  the existing fixture in the same file does: this host's `core.hooksPath` hook
+  would otherwise run the outer gate on the fixture.
+- No existing test was edited, and no assertion was removed.
+- `deno test -A --filter "Issue #5169" tests/pre_push_gate_test.ts` (from
+  `worker/deno`, with the host's `GIT_CONFIG_*` hook variables unset, on the
+  final code): 18 passed, 0 failed. Re-run at the head after the pre-PR
+  verifier's notice: 18 passed, 0 failed. `deno fmt --check`, `deno lint` and
+  `deno check` on the two changed code files are clean.
+- Docs: in `docs/CONFIGURATION.md`, I updated the pre-push gate's `deno test`
+  selection paragraph and the stage summary ("the changed, referencing and, when
+  the push adds, deletes or renames a file, directory-listing tests").
+  `markdownlint-cli2` reports 0 issues. A grep of `docs/` (excluding
+  `docs/archive/`) and `README.md` found no other description of this selection.
+- `./quality.sh < /dev/null` ran on the first commit; the review fixes came
+  after it. Every stage passed except `deno tests` (35,136 passed, 1 failed).
+  The failure is `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` ("PR
+  summary CI task runs git with restricted environment permissions"), which
+  needs `registry.npmjs.org` ("dns error: failed to lookup address
+  information"); this container has no network. Because of that failure the
+  serial test pass did not run.
 
-- `worker/deno/tests/babysitter_tree_gate_test.ts` (66 tests at head) has three
-  new tests. Each runs the real `runBabysitterTreeGate` and the real workflow
-  scan (no `findCiCargo` injected) over a real clone whose `main` holds a crate
-  and a pull-request workflow running
-  `cargo clippy --all-targets -- -D warnings`. Only the command runner is faked.
-  - `a repair changing a Rust file with a failing CI clippy blocks with its
-    diagnostic (Issue #5169)`:
-    an uncommitted `src/lib.rs` edit, clippy exits 101, and the outcome is
-    `blocked` with the clippy diagnostic. Red on the unfixed gate:
-    `AssertionError: Values are not equal` (`passed` vs `blocked`), because
-    clippy never ran.
-  - A Rust edit passes when clippy succeeds.
-  - A Markdown-only edit passes even when clippy would fail.
-- Governing requirement for the edited tests (Part of #5169, "What to fix",
-  quoted verbatim): "Make the fleet run
-  `cargo clippy, cargo llvm-cov, deno fmt, deno test` the way CI does, and
-  require it to pass, before a PR is raised or a fix is pushed. Find the path
-  that skipped it (a disk-budget deferral that leaves checks to CI, a targeted
-  subset) and close it."
-- Edited tests, after `repairChecksOnly` was removed:
-  - Removed from `worker/deno/tests/pre_push_gate_cargo_deny_test.ts`: the whole
-    test `cargo deny: repairChecksOnly mode checks Cargo.lock`, with
-    `assert(result.ok);` and
-    `assertEquals(denyCommands(seen), [{ command: DENY_ARGV, cwd: clone }]);`.
-    - Obsolete: the `repairChecksOnly` mode no longer exists.
-    - Still covered by:
-      `worker/deno/tests/pre_push_gate_cargo_deny_test.ts::cargo deny: repairChecksWithCiCargo mode checks Cargo.lock`,
-      which makes the same assertions.
-  - `worker/deno/tests/pre_push_gate_cargo_deny_test.ts`:
-    `cargo deny:
-    repairChecksOnly mode skips a source-only repair even with a baseRef`
-    is renamed to the `repairChecksWithCiCargo` mode, with every assertion kept.
-    It passes.
-  - `worker/deno/tests/pre_push_gate_test.ts`: the `{ repairChecksOnly: true }`
-    entry is dropped from two mode loops. The `{}` and
-    `{ repairChecksWithCiCargo: true }` entries remain. Repair failures are asserted through gate outcomes.
-  - `worker/deno/tests/git_push_preflight_test.ts`: the repair test that passed
-    `{ commands: [], repairChecksOnly: true, runner }` now passes
-    `{ ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner }`, with every
-    assertion unchanged. The change has no Rust file, so no cargo check is
-    planned and the assertions hold.
-  - `worker/deno/tests/pre_push_gate_test.ts`: five repair-mode tests change
-    because the mode now keeps the changed-file `deno fmt --check`.
-    - Obsolete: a `repairChecksWithCiCargo` repair push runs no `deno fmt` at
-      all.
-    - Remaining: no `deno lint`, no cspell, and no cargo command beyond the CI
-      checks; the docs-only repair still reads no CI cargo scan.
-    - Covered by:
-      - `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repairChecksWithCiCargo runs deno fmt --check and the CI cargo commands for a .rs and .ts push, and nothing else (Issue #5169)`
-        (renamed; expected `checksRun` goes from `[CLIPPY_CMD]` to
-        `[BAD_TS_FMT, CLIPPY_CMD]`).
-      - `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repairChecksWithCiCargo on a docs-only push runs only deno fmt --check and markdownlint for the pushed Markdown and does not read the CI cargo scan (Issues #4930 and #5169)`
-        (renamed; the control expects
-        `deno fmt --check --permit-no-files
-        'README.md'` first, then
-        markdownlint).
-      - `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: repair pushes enforce unit tests and markdownlint (PR #5034 review)`
-        (the gate reports independent formatter, unit-test and markdownlint
-        failures, and accepts the clean control).
-  - `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - a formatting failure keeps a repair local until the formatted file passes (#4630, #5169)`:
-    the real formatter blocks the unformatted commit and leaves the remote tip
-    unchanged. After the file is formatted, the repair reaches the remote.
-  - `worker/deno/tests/babysitter_tree_gate_test.ts::a failing uncommitted test blocks the repair and names the test file (#4930, #5169)`:
-    the blocked verdict includes the new test filename. The invalid-config and
-    unreadable-config controls check the returned list of completed checks.
-  - `worker/deno/tests/babysitter_repair_4738_test.ts`: the fake runner failed
-    every command; it now fails only `deno task test:unit` commands, so the new
-    `deno fmt --check` passes. No assertion changes; the same test still blocks
-    on a failing unit test.
-- Results before the review revisions, run from `worker/deno`:
-  - `worker/deno/tests/babysitter_tree_gate_test.ts` (66 tests at head),
-    `worker/deno/tests/babysitter_repair_4738_test.ts` (43),
-    `worker/deno/tests/pre_push_gate_cargo_deny_test.ts` (13) and
-    `worker/deno/tests/git_push_preflight_test.ts` (37): 159 passed, 0 failed in
-    total, each file run on its own.
-  - `deno check` on the changed lib files and `commands/babysitter_repair.ts`:
-    clean.
-  - Run directly with `deno test -A`, `worker/deno/tests/pre_push_gate_test.ts`
-    (186 tests at head) gave 145 passed and 41 failed on the tested revision. The failures
-    come from the fixtures' own `git push` meeting the host's pre-push hook
-    (markdownlint on a fixture `README.md`; filed as #5254). Under
-    `./quality.sh` that file raised no failure.
-- `./quality.sh < /dev/null` before the review revisions:
-  - Every stage passed except `deno tests`. Config integration and checkov were
-    skipped in this environment.
-  - The parallel pass gave 35116 passed and 1 failed. The failure was in the
-    unchanged
-    `PR summary CI task runs git with restricted environment
-    permissions`
-    test (Issue #3768): it could not resolve `registry.npmjs.org` (no network).
-    Re-run alone on the head, that file gave 10 passed, 1 failed for the same
-    reason. This change does not touch that test.
-  - The serial pass did not run because the parallel pass had failed.
+## Review fix validation
 
-Not done or not checked:
+Replaced the two publication-path command-log assertions with gate outcome
+assertions. The process-boundary fake checks the actual fixture file set when
+its unchanged invariant test is selected. Invalid additions, deletions and
+renames must block with `directory invariant violated`; valid controls pass. The
+module fixture now uses the real `Deno.readDir` API instead of an undefined
+walk.
 
-- The Acceptance Criteria entries above.
-- The serial test pass of `./quality.sh`, and the network-dependent test.
-- No real `cargo clippy` ran in a babysitter container. The tests fake the
-  command runner.
+All 18 Issue #5169 tests pass locally using a temporary dependency import map
+and --no-check. Disabling the directory-listing selector makes both replacement
+regression tests fail (11 other filtered tests pass). This is selector red/green
+evidence; no hosted CI result is claimed for this repair.
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+## CI fix (PR #5267)
+
+The `unitCommandsForFooEdit` helper in `worker/deno/tests/pre_push_gate_test.ts`
+(an existing test helper, not part of the Issue #5169 tests) was declared to
+return `Awaited<ReturnType<typeof runPrePushGate>>` but returns the recorded
+`string[]` of `test:unit` commands. The declared return type is now `string[]`,
+which matches what the helper returns. No assertion changed and no behaviour
+changed; only the type annotation did.

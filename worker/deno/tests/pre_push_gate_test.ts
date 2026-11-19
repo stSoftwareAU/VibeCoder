@@ -22,6 +22,7 @@ import {
   listPushedFiles,
   loadDenoScopes,
   loadDenoUnitTestRoots,
+  loadDirectoryListingTests,
   loadReferencedUnitTests,
   needsFullUnitSuite,
   parsePrePushRefs,
@@ -2192,6 +2193,26 @@ Deno.test("planChangedFileChecks: a changed .rs plans the CI clippy with its arg
   assertEquals(tokeniseCommand(CLIPPY_CMD), CLIPPY_ARGV);
 });
 
+Deno.test("planChangedFileChecks: Rust config in an ancestor of the CI working directory plans the check, a look-alike prefix does not (Issue #5169)", () => {
+  const plan = (dir: string, changed: string[]) => {
+    const result = planChangedFileChecks(changed, changed, {
+      repoRoot: "/r",
+      markdownlintBinary: null,
+      ciCargo: scanOf({ ...CLIPPY_CHECK, workingDirectory: dir }),
+    });
+    assert(result.ok);
+    return result.value.filter((c) => c.cargo !== undefined).map((c) =>
+      c.label
+    );
+  };
+  assertEquals(plan("rust", ["rust-toolchain.toml"]), ["cargo clippy (rust)"]);
+  assertEquals(plan("rust/crates/a", ["rust/Cargo.lock"]), [
+    "cargo clippy (rust/crates/a)",
+  ]);
+  assertEquals(plan("rust", ["rusty/Cargo.lock"]), []);
+  assertEquals(plan("rust", ["build.rs"]), []);
+});
+
 Deno.test("planChangedFileChecks: the CI cargo checks come after cargo fmt", () => {
   const result = planChangedFileChecks(
     ["rust/src/lib.rs"],
@@ -2427,6 +2448,204 @@ function gateRust(
     findCiCargo: () => Promise.resolve(scan),
   });
 }
+
+/**
+ * A repo whose `files` are committed and pushed to origin, then one local
+ * commit that only deletes `deletePath` — or, given `renameTo`, only renames
+ * it there (Issue #5169).
+ */
+async function makeRepoDeleting(
+  files: Record<string, string>,
+  deletePath: string,
+  renameTo?: string,
+): Promise<{ root: string; clone: string; stdin: string }> {
+  const root = await Deno.makeTempDir({ prefix: "vibe-pp-del-" });
+  const remote = `${root}/remote.git`;
+  const clone = `${root}/clone`;
+  await git(root, "init", "-q", "--bare", "-b", "main", remote);
+  await git(root, "clone", "-q", remote, clone);
+  await Deno.writeTextFile(`${clone}/deno.json`, "{}\n");
+  for (const [path, text] of Object.entries(files)) {
+    await Deno.mkdir(`${clone}/${path.slice(0, path.lastIndexOf("/"))}`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(`${clone}/${path}`, text);
+  }
+  await git(clone, "add", ".");
+  await git(clone, "commit", "-qm", "init");
+  await git(clone, "push", "-q", "--no-verify", "origin", "HEAD:main");
+  if (renameTo === undefined) await git(clone, "rm", "-q", deletePath);
+  else await git(clone, "mv", deletePath, renameTo);
+  await git(clone, "commit", "-qm", "delete");
+  const sha = await git(clone, "rev-parse", "HEAD");
+  return {
+    root,
+    clone,
+    stdin: `refs/heads/main ${sha} refs/heads/main ${"0".repeat(40)}\n`,
+  };
+}
+
+const DELETION_FILES_5169 = {
+  ...RUST_FILES,
+  "rust/src/helper.rs": "pub fn h() {}\n",
+  "rust/clippy.toml": 'msrv = "1.70"\n',
+  "rust/NOTES.md": "# Notes\n",
+};
+
+Deno.test("runPrePushGate: a push that only deletes a .rs file runs CI's clippy, and a failing clippy blocks it (Issue #5169)", async () => {
+  const { root, clone, stdin } = await makeRepoDeleting(
+    DELETION_FILES_5169,
+    "rust/src/helper.rs",
+  );
+  try {
+    const calls: RanCall[] = [];
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner((command) =>
+        command === CLIPPY_CMD
+          ? {
+            code: 101,
+            stderr: "error[E0583]: file not found for module `helper`\n",
+          }
+          : {}, calls),
+    );
+    assert(!result.ok);
+    assert(result.error instanceof PreFlightGateError);
+    assert(!(result.error instanceof PrePushGateInfrastructureError));
+    assertEquals(result.error.command, CLIPPY_CMD);
+    assertStringIncludes(result.error.message, "E0583");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a push that only deletes a .rs file runs CI's clippy when it passes (Issue #5169)", async () => {
+  const { root, clone, stdin } = await makeRepoDeleting(
+    DELETION_FILES_5169,
+    "rust/src/helper.rs",
+  );
+  try {
+    const calls: RanCall[] = [];
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(() => ({}), calls),
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(ciRuns(calls).map((c) => c.command), [CLIPPY_CMD]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a push that only deletes clippy.toml runs CI's clippy (Issue #5169)", async () => {
+  const { root, clone, stdin } = await makeRepoDeleting(
+    DELETION_FILES_5169,
+    "rust/clippy.toml",
+  );
+  try {
+    const calls: RanCall[] = [];
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(() => ({}), calls),
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(ciRuns(calls).map((c) => c.command), [CLIPPY_CMD]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+for (
+  const [from, to] of [
+    ["rust/src/helper.rs", "rust/src/helper.rs.disabled"],
+    ["rust/clippy.toml", "rust/clippy.toml.bak"],
+  ] as const
+) {
+  Deno.test(`runPrePushGate: a push that only renames ${from} to a non-Rust name runs CI's clippy, and a failing clippy blocks it (Issue #5169)`, async () => {
+    const { root, clone, stdin } = await makeRepoDeleting(
+      DELETION_FILES_5169,
+      from,
+      to,
+    );
+    try {
+      const calls: RanCall[] = [];
+      const result = await gateRust(
+        clone,
+        stdin,
+        scriptedRunner(
+          (command) =>
+            command === CLIPPY_CMD
+              ? { code: 101, stderr: "error[E0583]: file not found\n" }
+              : {},
+          calls,
+        ),
+      );
+      assert(!result.ok);
+      assert(result.error instanceof PreFlightGateError);
+      assert(!(result.error instanceof PrePushGateInfrastructureError));
+      assertEquals(result.error.command, CLIPPY_CMD);
+      assertEquals(ciRuns(calls).map((c) => c.command), [CLIPPY_CMD]);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  });
+}
+
+Deno.test("runPrePushGate: a push that only renames a non-Rust file runs no CI cargo and never reads the scan (Issue #5169)", async () => {
+  const { root, clone, stdin } = await makeRepoDeleting(
+    DELETION_FILES_5169,
+    "rust/NOTES.md",
+    "rust/README.txt",
+  );
+  try {
+    const calls: RanCall[] = [];
+    let scans = 0;
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: scriptedRunner(() => ({}), calls),
+      findCiCargo: () => {
+        scans++;
+        return Promise.resolve(scanOf(CLIPPY_CHECK));
+      },
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(ciRuns(calls), []);
+    assertEquals(scans, 0);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a push that only deletes a non-Rust file runs no CI cargo and never reads the scan (Issue #5169)", async () => {
+  const { root, clone, stdin } = await makeRepoDeleting(
+    DELETION_FILES_5169,
+    "rust/NOTES.md",
+  );
+  try {
+    const calls: RanCall[] = [];
+    let scans = 0;
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: scriptedRunner(() => ({}), calls),
+      findCiCargo: () => {
+        scans++;
+        return Promise.resolve(scanOf(CLIPPY_CHECK));
+      },
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(ciRuns(calls), []);
+    assertEquals(scans, 0);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
 
 Deno.test("runPrePushGate: CI clippy runs exactly as the workflow wrote it, in its directory with its env, after a toolchain probe", async () => {
   const { root, clone, stdin } = await makeRepoWithFiles({
@@ -5835,6 +6054,192 @@ Deno.test("runPrePushGate: a prompt or lock change runs the whole unit suite, re
   }
 });
 
+Deno.test("loadDirectoryListingTests: a test that lists a directory, or imports a file that does, is selected; a plain test and prose are not (Issue #5169)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const files: Record<string, string> = {
+      "worker/deno/tests/manifest_test.ts":
+        'for await (const e of Deno.readDir(".")) console.log(e);\n',
+      "worker/deno/lib/coverage.ts":
+        "export const list = (r: string) => Deno.readDir(r);\n",
+      "worker/deno/tests/coverage_test.ts":
+        'import { list } from "../lib/coverage.ts";\nlist(".");\n',
+      "worker/deno/tests/support/listing.ts":
+        'export const args = ["ls-files", "-z"];\n',
+      "worker/deno/tests/uses_support_test.ts":
+        'import { args } from "./support/listing.ts";\nargs;\n',
+      "worker/deno/lib/foo.ts": "export const foo = 1;\n",
+      "worker/deno/tests/plain_test.ts":
+        'import { foo } from "../lib/foo.ts";\nfoo;\n',
+      "worker/deno/tests/prose_test.ts":
+        "// Deno.readDir is mentioned, not called\nexport {};\n",
+    };
+    for (const [path, text] of Object.entries(files)) {
+      await Deno.mkdir(`${dir}/${path.replace(/\/[^/]+$/, "")}`, {
+        recursive: true,
+      });
+      await Deno.writeTextFile(`${dir}/${path}`, text);
+    }
+    assertEquals(
+      await loadDirectoryListingTests(dir, Object.keys(files), [
+        "worker/deno",
+      ]),
+      {
+        "worker/deno": [
+          "tests/coverage_test.ts",
+          "tests/manifest_test.ts",
+          "tests/uses_support_test.ts",
+        ],
+      },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("loadDirectoryListingTests: an unreadable tracked module counts as listing a directory, so its importer runs (Issue #5169)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/worker/deno/tests`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/worker/deno/tests/missing_user_test.ts`,
+      'import { m } from "../lib/missing.ts";\nm;\n',
+    );
+    await Deno.writeTextFile(
+      `${dir}/worker/deno/tests/plain_test.ts`,
+      "export {};\n",
+    );
+    // lib/missing.ts is tracked but absent from disk, so it cannot be read.
+    assertEquals(
+      await loadDirectoryListingTests(dir, [
+        "worker/deno/tests/missing_user_test.ts",
+        "worker/deno/tests/plain_test.ts",
+        "worker/deno/lib/missing.ts",
+      ], ["worker/deno"]),
+      { "worker/deno": ["tests/missing_user_test.ts"] },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** Gate outcome with a process-boundary directory-invariant test fixture. */
+async function unitCommandsAfterBase(
+  base: (clone: string) => Promise<void>,
+  edit: (clone: string) => Promise<void>,
+): Promise<Awaited<ReturnType<typeof runPrePushGate>>> {
+  const { root, clone, stdin } = await makeUnitTestRepo(async (c) => {
+    await base(c);
+    await git(c, "add", "-A");
+    await git(c, "commit", "-qm", "listing base");
+    await git(c, "push", "-q", "--no-verify", "origin", "HEAD:main");
+    await edit(c);
+  });
+  try {
+    return await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      ...stubShellcheck(),
+      runner: async (command) => {
+        let invalid = false;
+        if (
+          command.startsWith("deno task test:unit") &&
+          command.includes("tests/manifest_test.ts")
+        ) {
+          invalid = await Deno.stat(`${clone}/worker/deno/tests/new_test.ts`)
+            .then(() => true, () => false);
+        }
+        if (
+          command.startsWith("deno task test:unit") &&
+          command.includes("tests/coverage_test.ts")
+        ) {
+          const files = [];
+          for await (const e of Deno.readDir(`${clone}/worker/deno/lib`)) {
+            files.push(e.name);
+          }
+          invalid = files.sort().join(",") !== "coverage.ts,foo.ts";
+        }
+        return {
+          started: true,
+          code: invalid ? 1 : 0,
+          stdout: "",
+          stderr: invalid ? "directory invariant violated" : "",
+        };
+      },
+    });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+Deno.test("runPrePushGate: a push that only adds a test file also runs the tests that list the tests directory (Issue #5169)", async () => {
+  const base = (c: string) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/tests/manifest_test.ts`,
+      'for await (const e of Deno.readDir(".")) console.log(e);\n',
+    );
+  const blocked = await unitCommandsAfterBase(base, (c) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/tests/new_test.ts`,
+      "export {};\n",
+    ));
+  assert(!blocked.ok);
+  assertStringIncludes(blocked.error.message, "directory invariant violated");
+  // Control: editing an existing test adds or removes no file.
+  const valid = await unitCommandsAfterBase(base, (c) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/tests/foo_test.ts`,
+      "export {};\n// edited\n",
+    ));
+  assert(valid.ok);
+});
+
+Deno.test("runPrePushGate: a push that adds, deletes or renames a source runs the tests whose imported module walks a directory (Issue #5169)", async () => {
+  const base = async (c: string) => {
+    await Deno.writeTextFile(
+      `${c}/worker/deno/lib/coverage.ts`,
+      "export const list = (r: string) => Deno.readDir(r);\n",
+    );
+    await Deno.writeTextFile(
+      `${c}/worker/deno/tests/coverage_test.ts`,
+      'import { list } from "../lib/coverage.ts";\nlist(".");\n',
+    );
+  };
+  const adds = (c: string) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/lib/new_mod.ts`,
+      "export const n = 1;\n",
+    );
+  const deletes = (c: string) => Deno.remove(`${c}/worker/deno/lib/foo.ts`);
+  const renames = (c: string) =>
+    Deno.rename(`${c}/worker/deno/lib/foo.ts`, `${c}/worker/deno/lib/bar.ts`);
+  // A source added, deleted or renamed beside the walker selects its test; neither names it.
+  for (const edit of [adds, deletes, renames]) {
+    const result = await unitCommandsAfterBase(base, edit);
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "directory invariant violated");
+    const valid = await unitCommandsAfterBase(base, async (c) => {
+      await edit(c);
+      await git(
+        c,
+        "restore",
+        "--source=HEAD",
+        "--worktree",
+        "worker/deno/lib/foo.ts",
+      );
+      for (const name of ["new_mod.ts", "bar.ts"]) {
+        await Deno.remove(`${c}/worker/deno/lib/${name}`).catch(() => {});
+      }
+      await Deno.writeTextFile(
+        `${c}/worker/deno/lib/foo.ts`,
+        "export const foo = 2;\n",
+      );
+    });
+    assert(valid.ok);
+  }
+});
+
 Deno.test("runPrePushGate: a 400-file test:unit block still names the failing tests after the head/tail cut (Issue #5113)", async () => {
   const { root, clone, stdin } = await makeUnitTestRepo(async (c) => {
     await editFoo(c);
@@ -5889,3 +6294,72 @@ Deno.test("runPrePushGate: a 400-file test:unit block still names the failing te
     await Deno.remove(root, { recursive: true });
   }
 });
+
+for (
+  const [name, file, text] of [
+    [
+      "rust-toolchain.toml",
+      "rust-toolchain.toml",
+      '[toolchain]\nchannel = "1.80"\n',
+    ],
+    ["Cargo.lock", "Cargo.lock", "version = 4\n"],
+  ] as const
+) {
+  Deno.test(`runPrePushGate: a push that only changes a root ${name} runs the sub-directory CI clippy, and a failing clippy blocks it (Issue #5169)`, async () => {
+    const { root, clone, stdin } = await makeRepoWithFiles({ [file]: text });
+    try {
+      // The crate directory exists on disk, but is not part of the pushed range.
+      await Deno.mkdir(`${clone}/rust`);
+      const passed: RanCall[] = [];
+      const ok = await gateRust(
+        clone,
+        stdin,
+        scriptedRunner(() => ({}), passed),
+      );
+      assert(ok.ok, ok.ok ? "" : ok.error.message);
+      assertEquals(ciRuns(passed).map((c) => c.command), [CLIPPY_CMD]);
+
+      const calls: RanCall[] = [];
+      const result = await gateRust(
+        clone,
+        stdin,
+        scriptedRunner(
+          (command) =>
+            command === CLIPPY_CMD
+              ? { code: 101, stderr: "error: clippy failed\n" }
+              : {},
+          calls,
+        ),
+      );
+      assert(!result.ok);
+      assert(result.error instanceof PreFlightGateError);
+      assert(!(result.error instanceof PrePushGateInfrastructureError));
+      assertEquals(result.error.command, CLIPPY_CMD);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  });
+}
+
+for (
+  const [name, file] of [
+    ["a sibling directory's tools/Cargo.lock", "tools/Cargo.lock"],
+    ["a root .rs file build.rs", "build.rs"],
+  ] as const
+) {
+  Deno.test(`runPrePushGate: a push that only changes ${name} runs no CI clippy for rust (Issue #5169)`, async () => {
+    const { root, clone, stdin } = await makeRepoWithFiles({ [file]: "x\n" });
+    try {
+      const calls: RanCall[] = [];
+      const result = await gateRust(
+        clone,
+        stdin,
+        scriptedRunner(() => ({}), calls),
+      );
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assertEquals(ciRuns(calls), []);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  });
+}

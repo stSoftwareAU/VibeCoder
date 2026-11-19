@@ -39,10 +39,55 @@ Deno.test("codex adapter - a completed turn yields the final agent message, sess
   assertEquals(decoded.textSource, "final");
   assertStringIncludes(decoded.text, "Fixed the parser and the suite passes.");
   assertEquals(decoded.sessionId, "0199a5b2-7f31-7c4a-9e08-2b6a4c1d5e77");
-  assertEquals(decoded.usage?.inputTokens, 18342);
+  // Codex's input_tokens (18,342) includes the cached count (16,000).
+  assertEquals(decoded.usage?.inputTokens, 2342);
   assertEquals(decoded.usage?.cacheReadTokens, 16000);
   assertEquals(decoded.usage?.outputTokens, 1201);
   assert(decoded.progress.events >= 3, "item events were not counted");
+});
+
+/** A minimal completed Codex turn carrying the given `usage` object. */
+function turnWithUsage(usage: Record<string, number>): string {
+  return [
+    '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}',
+    JSON.stringify({ type: "turn.completed", usage }),
+  ].join("\n");
+}
+
+Deno.test("codex adapter - cached input is not counted again as uncached input (Issue #5125)", () => {
+  const decoded = CODEX_OUTPUT_ADAPTER.decode(turnWithUsage({
+    input_tokens: 1200,
+    cached_input_tokens: 900,
+    output_tokens: 300,
+  }));
+
+  assertEquals(decoded.usage, {
+    inputTokens: 300,
+    outputTokens: 300,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 900,
+  });
+});
+
+Deno.test("codex adapter - usage without cached_input_tokens keeps the whole input uncached (Issue #5125)", () => {
+  const decoded = CODEX_OUTPUT_ADAPTER.decode(turnWithUsage({
+    input_tokens: 500,
+    output_tokens: 20,
+  }));
+
+  assertEquals(decoded.usage?.inputTokens, 500);
+  assertEquals(decoded.usage?.cacheReadTokens, 0);
+});
+
+Deno.test("codex adapter - cached input above total input never yields negative uncached input (Issue #5125)", () => {
+  const decoded = CODEX_OUTPUT_ADAPTER.decode(turnWithUsage({
+    input_tokens: 100,
+    cached_input_tokens: 150,
+    output_tokens: 5,
+  }));
+
+  assertEquals(decoded.usage?.inputTokens, 0);
+  assertEquals(decoded.usage?.cacheReadTokens, 150);
 });
 
 Deno.test("codex adapter - a success quoting a rate limit is a success, not a refusal", () => {
@@ -149,7 +194,8 @@ Deno.test("codex adapter - the legacy msg envelope decodes to the same contract"
   assertEquals(decoded.status, "completed");
   assertEquals(decoded.text, "Rebased onto the milestone branch and pushed.");
   assertEquals(decoded.sessionId, "0199a5b2-7f31-7c4a-9e08-2b6a4c1d5e7d");
-  assertEquals(decoded.usage?.inputTokens, 9100);
+  // input_tokens (9,100) includes the cached count (8,000).
+  assertEquals(decoded.usage?.inputTokens, 1100);
   assertEquals(decoded.usage?.cacheReadTokens, 8000);
   assertEquals(decoded.usage?.outputTokens, 430);
   // A window that is merely 41.5% used is reported, not treated as exhausted.

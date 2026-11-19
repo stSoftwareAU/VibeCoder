@@ -301,7 +301,11 @@ at the unchanged head, the description steps run in order:
    `Related to #N` or `Relates to #N` (in this repository, or with no repository
    given). That can only leave the issue open, never close it, and a proposal is
    data and not authority to close, so that reference is not overridden with
-   `Closes #N`. A bare mention such as "addresses the review on #N", or another
+   `Closes #N`. The merged-PR closers leave the issue open on merge
+   when the body names it only as `Part of #N` (Issue #5135); the other
+   non-closing forms do not hold it open against an `(Issue #N)` title, so a
+   repair that means to keep the issue open writes `Part of #N`. A bare mention
+   such as "addresses the review on #N", or another
    repository's `owner/repo#N`, is not a closing claim and does not stop the
    append. The summary is read with the shared committed loader
    (`loadCommittedPrSummary`) at the verified pushed head sha, using
@@ -431,8 +435,9 @@ no check. The gate runs the unit tests selected for the changed files
 (`deno task test:unit` for a Deno root that defines that task, with the same
 selection as the worker's other repair pushes; a change to a prompt, `deno.json`
 or `deno.lock` runs the whole suite), markdownlint when configured, the
-ShellCheck policy and the cargo-deny gate. When a Rust-relevant file changed it
-also runs the repo CI's cargo clippy and test-target compile (the
+ShellCheck policy and the cargo-deny gate (when a cargo input changed, was
+deleted or was renamed away). When a Rust-relevant file changed, was deleted or
+was renamed away it also runs the repo CI's cargo clippy and test-target compile (the
 `cargo clippy` and `cargo test --no-run`-style commands the gate derives from
 the repo's pull-request workflows, Issue #5169). A failing one blocks and spends
 a repair attempt. The clone's `.git` is read-only, so there is no PR-base
@@ -843,9 +848,9 @@ compile check for the code they touched. The container also withholds the
 READY line unless the pre-push gate over the uncommitted changes passes (see
 [Container repairs](#container-repairs)); that gate runs the unit tests,
 markdownlint, ShellCheck, cargo-deny and gitleaks checks and, when a
-Rust-relevant file changed, the repo CI's cargo clippy and test-target compile,
-plus `deno fmt --check` on the changed files it covers, but no other formatter
-check and no linters other than CI's cargo clippy.
+Rust-relevant file changed, was deleted or was renamed away, the repo CI's cargo clippy and
+test-target compile, plus `deno fmt --check` on the changed files it covers,
+but no other formatter check and no linters other than CI's cargo clippy.
 
 This MVP uses the configured GitHub App and the worker's agent providers; it
 does not handle Dependabot, use per-repository quality commands, or review PRs.
