@@ -622,7 +622,7 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_HOST`                         | `host`                          | yes            | Host the worker runs on                                                                                                                                                                         |
 | `VIBECODER_WORKER_NAME`                  | `workerName`                    | no             | Operator-configured worker name                                                                                                                                                                 |
 | `VIBECODER_MODE`                         | `mode`                          | no             | Workflow the run served: the configured implementation label (`work-on`) or `idle-task`                                                                                                         |
-| `VIBECODER_PROVIDER`                     | `provider`                      | no             | Agent provider that served the run                                                                                                                                                              |
+| `VIBECODER_PROVIDER`                     | `provider`                      | no             | The one provider the run's agent invocations named; the host's configured provider when the run spawned no agent; omitted when they named none or several, or the run never reported (Issue #5163) |
 | `VIBECODER_SESSION_ID`                   | `sessionId`                     | no             | Agent session id                                                                                                                                                                                |
 | `VIBECODER_SESSION_LOG_PATH`             | `sessionLogPath`                | no             | Absolute path to this run's transcript, verified on disk                                                                                                                                        |
 | `VIBECODER_SESSION_LOG_ABSENT_REASON`    | `sessionLogAbsentReason`        | no             | Why the path is missing (`tee_disabled`, `log_dir_unavailable`, `size_cap_exceeded`, `write_failed`, `file_missing`)                                                                            |
@@ -842,8 +842,9 @@ Every run context has either `telemetry` or `telemetryAbsentReason`, and either
 `sessionLogPath` or `sessionLogAbsentReason` — never neither (Issue #1948).
 Other optional facts the run could not supply — no provider, no session — are
 **omitted** from both the document and the environment rather than emitted
-empty, so `[ -n "$VIBECODER_SESSION_ID" ]` is a truthful test. `result` and
-`exitCode` are unchanged (Issue #1947): hooks keyed on them keep working.
+empty (`provider` is omitted, never defaulted to the host's configured provider,
+when the run's invocations named none or several — Issue #5163), so
+`[ -n "$VIBECODER_SESSION_ID" ]` is a truthful test. `result` and `exitCode` are unchanged (Issue #1947): hooks keyed on them keep working.
 
 ### Lifecycle ledger cross-reference
 

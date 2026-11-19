@@ -647,6 +647,14 @@ interface WorkOnIssueResultBase {
    * post-run callback context.
    */
   tokenEconomizer?: TokenEconomizerRunStats;
+  /**
+   * Agent provider that served the run (Issue #5163), from
+   * `servedRunProvider` over {@link PhaseState.claudeRunStats}: the host's
+   * configured provider when the run spawned no agent, absent when its
+   * invocations named none or more than one. Carried to the post-run callback
+   * context.
+   */
+  provider?: string;
 }
 
 /**

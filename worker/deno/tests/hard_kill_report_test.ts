@@ -734,7 +734,6 @@ Deno.test("AC5: a hard-kill callback document keeps every ordinary key with an i
   const identity: CallbackIdentity = {
     runId: ev.runId,
     host: ev.host,
-    provider: "claude",
     sessionId: "sess-1",
   };
   const seams: CallbackContextSeams = {

@@ -687,6 +687,31 @@ Deno.test("run_core callbacks - the terminal run carries the run's RTK outcome (
   assertEquals(runs[0]?.codegraph, undefined);
 });
 
+for (
+  const [label, value, expected] of [
+    ["carries", { success: true, provider: "deepseek" }, "deepseek"],
+    ["omits an absent", { success: true }, undefined],
+  ] as const
+) {
+  Deno.test(`run_core callbacks - the terminal run ${label} provider (Issue #5163)`, async () => {
+    const { runs, runIssueCallbacks } = recorder();
+    const time = clock();
+    const deps = createMockDeps({
+      ...time,
+      runIssueCallbacks,
+      findNextIssue: issueQueue([issue("o/a", 1)]),
+      processIssue: () => {
+        time.burnCycle();
+        return Promise.resolve({ ok: true, value });
+      },
+    });
+
+    await runCycle(deps);
+
+    assertEquals(runs[0]?.provider, expected);
+  });
+}
+
 Deno.test("run_core callbacks - the terminal run carries the run's TokenEconomizer stats (Issue #4958)", async () => {
   const { runs, runIssueCallbacks } = recorder();
   const time = clock();

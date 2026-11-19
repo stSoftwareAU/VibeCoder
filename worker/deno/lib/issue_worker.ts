@@ -78,6 +78,7 @@ import {
   seedClaimedIssueGuard,
 } from "./claimed_issue_guard.ts";
 import { listTemplates } from "./idle_task_template.ts";
+import { servedRunProvider } from "./run_callback_provider.ts";
 import { tokenEconomizerNotRun } from "./token_economizer_run_stats.ts";
 // Importing the security-scan template ensures it is registered when
 // the idle-task pre-flight check below consults the registry. Issue
@@ -293,9 +294,15 @@ async function workOnIssueRecorded(
       state.claudeRunStats ?? [],
       ctx.config.agentProvider,
     );
+    const provider = servedRunProvider(
+      state.claudeRunStats ?? [],
+      ctx.config.agentProvider,
+    );
     return {
       ...result,
       outcome,
+      // Issue #5163: the provider that served the run, not the host's default.
+      ...(provider ? { provider } : {}),
       ...(telemetry ? { telemetry } : {}),
       ...(telemetryAbsentReason ? { telemetryAbsentReason } : {}),
       // What this run's Graft collection did (Issue #2104). Derived here for

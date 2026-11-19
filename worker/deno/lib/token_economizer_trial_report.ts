@@ -698,7 +698,7 @@ export function formatTokenEconomizerTrialSection(
         : ""
     }`,
     "- Not checked: the run record carries no advisor/executor-split setting, so that section 5 exclusion cannot be applied from the archive; the reader must check it (#4959).",
-    "- Not checked: the run record's provider is the host's configured provider, not the one that served the run, so a switch-off control run served by another provider cannot be excluded from the archive; the reader must check it (#4959).",
+    "- Not checked: run records written before #5163 carry the host's configured provider, not the one that served the run, and nothing in a record tells the two apart, so such a switch-off control run served by another provider cannot be excluded from the archive; the reader must check it (#4959).",
     "- Not checked: the run record carries no other-trial-window flag, so that section 5 exclusion cannot be applied from the archive; the reader must check it (#4959).",
   ];
   return lines.join("\n");
