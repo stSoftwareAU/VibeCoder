@@ -117,7 +117,10 @@ now fixed. The `internal-reachable` hits in `docs/CROSS-REPO-FIX.md` name a
   - The guidelines section text before "### How to open that PR" names every
     manifest path, imported live from `worker/deno/lib/cross_repo_fix.ts`, and
     states the default-branch condition.
-  - The same text pins the no-branch, no-marker and no-write-authority rule.
+  - The same text pins the no-branch, no-marker and no-write-authority rule. The
+    marker name in that pin is built from `CROSS_REPO_PR_MARKER_NAME`, imported
+    live from `worker/deno/lib/cross_repo_pr_handoff.ts`, so a rename of the
+    marker in code fails the test.
   - The issue prompt's "No hand-back, no follow-up" section no longer says "in
     another repository you can reach" and names the manifest condition.
 - Red on base: with the two prompt files checked out from `origin/main`, the new

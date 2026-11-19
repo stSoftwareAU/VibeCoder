@@ -14,6 +14,7 @@ import {
   CONSUMING_CARGO_MANIFEST,
   CONSUMING_MANIFEST_PATHS,
 } from "../lib/cross_repo_fix.ts";
+import { CROSS_REPO_PR_MARKER_NAME } from "../lib/cross_repo_pr_handoff.ts";
 import {
   assertPins,
   flat,
@@ -51,7 +52,7 @@ Deno.test("guidelines define can-access by the declared manifests before any pus
 Deno.test("guidelines state the undeclared-repo rule: no branch, no marker, no write authority", async () => {
   const { text } = await prePushText();
   assertPins(text, [
-    "Push no branch there and declare no `vibe-cross-repo-pr` marker",
+    `Push no branch there and declare no \`${CROSS_REPO_PR_MARKER_NAME}\` marker`,
     "reachability grants no cross-repo write authority",
   ]);
 });
