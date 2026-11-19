@@ -659,6 +659,38 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "aws-emulator-cloudformation 5110: a directory with no templates exits 1 before any AWS call",
+  async () => {
+    await withSandbox(async (sb) => {
+      const dir = `${sb.root}/cfn`;
+      const copied = `${dir}/test-aws-emulator.sh`;
+      await Deno.mkdir(dir);
+      await Deno.copyFile(SCRIPT_PATH, copied);
+      await writeFake(sb, "aws", FAKE_AWS);
+      const state = `${sb.root}/state`;
+      await Deno.mkdir(state);
+      const r = await runScript(sb, `${sb.bin}:${SYSTEM_PATH}`, {
+        ...insideEnv(sb, "https://127.0.0.1:45871"),
+        FAKE_DIR: state,
+        FAKE_MODE: "gap",
+      }, copied);
+      assertEquals(r.code, 1, r.output);
+      assertStringIncludes(r.output, "::error::No CloudFormation templates");
+      assertStringIncludes(r.output, dir);
+      let calls = "";
+      try {
+        calls = await Deno.readTextFile(`${state}/calls.log`);
+      } catch {
+        // The fake was never called.
+      }
+      assertEquals(calls, "", `the fake aws must not be called:\n${calls}`);
+      assert(!r.output.includes("PASS"), r.output);
+      assert(!r.output.includes("assertions passed"), r.output);
+    });
+  },
+);
+
 // The real end-to-end run. As with the 5109 suite, the helper refuses the
 // worker account `vibe` and uid 0 by design, so this case is ignored for both.
 // It runs only where an ordinary non-root, non-`vibe` account has

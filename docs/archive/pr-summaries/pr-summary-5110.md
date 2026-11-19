@@ -197,15 +197,17 @@ flowchart LR
   and CI runs the same applicable integration checks. — evidence: the `agent`
   run in Evidence; `.github/workflows/aws-emulator.yml` called from
   `.github/workflows/quality.yml` — reviewer: partial — reason: the `agent` run
-  used this worker container, not a freshly started one, and CI not yet verified
-  on this branch
+  used this worker container, not a freshly started one (no container runtime on
+  this host), and CI has not run on this branch (`quality.yml` runs only on a
+  pull request, and none is raised yet)
 - **met** — Evidence includes the pinned release, actual test commands,
   successful data assertions, a supported negative API result and cleanup. —
   evidence: the `agent` run output above;
   `infra/cloudformation/test-aws-emulator.sh` — reviewer: met
 - **met** — Focused tests prove startup/test failures propagate and missing
   required execution cannot become a green check. — evidence:
-  `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts`,
+  `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (including "a
+  directory with no templates exits 1 before any AWS call"),
   `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (if-false and
   `exit 0` wrappers, separators, `[gate-call]`, `[gate-needs]`),
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts` — reviewer: met
@@ -310,7 +312,7 @@ flowchart LR
     findings, `[pinned-install]` and `[runner-install]`. The separator check is
     per step, and the real emulator install and runner install share one `run:`
     step, so `|| true` there disproves both.
-- `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (new): 15 passed,
+- `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (new): 16 passed,
   1 ignored. The cases:
   - the missing runner (exit 4), and the re-exec with its exit status passed
     through;
@@ -325,7 +327,12 @@ flowchart LR
   - a failed describe-stack-resources;
   - the expected gap reported as `UNSUPPORTED`;
   - a role left behind failing cleanup;
-  - a template with no property checks failing first, with a positive control.
+  - a template with no property checks failing first, with a positive control;
+  - a directory with no templates exiting 1 with
+    `::error::No CloudFormation templates`, with no `aws` call and no `PASS`.
+    This replaces the deleted Floci suite's "fails when no template exists"
+    case. Red-checked: with the guard changed to
+    `echo "all 0 assertions passed"; exit 0`, the case fails.
 
   The ignored case is the real end-to-end run. It is skipped for `vibe` and
   root, and was run as `agent` in Evidence instead.
@@ -349,7 +356,9 @@ flowchart LR
     `.github/workflows/floci.yml` and `worker/deno/lib/floci_workflow_check.ts`
     are deleted. The separator, comment, `continue-on-error` and YAML-key cases
     are tested again in
-    `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`. Still covered
+    `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`, and the
+    no-template case in
+    `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts`. Still covered
     by:
     `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts::real aws-emulator.yml passes every check`
     and `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts`.
@@ -364,16 +373,18 @@ flowchart LR
   unset, at `75346ead5`. It passed every stage, including `deno tests`,
   markdownlint, semgrep and gitleaks. `config integration` and `checkov` were
   skipped: there is no `.config.json`, and no checkov or container runtime.
-  Since then only the validator, its test file and the detector's two exports
-  have changed. Their tests, `deno lint`, `deno check` and `deno fmt` were run
-  on the final head.
+  Since then only the validator, its test file, the detector's two exports and
+  one added case in `aws_emulator_cloudformation_5110_test.ts` have changed.
+  Their tests, `deno lint`, `deno check` and `deno fmt` were run on the final
+  head.
 
-<!-- vibe-quality-gate-skipped reason="the full gate ran at 75346ead5 and passed; only the workflow validator, its test file and two exports changed after it, and those were re-tested, linted, type-checked and formatted on the final head" -->
+<!-- vibe-quality-gate-skipped reason="the full gate ran at 75346ead5 and passed; only the workflow validator, its test file, two exports and one added script test changed after it, and those were re-tested, linted, type-checked and formatted on the final head" -->
 
 Not checked:
 
 - CI has not run on this branch.
-- The `agent` run used this worker container, not a freshly started one.
+- The `agent` run used this worker container, not a freshly started one. This
+  host has no container runtime to start one.
 - The detector does not skip `sudo` options, so `sudo -E aws-emulator-run` is
   not counted.
 - The integration suites the gate leaves to CI were not run here.
