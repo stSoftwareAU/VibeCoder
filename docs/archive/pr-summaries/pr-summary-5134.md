@@ -18,11 +18,10 @@ keep the consumer's requirement unmet. No worker code changes: the
 
 - The guidelines said "can access" meant reachable, while
   `authoriseCrossRepoTarget` (`worker/deno/lib/cross_repo_fix.ts`) refuses any
-  target the consumer's manifest does not declare. So a script-consumed
-  sibling had no outcome that satisfied the prompts. Each run pushed a branch,
-  had the marker refused, and ended in a `needs-human` hand-off
-  (`handOffCrossRepoPr`, `worker/deno/lib/cross_repo_pr_handoff.ts`, "Open the
-  PR by hand").
+  target the consumer's manifest does not declare. So a script-consumed sibling
+  had no outcome that satisfied the prompts. Each run pushed a branch, had the
+  marker refused, and ended in a `needs-human` hand-off (`handOffCrossRepoPr`,
+  `worker/deno/lib/cross_repo_pr_handoff.ts`, "Open the PR by hand").
 - The issue asked for a wording fix, not a new check, so the prompts now state
   what the worker enforces.
 
@@ -37,18 +36,18 @@ keep the consumer's requirement unmet. No worker code changes: the
     `route-issue`, the same wording the planning prompt already uses.
 - The agent cannot file the issue itself: the run's `gh` writes reach only the
   claim repo (`gh_guard_decision.ts`, `WRITE_REPO_BLOCKED`).
-- A transitive internal dependency is on the marker path only when the
-  consumer also declares it, because authorisation reads only the consumer's
-  manifests. The "Recurse" bullet now says so.
+- A transitive internal dependency is on the marker path only when the consumer
+  also declares it, because authorisation reads only the consumer's manifests.
+  The "Recurse" bullet now says so.
 - An unreachable declared dependency now falls under the same "no branch, no
   marker" bullet, which keeps the old "work around it here" option.
-- No new worked example was added: the issue asked only to align example 1,
-  and the section is introduced as five cases.
+- No new worked example was added: the issue asked only to align example 1, and
+  the section is introduced as five cases.
 
 ### Undiscoverable Facts
 
-- The three private-fleet runs in the issue are described there without
-  names. They were not re-read here.
+- The three private-fleet runs in the issue are described there without names.
+  They were not re-read here.
 
 ## Evidence
 
@@ -72,12 +71,10 @@ Files changed:
   - The "Can access" definition now names the manifests that
     `CONSUMING_MANIFEST_PATHS` and `CONSUMING_CARGO_MANIFEST` list.
   - The "Recurse" bullet now limits transitive dependencies to declared ones.
-  - The "Unreachable internal dependency → treat as external" bullet is
-    replaced by "Undeclared or unreachable internal repo → no branch, no
-    marker".
+  - The "Unreachable internal dependency → treat as external" bullet is replaced
+    by "Undeclared or unreachable internal repo → no branch, no marker".
   - "How to open that PR" now says it applies only to a dependency the
-    definition covers, and its closing paragraph points back to the
-    definition.
+    definition covers, and its closing paragraph points back to the definition.
   - Worked example 1 is aligned with the new definition.
 - `prompts/issue/prompt.md`: in "No hand-back, no follow-up", "in another
   repository you can reach" is replaced by the same definition, plus one
@@ -100,18 +97,18 @@ Related rules checked:
 - The planning prompt's routing rule: mirrored.
 - The External-dependency bullet: kept.
 - Release-gating's "exactly one follow-up": applies only to declared
-  dependencies after their PR is open. It is untouched, and this change does
-  not create a new conflict with it.
+  dependencies after their PR is open. It is untouched, and this change does not
+  create a new conflict with it.
 
 I applied the new rule to this PR's own diff and found nothing to fix. The PR
 pushes to no other repo and declares no marker.
 
-Docs sweep: I grepped `README.md`, `DESIGN-PRINCIPLES.md`,
-`CODING-STANDARDS.md` and `docs/*.md` for `treat.* as external`, `you can
-reach`, `can clone it` and `reachable internal`. The only stale hit was
-`DESIGN-PRINCIPLES.md`, which is now fixed. The `internal-reachable` hits in
-`docs/CROSS-REPO-FIX.md` name a `resolveCrossRepoTarget` result and are still
-accurate.
+Docs sweep: I grepped `README.md`, `DESIGN-PRINCIPLES.md`, `CODING-STANDARDS.md`
+and `docs/*.md` for `treat.* as external`, `you can
+reach`, `can clone it` and
+`reachable internal`. The only stale hit was `DESIGN-PRINCIPLES.md`, which is
+now fixed. The `internal-reachable` hits in `docs/CROSS-REPO-FIX.md` name a
+`resolveCrossRepoTarget` result and are still accurate.
 
 ## Test Plan
 
@@ -121,11 +118,11 @@ accurate.
     manifest path, imported live from `worker/deno/lib/cross_repo_fix.ts`, and
     states the default-branch condition.
   - The same text pins the no-branch, no-marker and no-write-authority rule.
-  - The issue prompt's "No hand-back, no follow-up" section no longer says
-    "in another repository you can reach" and names the manifest condition.
-- Red on base: with the two prompt files checked out from `origin/main`, the
-  new test gave `FAILED | 0 passed | 3 failed`. With the files restored to
-  HEAD, it passes 3 of 3.
+  - The issue prompt's "No hand-back, no follow-up" section no longer says "in
+    another repository you can reach" and names the manifest condition.
+- Red on base: with the two prompt files checked out from `origin/main`, the new
+  test gave `FAILED | 0 passed | 3 failed`. With the files restored to HEAD, it
+  passes 3 of 3.
 - These passed (208 passed, 0 failed):
   - `coding_guidelines_layers_2574_test.ts`, which pins the section headings;
   - `coding_guidelines_twin_drift_test.ts`;
