@@ -19,9 +19,12 @@ import {
 } from "../lib/repo_formatters.ts";
 import {
   defaultPrePushGit,
+  findMarkdownlintBinary,
   listPushedFiles,
   loadDenoScopes,
   loadDenoUnitTestRoots,
+  loadDirectoryListingTests,
+  loadMarkdownlintGlobExclusions,
   loadReferencedUnitTests,
   needsFullUnitSuite,
   parsePrePushRefs,
@@ -168,9 +171,109 @@ Deno.test("planChangedFileChecks: doc-only change plans fmt and markdownlint, no
   const commands = result.value.map((c) => c.command);
   assertEquals(commands, [
     "deno fmt --check --permit-no-files 'README.md'",
-    "'/r/node_modules/.bin/mdl' 'README.md'",
+    "'/r/node_modules/.bin/mdl' --no-globs 'README.md'",
   ]);
   assert(result.value.every((c) => c.cwd === "/r"));
+});
+
+Deno.test("planChangedFileChecks: root config negations are re-applied after --no-globs", () => {
+  const result = planChangedFileChecks(
+    ["README.md"],
+    [".markdownlint-cli2.jsonc", "README.md"],
+    {
+      repoRoot: "/r",
+      markdownlintBinary: "/r/mdl",
+      markdownlintExclusions: ["!target/**", "#vendor"],
+    },
+  );
+  assert(result.ok);
+  assertEquals(
+    result.value.map((c) => c.command),
+    ["'/r/mdl' --no-globs 'README.md' '!target/**' '#vendor'"],
+  );
+});
+
+/** A temp repo root holding `files` (name to text), for the config loader. */
+async function markdownlintRoot(
+  files: Record<string, string>,
+): Promise<string> {
+  const root = await Deno.makeTempDir({ prefix: "vibe-mdl-globs-" });
+  for (const [name, text] of Object.entries(files)) {
+    await Deno.writeTextFile(`${root}/${name}`, text);
+  }
+  return root;
+}
+
+Deno.test("loadMarkdownlintGlobExclusions: jsonc keeps only string negations", async () => {
+  const root = await markdownlintRoot({
+    ".markdownlint-cli2.jsonc":
+      '// CI config\n{ "globs": ["**/*.md", "!target/**", "#vendor/**", 3] }\n',
+  });
+  try {
+    assertEquals(
+      await loadMarkdownlintGlobExclusions(root, [".markdownlint-cli2.jsonc"]),
+      ["!target/**", "#vendor/**"],
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("loadMarkdownlintGlobExclusions: yaml config is read when jsonc is absent", async () => {
+  const root = await markdownlintRoot({
+    ".markdownlint-cli2.yaml": 'globs:\n  - "**/*.md"\n  - "!target/**"\n',
+  });
+  try {
+    assertEquals(
+      await loadMarkdownlintGlobExclusions(root, [".markdownlint-cli2.yaml"]),
+      ["!target/**"],
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("loadMarkdownlintGlobExclusions: an untracked config is not read", async () => {
+  const root = await markdownlintRoot({
+    ".markdownlint-cli2.jsonc": '{ "globs": ["!target/**"] }\n',
+  });
+  try {
+    assertEquals(await loadMarkdownlintGlobExclusions(root, []), []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("loadMarkdownlintGlobExclusions: an unparseable config gives no exclusions", async () => {
+  const root = await markdownlintRoot({
+    ".markdownlint-cli2.jsonc": '{ "globs": [',
+  });
+  try {
+    assertEquals(
+      await loadMarkdownlintGlobExclusions(root, [".markdownlint-cli2.jsonc"]),
+      [],
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("loadMarkdownlintGlobExclusions: jsonc takes precedence over yaml", async () => {
+  const root = await markdownlintRoot({
+    ".markdownlint-cli2.jsonc": '{ "globs": ["!a/**"] }\n',
+    ".markdownlint-cli2.yaml": 'globs:\n  - "!b/**"\n',
+  });
+  try {
+    assertEquals(
+      await loadMarkdownlintGlobExclusions(root, [
+        ".markdownlint-cli2.jsonc",
+        ".markdownlint-cli2.yaml",
+      ]),
+      ["!a/**"],
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 Deno.test("planChangedFileChecks: nested deno root uses its own cwd and relative paths", () => {
@@ -1044,6 +1147,192 @@ Deno.test("runPrePushGate: doc-only push blocked by failing markdownlint", async
     await Deno.remove(root, { recursive: true });
   }
 });
+
+// The real markdownlint-cli2 as the production runner finds it, or null.
+const markdownlintBinary = await findMarkdownlintBinary(
+  Deno.cwd(),
+  Deno.env.get("PATH") ?? "",
+);
+
+Deno.test(
+  "runPrePushGate: markdownlint ignores Graft cards under .git (Issue #5238)",
+  {
+    // The CI test shard does not install markdownlint-cli2 (see
+    // commitShellcheckFiles), so skip when no runnable binary is found.
+    ignore: markdownlintBinary === null,
+  },
+  async () => {
+    assert(markdownlintBinary !== null);
+    const binary = markdownlintBinary;
+    const root = await Deno.makeTempDir({ prefix: "vibe-pp-graft-" });
+    try {
+      const remote = `${root}/remote.git`;
+      const clone = `${root}/clone`;
+      await git(root, "init", "-q", "--bare", "-b", "main", remote);
+      await git(root, "clone", "-q", remote, clone);
+      await Deno.writeTextFile(
+        `${clone}/.markdownlint-cli2.jsonc`,
+        '{ "globs": ["**/*.md"] }\n',
+      );
+      await git(clone, "add", ".markdownlint-cli2.jsonc");
+      await git(clone, "commit", "-qm", "init");
+      await git(clone, "push", "-q", "origin", "HEAD:main");
+      const pushed = await git(clone, "rev-parse", "HEAD");
+      // Untracked, so only the config glob can reach it; the push never sees it.
+      await Deno.writeTextFile(`${clone}/other.md`, "#Bad\n");
+      await Deno.mkdir(`${clone}/.git/graft`, { recursive: true });
+      await Deno.writeTextFile(
+        `${clone}/.git/graft/card.md`,
+        "# Card\n\nVec<u64> <b>x</b>\n",
+      );
+      await Deno.writeTextFile(`${clone}/good.md`, "# Good\n\nText.\n");
+      await git(clone, "add", "good.md");
+      await git(clone, "commit", "-qm", "good docs");
+      const tip = await git(clone, "rev-parse", "HEAD");
+      const runGate = (sha: string) =>
+        runPrePushGate({
+          cwd: clone,
+          stdin: `refs/heads/main ${sha} refs/heads/main ${pushed}\n`,
+          preFlightCommands: [],
+          findMarkdownlint: () => Promise.resolve(binary),
+        });
+
+      const ok = await runGate(tip);
+      assert(ok.ok, ok.ok ? "" : ok.error.message);
+      assert(
+        ok.value.checksRun.some((c) =>
+          c.includes("--no-globs") && c.includes("good.md")
+        ),
+      );
+
+      await Deno.writeTextFile(`${clone}/bad.md`, "#Bad\n");
+      await git(clone, "add", "bad.md");
+      await git(clone, "commit", "-qm", "bad docs");
+      const badTip = await git(clone, "rev-parse", "HEAD");
+      const blocked = await runGate(badTip);
+      assert(!blocked.ok);
+      assertInstanceOf(blocked.error, PreFlightGateError);
+      assert(blocked.error.command.includes("bad.md"));
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "runPrePushGate: markdownlint keeps a config's negated globs under --no-globs (Issue #5238)",
+  {
+    // The CI test shard does not install markdownlint-cli2 (see
+    // commitShellcheckFiles), so skip when no runnable binary is found.
+    ignore: markdownlintBinary === null,
+  },
+  async () => {
+    assert(markdownlintBinary !== null);
+    const binary = markdownlintBinary;
+    const root = await Deno.makeTempDir({ prefix: "vibe-pp-vendor-" });
+    try {
+      const remote = `${root}/remote.git`;
+      const clone = `${root}/clone`;
+      await git(root, "init", "-q", "--bare", "-b", "main", remote);
+      await git(root, "clone", "-q", remote, clone);
+      await Deno.writeTextFile(
+        `${clone}/.markdownlint-cli2.jsonc`,
+        '{ "globs": ["**/*.md", "!vendor/**"] }\n',
+      );
+      await git(clone, "add", ".markdownlint-cli2.jsonc");
+      await git(clone, "commit", "-qm", "init");
+      await git(clone, "push", "-q", "origin", "HEAD:main");
+      const pushed = await git(clone, "rev-parse", "HEAD");
+      await Deno.mkdir(`${clone}/vendor`, { recursive: true });
+      await Deno.writeTextFile(`${clone}/vendor/x.md`, "#Bad\n");
+      await Deno.writeTextFile(`${clone}/good.md`, "# Good\n\nText.\n");
+      await git(clone, "add", "good.md", "vendor/x.md");
+      await git(clone, "commit", "-qm", "docs and vendored docs");
+      const tip = await git(clone, "rev-parse", "HEAD");
+      const result = await runPrePushGate({
+        cwd: clone,
+        stdin: `refs/heads/main ${tip} refs/heads/main ${pushed}\n`,
+        preFlightCommands: [],
+        findMarkdownlint: () => Promise.resolve(binary),
+      });
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assert(
+        result.value.checksRun.some((c) => c.includes("'!vendor/**'")),
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+);
+
+for (const extension of ["cjs", "mjs"]) {
+  Deno.test(
+    `runPrePushGate: markdownlint preserves ${extension} exclusions (Issue #5238)`,
+    {
+      // The CI test shard does not install markdownlint-cli2 (see
+      // commitShellcheckFiles), so skip when no runnable binary is found.
+      ignore: markdownlintBinary === null,
+    },
+    async () => {
+      assert(markdownlintBinary !== null);
+      const binary = markdownlintBinary;
+      const root = await Deno.makeTempDir({ prefix: "vibe-pp-vendor-" });
+      try {
+        const remote = `${root}/remote.git`;
+        const clone = `${root}/clone`;
+        await git(root, "init", "-q", "--bare", "-b", "main", remote);
+        await git(root, "clone", "-q", remote, clone);
+        await Deno.writeTextFile(
+          `${clone}/.markdownlint-cli2.${extension}`,
+          `${
+            extension === "cjs" ? "module.exports =" : "export default"
+          } { globs: ["**/*.md", "!vendor/**"] };\n`,
+        );
+        await git(clone, "add", `.markdownlint-cli2.${extension}`);
+        await git(clone, "commit", "-qm", "init");
+        await git(clone, "push", "-q", "origin", "HEAD:main");
+        const pushed = await git(clone, "rev-parse", "HEAD");
+        await Deno.mkdir(`${clone}/vendor`, { recursive: true });
+        await Deno.writeTextFile(`${clone}/vendor/x.md`, "#Bad\n");
+        await Deno.writeTextFile(`${clone}/good.md`, "# Good\n\nText.\n");
+        await git(clone, "add", "good.md", "vendor/x.md");
+        await git(clone, "commit", "-qm", "docs and vendored docs");
+        const tip = await git(clone, "rev-parse", "HEAD");
+        const result = await runPrePushGate({
+          cwd: clone,
+          stdin: `refs/heads/main ${tip} refs/heads/main ${pushed}\n`,
+          preFlightCommands: [],
+          findMarkdownlint: () => Promise.resolve(binary),
+        });
+        assert(result.ok, result.ok ? "" : result.error.message);
+        await Deno.mkdir(`${clone}/.git/graft`, { recursive: true });
+        await Deno.writeTextFile(`${clone}/.git/graft/card.md`, "#Bad\n");
+        await Deno.writeTextFile(`${clone}/other.md`, "#Bad\n");
+        const isolated = await runPrePushGate({
+          cwd: clone,
+          stdin: `refs/heads/main ${tip} refs/heads/main ${pushed}\n`,
+          preFlightCommands: [],
+          findMarkdownlint: () => Promise.resolve(binary),
+        });
+        assert(isolated.ok, isolated.ok ? "" : isolated.error.message);
+        await Deno.writeTextFile(`${clone}/bad.md`, "#Bad\n");
+        await git(clone, "add", "bad.md");
+        await git(clone, "commit", "-qm", "invalid unexcluded Markdown");
+        const badTip = await git(clone, "rev-parse", "HEAD");
+        const blocked = await runPrePushGate({
+          cwd: clone,
+          stdin: `refs/heads/main ${badTip} refs/heads/main ${pushed}\n`,
+          preFlightCommands: [],
+          findMarkdownlint: () => Promise.resolve(binary),
+        });
+        assert(!blocked.ok);
+        assertInstanceOf(blocked.error, PreFlightGateError);
+      } finally {
+        await Deno.remove(root, { recursive: true });
+      }
+    },
+  );
+}
 
 Deno.test("runPrePushGate: deleted scripts are not passed to ShellCheck", async () => {
   const { root, clone } = await makeRepoWithDocCommit();
@@ -6050,6 +6339,192 @@ Deno.test("runPrePushGate: a prompt or lock change runs the whole unit suite, re
     } finally {
       await Deno.remove(root, { recursive: true });
     }
+  }
+});
+
+Deno.test("loadDirectoryListingTests: a test that lists a directory, or imports a file that does, is selected; a plain test and prose are not (Issue #5169)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const files: Record<string, string> = {
+      "worker/deno/tests/manifest_test.ts":
+        'for await (const e of Deno.readDir(".")) console.log(e);\n',
+      "worker/deno/lib/coverage.ts":
+        "export const list = (r: string) => Deno.readDir(r);\n",
+      "worker/deno/tests/coverage_test.ts":
+        'import { list } from "../lib/coverage.ts";\nlist(".");\n',
+      "worker/deno/tests/support/listing.ts":
+        'export const args = ["ls-files", "-z"];\n',
+      "worker/deno/tests/uses_support_test.ts":
+        'import { args } from "./support/listing.ts";\nargs;\n',
+      "worker/deno/lib/foo.ts": "export const foo = 1;\n",
+      "worker/deno/tests/plain_test.ts":
+        'import { foo } from "../lib/foo.ts";\nfoo;\n',
+      "worker/deno/tests/prose_test.ts":
+        "// Deno.readDir is mentioned, not called\nexport {};\n",
+    };
+    for (const [path, text] of Object.entries(files)) {
+      await Deno.mkdir(`${dir}/${path.replace(/\/[^/]+$/, "")}`, {
+        recursive: true,
+      });
+      await Deno.writeTextFile(`${dir}/${path}`, text);
+    }
+    assertEquals(
+      await loadDirectoryListingTests(dir, Object.keys(files), [
+        "worker/deno",
+      ]),
+      {
+        "worker/deno": [
+          "tests/coverage_test.ts",
+          "tests/manifest_test.ts",
+          "tests/uses_support_test.ts",
+        ],
+      },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("loadDirectoryListingTests: an unreadable tracked module counts as listing a directory, so its importer runs (Issue #5169)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/worker/deno/tests`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/worker/deno/tests/missing_user_test.ts`,
+      'import { m } from "../lib/missing.ts";\nm;\n',
+    );
+    await Deno.writeTextFile(
+      `${dir}/worker/deno/tests/plain_test.ts`,
+      "export {};\n",
+    );
+    // lib/missing.ts is tracked but absent from disk, so it cannot be read.
+    assertEquals(
+      await loadDirectoryListingTests(dir, [
+        "worker/deno/tests/missing_user_test.ts",
+        "worker/deno/tests/plain_test.ts",
+        "worker/deno/lib/missing.ts",
+      ], ["worker/deno"]),
+      { "worker/deno": ["tests/missing_user_test.ts"] },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** Gate outcome with a process-boundary directory-invariant test fixture. */
+async function unitCommandsAfterBase(
+  base: (clone: string) => Promise<void>,
+  edit: (clone: string) => Promise<void>,
+): Promise<Awaited<ReturnType<typeof runPrePushGate>>> {
+  const { root, clone, stdin } = await makeUnitTestRepo(async (c) => {
+    await base(c);
+    await git(c, "add", "-A");
+    await git(c, "commit", "-qm", "listing base");
+    await git(c, "push", "-q", "--no-verify", "origin", "HEAD:main");
+    await edit(c);
+  });
+  try {
+    return await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      ...stubShellcheck(),
+      runner: async (command) => {
+        let invalid = false;
+        if (
+          command.startsWith("deno task test:unit") &&
+          command.includes("tests/manifest_test.ts")
+        ) {
+          invalid = await Deno.stat(`${clone}/worker/deno/tests/new_test.ts`)
+            .then(() => true, () => false);
+        }
+        if (
+          command.startsWith("deno task test:unit") &&
+          command.includes("tests/coverage_test.ts")
+        ) {
+          const files = [];
+          for await (const e of Deno.readDir(`${clone}/worker/deno/lib`)) {
+            files.push(e.name);
+          }
+          invalid = files.sort().join(",") !== "coverage.ts,foo.ts";
+        }
+        return {
+          started: true,
+          code: invalid ? 1 : 0,
+          stdout: "",
+          stderr: invalid ? "directory invariant violated" : "",
+        };
+      },
+    });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+Deno.test("runPrePushGate: a push that only adds a test file also runs the tests that list the tests directory (Issue #5169)", async () => {
+  const base = (c: string) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/tests/manifest_test.ts`,
+      'for await (const e of Deno.readDir(".")) console.log(e);\n',
+    );
+  const blocked = await unitCommandsAfterBase(base, (c) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/tests/new_test.ts`,
+      "export {};\n",
+    ));
+  assert(!blocked.ok);
+  assertStringIncludes(blocked.error.message, "directory invariant violated");
+  // Control: editing an existing test adds or removes no file.
+  const valid = await unitCommandsAfterBase(base, (c) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/tests/foo_test.ts`,
+      "export {};\n// edited\n",
+    ));
+  assert(valid.ok);
+});
+
+Deno.test("runPrePushGate: a push that adds, deletes or renames a source runs the tests whose imported module walks a directory (Issue #5169)", async () => {
+  const base = async (c: string) => {
+    await Deno.writeTextFile(
+      `${c}/worker/deno/lib/coverage.ts`,
+      "export const list = (r: string) => Deno.readDir(r);\n",
+    );
+    await Deno.writeTextFile(
+      `${c}/worker/deno/tests/coverage_test.ts`,
+      'import { list } from "../lib/coverage.ts";\nlist(".");\n',
+    );
+  };
+  const adds = (c: string) =>
+    Deno.writeTextFile(
+      `${c}/worker/deno/lib/new_mod.ts`,
+      "export const n = 1;\n",
+    );
+  const deletes = (c: string) => Deno.remove(`${c}/worker/deno/lib/foo.ts`);
+  const renames = (c: string) =>
+    Deno.rename(`${c}/worker/deno/lib/foo.ts`, `${c}/worker/deno/lib/bar.ts`);
+  // A source added, deleted or renamed beside the walker selects its test; neither names it.
+  for (const edit of [adds, deletes, renames]) {
+    const result = await unitCommandsAfterBase(base, edit);
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "directory invariant violated");
+    const valid = await unitCommandsAfterBase(base, async (c) => {
+      await edit(c);
+      await git(
+        c,
+        "restore",
+        "--source=HEAD",
+        "--worktree",
+        "worker/deno/lib/foo.ts",
+      );
+      for (const name of ["new_mod.ts", "bar.ts"]) {
+        await Deno.remove(`${c}/worker/deno/lib/${name}`).catch(() => {});
+      }
+      await Deno.writeTextFile(
+        `${c}/worker/deno/lib/foo.ts`,
+        "export const foo = 2;\n",
+      );
+    });
+    assert(valid.ok);
   }
 });
 

@@ -296,3 +296,18 @@ tests pass together (4 passed, 0 failed). Existing assertions are retained.
 These local runs use temporary standard-library mappings and `--no-check`;
 the dependency files are restored and are not part of the commit. Hosted CI
 must validate type checking with the normal dependencies.
+
+## CI timer type correction
+
+CI run 44430648639 stopped before executing the launcher suites: Node's timer
+ambient types make `setTimeout` return `Timeout`, so the new test's explicit
+`number` annotation failed with TS2322. The timer now uses
+`ReturnType<typeof setTimeout>`, retaining the same bounded wait and cleanup
+without a cast or suppression. The latest base is merged into this branch.
+
+The complete launcher test file passes `deno check` with a temporary HTTP
+mirror of the standard-library dependencies (JSR is unreachable here). The
+four Issue #5161 tests pass separately with local dependency mappings
+(4 passed, 0 failed, 55 seconds). Formatting, lint and diff checks also pass.
+No dependency manifest or lockfile changes are included; CI still validates
+its normal locked dependency resolution.

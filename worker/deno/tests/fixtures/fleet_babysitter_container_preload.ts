@@ -3,8 +3,11 @@
  * #4770): `gh`, `git` against the repair clone and the container runtime are
  * faked, so the CLI runs end to end with no network, no container and no
  * credentials. The worker checkout is read through real git, as the repair
- * snapshots it.
+ * snapshots it. The host platform is pinned to Linux because the container
+ * runtime is faked as docker/podman (Issue #5245).
  */
+import "./linux_host_platform_preload.ts";
+
 export {};
 
 const root = Deno.env.get("BABYSITTER_REPAIR_FIXTURE");

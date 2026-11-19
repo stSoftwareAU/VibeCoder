@@ -907,7 +907,7 @@ printf '%s %s-helper --name %s\n' '${helper.pid}' "$runtime" "$(cat "$r/helper-n
     assert(args);
     const name = args[args.indexOf("--name") + 1]!;
     assertEquals(await containerExists(harness, name), false, outcome.stderr);
-    let timer: number | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const status = await Promise.race([
         helperStatus,

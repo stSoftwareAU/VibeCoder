@@ -766,6 +766,235 @@ Deno.test("a long parameter list around many registrations stays linear (Issue #
   assertEquals(scan.notes, []);
 });
 
+// --- An inline test body calling a helper's callback (Issue #5233) ---
+
+const WITH_FIXTURE =
+  `function withFixture(name: string, fn: (f: number) => Promise<void>) {
+  Deno.test(name, async () => {
+    const f = await setup();
+    await fn(f);
+  });
+}
+`;
+
+Deno.test("an inline test body calling a helper's callback is accepted when the call asserts (Issue #5233)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `function withFixture(name: string, fn: (f: number) => Promise<void>) {
+  Deno.test(name, async () => {
+    const f = await setup();
+    await fn(f);
+  });
+}
+withFixture("a", async (f) => {
+  assertEquals(f, 1);
+});
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+});
+
+Deno.test("an assertion-free call of such a helper is refused on its call line, not the Deno.test line (Issue #5233)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `${WITH_FIXTURE}withFixture("a", async (f) => {
+  assertEquals(f, 1);
+});
+withFixture("b", async (f) => {
+  await Promise.resolve(f);
+});
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 10]]);
+});
+
+Deno.test("an inline test body calling a helper with no call in view is a note on its Deno.test line (Issue #5233)", () => {
+  const file = "tests/fixture_test.ts";
+  const scan = scanDummyTests(added(file, WITH_FIXTURE));
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, [{ file, line: 2, kind: "unseen" }]);
+});
+
+Deno.test("a helper whose inline body asserts itself is judged as before, not at its calls (Issue #5233)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `function withFixture(name: string, fn: (f: number) => Promise<void>) {
+  Deno.test(name, async () => {
+    assertEquals(await setup(), 1);
+    await fn(await setup());
+  });
+}
+withFixture("b", async (f) => {
+  await Promise.resolve(f);
+});
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+});
+
+Deno.test("a helper whose inline body has only a success-only assertion is judged at each call (Issue #5233)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `function withFixture(name: string, fn: (f: number) => Promise<void>) {
+  Deno.test(name, async () => {
+    assertExists(await setup());
+    await fn(1);
+  });
+}
+withFixture("asserts", async (f) => {
+  assertEquals(f, 1);
+});
+withFixture("asserts nothing", async (f) => {
+  await Promise.resolve(f);
+});
+`,
+  );
+  assertEquals(rules(diff), [["success-only", 10]]);
+});
+
+Deno.test("a helper calling two callbacks is judged as a whole at each call (Issue #5233)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `function withSetup(name: string, before: () => Promise<void>, fn: (f: number) => Promise<void>) {
+  Deno.test(name, async () => {
+    await before();
+    await fn(1);
+  });
+}
+withSetup("a", async () => {
+  await Promise.resolve(1);
+}, async (f) => {
+  assertEquals(f, 1);
+});
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+});
+
+const PAIR =
+  `function pair(name: string, first: () => void, second: () => void) {
+  Deno.test(name + " first", () => {
+    first();
+  });
+  Deno.test(name + " second", () => {
+    second();
+  });
+}
+`;
+
+Deno.test("a helper registering two tests judges each test by its own callback only (PR #5269 review)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `${PAIR}pair("p", () => {
+  assertEquals(result(), 1);
+}, () => {
+  doWork();
+});
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 9]]);
+});
+
+Deno.test("a success-only callback is not exempted by another registration's strong assertion (PR #5269 review)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `${PAIR}pair("p", () => {
+  assertEquals(result(), 1);
+}, () => {
+  assertExists(result());
+});
+`,
+  );
+  assertEquals(rules(diff), [["success-only", 9]]);
+});
+
+Deno.test("a helper registering two tests accepts a call where each callback asserts (PR #5269 review)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `${PAIR}pair("p", () => {
+  assertEquals(result(), 1);
+}, () => {
+  assertEquals(result(), 2);
+});
+`,
+  );
+  assertEquals(rules(diff), []);
+});
+
+Deno.test("an assertion in a callback no registered test invokes does not satisfy the test (PR #5269 review)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `function run(name: string, used: () => void, unused: () => void) {
+  Deno.test(name, () => {
+    used();
+  });
+}
+run("p", () => {
+  doWork();
+}, () => {
+  assertEquals(result(), 1);
+});
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 6]]);
+});
+
+Deno.test("a helper whose inline test is skipped with a reason is not judged at its calls (Issue #5233)", () => {
+  const diff = added(
+    "tests/fixture_test.ts",
+    `function withFixture(name: string, fn: (f: number) => Promise<void>) {
+  // Needs a live database; enabled again in #9999.
+  Deno.test.ignore(name, async () => {
+    const f = await setup();
+    await fn(f);
+  });
+}
+withFixture("b", async (f) => {
+  await Promise.resolve(f);
+});
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+});
+
+Deno.test("in an edited file, an assertion-free call of a helper whose body calls an out-of-view setup is a note (Issue #5233)", () => {
+  const file = "tests/fixture_test.ts";
+  // Non-async callbacks: an `async (` in a body is itself an out-of-view
+  // callee in an edited file, which would make this note come from the body.
+  const lines = [
+    "function withFixture(name: string, fn: (f: number) => Promise<void>) {",
+    "  Deno.test(name, async () => {",
+    "    const f = await setup();",
+    "    await fn(f);",
+    "  });",
+    "}",
+    'withFixture("a", (f) => {',
+    "  assertEquals(f, 1);",
+    "});",
+    'withFixture("b", (f) => {',
+    "  Promise.resolve(f);",
+    "});",
+  ];
+  const diff = [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((l) => `+${l}`),
+  ].join("\n") + "\n";
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, [{ file, line: 10, kind: "unseen" }]);
+});
+
 // --- What the diff shows ---
 
 Deno.test("an unchanged test in context is not judged; an edited one is", () => {

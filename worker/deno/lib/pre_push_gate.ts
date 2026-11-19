@@ -32,7 +32,9 @@
  *    deploy test and the `deno test` run are cheap. The `deno test` check runs
  *    the changed test files, the same-named and co-located tests of changed
  *    sources and the tests whose text names a changed file or that import such
- *    a file, via the repo's own `test:unit` task so integration suites like
+ *    a file; a push that adds, deletes or renames a file under a root also runs
+ *    that root's directory-listing tests ({@link loadDirectoryListingTests}),
+ *    via the repo's own `test:unit` task so integration suites like
  *    CI's shards are excluded. A change under `prompts/`, or to a root's
  *    `deno.json`, `deno.jsonc` or `deno.lock`, has readers a name scan cannot
  *    find, so it runs that root's whole `test:unit` suite
@@ -101,6 +103,10 @@ import {
 } from "./deno_scope.ts";
 import { INTEGRATION_TEST_FILES } from "./integration_test_manifest.ts";
 import { stripJsonc } from "./jsonc.ts";
+// Full specifier, as cargo_deny_gate.ts uses: the hook runtime cannot resolve
+// the bare `@std/yaml` import-map entry.
+// deno-lint-ignore no-import-prefix
+import { parse as parseYaml } from "jsr:@std/yaml@^1.0.12/parse";
 import {
   denoTestFailureSummary,
   judgeDenoTestCheck,
@@ -249,6 +255,66 @@ function pushedBranches(refs: readonly PrePushRef[]): string[] | undefined {
   return names.length === 0 ? undefined : names;
 }
 
+/** The unique paths the pushed commits touch, as `filterArgs` selects them. */
+async function pushedNames(
+  refs: PrePushRef[],
+  cwd: string,
+  git: PrePushGit,
+  baseRef: string | undefined,
+  filterArgs: string[],
+): Promise<Result<Set<string>, string>> {
+  const names = new Set<string>();
+  if (refs.length === 0) return { ok: true, value: names };
+  if (baseRef !== undefined && (baseRef === "" || baseRef.startsWith("-"))) {
+    return { ok: false, error: `unsafe base ref ${JSON.stringify(baseRef)}` };
+  }
+  const result = await git(
+    [
+      "log",
+      "--diff-merges=dense-combined",
+      "--name-only",
+      "-z",
+      "--format=",
+      ...filterArgs,
+      ...refs.map((r) => r.localSha),
+      "--not",
+      baseRef ?? "--remotes",
+    ],
+    cwd,
+  );
+  if (result.code !== 0) {
+    return {
+      ok: false,
+      error: `git log failed (exit ${result.code}): ${result.stderr.trim()}`,
+    };
+  }
+  // Observed shape: names separated by NUL, no commit separators with
+  // `--format=`; stripping stray newlines keeps this robust regardless.
+  for (const part of result.stdout.split("\0")) {
+    const name = part.replace(/^\n+|\n+$/g, "");
+    if (name !== "") names.add(name);
+  }
+  return { ok: true, value: names };
+}
+
+/**
+ * The sorted unique paths the pushed commits add or delete (a rename counts as
+ * both), the push's change to a directory's set of files (Issue #5169). The
+ * range and `baseRef` rules are those of {@link listPushedFiles}.
+ */
+export async function listAddedOrDeletedFiles(
+  refs: PrePushRef[],
+  cwd: string,
+  git: PrePushGit,
+  baseRef?: string,
+): Promise<Result<string[], string>> {
+  const pushed = await pushedNames(refs, cwd, git, baseRef, [
+    "--no-renames",
+    "--diff-filter=AD",
+  ]);
+  return pushed.ok ? { ok: true, value: [...pushed.value].sort() } : pushed;
+}
+
 /**
  * List the files the push introduces: those touched by commits (including
  * the paths a merge commit itself changed: a conflict resolution or a fix
@@ -275,41 +341,19 @@ export async function listPushedFiles(
   baseRef?: string,
   includeDeleted = false,
 ): Promise<Result<string[], string>> {
-  if (refs.length === 0) return { ok: true, value: [] };
-  if (baseRef !== undefined && (baseRef === "" || baseRef.startsWith("-"))) {
-    return { ok: false, error: `unsafe base ref ${JSON.stringify(baseRef)}` };
-  }
-  const result = await git(
-    [
-      "log",
-      "--diff-merges=dense-combined",
-      "--name-only",
-      "-z",
-      "--format=",
-      // A rename is listed under its new name only by default, which hides
-      // a renamed-away `.rs`, `clippy.toml` or `deny.toml` from the CI cargo
-      // and cargo-deny triggers, so the deleted-path list reports both sides
-      // (Issue #5169).
-      ...(includeDeleted ? ["--no-renames"] : ["--diff-filter=d"]),
-      ...refs.map((r) => r.localSha),
-      "--not",
-      baseRef ?? "--remotes",
-    ],
+  const pushed = await pushedNames(
+    refs,
     cwd,
+    git,
+    baseRef,
+    // A rename is listed under its new name only by default, which hides
+    // a renamed-away `.rs`, `clippy.toml` or `deny.toml` from the CI cargo
+    // and cargo-deny triggers, so the deleted-path list reports both sides
+    // (Issue #5169).
+    includeDeleted ? ["--no-renames"] : ["--diff-filter=d"],
   );
-  if (result.code !== 0) {
-    return {
-      ok: false,
-      error: `git log failed (exit ${result.code}): ${result.stderr.trim()}`,
-    };
-  }
-  // Observed shape: names separated by NUL, no commit separators with
-  // `--format=`; stripping stray newlines keeps this robust regardless.
-  const names = new Set<string>();
-  for (const part of result.stdout.split("\0")) {
-    const name = part.replace(/^\n+|\n+$/g, "");
-    if (name !== "") names.add(name);
-  }
+  if (!pushed.ok) return pushed;
+  const names = pushed.value;
   if (includeDeleted) return { ok: true, value: [...names].sort() };
   if (names.size === 0) return { ok: true, value: [] };
   let realCwd: string;
@@ -1173,7 +1217,9 @@ function quoteArguments(args: string[]): Result<string, string> {
  * outside `tests/`, its `tests/<name>_test.ts` sibling and its co-located
  * `<dir>/<name>_test.ts` sibling (a source under `tests/`, such as a support
  * helper, has no sibling); and the `referenced` tests
- * ({@link loadReferencedUnitTests}) whose text names a changed file. Only files
+ * ({@link loadReferencedUnitTests}) whose text names a changed file, plus a
+ * root's directory-listing tests ({@link loadDirectoryListingTests}) when the
+ * push adds or deletes a file under it. Only files
  * `tracked` still holds count, so a deleted test is not run. Deduplicated and
  * sorted.
  */
@@ -1218,7 +1264,8 @@ function plannedUnitTestFiles(
  * whose changed tests get a `deno test` check (see
  * {@link loadDenoUnitTestRoots}); absent means no `deno test` check. The check
  * runs the changed test files, the same-named and co-located tests of changed
- * sources and the `denoReferencedTests` beside them, via the repo's own
+ * sources and the `denoReferencedTests` (those naming a changed file, and the
+ * directory-listing tests of a root that gained or lost a file) beside them, via the repo's own
  * `test:unit` task, so
  * integration suites like CI's shards are not run here.
  *
@@ -1236,6 +1283,12 @@ export function planChangedFileChecks(
   opts: {
     repoRoot: string;
     markdownlintBinary: string | null;
+    /**
+     * The root config's negated `globs` entries (see
+     * {@link loadMarkdownlintGlobExclusions}), re-applied on the command line
+     * because `--no-globs` drops them with the rest of `globs` (Issue #5238).
+     */
+    markdownlintExclusions?: readonly string[];
     /** Resolved cspell binary; absent or null means "not found". */
     cspellBinary?: string | null;
     /**
@@ -1252,7 +1305,9 @@ export function planChangedFileChecks(
     denoUnitTestRoots?: string[];
     /**
      * Per deno root, the root-relative tests whose text names a changed file
-     * (see {@link loadReferencedUnitTests}); they run beside the changed tests.
+     * (see {@link loadReferencedUnitTests}) and, for a root that gained or lost
+     * a file, its directory-listing tests ({@link loadDirectoryListingTests});
+     * they run beside the changed tests.
      */
     denoReferencedTests?: Record<string, string[]>;
     /**
@@ -1384,10 +1439,48 @@ export function planChangedFileChecks(
       };
     }
     if (!quoted.ok) return quoted;
+    const exclusions = quoteAll([...(opts.markdownlintExclusions ?? [])]);
+    if (!exclusions.ok) return exclusions;
+    // Executable configs stay in the check subprocess. Load them with Node,
+    // then call the installed tool's API in that same process so its module
+    // cache evaluates the config once. Positive globs cannot widen this run.
+    const optionsFile = [
+      ".markdownlint-cli2.jsonc",
+      ".markdownlint-cli2.yaml",
+      ".markdownlint-cli2.cjs",
+      ".markdownlint-cli2.mjs",
+    ].find((name) => tracked.includes(name));
+    let command = `${binary} --no-globs ${quoted.value}${
+      exclusions.value === "" ? "" : ` ${exclusions.value}`
+    }`;
+    if (optionsFile?.endsWith(".cjs") || optionsFile?.endsWith(".mjs")) {
+      const script = [
+        'import {realpathSync} from "node:fs";',
+        'import {createRequire} from "node:module";',
+        'import {pathToFileURL} from "node:url";',
+        "const [binary, configPath, ...files] = process.argv.slice(1);",
+        "const {default: config} = await import(pathToFileURL(configPath));",
+        'const exclusions = (config.globs ?? []).filter((g) => typeof g === "string" && (g.startsWith("!") || g.startsWith("#")));',
+        "const require = createRequire(realpathSync(binary));",
+        'const {main} = await import(pathToFileURL(require.resolve("markdownlint-cli2")));',
+        "process.exitCode = await main({argv: [...files, ...exclusions], noGlobs: true, logMessage: console.log, logError: console.error});",
+      ].join(" ");
+      const args = argvCommand([
+        "node",
+        "--input-type=module",
+        "-e",
+        script,
+        opts.markdownlintBinary,
+        `${opts.repoRoot}/${optionsFile}`,
+        ...markdown.map((path) => path.startsWith("-") ? `./${path}` : path),
+      ]);
+      if (!args.ok) return args;
+      command = args.value;
+    }
     checks.push({
       label: "markdownlint",
       cwd: opts.repoRoot,
-      command: `${binary} ${quoted.value}`,
+      command,
     });
   }
 
@@ -1588,6 +1681,47 @@ export function planFormatterFixes(
     });
   }
   return fixes;
+}
+
+/**
+ * The negated `globs` entries (`!…`, or `#…`, which markdownlint-cli2 also
+ * treats as exclusions) of the root markdownlint-cli2 options file. The tool
+ * takes its `globs` from `.markdownlint-cli2.jsonc`, else
+ * `.markdownlint-cli2.yaml`, so only the first of those that is tracked is
+ * read. `--no-globs` drops these with the rest of `globs`, so the gate passes
+ * them back on the command line (Issue #5238).
+ *
+ * A missing file, a file without `globs`, or one that cannot be read or parsed
+ * gives []. That fails closed, never open: dropping a negation only lints more
+ * of the pushed paths, never fewer, and markdownlint-cli2 reads the same config
+ * itself and exits non-zero on one it cannot parse.
+ * `.markdownlint-cli2.cjs` and `.mjs` are not read, since reading them would
+ * mean executing them.
+ */
+export async function loadMarkdownlintGlobExclusions(
+  repoRoot: string,
+  tracked: string[],
+): Promise<string[]> {
+  const name = [".markdownlint-cli2.jsonc", ".markdownlint-cli2.yaml"]
+    .find((candidate) => tracked.includes(candidate));
+  if (name === undefined) return [];
+  let parsed: unknown;
+  try {
+    const text = await readRepoFile(repoRoot, name);
+    parsed = name.endsWith(".jsonc")
+      ? JSON.parse(stripJsonc(text))
+      : parseYaml(text);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return [];
+  }
+  const globs = (parsed as { globs?: unknown }).globs;
+  if (!Array.isArray(globs)) return [];
+  return globs.filter((glob): glob is string =>
+    typeof glob === "string" && (glob.startsWith("!") || glob.startsWith("#"))
+  );
 }
 
 /**
@@ -2982,6 +3116,13 @@ export async function runPrePushGate(opts: {
     opts.baseRef,
   );
   if (!contained.ok) return infrastructureFail(contained.error);
+  const fileSetChanges = await listAddedOrDeletedFiles(
+    refs.value,
+    opts.cwd,
+    git,
+    opts.baseRef,
+  );
+  if (!fileSetChanges.ok) return infrastructureFail(fileSetChanges.error);
   const formatterCandidates = contained.value;
   // The unfiltered touched list: it keeps deleted paths (Issue #5169) and files
   // under a symlinked crate directory (Issue #4630).
@@ -3011,11 +3152,16 @@ export async function runPrePushGate(opts: {
     hasExtension(p, MARKDOWN_EXTENSIONS)
   );
   let markdownlintBinary: string | null = null;
+  let markdownlintExclusions: string[] = [];
   if (needsMarkdownlint) {
     const find = opts.findMarkdownlint ??
       ((root: string) =>
         findMarkdownlintBinary(root, Deno.env.get("PATH") ?? ""));
     markdownlintBinary = await find(opts.cwd);
+    markdownlintExclusions = await loadMarkdownlintGlobExclusions(
+      opts.cwd,
+      tracked,
+    );
   }
 
   const cspellInCi = !opts.repairChecksWithCiCargo &&
@@ -3068,9 +3214,31 @@ export async function runPrePushGate(opts: {
       touched.value.some((p) => root === "." || p.startsWith(`${root}/`))
     ),
   );
+  const referencedTests = await loadReferencedUnitTests(
+    opts.cwd,
+    tracked,
+    // Deleted and renamed-away paths too: a test can still name them.
+    touched.value,
+    denoUnitTestRoots,
+  );
+  // A test that checks a directory's file set breaks on a file it never names
+  // (Issue #5169), so a root that gained or lost a file runs those tests too.
+  const listingTests = await loadDirectoryListingTests(
+    opts.cwd,
+    tracked,
+    denoUnitTestRoots.filter((root) =>
+      fileSetChanges.value.some((p) => root === "." || p.startsWith(`${root}/`))
+    ),
+  );
+  for (const [root, tests] of Object.entries(listingTests)) {
+    referencedTests[root] = [
+      ...new Set([...(referencedTests[root] ?? []), ...tests]),
+    ];
+  }
   const plan = planChangedFileChecks(formatterSelection, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
+    markdownlintExclusions,
     cspellBinary,
     cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
@@ -3079,13 +3247,7 @@ export async function runPrePushGate(opts: {
       needsFullUnitSuite(touched.value, root) || unfollowable.includes(root)
     ),
     validationChanged: contained.value,
-    denoReferencedTests: await loadReferencedUnitTests(
-      opts.cwd,
-      tracked,
-      // Deleted and renamed-away paths too: a test can still name them.
-      touched.value,
-      denoUnitTestRoots,
-    ),
+    denoReferencedTests: referencedTests,
     ciCargo,
     cargoChanged: ciCargoPaths,
   });
@@ -3281,4 +3443,73 @@ export async function runPrePushGate(opts: {
   if (!preFlight.ok) return { ok: false, error: preFlight.error };
 
   return { ok: true, value: { checksRun } };
+}
+
+/** A text match: a comment spelling such a call also matches, which over-selects and fails closed. */
+const LISTS_DIRECTORY =
+  /\bDeno\.readDir(?:Sync)?\s*\(|\b(?:walk|walkSync|expandGlob|expandGlobSync)\s*\(|["'`]ls-files["'`]/;
+
+/**
+ * Per deno root, the root-relative `_test.ts` files that check the set of files
+ * in a directory (Issue #5169): such a test can break on a file it never names,
+ * so a push that adds, deletes or renames a file runs it. A file lists a
+ * directory when its text matches {@link LISTS_DIRECTORY}. A test-tree file (a
+ * `_test.ts` or one under `tests/`) is a seed when it lists a directory or
+ * imports (relative `.ts` specifier) a tracked file that does; a test is
+ * selected when it is a seed or imports one, directly or transitively. A module
+ * that reaches a listing only through another non-test module is not followed,
+ * so CI's shards stay the backstop. A tracked `.ts` file that cannot be read
+ * counts as listing a directory (fails closed).
+ */
+export async function loadDirectoryListingTests(
+  repoRoot: string,
+  tracked: string[],
+  roots: string[],
+): Promise<Record<string, string[]>> {
+  const found: Record<string, string[]> = {};
+  for (const root of roots) {
+    const prefix = root === "." ? "" : `${root}/`;
+    const texts = new Map<string, string>();
+    const unreadable = new Set<string>();
+    for (const path of tracked) {
+      if (!path.startsWith(prefix) || !path.endsWith(".ts")) continue;
+      try {
+        texts.set(path, await readRepoFile(repoRoot, path));
+      } catch {
+        unreadable.add(path); // Fails closed: it may list a directory.
+        texts.set(path, "");
+      }
+    }
+    const lists = (path: string) =>
+      unreadable.has(path) || LISTS_DIRECTORY.test(texts.get(path) ?? "");
+    const importers = new Map<string, string[]>();
+    const seeds: string[] = [];
+    // SIMPLE-ON-PURPOSE: one import hop from the test tree, fine while listers are imported directly — upgrade when a listing test is missed through a second non-test module
+    for (const [path, text] of texts) {
+      const imports = relativeTsSpecifiers(text).map((s) =>
+        resolveSpecifier(path, s)
+      );
+      for (const target of imports) {
+        importers.set(target, [...(importers.get(target) ?? []), path]);
+      }
+      const inTestTree = path.endsWith("_test.ts") ||
+        path.startsWith(`${prefix}tests/`);
+      if (inTestTree && (lists(path) || imports.some(lists))) seeds.push(path);
+    }
+    const reached = new Set(seeds);
+    const queue = [...seeds];
+    for (const file of queue) {
+      for (const importer of importers.get(file) ?? []) {
+        if (!reached.has(importer)) {
+          reached.add(importer);
+          queue.push(importer);
+        }
+      }
+    }
+    found[root] = [...texts.keys()]
+      .filter((p) => p.endsWith("_test.ts") && reached.has(p))
+      .map((p) => p.slice(prefix.length))
+      .sort();
+  }
+  return found;
 }

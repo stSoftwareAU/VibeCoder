@@ -126,6 +126,7 @@ import {
   babysitterRetryEligible,
   type BabysitterRetryRecord,
   buildBabysitterAttemptMarker,
+  buildBabysitterAttemptRecordBody,
   classifyBabysitterFailure,
   clearBabysitterRetryStates,
   listBabysitterRetryStates,
@@ -786,7 +787,7 @@ async function recordSharedBabysitterAttempt(
     "--method",
     "POST",
     "--field",
-    `body=Babysitter repair recorded.\n\n${marker}`,
+    `body=${buildBabysitterAttemptRecordBody(marker)}`,
   ]);
   let comment: unknown;
   try {
