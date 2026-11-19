@@ -103,6 +103,10 @@ import {
 } from "./deno_scope.ts";
 import { INTEGRATION_TEST_FILES } from "./integration_test_manifest.ts";
 import { stripJsonc } from "./jsonc.ts";
+// Full specifier, as cargo_deny_gate.ts uses: the hook runtime cannot resolve
+// the bare `@std/yaml` import-map entry.
+// deno-lint-ignore no-import-prefix
+import { parse as parseYaml } from "jsr:@std/yaml@^1.0.12/parse";
 import {
   denoTestFailureSummary,
   judgeDenoTestCheck,
@@ -1279,6 +1283,12 @@ export function planChangedFileChecks(
   opts: {
     repoRoot: string;
     markdownlintBinary: string | null;
+    /**
+     * The root config's negated `globs` entries (see
+     * {@link loadMarkdownlintGlobExclusions}), re-applied on the command line
+     * because `--no-globs` drops them with the rest of `globs` (Issue #5238).
+     */
+    markdownlintExclusions?: readonly string[];
     /** Resolved cspell binary; absent or null means "not found". */
     cspellBinary?: string | null;
     /**
@@ -1429,10 +1439,48 @@ export function planChangedFileChecks(
       };
     }
     if (!quoted.ok) return quoted;
+    const exclusions = quoteAll([...(opts.markdownlintExclusions ?? [])]);
+    if (!exclusions.ok) return exclusions;
+    // Executable configs stay in the check subprocess. Load them with Node,
+    // then call the installed tool's API in that same process so its module
+    // cache evaluates the config once. Positive globs cannot widen this run.
+    const optionsFile = [
+      ".markdownlint-cli2.jsonc",
+      ".markdownlint-cli2.yaml",
+      ".markdownlint-cli2.cjs",
+      ".markdownlint-cli2.mjs",
+    ].find((name) => tracked.includes(name));
+    let command = `${binary} --no-globs ${quoted.value}${
+      exclusions.value === "" ? "" : ` ${exclusions.value}`
+    }`;
+    if (optionsFile?.endsWith(".cjs") || optionsFile?.endsWith(".mjs")) {
+      const script = [
+        'import {realpathSync} from "node:fs";',
+        'import {createRequire} from "node:module";',
+        'import {pathToFileURL} from "node:url";',
+        "const [binary, configPath, ...files] = process.argv.slice(1);",
+        "const {default: config} = await import(pathToFileURL(configPath));",
+        'const exclusions = (config.globs ?? []).filter((g) => typeof g === "string" && (g.startsWith("!") || g.startsWith("#")));',
+        "const require = createRequire(realpathSync(binary));",
+        'const {main} = await import(pathToFileURL(require.resolve("markdownlint-cli2")));',
+        "process.exitCode = await main({argv: [...files, ...exclusions], noGlobs: true, logMessage: console.log, logError: console.error});",
+      ].join(" ");
+      const args = argvCommand([
+        "node",
+        "--input-type=module",
+        "-e",
+        script,
+        opts.markdownlintBinary,
+        `${opts.repoRoot}/${optionsFile}`,
+        ...markdown.map((path) => path.startsWith("-") ? `./${path}` : path),
+      ]);
+      if (!args.ok) return args;
+      command = args.value;
+    }
     checks.push({
       label: "markdownlint",
       cwd: opts.repoRoot,
-      command: `${binary} ${quoted.value}`,
+      command,
     });
   }
 
@@ -1633,6 +1681,47 @@ export function planFormatterFixes(
     });
   }
   return fixes;
+}
+
+/**
+ * The negated `globs` entries (`!…`, or `#…`, which markdownlint-cli2 also
+ * treats as exclusions) of the root markdownlint-cli2 options file. The tool
+ * takes its `globs` from `.markdownlint-cli2.jsonc`, else
+ * `.markdownlint-cli2.yaml`, so only the first of those that is tracked is
+ * read. `--no-globs` drops these with the rest of `globs`, so the gate passes
+ * them back on the command line (Issue #5238).
+ *
+ * A missing file, a file without `globs`, or one that cannot be read or parsed
+ * gives []. That fails closed, never open: dropping a negation only lints more
+ * of the pushed paths, never fewer, and markdownlint-cli2 reads the same config
+ * itself and exits non-zero on one it cannot parse.
+ * `.markdownlint-cli2.cjs` and `.mjs` are not read, since reading them would
+ * mean executing them.
+ */
+export async function loadMarkdownlintGlobExclusions(
+  repoRoot: string,
+  tracked: string[],
+): Promise<string[]> {
+  const name = [".markdownlint-cli2.jsonc", ".markdownlint-cli2.yaml"]
+    .find((candidate) => tracked.includes(candidate));
+  if (name === undefined) return [];
+  let parsed: unknown;
+  try {
+    const text = await readRepoFile(repoRoot, name);
+    parsed = name.endsWith(".jsonc")
+      ? JSON.parse(stripJsonc(text))
+      : parseYaml(text);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return [];
+  }
+  const globs = (parsed as { globs?: unknown }).globs;
+  if (!Array.isArray(globs)) return [];
+  return globs.filter((glob): glob is string =>
+    typeof glob === "string" && (glob.startsWith("!") || glob.startsWith("#"))
+  );
 }
 
 /**
@@ -3063,11 +3152,16 @@ export async function runPrePushGate(opts: {
     hasExtension(p, MARKDOWN_EXTENSIONS)
   );
   let markdownlintBinary: string | null = null;
+  let markdownlintExclusions: string[] = [];
   if (needsMarkdownlint) {
     const find = opts.findMarkdownlint ??
       ((root: string) =>
         findMarkdownlintBinary(root, Deno.env.get("PATH") ?? ""));
     markdownlintBinary = await find(opts.cwd);
+    markdownlintExclusions = await loadMarkdownlintGlobExclusions(
+      opts.cwd,
+      tracked,
+    );
   }
 
   const cspellInCi = !opts.repairChecksWithCiCargo &&
@@ -3144,6 +3238,7 @@ export async function runPrePushGate(opts: {
   const plan = planChangedFileChecks(formatterSelection, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
+    markdownlintExclusions,
     cspellBinary,
     cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
