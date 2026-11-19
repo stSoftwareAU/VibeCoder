@@ -46,13 +46,13 @@ Some criteria are still partial (see below), so this is Part of #5110.
 - **Named gaps are pinned.** `KNOWN_GAPS` in the script holds each gap's
   expected failure reason. A gap that stops reproducing, or fails another way,
   fails the run with `gap changed: update KNOWN_GAPS`. A template with no
-  property-check function fails before any AWS call, so stack status alone
-  never passes a template.
-- **The pre-push gate does not run the emulator test.** The gate runs as
-  `vibe`, which `aws-emulator-run` always refuses (#5109). CI is the enforcing
-  gate. Locally the command runs as `agent` or any other non-root account that
-  is not `vibe`. The Floci planner is kept because the gate serves the whole
-  fleet, and removing it would drop a check from repositories that still track
+  property-check function fails before any AWS call, so stack status alone never
+  passes a template.
+- **The pre-push gate does not run the emulator test.** The gate runs as `vibe`,
+  which `aws-emulator-run` always refuses (#5109). CI is the enforcing gate.
+  Locally the command runs as `agent` or any other non-root account that is not
+  `vibe`. The Floci planner is kept because the gate serves the whole fleet, and
+  removing it would drop a check from repositories that still track
   `test-floci.sh`.
 - **No push trigger.** The fleet's `workflow-triggers` rule forbids test
   workflows on push to the default branch. The workflow runs on `pull_request`
@@ -120,14 +120,15 @@ UNSUPPORTED (not proven, named gaps):
   `HostSecurityGroup CREATE_FAILED ... Value (HTTPS — SSM endpoints, ...) for parameter description is invalid. Valid characters: a-z, A-Z, 0-9, spaces, and ._-:/()#,@[]+=&;{}!$*`.
 - **Detector corpus run** (`workflowRunsAwsEmulator` with the repository script
   reader over every `.github/workflows/*.yml`):
-  - At the head: `aws-emulator.yml` is true and the other 14 workflows are false.
+  - At the head: `aws-emulator.yml` is true and the other 14 workflows are
+    false.
   - On `origin/main`: all 15 are false, `floci.yml` included. That workflow
     counted through the separate Floci rule, not this one.
   - No false positives or false negatives.
 - **Documentation:**
-  - `docs/EC2-LINUX-VERIFICATION.md` has the coverage by resource and
-    behaviour, the gap, the command, and the items left to real AWS: IAM, KMS
-    and resource policies, runtime, cross-account and cross-Region.
+  - `docs/EC2-LINUX-VERIFICATION.md` has the coverage by resource and behaviour,
+    the gap, the command, and the items left to real AWS: IAM, KMS and resource
+    policies, runtime, cross-account and cross-Region.
   - The Floci and detector wording is updated in `docs/CONTAINER.md`,
     `docs/CONFIGURATION.md`, `docs/CONTAINER-IMAGE.md`,
     `docs/IDLE-TASK-FRAMEWORK.md`, `docs/BEST-PRACTICES-SCAN.md`,
@@ -171,8 +172,8 @@ flowchart LR
   not yet verified
 - **met** — Evidence includes the pinned release, actual test commands,
   successful data assertions, a supported negative API result and cleanup. —
-  evidence: the real-run output above; `infra/cloudformation/test-aws-emulator.sh`
-  — reviewer: met
+  evidence: the real-run output above;
+  `infra/cloudformation/test-aws-emulator.sh` — reviewer: met
 - **partial** — Focused tests prove startup/test failures propagate and missing
   required execution cannot become a green check. — evidence:
   `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts`,
@@ -213,8 +214,8 @@ flowchart LR
   without it
 - **unrequested** — `worker/deno/lib/pre_push_gate.ts` comments and the test
   "the AWS Emulator script is never planned" — reviewer: unrequested — reason:
-  they record that the gate cannot run the emulator test as `vibe` and keep
-  that absence deliberate
+  they record that the gate cannot run the emulator test as `vibe` and keep that
+  absence deliberate
 - **unrequested** — `docs/audits/lib-sweep-coverage/top-up-3369.json` path
   update — reviewer: unrequested — reason: mechanical follow-through of
   replacing `floci_workflow_check.ts`
@@ -227,11 +228,11 @@ flowchart LR
   `docs/archive/pr-summaries/pr-summary-5110.md:17` — reason: fixed in this diff
   (rewritten against the head: the Floci planner is kept, the `ResolvedValue`
   claim is dropped, and the test names and counts are current)
-- **violation** — A Code Change Owes a Docs Change (install counted as
-  coverage) — evidence: `DESIGN-PRINCIPLES.md:1875` — reason: fixed in this diff
-- **violation** — Integration prerequisites and doc comments must be truthful
-  — evidence: `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts:663`
-  — reason: fixed in this diff (the comment now says the case runs only where an
+- **violation** — A Code Change Owes a Docs Change (install counted as coverage)
+  — evidence: `DESIGN-PRINCIPLES.md:1875` — reason: fixed in this diff
+- **violation** — Integration prerequisites and doc comments must be truthful —
+  evidence: `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts:663` —
+  reason: fixed in this diff (the comment now says the case runs only where an
   ordinary account has the emulator; CI's real run is `aws-emulator.yml`, which
   fails on a missing runtime)
 - **violation** — Writing a gate over text (variants, corpus run, reuse) —
@@ -282,8 +283,8 @@ flowchart LR
   (`echo`, `command -v`, `which`, comments, install-only); script indirection
   with `..`, absolute, `$`, symlink-out and oversized refusals; an unreadable
   script rejecting, with a readable control. Result: 80 passed.
-- `worker/deno/tests/pre_push_gate_test.ts` (one test added, none removed):
-  "the AWS Emulator script is never planned". It passes on the base by design,
+- `worker/deno/tests/pre_push_gate_test.ts` (one test added, none removed): "the
+  AWS Emulator script is never planned". It passes on the base by design,
   because it pins a deliberate absence. Result: 213 passed when run with the
   session's injected `GIT_CONFIG_*` hook variables unset. With them set, 43
   fixture pushes are refused by this session's own pre-push hook, which is an
@@ -301,10 +302,9 @@ flowchart LR
 - `./quality.sh` (run with the injected `GIT_CONFIG_*` variables unset): every
   stage passed except `deno tests` (`config integration` and `checkov` were
   skipped). The parallel pass ran 35111 tests and passed them, with 2 failures:
-  - `worker/deno/tests/aws_emulator_in_ci_check_test.ts` failed to load
-    because `Deno.uid()` needs `--allow-sys`, which the gate does not grant. It
-    is fixed (`id -u` instead), and the file now passes without `--allow-sys`:
-    80 passed.
+  - `worker/deno/tests/aws_emulator_in_ci_check_test.ts` failed to load because
+    `Deno.uid()` needs `--allow-sys`, which the gate does not grant. It is fixed
+    (`id -u` instead), and the file now passes without `--allow-sys`: 80 passed.
   - `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` failed with
     `dns error: failed to lookup address information` fetching
     `registry.npmjs.org`. This is an environmental network fault in this
