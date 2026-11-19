@@ -452,6 +452,32 @@ Deno.test("summary-rule retry - a standing violation arrives as a CODE FIX item 
   assertEquals(prompt.includes("so do not change it"), false);
 });
 
+Deno.test("summary-rule retry - step 5 says a standing CODE FIX item is sent back at fleet review, and never that findings are free (Issue #5148)", () => {
+  const prompt = buildSummaryRuleRetryPrompt(
+    {
+      ...VERDICT,
+      standingViolations: [{ text: STANDING_TEXT, cited: STANDING_CITED }],
+    },
+    "org/repo",
+    7,
+    "0123456789ab",
+  );
+
+  assertStringIncludes(
+    prompt,
+    "Findings you leave are posted on the pull request and do not stop it, but a CODE FIX item left standing sends it back at fleet review.",
+  );
+  assertEquals(prompt.includes("do not cost another turn"), false);
+
+  const plain = buildSummaryRuleRetryPrompt({ ...VERDICT }, "org/repo", 7);
+  assertStringIncludes(
+    plain,
+    "Findings you leave are posted on the pull request and do not stop it.",
+  );
+  assertEquals(plain.includes("do not cost another turn"), false);
+  assertEquals(plain.includes("sends it back at fleet review"), false);
+});
+
 Deno.test("summary-rule retry - without standing violations the documentary rule is unchanged (Issue #3382)", () => {
   for (const extra of [{}, { standingViolations: [] }]) {
     const prompt = buildSummaryRuleRetryPrompt(

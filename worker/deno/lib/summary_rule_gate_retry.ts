@@ -244,6 +244,10 @@ export function buildSummaryRuleRetryPrompt(
     v.text.trim() !== ""
   );
   const standingBlockNames: string[] = [];
+  // Issue #5148: only a CODE FIX item left standing is sent back at fleet review.
+  const leftFindingsNote = standing.length > 0
+    ? "Findings you leave are posted on the pull request and do not stop it, but a CODE FIX item left standing sends it back at fleet review."
+    : "Findings you leave are posted on the pull request and do not stop it.";
   let standingSection = "";
   if (standing.length > 0) {
     const n = standing.length;
@@ -357,7 +361,7 @@ ${standingSection}${unmetSection}Do exactly this, and nothing else:
 ${step2} One exception (Issue #3395): a REQUIRED ITEM headed \`${PRE_PR_VERIFIER_HEADING_WORDS}\` can name a defect in the code itself. For that item only, fix the code and its tests where a finding asks for it, run the tests covering what you changed, then make the summary describe the head; the worker re-runs the quality gate and the verifier afterwards. For that verifier item, a finding is closed only by fixing it or disputing it with evidence in the final message, naming the finding and the evidence. Marking a criterion \`partial\` closes only a finding about that entry's \`met\` status. Listing a known gap or open limitation in the PR summary, or noting a test as "not red-checked", closes no finding.
 3. Where a REQUIRED ITEM asks for the \`## Acceptance Criteria\` or \`## Standards Review\` block, dispatch the two reviewer sub-agents first and write their verdicts down. Never invent a \`reviewer:\` verdict — a fabricated review is the over-claim those blocks exist to prevent.
 4. Before you commit, re-read the summary against ${itemRef} in turn, checking that item is actually fixed. In your final message, name ${itemRef} by number and say what you changed for it.
-5. Commit the change, referencing #${issueNumber}. Do not create the PR yourself, do not close the issue, and do not start new work. The worker commits whatever you leave in the tree, so nothing you write here is lost. Findings you leave are posted on the pull request; they do not cost another turn and they do not stop the pull request.
+5. Commit the change, referencing #${issueNumber}. Do not create the PR yourself, do not close the issue, and do not start new work. The worker commits whatever you leave in the tree, so nothing you write here is lost. ${leftFindingsNote}
 
 If a REQUIRED ITEM is wrong — the summary already carries what it asks for — say so plainly in your final message for that item and commit nothing for it.
 
