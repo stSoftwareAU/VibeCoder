@@ -11,7 +11,10 @@
  * once wrapping is ignored. Issue #3779 widened it from narrowing to any change
  * in what the helper returns, refuses or finds, and requires a test through
  * each touched caller, after VibeCoder#3353 and a private fleet PR regressed an
- * existing caller.
+ * existing caller. Issue #5235 shortened it: the sentence promising that the
+ * pre-PR verifier's caller verdicts block the PR (advisory since #4234), the
+ * PR-summary callers list, and the parenthetical lists of helper kinds were
+ * removed.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -58,19 +61,21 @@ function sharedHelperRuleParagraph(
 }
 
 const KEY_PHRASES = [
-  "list its existing callers and the real values each can receive",
-  "the tool or API's actual output",
-  "a lookup that gains a fallback",
-  "a routine that gains a refusal or precondition",
-  'reads "nothing found" as "leave it alone"',
-  "Add a test that exercises each existing caller whose behaviour the change touches",
-  "a callers-checked list alone does not count",
-  "List the callers checked in the PR summary",
-  "left without a verdict, or reported `regressed`, blocks the PR",
-  "A changed shared helper with no test through an existing caller whose behaviour it touches",
+  "decide for each existing caller whether its behaviour changes under the new result",
+  "using the real values that caller can receive",
+  "keep the shared helper as it was and apply the new behaviour at the new call site, or change that caller too",
+  "Add a test that exercises each existing caller whose behaviour the change touches, under the new result",
+  "A changed shared helper with no test through an existing caller whose behaviour it touches is a blocking self-review finding",
 ];
 
-Deno.test("both surfaces carry the changing-a-shared-helper rule (Issues #3100, #3779)", async () => {
+// Issue #5235 removed these: the verifier's caller verdicts are advisory since #4234, and a self-written callers list is no evidence.
+const RETIRED_PHRASES = [
+  "blocks the PR",
+  "List the callers checked in the PR summary",
+  "a callers-checked list alone does not count",
+];
+
+Deno.test("both surfaces carry the changing-a-shared-helper rule (Issues #3100, #3779, #5235)", async () => {
   const standards = section(
     await readRepoDoc("CODING-STANDARDS.md"),
     "Test coverage expectations",
@@ -91,6 +96,12 @@ Deno.test("both surfaces carry the changing-a-shared-helper rule (Issues #3100, 
       assert(
         paragraph.includes(phrase),
         `${surface} is missing "${phrase}" from the changing-a-shared-helper rule: ${paragraph}`,
+      );
+    }
+    for (const phrase of RETIRED_PHRASES) {
+      assert(
+        !paragraph.includes(phrase),
+        `${surface} still carries retired "${phrase}" in the changing-a-shared-helper rule: ${paragraph}`,
       );
     }
   }
