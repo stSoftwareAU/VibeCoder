@@ -225,9 +225,12 @@ flowchart LR
   `exit 0` wrappers, separators, negated and condition-wrapped calls,
   `[gate-call]`, `[gate-needs]`),
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts` (disabled and unreachable
-  runner invocations, each with a credited control) — reviewer: partial then met
-  — reason: the review at the earlier head found a negated test step accepted
-  and a disabled or unreachable runner credited; both are refused at this head
+  runner invocations, including `true && exit 0` and `false || exit 0` before
+  the runner and `bash -n ./test.sh`, in the workflow and in a repository
+  script, each with a credited control) — reviewer: partial then met — reason:
+  the review at the earlier head found a negated test step accepted and a
+  disabled, guaranteed-exit or no-exec runner credited; all are refused at this
+  head
 - **met** — Every existing template is accounted for as exercised or as a
   specific unsupported case with alternative validation; no unsupported/stubbed
   resource is reported as proven. — evidence:
