@@ -113,7 +113,9 @@ All the test files below are under `worker/deno/tests/`:
   the parallel pass, 63 passed in total, 0 failed.
 - **Ran:** `deno fmt --check` and `deno lint` on the changed files. Both are
   clean.
-- **Ran:** `./quality.sh < /dev/null` on the head. Result: PASSED.
+- **Ran:** `./quality.sh < /dev/null` on the head. Result: `PASSED (with
+  skipped checks)`. The gate itself skipped `config integration` and
+  `checkov`.
 
 ## Not done or not checked
 
