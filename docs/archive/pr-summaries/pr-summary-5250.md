@@ -122,8 +122,8 @@ flowchart LR
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — every changed call site needs a test that goes red without
-  it — evidence: `worker/deno/lib/hard_kill_evidence.ts:783-784` — reason: open,
+- **violation** — every changed call site needs a test that goes red without it
+  — evidence: `worker/deno/lib/hard_kill_evidence.ts:783-784` — reason: open,
   not fixed in this run. The production defaults `diskReading` and
   `memoryReading` in `createEvidenceSeams` have no test, because every test
   stubs both seams.
@@ -232,9 +232,9 @@ Results:
   missing from an older record, and that a repeat's follow-up line carries them.
 - Code comments: the `worker/deno/lib/hard_kill_report.ts` module header (the
   argument for what reaches the public repository) and the `formatHardKillBody`
-  doc comment now name the two host figures beside the four guest figures.
-  These are comment-only edits. After them, the 10 hard-kill test files above
-  gave 241 passed and 0 failed.
+  doc comment now name the two host figures beside the four guest figures. These
+  are comment-only edits. After them, the 10 hard-kill test files above gave 241
+  passed and 0 failed.
 
 Not done:
 
