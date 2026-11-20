@@ -74,11 +74,12 @@ flowchart LR
 - `worker/deno/tests/run_core_callbacks_test.ts`: new test "the terminal run carries / omits an absent provider". No existing assertion was changed.
 - `worker/deno/tests/run_callback_context_test.ts`: the provider fixtures moved from the identity to the run, because the identity no longer has a `provider` field. The expected values (`claude`, and none for a blank) are unchanged.
 - `worker/deno/tests/hard_kill_report_test.ts`: `provider: "claude"` was removed from the shared identity fixture for the same reason. The test's document and outcome assertions are unchanged. The comparison of keys between ordinary and hard-kill documents no longer includes `provider`, because neither run supplies one.
-- `./quality.sh < /dev/null` on the final code head (`726a0b545`): passed (`Result: PASSED (with skipped checks)`; config integration and checkov skipped on this host; deno tests 818.5s).
+- `./quality.sh < /dev/null` on the head after merging `main` (`e17ea5339`): passed (`Result: PASSED (with skipped checks)`; config integration and checkov skipped on this host; deno tests 769.7s, parallel and serial passes both passed).
 - `deno task pr-summary-check`: run on this summary before the push; nothing blocked.
 
 ## Not checked
 
 - CI on the pushed branch.
+- The earlier run's pre-push block was `tests/pr_summary_ci_workflow_3768_test.ts`, which this branch does not touch. The test clears its environment, so Deno reads the default cache, and this host cannot resolve `registry.npmjs.org`. The four npm packages it needs were copied into the host's default Deno cache from the worker's own cache; no repository file was changed for it.
 - Config integration and checkov, both skipped by the gate on this host.
 - `docs/CALLBACKS.md`: much of its diff is a line reflow that the worker's formatter commit made on the abandoned branch. It was carried over as is, and markdownlint passes on it.
