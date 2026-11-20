@@ -12,8 +12,8 @@ same-line heading is now exempt when all of these hold:
 - the key is a Capitalised or PascalCase word that does not end in a credential
   word (checked on the lower-cased key, so `Userpassword` ends in `password`);
 - the value is one plain word;
-- a further word follows the value on the same line, so the heading leads into
-  a sentence and a `Key: word` that ends its line stays masked.
+- a further word follows the value on the same line, so the heading leads into a
+  sentence and a `Key: word` that ends its line stays masked.
 
 Every other assignment is masked as before. Closes #5253.
 
@@ -68,9 +68,8 @@ Backend-only change; no UI file is touched.
 - `worker/deno/lib/secret_redaction.ts`: new `PROSE_HEADING_SEPARATOR`,
   `PROSE_HEADING_KEY`, `CREDENTIAL_KEY_ENDING`, `PROSE_CONTINUATION`,
   `textAfter` and `isProseHeading`. `assignmentIsMasked` now takes the key and
-  the text after the value. The doc comments on
-  `isCredentialShapedValue` and the `secret-assignment` rule now name the
-  exception.
+  the text after the value. The doc comments on `isCredentialShapedValue` and
+  the `secret-assignment` rule now name the exception.
 - `SECURITY.md`, section "An assignment's value is judged, not only its label":
   I read the whole section. The inline bullet and the "only when the separator
   crossed a line break" sentence now name the exception, there is a new
@@ -108,17 +107,17 @@ tests). No existing test was edited.
   16-character synthetic secret, a 40-character AWS-shaped key,
   `correcthorsebatterystaple`, `hunter2`, and `"run"`.
 - `a product heading split across a line break stays masked`.
-- `only the key's ending decides a prose heading`: the same body survives
-  under the product name and is masked under `GithubToken`.
+- `only the key's ending decides a prose heading`: the same body survives under
+  the product name and is masked under `GithubToken`.
 - `a credential word as a lower-case suffix keeps the mask`: `Userpassword`,
   `Rootpassword`, `Accesskey`, `Privatekey`, `Secretkey`, `Authtoken`,
   `Apitoken` and `Clientsecret`, each with `: hunter` and with
   `: run the agreed trial`.
-- `a qualified credential field ending its line keeps the mask`:
-  `SecretString`, `PasswordConfirmation`, `PasswordPlain`, `SecretAnswer`,
-  `SecretText`, `TokenString`, `PrivateKeyFile` and the product name, each with
-  `: hunter` at end of text, before a line break, before a full stop and inside
-  braces. The reported title still survives beside them.
+- `a qualified credential field ending its line keeps the mask`: `SecretString`,
+  `PasswordConfirmation`, `PasswordPlain`, `SecretAnswer`, `SecretText`,
+  `TokenString`, `PrivateKeyFile` and the product name, each with `: hunter` at
+  end of text, before a line break, before a full stop and inside braces. The
+  reported title still survives beside them.
 
 Red against the base code (`origin/main`): 4 of the 10 failed (the two title
 tests, the survive half of the key-ending test, and the title assertion at the
@@ -127,9 +126,9 @@ end of the qualified-field test). The base code returned the title with
 they pin masking the fix keeps.
 
 Red against the first cut of this fix (commit `dcdb8e953`, which read the key's
-last capitalised word and had no continuation check): the last two tests
-failed, because `Userpassword: hunter` and `SecretString: hunter` were
-published verbatim. The other 8 passed.
+last capitalised word and had no continuation check): the last two tests failed,
+because `Userpassword: hunter` and `SecretString: hunter` were published
+verbatim. The other 8 passed.
 
 After the fix:
 
