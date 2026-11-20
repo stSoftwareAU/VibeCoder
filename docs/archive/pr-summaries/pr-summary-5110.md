@@ -28,7 +28,8 @@ validator now also requires:
   `.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`, and its env
   to set nothing but `EVENT_NAME`, `BASE_SHA` and `HEAD_SHA`; a comment is a
   physical line whose first character after any leading spaces or tabs is `#`;
-  non-ASCII filter code is refused, and backslash-newline is removed without
+  non-ASCII filter code is refused, and only one backslash as a line's final
+  character is accepted as a continuation; its newline is removed without
   adding a space, as Bash removes it;
 - job `changes` to have no step but `actions/checkout` and the `filter` step,
   and no `container:` or `env:`; the workflow to set no `env:`.
@@ -189,7 +190,7 @@ flowchart LR
 ## Test Plan
 
 - Added to `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`:
-  - **`(container-agent-run) refuses …` table, 53 cases, each asserting one
+  - **`(container-agent-run) refuses …` table, 57 cases, each asserting one
     finding with that rule's own message:**
     - a missing or wrong `needs`;
     - a constant `outputs.image`;
@@ -217,7 +218,10 @@ flowchart LR
     - a GitHub expression inside a comment, a workflow-level git path variable,
       and a `container:` on job `changes`;
     - a non-breaking space before a comment, plus backslash-newline splitting
-      `set -euo`, the image-output `echo`, or the event condition.
+      `set -euo`, the image-output `echo`, or the event condition;
+    - an escaped trailing backslash in the image-output or event-condition
+      quote, a line of two backslashes, and two backslashes after the detect
+      call.
   - **`refuses job changes removed entirely with one finding`:** asserts "job
     changes must exist".
   - **Controls that return `[]`:** `needs: [changes]`, an extra comment line, an
@@ -243,6 +247,8 @@ flowchart LR
   - The non-breaking-space comment and the three backslash-continuation cases
     were observed red by the fleet reviewer against 782ef8b7: each returned
     `[]` where one finding was expected.
+  - The four escaped-backslash cases were observed red by the fleet reviewer
+    against 0835318a: each returned `[]` where one finding was expected.
 - **Existing tests:** none edited, and the diff removes no line from the test
   file. The real `container-build.yml` positive test still returns `[]`. The new
   check runs after the existing early return, so the malformed-input cases still
@@ -250,7 +256,7 @@ flowchart LR
 - **Focused run:**
   `cd worker/deno && deno task test:unit tests/issue_5110_aws_emulator_workflow_test.ts tests/aws_emulator_in_ci_check_test.ts tests/aws_emulator_cloudformation_5110_test.ts < /dev/null`
   gave 312 passed, 0 failed before the last 5 cases; the 5110 workflow test file
-  alone now gives 166 passed, 0 failed.
+  alone now gives 170 passed, 0 failed.
 - **Corpus:** `checkContainerBuildRunsAwsEmulator` over every
   `.github/workflows/*.yml` returns `[]` only for `container-build.yml`. Every
   other workflow gets findings. False positives 0; false negatives 0 against the

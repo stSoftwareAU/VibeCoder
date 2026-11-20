@@ -603,8 +603,12 @@ function codeLines(step: unknown): string[] {
         return point !== 0x09 && (point < 0x20 || point > 0x7e);
       })
     ) return ["invalid non-ASCII code"];
+    const firstBackslash = physical.indexOf("\\");
+    if (firstBackslash !== -1 && firstBackslash !== physical.length - 1) {
+      return ["invalid backslash"];
+    }
     const line = `${continued}${physical}`;
-    if (line.endsWith("\\")) {
+    if (firstBackslash !== -1 && firstBackslash === physical.length - 1) {
       // Bash removes backslash-newline without inserting a blank. Preserve
       // indentation already present on the following physical line.
       continued = line.slice(0, -1);

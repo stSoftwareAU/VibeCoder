@@ -1067,6 +1067,24 @@ for (
       '          if [[ "${EVENT_NAME}" != "pull_request" ]]; then\n',
       '          if [[ "${EVENT_NAME}"\\\n          !=\\\n          "pull_request" ]]; then\n',
     ]], "must be exactly"],
+    ["the image output ending with an escaped backslash", [[
+      '          echo "image=true" >> "$GITHUB_OUTPUT"\n',
+      '          echo "image=true" >> "$GITHUB_OUTPUT' + "\\".repeat(2) +
+      '\n\n          "\n',
+    ]], "must be exactly"],
+    ["the event condition ending with an escaped backslash", [[
+      '          if [[ "${EVENT_NAME}" != "pull_request" ]]; then\n',
+      '          if [[ "${EVENT_NAME}" != "pull_request' + "\\".repeat(2) +
+      '\n\n          " ]]; then\n',
+    ]], "must be exactly"],
+    ["a line of two backslashes before the detect call", [[
+      DETECT_CALL_LINE,
+      "          " + "\\".repeat(2) + "\n\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["the detect call ending with two backslashes", [[
+      DETECT_CALL_LINE,
+      DETECT_CALL_LINE.trimEnd() + "\\".repeat(2) + "\n",
+    ]], "must be exactly"],
     // Another step in job changes could rewrite the script the filter runs.
     ["a step rewriting the detect script before the filter", [[
       "      - name: Detect image-affecting changes\n",
