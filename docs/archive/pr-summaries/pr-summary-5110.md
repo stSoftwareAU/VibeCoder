@@ -21,10 +21,13 @@ validator now also requires:
   `outputs.image` exactly `${{ steps.filter.outputs.image }}`;
 - the `filter` step to have no `if:` or soft `continue-on-error`, a shell that
   runs the body, and `BASE_SHA`/`HEAD_SHA` taken from the pull request event;
-- the `filter` step's last reachable command (read with the existing
-  `reachableSegments` parser) to be exactly
-  `.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`;
-- the `filter` step to write no `image=` value other than `image=true`.
+- the `filter` step's code (comments, blank lines and `\` continuations aside)
+  to be exactly the `FILTER_CODE` allowlist, ending in
+  `.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`, and its
+  env to set nothing but `EVENT_NAME`, `BASE_SHA` and `HEAD_SHA`;
+- job `changes` to have no step but `actions/checkout` and the `filter` step,
+  and no `env:`; the workflow `env:` to set none of `BASH_ENV`, `ENV`,
+  `SHELLOPTS`, `BASHOPTS` or `GITHUB_OUTPUT`.
 
 Part of #5110.
 
@@ -36,10 +39,10 @@ Part of #5110.
   not become a green check. In GitHub, a skipped step or job counts as passing,
   so any edit that stops `IMAGE_CHANGED` being `true` turns the agent run into a
   silent pass. The `changes` job is where that can happen.
-- The `filter` step is read with `reachableSegments`
-  (`lib/shell_command_words.ts`), the parser the repo already has. It drops
-  commands behind `true ||`, after an unconditional `exit`, and across `\`
-  continuations, so a new hand-written reader is not needed.
+- The `filter` step is held to an exact line allowlist rather than parsed: a
+  parse of the last reachable command accepted runtime `||`/`if` guards, empty
+  loops, a trailing `&` and a `GITHUB_OUTPUT` reassignment, each of which exits
+  0 with no `image` output.
 
 ### Essential Design Decisions
 
@@ -102,13 +105,15 @@ flowchart LR
   successful data assertions, a supported negative API result and cleanup. —
   evidence: job 136121503571 log (quoted under Undiscoverable Facts);
   `docs/EC2-LINUX-VERIFICATION.md` — reviewer: met
-- **met** — Focused tests prove startup/test failures propagate and missing
+- **partial** — Focused tests prove startup/test failures propagate and missing
   required execution cannot become a green check. — evidence:
   `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (startup and test
   failures exit non-zero);
   `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (the
   `[container-agent-run]` refusal tables, including the new `changes`-gate
-  cases) — reviewer: met
+  cases) — reviewer: partial — reason: the reviewer found a prior step in job
+  `changes` could rewrite the detect script; that is now refused by a test, but
+  the reviewer has not re-run on the fix
 - **met** — Every existing template is accounted for as exercised or as a
   specific unsupported case with alternative validation; no unsupported/stubbed
   resource is reported as proven. — evidence:
@@ -148,8 +153,10 @@ flowchart LR
 - **violation** — Writing a gate over text (no silent pass on unread input):
   lines above the last were never read — evidence:
   `worker/deno/lib/aws_emulator_workflow_check.ts:554` — reason: fixed in this
-  diff (every reachable command is read; an `exit 0` or `true ||` before the
-  call is refused)
+  diff (the filter code is an exact allowlist, so any other command before or
+  around the call, including a guarded `exit 0`, an `||`/`if` guard, a loop, a
+  trailing `&` or a `GITHUB_OUTPUT` assignment, `export` or `unset`, is
+  refused)
 - **violation** — Check where you insert: after the new doc sentences, "It" and
   "those files" pointed at the wrong things — evidence:
   `docs/EC2-LINUX-VERIFICATION.md:62` — reason: fixed in this diff ("The
@@ -175,13 +182,16 @@ flowchart LR
   - no `/tmp`, environment, clock or history use in the tests;
   - the regex is linear.
 
-  The reviewer saw the first version of the diff. The fixes above were made
+  A second standards review on the allowlist version found stale comments, a
+  dead `isObject` branch and a three-name env denylist; all were fixed after
+  it (job `changes` env is now refused outright). The first reviewer saw the
+  first version of the diff. The fixes above were made
   after it, in 503fe65f1.
 
 ## Test Plan
 
 - Added to `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`:
-  - **`(container-agent-run) refuses …` table, 22 cases, each asserting one
+  - **`(container-agent-run) refuses …` table, 42 cases, each asserting one
     finding with that rule's own message:**
     - a missing or wrong `needs`;
     - a constant `outputs.image`;
@@ -196,11 +206,19 @@ flowchart LR
     - a `GITHUB_OUTPUT=` prefix;
     - `"$HEAD_SHA"` passed twice;
     - `BASE_SHA` or `HEAD_SHA` taken from the wrong event field;
-    - `bash -n {0}` on the step, or on job `changes`.
+    - `bash -n {0}` on the step, or on job `changes`;
+    - the call behind a runtime `[[ ]] ||` or `&&`, inside an `if` on the event
+      name, an empty `for` or a non-matching `case`, or run with `&`;
+    - a guarded `exit 0`; `GITHUB_OUTPUT` assigned, exported or unset on its
+      own line; an `echo "--image=foo"` line;
+    - `GITHUB_OUTPUT` in the step env; any env on job `changes`; `BASH_ENV` or
+      `GITHUB_OUTPUT` in the workflow env; a workflow env expression;
+    - a step in job `changes` that rewrites the detect script, writes
+      `GITHUB_ENV`, or uses a local action.
   - **`refuses job changes removed entirely with one finding`:** asserts "job
     changes must exist".
-  - **Controls that return `[]`:** `needs: [changes]`, `echo "--image=foo"` and
-    `base_image=x`.
+  - **Controls that return `[]`:** `needs: [changes]`, an extra comment line, an
+    extra blank line, and the call split by a `\` continuation.
 - **Red runs, observed:**
   - With the first refusal cases written and the validator not yet changed, 12
     failed.
@@ -208,13 +226,18 @@ flowchart LR
     controls, which the old regex fired on.
   - The here-document case was added after the fix, so it was never observed
     red.
+  - After the pre-PR verifier's review, the 14 new filter-code and env cases
+    all failed against the previous validator (`endsWithDetectCall`). The 5
+    later cases (other `changes` steps, job and expression env) were written
+    with the fix and not observed red.
 - **Existing tests:** none edited, and the diff removes no line from the test
   file. The real `container-build.yml` positive test still returns `[]`. The new
   check runs after the existing early return, so the malformed-input cases still
   give one finding.
 - **Focused run:**
   `cd worker/deno && deno task test:unit tests/issue_5110_aws_emulator_workflow_test.ts tests/aws_emulator_in_ci_check_test.ts tests/aws_emulator_cloudformation_5110_test.ts < /dev/null`
-  gave 297 passed, 0 failed.
+  gave 312 passed, 0 failed before the last 5 cases; the 5110 workflow test
+  file alone now gives 155 passed, 0 failed.
 - **Corpus:** `checkContainerBuildRunsAwsEmulator` over every
   `.github/workflows/*.yml` returns `[]` only for `container-build.yml`. Every
   other workflow gets findings. False positives 0; false negatives 0 against the
@@ -243,9 +266,12 @@ flowchart LR
 
 ## Not done or not checked
 
-- The validator cannot see runner-side edits. These include a step that rewrites
-  the checked-out script, replaces docker or its context, or writes `GITHUB_ENV`
-  indirectly, and a retag it does not recognise.
+- The validator cannot see runner-side edits in job `container`: a step there
+  that rewrites the checked-out script, replaces docker or its context, or
+  writes `GITHUB_ENV` indirectly, and a retag it does not recognise. In job
+  `changes` no such step can exist (only `actions/checkout` is allowed). An
+  edit to `.github/scripts/detect-image-changes.sh` itself is covered by that
+  script's own tests, not by this validator.
   `docs/EC2-LINUX-VERIFICATION.md` lists them.
 - A PR that changes only `infra/cloudformation/**` gets the runner path, not a
   fresh-container run (see Essential Design Decisions).
