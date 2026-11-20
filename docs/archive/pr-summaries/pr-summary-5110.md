@@ -14,9 +14,8 @@ Emulator. This PR covers what #5110 still needed:
   runs whenever that job builds the image: on a pull request with an
   image-affecting change, on the weekly schedule, or on a manual run. This PR
   changes `container-build.yml`, so its own CI runs the step.
-- **The container step has a validator.**
-  `checkContainerBuildRunsAwsEmulator` in
-  `worker/deno/lib/aws_emulator_workflow_check.ts` (`[container-agent-run]`)
+- **The container step has a validator.** `checkContainerBuildRunsAwsEmulator`
+  in `worker/deno/lib/aws_emulator_workflow_check.ts` (`[container-agent-run]`)
   requires a step in job `container` that is only `set -euo pipefail` plus one
   `docker run`. It parses that `docker run` positionally and fails closed:
   - the image must be `${IMAGE}`, and only `< /dev/null` may follow it;
@@ -26,13 +25,13 @@ Emulator. This PR covers what #5110 still needed:
   - the job and the step must not set `continue-on-error`; the job must have no
     `if:`, and the step's `if:` must be absent or `env.IMAGE_CHANGED == 'true'`;
   - the effective shell must run the body.
-- **Syntax-only shells are refused (PR #5276 review).** `checkAwsEmulatorWorkflow`
-  now checks the test step's effective shell: the step's `shell:`, else the
-  job's, else the workflow's `defaults.run.shell`. The shell must be unset, or
-  `bash`/`sh` with only `--noprofile`, `--norc`, `-e`/`-u`/`-x`/`-o <name>`
-  options and an optional `{0}`. Before this change, `bash -n {0}`,
-  `bash -o noexec {0}`, `bash -c true {0}` and `true {0}` all passed without
-  running the deploy.
+- **Syntax-only shells are refused (PR #5276 review).**
+  `checkAwsEmulatorWorkflow` now checks the test step's effective shell: the
+  step's `shell:`, else the job's, else the workflow's `defaults.run.shell`. The
+  shell must be unset, or `bash`/`sh` with only `--noprofile`, `--norc`,
+  `-e`/`-u`/`-x`/`-o <name>` options and an optional `{0}`. Before this change,
+  `bash -n {0}`, `bash -o noexec {0}`, `bash -c true {0}` and `true {0}` all
+  passed without running the deploy.
 
 Part of #5110.
 
@@ -42,16 +41,16 @@ Part of #5110.
 
 - No container runtime exists on the worker host. The only place a fresh worker
   container can run the command is the CI job that already builds the image, so
-  the run lives there rather than in a new workflow (issue Scope 8: reuse current
-  CI mechanisms).
+  the run lives there rather than in a new workflow (issue Scope 8: reuse
+  current CI mechanisms).
 - The validator allowlists shells and `docker run` arguments rather than
   blocklisting them. A new evasion form then fails closed instead of passing.
 
 ### Essential Design Decisions
 
-- The agent run is gated on `IMAGE_CHANGED`, the job's existing image gate.
-  A PR that changes only the templates or the script is still covered on every
-  PR by `aws-emulator.yml`, on the runner.
+- The agent run is gated on `IMAGE_CHANGED`, the job's existing image gate. A PR
+  that changes only the templates or the script is still covered on every PR by
+  `aws-emulator.yml`, on the runner.
 - The container mount is read-only. The script reads templates from its own
   directory and writes only under `mktemp` and `aws-emulator-run`'s private HOME
   (`infra/cloudformation/test-aws-emulator.sh:39`, `:101`;
@@ -118,12 +117,11 @@ flowchart LR
   `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (shell refusals
   `bash -n`, `-o noexec`, `-c`, `-s`, `--version`, `true {0}`, `python {0}` at
   step, job and workflow level; container refusals for a second `--entrypoint`
-  or `--user`, a different image, a missing `:ro`, `set +e`, a commented-out
-  or `echo` line, `! `, `|| true`, an extra argument, `if:` and
-  `continue-on-error` at job and step level, and a removed step) — reviewer:
-  partial — reason: the reviewer found the `-c`, repeated-flag and image
-  evasions at the earlier head 461e1cfa6; each is refused and tested at
-  8005e1c03
+  or `--user`, a different image, a missing `:ro`, `set +e`, a commented-out or
+  `echo` line, `!`, `|| true`, an extra argument, `if:` and `continue-on-error`
+  at job and step level, and a removed step) — reviewer: partial — reason: the
+  reviewer found the `-c`, repeated-flag and image evasions at the earlier head
+  461e1cfa6; each is refused and tested at 8005e1c03
 - **met** — Every existing template is accounted for as exercised or as a
   specific unsupported case with alternative validation; no unsupported/stubbed
   resource is reported as proven. — evidence:
@@ -138,8 +136,8 @@ flowchart LR
   `.github/workflows/aws-emulator.yml` in PR #5276's CI, which ran the command;
   the new step adds no permission — reviewer: met
 - **partial** — Required local/CI checks pass; no automatic mutation or fuzzing
-  campaign is added. — evidence: `./quality.sh` (Test Plan); no campaign added
-  — reviewer: partial — reason: CI not yet verified — remaining:
+  campaign is added. — evidence: `./quality.sh` (Test Plan); no campaign added —
+  reviewer: partial — reason: CI not yet verified — remaining:
   merge-verification-only
 - **unrequested** — `defaultShell` is exported from
   `worker/deno/lib/aws_emulator_in_ci_check.ts` — reviewer: unrequested —
@@ -194,9 +192,10 @@ flowchart LR
   function that base lacks, so the file cannot load there. The fleet reviewer
   showed by direct call that base `checkAwsEmulatorWorkflow` returns `[]` for a
   `bash -n {0}` test step.
-- `./quality.sh < /dev/null` on f10167677: `Result: PASSED (with skipped
-  checks)`; `config integration` and `checkov` were skipped by the gate itself.
-  An earlier run on 8005e1c03 failed one test,
+- `./quality.sh < /dev/null` on f10167677:
+  `Result: PASSED (with skipped
+  checks)`; `config integration` and `checkov`
+  were skipped by the gate itself. An earlier run on 8005e1c03 failed one test,
   `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`, on this host's
   offline npm cache ("Failed caching npm package 'commonmark@0.31.2' ... dns
   error"); it passed after that cache was seeded, with no code change.
@@ -206,8 +205,8 @@ flowchart LR
 
 ## Not done or not checked
 
-- The new container step has not run yet. Its first run is this PR's
-  `container` check.
+- The new container step has not run yet. Its first run is this PR's `container`
+  check.
 - On this host, the push gate's `DENO_DIR=/opt/deno-seed` lacks `commonmark`'s
   npm packages and is read-only, so the worker's pre-push gate blocks with
   "Failed caching npm package 'mdurl@1.0.1'". This is a worker environment
