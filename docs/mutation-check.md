@@ -62,7 +62,7 @@ The retained security-fix discrimination check also removes a temporary clone
 in `worker/deno/lib/security_fix_discrimination.ts`. Its cleanup failure now logs
 a warning with the directory and cause, preserving the check's completed verdict.
 An injected ENOTEMPTY regression test verifies that handling; it does not prove
-or repair a live-writer race. 
+or repair a live-writer race.
 
 The modules `mutation_runner.ts`, `mutation_gate.ts` and `ci_mutation_contract.ts`
 keep only shared helpers, such as the runner seams, `isDenoTestFile`,

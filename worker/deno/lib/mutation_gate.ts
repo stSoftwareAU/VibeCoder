@@ -17,7 +17,7 @@
 /**
  * The file-name rule only: true for `*_test.ts`, `*.test.ts` and friends. A
  * project's `test.include` in its deno.json can also make a file a test; this
- * check does not read that config.
+ * function does not read that config.
  */
 export function isDenoTestFile(file: string): boolean {
   const base = file.slice(file.lastIndexOf("/") + 1);
