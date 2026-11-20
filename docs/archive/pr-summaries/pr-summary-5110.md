@@ -185,7 +185,7 @@ flowchart LR
 ## Test Plan
 
 - Added to `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`:
-  - **`(container-agent-run) refuses …` table, 44 cases, each asserting one
+  - **`(container-agent-run) refuses …` table, 46 cases, each asserting one
     finding with that rule's own message:**
     - a missing or wrong `needs`;
     - a constant `outputs.image`;
@@ -225,6 +225,10 @@ flowchart LR
     failed against the previous validator (`endsWithDetectCall`). The 5 later
     cases (other `changes` steps, job and expression env) were written with the
     fix and not observed red.
+  - The two comment-inside-a-continuation cases added after review both failed
+    against 0ac992ab2 with `[]` where one finding was expected.
+  - The comment-backslash cases for `exit 0` and `true ||` both failed against
+    aa8c2e6dc with `[]` where one finding was expected.
 - **Existing tests:** none edited, and the diff removes no line from the test
   file. The real `container-build.yml` positive test still returns `[]`. The new
   check runs after the existing early return, so the malformed-input cases still
@@ -232,7 +236,7 @@ flowchart LR
 - **Focused run:**
   `cd worker/deno && deno task test:unit tests/issue_5110_aws_emulator_workflow_test.ts tests/aws_emulator_in_ci_check_test.ts tests/aws_emulator_cloudformation_5110_test.ts < /dev/null`
   gave 312 passed, 0 failed before the last 5 cases; the 5110 workflow test file
-  alone now gives 155 passed, 0 failed.
+  alone now gives 159 passed, 0 failed.
 - **Corpus:** `checkContainerBuildRunsAwsEmulator` over every
   `.github/workflows/*.yml` returns `[]` only for `container-build.yml`. Every
   other workflow gets findings. False positives 0; false negatives 0 against the

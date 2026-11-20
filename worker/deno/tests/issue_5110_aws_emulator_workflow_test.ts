@@ -925,6 +925,14 @@ for (
       DETECT_CALL_LINE,
       "          exit 0\n" + DETECT_CALL_LINE,
     ]], "must be exactly"],
+    ["a comment backslash before exit 0", [[
+      DETECT_CALL_LINE,
+      "          # note \\\n          exit 0\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["a comment backslash before true ||", [[
+      DETECT_CALL_LINE,
+      "          # note \\\n          true ||\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
     ["an assignment prefix on the script call", [[
       DETECT_CALL_LINE,
       "          GITHUB_OUTPUT= " + DETECT_CALL_LINE.trimStart(),

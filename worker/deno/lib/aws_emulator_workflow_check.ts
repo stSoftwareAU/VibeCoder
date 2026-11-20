@@ -593,10 +593,28 @@ const FILTER_CODE = [
  * continuations joined, each line trimmed with runs of blanks collapsed.
  */
 function codeLines(step: unknown): string[] {
-  return runOf(step).replace(/\\\n/g, " ").split("\n")
-    .map((l) => l.trim().replace(/[ \t]+/g, " ")).filter((l) =>
-      l !== "" && !l.startsWith("#")
-    );
+  const logical: string[] = [];
+  let continued = "";
+  for (const physical of runOf(step).split("\n")) {
+    const trimmed = physical.trim();
+    if (continued === "" && trimmed.startsWith("#")) {
+      // In Bash a comment ends at its physical newline. A trailing backslash
+      // is part of the comment, not a continuation (ShellCheck SC1143).
+      // Refuse it explicitly so it cannot hide the command on the next line.
+      if (trimmed.endsWith("\\")) return ["invalid comment continuation"];
+      continue;
+    }
+    const line = `${continued}${trimmed}`;
+    if (line.endsWith("\\")) {
+      continued = `${line.slice(0, -1)} `;
+      continue;
+    }
+    continued = "";
+    const normalised = line.trim().replace(/[ \t]+/g, " ");
+    if (normalised !== "") logical.push(normalised);
+  }
+  if (continued !== "") logical.push(continued.trimEnd());
+  return logical;
 }
 
 /** Whether the step's code is exactly {@link FILTER_CODE}. */
