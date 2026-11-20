@@ -579,30 +579,42 @@ const FILTER_CODE = [
 
 /**
  * The step's code lines: comment lines and blank lines dropped, backslash
- * continuations joined, each line trimmed with runs of blanks collapsed.
+ * continuations joined as Bash joins them, and runs of ASCII blanks collapsed.
  */
 function codeLines(step: unknown): string[] {
+  const code = runOf(step);
   const logical: string[] = [];
   let continued = "";
-  for (const physical of runOf(step).split("\n")) {
-    const trimmed = physical.trim();
-    if (continued === "" && trimmed.startsWith("#")) {
+  for (const physical of code.split("\n")) {
+    const leftTrimmed = physical.replace(/^[ \t]+/, "");
+    if (continued === "" && leftTrimmed.startsWith("#")) {
       // In Bash a comment ends at its physical newline. A trailing backslash
       // is part of the comment, not a continuation (ShellCheck SC1143).
       // Refuse it explicitly so it cannot hide the command on the next line.
-      if (trimmed.endsWith("\\")) return ["invalid comment continuation"];
+      if (physical.endsWith("\\")) return ["invalid comment continuation"];
       continue;
     }
-    const line = `${continued}${trimmed}`;
+    // Keep executable text closed over the shell syntax we model. Valid Bash
+    // comments may contain prose Unicode, but a Unicode space before `#` is
+    // executable text rather than a comment and must be refused.
+    if (/[^\x09\x20-\x7e]/.test(physical)) return ["invalid non-ASCII code"];
+    const line = `${continued}${physical}`;
     if (line.endsWith("\\")) {
-      continued = `${line.slice(0, -1)} `;
+      // Bash removes backslash-newline without inserting a blank. Preserve
+      // indentation already present on the following physical line.
+      continued = line.slice(0, -1);
       continue;
     }
     continued = "";
-    const normalised = line.trim().replace(/[ \t]+/g, " ");
+    const normalised = line.replace(/^[ \t]+|[ \t]+$/g, "").replace(
+      /[ \t]+/g,
+      " ",
+    );
     if (normalised !== "") logical.push(normalised);
   }
-  if (continued !== "") logical.push(continued.trimEnd());
+  if (continued !== "") {
+    logical.push(continued.replace(/[ \t]+$/g, ""));
+  }
   return logical;
 }
 

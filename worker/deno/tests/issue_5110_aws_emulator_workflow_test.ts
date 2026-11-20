@@ -1050,6 +1050,23 @@ for (
       CHANGES_JOB,
       CHANGES_JOB + "    container: ubuntu:latest\n",
     ]], "job changes must set no container:"],
+    ["a non-breaking space before a filter comment", [[
+      DETECT_CALL_LINE,
+      "          \u00a0# x || exit 0\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["set joined without a blank by a backslash continuation", [[
+      FILTER_HEAD_LINE + "        run: |\n          set -euo pipefail\n",
+      FILTER_HEAD_LINE +
+      "        run: |\n          set\\\n          -euo pipefail\n",
+    ]], "must be exactly"],
+    ["the image output joined without a blank by a backslash continuation", [[
+      '          echo "image=true" >> "$GITHUB_OUTPUT"\n',
+      '          echo\\\n          "image=true" >> "$GITHUB_OUTPUT"\n',
+    ]], "must be exactly"],
+    ["the event condition joined without blanks by backslash continuations", [[
+      '          if [[ "${EVENT_NAME}" != "pull_request" ]]; then\n',
+      '          if [[ "${EVENT_NAME}"\\\n          !=\\\n          "pull_request" ]]; then\n',
+    ]], "must be exactly"],
     // Another step in job changes could rewrite the script the filter runs.
     ["a step rewriting the detect script before the filter", [[
       "      - name: Detect image-affecting changes\n",

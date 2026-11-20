@@ -65,9 +65,10 @@ exactly `${{ steps.filter.outputs.image }}`, and its step `id: filter` to have
 no `if:` or `continue-on-error`. That step's `BASE_SHA` and `HEAD_SHA` env must
 come from the pull request event, it may set no other env but `EVENT_NAME`, and
 its shell must run the body. A comment line is one whose first character after
-any leading spaces or tabs is `#`; a line beginning with any other Unicode
-space is code. The raw body may contain no `${{ }}` expression, including in a
-comment. Its code, comments and blank lines aside, must be
+any leading spaces or tabs is `#`; non-ASCII filter code is refused rather than
+treated as a blank or comment. Backslash-newline is removed without adding a
+space, as Bash removes it. The raw body may contain no `${{ }}` expression,
+including in a comment. Its code, comments and blank lines aside, must be
 exactly the current allowlist: `set -euo pipefail`, the non-pull-request branch
 that appends `image=true` to `"$GITHUB_OUTPUT"` and exits, then
 `.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`. Any other
