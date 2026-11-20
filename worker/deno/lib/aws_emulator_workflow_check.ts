@@ -162,18 +162,23 @@ function stepIsOnlyScript(step: unknown, path: string): boolean {
 }
 
 const SHELL_OPTION_NAMES = ["pipefail", "errexit", "nounset", "xtrace"];
+const SHELL_COMMANDS = ["bash", "sh"].flatMap((name) => [
+  name,
+  `/bin/${name}`,
+  `/usr/bin/${name}`,
+]);
 
 /**
- * Whether a `shell:` value runs the `run:` body, by allowlist: `bash` or `sh`
- * (by basename), then zero or more of `--noprofile`, `--norc`, a cluster of
+ * Whether a `shell:` value runs the `run:` body, by allowlist: `bash` or `sh`,
+ * bare or as `/bin/` or `/usr/bin/` (any other path could be a planted
+ * look-alike), then zero or more of `--noprofile`, `--norc`, a cluster of
  * `e`/`u`/`x` flags, or `-o`/`-eo` followed by pipefail, errexit, nounset or
  * xtrace; then, if anything follows, exactly `{0}`. Everything else (`-c`,
  * `-s`, `-n`, `-o noexec`, extra words, other commands) is refused.
  */
 function shellRunsBody(value: string): boolean {
   const words = value.trim().split(/\s+/);
-  const command = (words[0] ?? "").replace(/^.*\//, "");
-  if (command !== "bash" && command !== "sh") return false;
+  if (!SHELL_COMMANDS.includes(words[0] ?? "")) return false;
   let i = 1;
   while (i < words.length) {
     const w = words[i] ?? "";
@@ -462,7 +467,9 @@ function segmentRunsAwsEmulatorAsAgent(words: string[]): boolean {
 
 /**
  * Whether a step sets its own `IMAGE` (or an `env:` that is not a plain map,
- * such as an expression, which could resolve to one).
+ * such as an expression, which could resolve to one). The agent-run step
+ * itself may set no `env:` at all: `BASH_ENV` or `DOCKER_HOST` there would
+ * replace the docker command or its daemon.
  */
 function stepOverridesImage(step: unknown): boolean {
   if (!isObject(step) || step.env === undefined) return false;
@@ -489,7 +496,7 @@ function segmentBuildsImage(words: string[]): boolean {
 
 /**
  * A step that could change what `${IMAGE}` names between the build and the
- * agent run: it writes `GITHUB_ENV`, or runs a docker/podman command that
+ * agent run: it runs a docker/podman command that
  * builds, tags, pulls, loads, imports or commits an image and mentions
  * `IMAGE` or the job's literal tag. A build of some other tag (the job's
  * bad-provider-set probe) does not count. Matched over the step's text, so a
@@ -497,7 +504,6 @@ function segmentBuildsImage(words: string[]): boolean {
  */
 function stepMayRetagImage(step: unknown, jobTag: string): boolean {
   const text = codeOf(step);
-  if (text.includes("GITHUB_ENV")) return true;
   const retags =
     /\b(?:docker|podman)\s+(?:image\s+)?(?:build|buildx|tag|pull|load|import|commit)\b/
       .test(text);
@@ -565,9 +571,15 @@ export function checkContainerBuildRunsAwsEmulator(
   }
   const steps = stepsOf(job);
   const stepIndex = steps.indexOf(step);
-  if (stepOverridesImage(step)) {
+  if (step.env !== undefined) {
     problems.push(
-      `${tag} the agent-run step must not set env.IMAGE: it must run the image the job builds`,
+      `${tag} the agent-run step must not set env: IMAGE, BASH_ENV or DOCKER_HOST there would change what runs`,
+    );
+  }
+  const envWriter = steps.find((s) => /GITHUB_(?:ENV|PATH)/.test(codeOf(s)));
+  if (envWriter !== undefined) {
+    problems.push(
+      `${tag} no step in job container may write GITHUB_ENV or GITHUB_PATH: either could change IMAGE, IMAGE_CHANGED or the docker on the PATH for the agent run`,
     );
   }
   const jobEnv = job.env;
@@ -577,6 +589,14 @@ export function checkContainerBuildRunsAwsEmulator(
   if (jobTag === "") {
     problems.push(
       `${tag} job container must set env.IMAGE to the tag its docker build step builds`,
+    );
+  }
+  if (
+    !isObject(jobEnv) ||
+    jobEnv.IMAGE_CHANGED !== "${{ needs.changes.outputs.image }}"
+  ) {
+    problems.push(
+      `${tag} job container must set env.IMAGE_CHANGED to exactly \${{ needs.changes.outputs.image }}: a constant would skip the build and the agent run`,
     );
   }
   const buildIndex = steps.findIndex((s, k) =>
@@ -593,7 +613,7 @@ export function checkContainerBuildRunsAwsEmulator(
     )
   ) {
     problems.push(
-      `${tag} a step between the docker build and the agent run writes GITHUB_ENV or builds, tags, pulls, loads, imports or commits an image, so \${IMAGE} may no longer be the image just built`,
+      `${tag} a step between the docker build and the agent run builds, tags, pulls, loads, imports or commits an image, so \${IMAGE} may no longer be the image just built`,
     );
   }
   const shell = effectiveShell(workflow, job, step);

@@ -528,6 +528,16 @@ const BUILD_STEP_IF = "      - name: Build image with Docker\n" +
 const BUILD_TAG =
   'docker build -f /tmp/Containerfile.stripped -t "${IMAGE}" container/\n';
 
+const JOB_IMAGE_CHANGED_LINE =
+  "      IMAGE_CHANGED: ${{ needs.changes.outputs.image }}\n";
+
+/** A new step whose `run:` is `line`, placed just before `anchor`. */
+function insertedStepBefore(anchor: string, line: string): string {
+  return "      - name: Inserted step\n" +
+    "        if: env.IMAGE_CHANGED == 'true'\n" +
+    `        run: |\n          ${line}\n` + anchor;
+}
+
 /** A new step, just before the agent run, whose `run:` is `line`. */
 function insertedStep(line: string): string {
   return "      - name: Inserted step\n" +
@@ -697,6 +707,52 @@ for (
       "an --env BASH_ENV for the bash script",
       [[AGENT_USER, "--user agent --env BASH_ENV=/tmp/x --volume"]],
     ],
+    // Spec reviewer's evasions (Issue #5110): no env on the run step, no
+    // GITHUB_ENV/GITHUB_PATH anywhere in the job, a real IMAGE_CHANGED gate
+    // and a system bash/sh.
+    [
+      "a step-level env BASH_ENV",
+      [[
+        AGENT_STEP_IF,
+        AGENT_STEP_IF + "        env:\n          BASH_ENV: /tmp/x\n",
+      ]],
+    ],
+    [
+      "a step-level env DOCKER_HOST",
+      [[
+        AGENT_STEP_IF,
+        AGENT_STEP_IF +
+        "        env:\n          DOCKER_HOST: unix:///tmp/fake.sock\n",
+      ]],
+    ],
+    [
+      "an earlier step writing GITHUB_PATH",
+      [[
+        BUILD_STEP_IF.split("\n")[0] + "\n",
+        insertedStepBefore(
+          BUILD_STEP_IF.split("\n")[0] + "\n",
+          'echo /tmp/f >> "$GITHUB_PATH"',
+        ),
+      ]],
+    ],
+    [
+      "a step before the build writing GITHUB_ENV",
+      [[
+        BUILD_STEP_IF.split("\n")[0] + "\n",
+        insertedStepBefore(
+          BUILD_STEP_IF.split("\n")[0] + "\n",
+          'echo IMAGE_CHANGED=false >> "$GITHUB_ENV"',
+        ),
+      ]],
+    ],
+    [
+      "a constant job IMAGE_CHANGED",
+      [[JOB_IMAGE_CHANGED_LINE, "      IMAGE_CHANGED: 'false'\n"]],
+    ],
+    [
+      "shell: /tmp/f/bash {0}",
+      [[AGENT_STEP_IF, AGENT_STEP_IF + "        shell: /tmp/f/bash {0}\n"]],
+    ],
   ] as [string, [string, string][]][]
 ) {
   Deno.test(`(container-agent-run) refuses ${label}`, () => {
@@ -721,6 +777,10 @@ for (
   const [label, pairs] of [
     ["-u agent", [["--user agent --volume", "-u agent --volume"]]],
     ["--user=agent", [["--user agent --volume", "--user=agent --volume"]]],
+    ["shell: /bin/bash -e {0}", [[
+      AGENT_STEP_IF,
+      AGENT_STEP_IF + "        shell: /bin/bash -e {0}\n",
+    ]]],
     ["--volume= and --entrypoint= forms", [
       [
         AGENT_USER + ' "${GITHUB_WORKSPACE}',
