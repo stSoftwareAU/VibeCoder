@@ -282,12 +282,10 @@ for (const suite of ["manifest task", "quality script", "offline retry"]) {
         );
       }
       const message = "credential provider unavailable";
-      const calls: string[][] = [];
       const outcome = await verifyResolvedTree(
         dir,
         (task) => {
-          calls.push(task.args);
-          if (suite === "offline retry" && calls.length === 1) {
+          if (task.kind === "cargo" && !task.args.includes("--offline")) {
             return Promise.resolve({
               code: 1,
               output: "unable to update registry `crates-io`\n" +
@@ -303,7 +301,6 @@ for (const suite of ["manifest task", "quality script", "offline retry"]) {
         undefined,
         () => Promise.resolve(false),
       );
-      if (suite === "offline retry") assert(calls[1]?.includes("--offline"));
       assertEquals(outcome.status, "failed");
       assertEquals(outcome.output, message);
       assertEquals(outcome.cause, "check-could-not-run");

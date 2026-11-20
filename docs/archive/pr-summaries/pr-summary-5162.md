@@ -46,6 +46,10 @@ counted in `refusedCycles`. Closes #5162.
 
 ## Evidence
 
+The Cargo fixture returns a registry error for an online test and a startup
+error for an offline test. The regression checks the reported diagnostic,
+gate cause and fallback reason without recording calls or their order.
+
 Three command-boundary regression tests failed on the previous head. A manifest
 task, the quality script and a Cargo offline retry each labelled a startup error
 as a failed repository check. Each now records `check-could-not-run`, retains
