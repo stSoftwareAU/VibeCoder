@@ -2131,7 +2131,8 @@ CONTAINER_WEDGED_EXIT_STATUS=87
 # `container-reap --if-silent` whether the worker log has been silent long
 # enough (VIBE_GUEST_SILENCE_SECONDS, read by the command) and the guest has
 # stopped answering `exec`; if so it is reaped well before the deadline. 0
-# turns the early check off.
+# turns the early check off. The default is kept in step with
+# DEFAULT_GUEST_SILENCE_CHECK_SECONDS in worker/deno/lib/guest_silence_watch.ts.
 GUEST_SILENCE_CHECK_SECONDS="${VIBE_GUEST_SILENCE_CHECK_SECONDS:-300}"
 if ! [[ "${GUEST_SILENCE_CHECK_SECONDS}" =~ ^[0-9]+$ ]]; then
   GUEST_SILENCE_CHECK_SECONDS=300

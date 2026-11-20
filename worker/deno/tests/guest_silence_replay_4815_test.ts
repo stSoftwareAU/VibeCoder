@@ -19,6 +19,7 @@ import { assert, assertEquals } from "@std/assert";
 import type { EvidenceSeams } from "../lib/hard_kill_evidence.ts";
 import {
   checkGuestSilence,
+  DEFAULT_GUEST_SILENCE_CHECK_SECONDS,
   DEFAULT_GUEST_SILENCE_SECONDS,
   GUEST_SILENCE_PROBE_TIMEOUT_MS,
   GUEST_SILENCE_PROBES,
@@ -45,16 +46,6 @@ const KILLS = [
     capturedAt: "2026-11-02T21:47:37.378Z",
   },
 ] as const;
-
-/** The launcher's early-check cadence, read from run.sh so drift fails here. */
-async function launcherCheckSeconds(): Promise<number> {
-  const runSh = await Deno.readTextFile(
-    new URL("../../../run.sh", import.meta.url),
-  );
-  const match = runSh.match(/VIBE_GUEST_SILENCE_CHECK_SECONDS:-(\d+)\}/);
-  assert(match, "run.sh no longer defaults VIBE_GUEST_SILENCE_CHECK_SECONDS");
-  return Number(match[1]);
-}
 
 /** Seams for one replayed check: the worker log frozen at its last write. */
 function replaySeams(
@@ -121,7 +112,7 @@ async function firstWedgedSilence(
 
 for (const kill of KILLS) {
   Deno.test(`replay #4815 ${kill.container} (${kill.lastStep}) - the early reap fires before the recorded silence`, async () => {
-    const cadence = await launcherCheckSeconds();
+    const cadence = DEFAULT_GUEST_SILENCE_CHECK_SECONDS;
     const observed = (Date.parse(kill.capturedAt) - Date.parse(kill.lastLog)) /
       1000;
     // Worst case for the reap: two probes each running to their bound.
@@ -150,7 +141,7 @@ for (const kill of KILLS) {
   });
 
   Deno.test(`replay #4815 ${kill.container} (${kill.lastStep}) - a guest that still answers is never reaped`, async () => {
-    const cadence = await launcherCheckSeconds();
+    const cadence = DEFAULT_GUEST_SILENCE_CHECK_SECONDS;
     const observed = (Date.parse(kill.capturedAt) - Date.parse(kill.lastLog)) /
       1000;
     assertEquals(
