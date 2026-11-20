@@ -319,3 +319,59 @@ Deno.test(
     }
   },
 );
+
+for (const slots of [1, 2]) {
+  Deno.test(`run_core - a mid-scan rate limit skips all idle hooks (${slots} slots)`, async () => {
+    const workDir = await Deno.makeTempDir({ prefix: "idle_secondary_limit_" });
+    try {
+      let now = 0;
+      let limited = false;
+      const calls: string[] = [];
+      const logs: string[] = [];
+      const config = idleRunConfig(workDir, 60);
+      config.maxConcurrentIssues = slots;
+      await runCoreLoop(
+        config,
+        createMockDeps({
+          now: () => now,
+          sleep: () => {
+            now = 61000;
+            return Promise.resolve();
+          },
+          log: (message) => logs.push(message),
+          isRateLimitActive: () => Promise.resolve(limited),
+          findNextIssue: () => {
+            limited = true;
+            return Promise.resolve({ ok: true, value: null });
+          },
+          runTranscriptScan: () => {
+            calls.push("transcript");
+            return Promise.resolve();
+          },
+          runIdleDetectAudit: () => {
+            calls.push("audit");
+            return Promise.resolve({ claimableTotal: 0 });
+          },
+          runIdleDecisionCensus: () => {
+            calls.push("census");
+            return Promise.resolve();
+          },
+          runIdleTaskFiler: () => {
+            calls.push("filer");
+            return Promise.resolve();
+          },
+        }),
+      );
+      assertEquals(
+        calls,
+        [],
+        "cooldown must cover the audit and census as well as filing",
+      );
+      assert(
+        logs.some((message) => message.includes("reason=rate_limit_active")),
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  });
+}
