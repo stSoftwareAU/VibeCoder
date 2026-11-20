@@ -37,8 +37,9 @@ import type { GitHubClient, Logger } from "../types.ts";
 export const TIME_DEFERRAL_MARKER = "vibe-defer-until";
 
 /**
- * How many times an issue may be time-deferred before it is handed to a
- * human. Bounded so a condition that is never met cannot loop forever,
+ * How many times an issue may be time-deferred before its next deferral marker
+ * is not honoured and the issue is retried as not finished (Issue #4227).
+ * Bounded so a condition that is never met cannot loop forever,
  * re-running an expensive agent and re-parking the issue indefinitely.
  */
 export const MAX_TIME_DEFERRALS = 3;
@@ -340,7 +341,8 @@ function buildDeferralComment(
     `**Reason given by the run:**\n\n` +
     `${reason.split("\n").map((l) => `> ${l}`).join("\n")}\n\n` +
     `Deferral ${deferralNumber} of ${MAX_TIME_DEFERRALS}. Past that limit, ` +
-    `this issue is handed to a human instead of deferred again.\n\n` +
+    `the issue is retried as not finished on the normal failure ladder ` +
+    `instead of deferred again.\n\n` +
     `${buildTimeDeferralRecordMarker(request.until)}`;
 }
 
@@ -417,7 +419,7 @@ export async function deferIssueUntil(
   return { outcome, recorded };
 }
 
-/** The public comment when the deferral limit is reached and a human takes over. */
+/** The public comment when the deferral limit is reached and the issue is retried as not finished (Issue #4227). */
 export function buildDeferralExhaustedComment(
   history: string[],
   request: TimeDeferralRequest,
@@ -430,7 +432,7 @@ export function buildDeferralExhaustedComment(
     `there:\n\n${list}\n\n` +
     `**Latest reason given by the run:**\n\n` +
     `${reason.split("\n").map((l) => `> ${l}`).join("\n")}\n\n` +
-    `Rather than deferring again, this is now handed to a human — it may be ` +
-    `worth checking whether the data source this issue depends on will ever ` +
-    `produce data.`;
+    `Rather than deferring again, the approved issue is retried as not ` +
+    `finished on the normal failure ladder (Issue #4227); no ` +
+    `\`needs-human\` is added.`;
 }
