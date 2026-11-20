@@ -4,8 +4,8 @@ The Container Build pull-request change filter (`IMAGE_PATHS` in
 `.github/scripts/detect-image-changes.sh`) now lists the babysitter repair gate
 modules and the containment probe fixture. A pull request that changes any of
 them builds the image and runs the containment suite's step "babysitter repairs
-run real checks before READY and publication", instead of reporting the
-required `container` check green with every step skipped. Closes #5255.
+run real checks before READY and publication", instead of reporting the required
+`container` check green with every step skipped. Closes #5255.
 
 ## Spec
 
@@ -14,8 +14,8 @@ required `container` check green with every step skipped. Closes #5255.
 - The filter listed `container_containment_test.ts` but none of the modules its
   babysitter step runs, so a change to the gate (PR #5252 is the example the
   issue gives) was first exercised on the weekly scheduled run, after merge.
-- Listing the five paths the issue names follows the existing pattern
-  (Issues #2070–#2073, #4047): a worker module an in-image check exercises is
+- Listing the five paths the issue names follows the existing pattern (Issues
+  #2070–#2073, #4047): a worker module an in-image check exercises is
   image-affecting.
 
 ### Essential Design Decisions
@@ -26,10 +26,11 @@ required `container` check green with every step skipped. Closes #5255.
   `worker/deno/lib/fleet_babysitter_container.ts` and
   `worker/deno/tests/support/babysitter_gate_container_probe.ts`.
 - The probe's own helper imports (`babysitter_ready.ts`,
-  `tests/support/babysitter_harness.ts`, `tests/support/babysitter_tree_fixture.ts`)
-  and the gate's transitive imports are not listed: the issue names the five
-  modules, and each extra path puts more worker-only PRs on the image build.
-  A change to those files is still exercised by the weekly scheduled build.
+  `tests/support/babysitter_harness.ts`,
+  `tests/support/babysitter_tree_fixture.ts`) and the gate's transitive imports
+  are not listed: the issue names the five modules, and each extra path puts
+  more worker-only PRs on the image build. A change to those files is still
+  exercised by the weekly scheduled build.
 
 ### Undiscoverable Facts
 
@@ -58,17 +59,18 @@ CI/script change; no UI files.
 ## Test Plan
 
 - Added the test above. No existing test or assertion was edited.
-- `deno test -A tests/container_image_change_filter_test.ts`: 12 passed,
-  0 failed. The existing negative control "an unrelated worker change still
-  skips the image build (Issue #4047)" still gets `image=false`.
-- `deno test -A tests/container_build_probe_paths_test.ts` (reads
-  `IMAGE_PATHS` from the script): 2 passed, 0 failed.
+- `deno test -A tests/container_image_change_filter_test.ts`: 12 passed, 0
+  failed. The existing negative control "an unrelated worker change still skips
+  the image build (Issue #4047)" still gets `image=false`.
+- `deno test -A tests/container_build_probe_paths_test.ts` (reads `IMAGE_PATHS`
+  from the script): 2 passed, 0 failed.
 - `shellcheck` and `bash -n` on the script: clean. `deno fmt --check` and
-  `deno lint` on the test file: clean. `markdownlint-cli2` on both docs:
-  0 issues.
-- `./quality.sh < /dev/null` on the head: `Result: PASSED (with skipped checks)`.
-  Config integration was skipped (`deno or .config.json not available`), and so
-  was checkov (no checkov on PATH).
+  `deno lint` on the test file: clean. `markdownlint-cli2` on both docs: 0
+  issues.
+- `./quality.sh < /dev/null` on the head:
+  `Result: PASSED (with skipped checks)`. Config integration was skipped
+  (`deno or .config.json not available`), and so was checkov (no checkov on
+  PATH).
 
 Not done: the live containment step itself was not run here (it needs a built
 image); the new filter entries only decide that CI runs it.
