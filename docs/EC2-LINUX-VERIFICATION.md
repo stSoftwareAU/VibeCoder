@@ -43,6 +43,27 @@ every pull request to `Develop`, `main` and `milestone/*` (drafts run when
 marked ready), and a failed, cancelled or skipped run turns `gate` red. It
 needs no Docker socket and no service container.
 
+The required `container` check in
+[`.github/workflows/container-build.yml`](../.github/workflows/container-build.yml)
+also starts a fresh container from the image it has just built and runs the
+same script there as `agent` (`docker run --rm --user agent` with
+`infra/cloudformation` mounted read-only as the entrypoint's directory). This
+runs whenever that job builds the image: a pull request with an image-affecting
+change (`.github/scripts/detect-image-changes.sh`), the scheduled sweep or a
+manual run. Its exit status fails the check.
+`checkContainerBuildRunsAwsEmulator` in
+[`worker/deno/lib/aws_emulator_workflow_check.ts`](../worker/deno/lib/aws_emulator_workflow_check.ts)
+holds that step's text to its contract. The step must use exactly one
+read-only volume holding the entrypoint and no flag outside `--rm`, `--user`,
+`--volume` and `--entrypoint`. The step sets no `env:`. The job and workflow
+`env:` set none of `BASH_ENV`, `ENV`, `PATH` or the `DOCKER_*` connection
+variables. The job takes `IMAGE_CHANGED` from the change detector, an earlier
+step runs `docker build -t "${IMAGE}"`, and no step names `GITHUB_ENV` or
+`GITHUB_PATH`. It is a text check, so it does not catch everything. It misses
+an indirect write to those files, a step that rewrites the checked-out script
+or replaces docker or its context, and a retag the check does not recognise. It
+also does not check the `changes` job that sets `IMAGE_CHANGED`.
+
 ```mermaid
 flowchart LR
     S["test-aws-emulator.sh"] --> R["aws-emulator-run<br/>--timeout 900"]

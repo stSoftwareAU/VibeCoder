@@ -17,6 +17,12 @@
  *   `if`/`while`/`until` word precedes the call, because `! ./script` turns
  *   a failure into success (PR #5276 review); and neither the
  *   job nor that step sets `continue-on-error` or an `if:` (PR #3478 review);
+ *   and the step's effective shell (its `shell:`, else the job's or the
+ *   workflow's `defaults.run.shell`) is unset or on an allowlist: `bash` or
+ *   `sh`, then only `--noprofile`, `--norc` and `-e`/`-u`/`-x`/`-o <name>`
+ *   options, then optionally `{0}`; `-c`, `-s`, `-n`, `-o noexec`, extra
+ *   words, `true {0}` and the like could pass without running the body
+ *   (PR #5276 review);
  * - (b) a step runs `container/toolchains/aws-emulator.sh` (the pinned,
  *   checksum-verified install), a step runs `container/toolchains/aws-cli.sh`
  *   (the pinned aws-cli, not the runner's own), and a step installs
@@ -34,6 +40,17 @@
  * `checkQualityCallsAwsEmulator` checks the parsed quality.yml: a job calls
  * this workflow (`[gate-call]`) and the `gate` job needs it (`[gate-needs]`).
  *
+ * `checkContainerBuildRunsAwsEmulator` checks the parsed container-build.yml:
+ * job `container` has a step that runs the reference command as `agent` in a
+ * fresh container of the image just built (`[container-agent-run]`): one
+ * `docker run` with `--user agent`, an `--entrypoint` ending in
+ * `/test-aws-emulator.sh` and a `--volume` of
+ * `${GITHUB_WORKSPACE}/infra/cloudformation:`, with its exit status intact (no
+ * `|`, `;` or `&`, no `!`), no `continue-on-error`, an `if:` of only
+ * `env.IMAGE_CHANGED == 'true'`, and an effective shell that runs the body. Job
+ * `container` itself has no `continue-on-error` and no `if:`, since a skipped
+ * or soft-failing job hides the run.
+ *
  * Each finding names its invariant in square brackets, e.g. `[test-step]`.
  *
  * No I/O: callers parse the YAML and pass the parsed value in.
@@ -45,6 +62,7 @@ import {
   shellSegments,
   statusPreservingCommandIndex,
 } from "./shell_command_words.ts";
+import { defaultShell } from "./aws_emulator_in_ci_check.ts";
 
 /** The test script the workflow must run in command position. */
 export const SCRIPT_PATH = "infra/cloudformation/test-aws-emulator.sh";
@@ -143,6 +161,56 @@ function stepIsOnlyScript(step: unknown, path: string): boolean {
   return rest.length === 1 && segmentInvokes(rest[0] ?? [], path);
 }
 
+const SHELL_OPTION_NAMES = ["pipefail", "errexit", "nounset", "xtrace"];
+const SHELL_COMMANDS = ["bash", "sh"].flatMap((name) => [
+  name,
+  `/bin/${name}`,
+  `/usr/bin/${name}`,
+]);
+
+/**
+ * Whether a `shell:` value runs the `run:` body, by allowlist: `bash` or `sh`,
+ * bare or as `/bin/` or `/usr/bin/` (any other path could be a planted
+ * look-alike), then zero or more of `--noprofile`, `--norc`, a cluster of
+ * `e`/`u`/`x` flags, or `-o`/`-eo` followed by pipefail, errexit, nounset or
+ * xtrace; then, if anything follows, exactly `{0}`. Everything else (`-c`,
+ * `-s`, `-n`, `-o noexec`, extra words, other commands) is refused.
+ */
+function shellRunsBody(value: string): boolean {
+  const words = value.trim().split(/\s+/);
+  if (!SHELL_COMMANDS.includes(words[0] ?? "")) return false;
+  let i = 1;
+  while (i < words.length) {
+    const w = words[i] ?? "";
+    if (w === "--noprofile" || w === "--norc" || /^-[eux]+$/.test(w)) {
+      i += 1;
+    } else if (
+      /^-[eux]*o$/.test(w) && SHELL_OPTION_NAMES.includes(words[i + 1] ?? "")
+    ) {
+      i += 2;
+    } else break;
+  }
+  const rest = words.slice(i);
+  return rest.length === 0 || (rest.length === 1 && rest[0] === "{0}");
+}
+
+/**
+ * Whether a step's effective shell (`step.shell`, else the job's, else the
+ * workflow's `defaults.run.shell`) runs the `run:` body: unset, or allowed by
+ * `shellRunsBody`. Returns the shell value in `value`, for the finding message.
+ */
+function effectiveShell(
+  workflow: Record<string, unknown>,
+  job: Record<string, unknown>,
+  step: unknown,
+): { runsBody: boolean; value: unknown } {
+  const value = (isObject(step) ? step.shell : undefined) ??
+    defaultShell(job) ?? defaultShell(workflow);
+  if (value === undefined) return { runsBody: true, value };
+  if (typeof value !== "string") return { runsBody: false, value };
+  return { runsBody: shellRunsBody(value), value };
+}
+
 /** The job entries of a parsed workflow as `[name, job]` pairs. */
 function jobEntries(
   workflow: Record<string, unknown>,
@@ -197,6 +265,15 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
     ) {
       problems.push(
         `[test-step] an if: on job ${jobId} or its ${SCRIPT_PATH} step could skip the deploy, and a skipped job reports success`,
+      );
+    }
+
+    const shell = effectiveShell(workflow, job, testStep);
+    if (!shell.runsBody) {
+      problems.push(
+        `[test-step] the ${SCRIPT_PATH} step's shell (step, job or workflow defaults.run.shell) must be bash or sh that runs the body; got ${
+          JSON.stringify(shell.value)
+        }`,
       );
     }
 
@@ -300,6 +377,271 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
     }
   }
 
+  return problems;
+}
+
+/**
+ * The only `docker run` flags the agent run may carry. Anything else fails
+ * closed: `--env` could set `BASH_ENV` for the bash script, and `--mount` or
+ * `--volumes-from` could shadow the mounted reference script.
+ */
+const DOCKER_VALUE_FLAGS = ["--user", "-u", "--volume", "-v", "--entrypoint"];
+const DOCKER_BOOLEAN_FLAGS = ["--rm"];
+/** Job or workflow env keys that would reach the agent-run step's shell or docker. */
+const INHERITED_ENV_REFUSED = [
+  "BASH_ENV",
+  "ENV",
+  "PATH",
+  "DOCKER_HOST",
+  "DOCKER_CONTEXT",
+  "DOCKER_CONFIG",
+];
+/** The one volume source: the checkout's CloudFormation directory. */
+const AGENT_VOLUME_SOURCE = "${GITHUB_WORKSPACE}/infra/cloudformation";
+const AGENT_SCRIPT_NAME = "test-aws-emulator.sh";
+
+/** Strip one surrounding pair of matching quotes. */
+function unquote(word: string): string {
+  const m = /^(["'])(.*)\1$/.exec(word);
+  return m ? (m[2] ?? "") : word;
+}
+
+/**
+ * Whether `volume` is `AGENT_VOLUME_SOURCE:D:ro` with `entrypoint` exactly
+ * `D/test-aws-emulator.sh`, D an absolute path with no `.`, `..` or empty
+ * segment. The entrypoint then names the script from the read-only mount.
+ */
+function volumeHoldsEntrypoint(volume: string, entrypoint: string): boolean {
+  const parts = volume.split(":");
+  if (parts.length !== 3) return false;
+  const [source, dest, mode] = parts as [string, string, string];
+  if (source !== AGENT_VOLUME_SOURCE || mode !== "ro") return false;
+  const segments = dest.split("/");
+  if (
+    segments[0] !== "" || segments.length < 2 ||
+    segments.slice(1).some((x) => x === "" || x === "." || x === "..")
+  ) return false;
+  return entrypoint === `${dest}/${AGENT_SCRIPT_NAME}`;
+}
+
+/**
+ * Whether one segment is exactly the `docker run` of the agent reference
+ * command. The arguments are parsed positionally and fail closed: an unknown
+ * flag, a different image or any trailing word other than `< /dev/null` means
+ * the segment does not count. The last `--user` must be `agent`; there must be
+ * exactly one `--volume`, mounting `${GITHUB_WORKSPACE}/infra/cloudformation`
+ * read-only at some D; and the last `--entrypoint` must be
+ * `D/test-aws-emulator.sh`, so no second mount can shadow the script.
+ */
+function segmentRunsAwsEmulatorAsAgent(words: string[]): boolean {
+  if (words[0] !== "docker" || words[1] !== "run") return false;
+  const users: string[] = [];
+  const entrypoints: string[] = [];
+  const volumes: string[] = [];
+  let j = 2;
+  while (j < words.length) {
+    const w = words[j] ?? "";
+    if (!w.startsWith("-")) break;
+    if (DOCKER_BOOLEAN_FLAGS.includes(w)) {
+      j += 1;
+      continue;
+    }
+    const eq = w.indexOf("=");
+    const flag = eq === -1 ? w : w.slice(0, eq);
+    if (!DOCKER_VALUE_FLAGS.includes(flag)) return false;
+    let value: string;
+    if (eq !== -1) {
+      value = w.slice(eq + 1);
+      j += 1;
+    } else {
+      if (j + 1 >= words.length) return false;
+      value = words[j + 1] ?? "";
+      j += 2;
+    }
+    value = unquote(value);
+    if (flag === "--user" || flag === "-u") users.push(value);
+    else if (flag === "--entrypoint") entrypoints.push(value);
+    else volumes.push(value);
+  }
+  if (unquote(words[j] ?? "") !== "${IMAGE}") return false;
+  const tail = words.slice(j + 1).join(" ");
+  if (tail !== "< /dev/null" && tail !== "</dev/null") return false;
+  return users[users.length - 1] === "agent" && volumes.length === 1 &&
+    volumeHoldsEntrypoint(
+      volumes[0] ?? "",
+      entrypoints[entrypoints.length - 1] ?? "",
+    );
+}
+
+/**
+ * Whether a step sets its own `IMAGE` (or an `env:` that is not a plain map,
+ * such as an expression, which could resolve to one). The agent-run step
+ * itself may set no `env:` at all: `BASH_ENV` or `DOCKER_HOST` there would
+ * replace the docker command or its daemon.
+ */
+function stepOverridesImage(step: unknown): boolean {
+  if (!isObject(step) || step.env === undefined) return false;
+  return !isObject(step.env) || "IMAGE" in step.env;
+}
+
+/**
+ * Whether a segment is `docker build` tagging `${IMAGE}` (`-t`, `--tag`, or
+ * either with `=`).
+ */
+function segmentBuildsImage(words: string[]): boolean {
+  const i = statusPreservingCommandIndex(words);
+  if (i === -1 || words[i] !== "docker" || words[i + 1] !== "build") {
+    return false;
+  }
+  return words.slice(i + 2).some((w, k, rest) => {
+    if (w === "-t" || w === "--tag") {
+      return unquote(rest[k + 1] ?? "") === "${IMAGE}";
+    }
+    const m = /^(?:-t|--tag)=(.*)$/.exec(w);
+    return m !== null && unquote(m[1] ?? "") === "${IMAGE}";
+  });
+}
+
+/**
+ * A step that could change what `${IMAGE}` names between the build and the
+ * agent run: it runs a docker/podman command that
+ * builds, tags, pulls, loads, imports or commits an image and mentions
+ * `IMAGE` or the job's literal tag. A build of some other tag (the job's
+ * bad-provider-set probe) does not count. Matched over the step's text, so a
+ * mention fails closed.
+ */
+function stepMayRetagImage(step: unknown, jobTag: string): boolean {
+  const text = codeOf(step);
+  const retags =
+    /\b(?:docker|podman)\s+(?:image\s+)?(?:build|buildx|tag|pull|load|import|commit)\b/
+      .test(text);
+  return retags &&
+    (text.includes("IMAGE") || (jobTag !== "" && text.includes(jobTag)));
+}
+
+/**
+ * Whether the step's code is only `set -euo pipefail` (optional) and exactly
+ * one segment that is the agent `docker run`.
+ */
+function stepIsAgentRun(step: unknown): boolean {
+  const rest = segmentsOf(step).filter((w) =>
+    w.join(" ") !== "set -euo pipefail"
+  );
+  return rest.length === 1 && segmentRunsAwsEmulatorAsAgent(rest[0] ?? []);
+}
+
+/**
+ * Check a parsed container-build.yml: job `container` has a step that runs the
+ * AWS Emulator reference command as `agent` in a fresh container, with its
+ * exit status intact (`[container-agent-run]`). Never throws on malformed
+ * input.
+ */
+export function checkContainerBuildRunsAwsEmulator(
+  workflow: unknown,
+): string[] {
+  const tag = "[container-agent-run]";
+  if (!isObject(workflow)) return [`${tag} workflow is not an object`];
+  const job = jobEntries(workflow).find(([id]) => id === "container")?.[1];
+  const step = job === undefined
+    ? undefined
+    : stepsOf(job).find(stepIsAgentRun);
+  if (job === undefined || step === undefined || !isObject(step)) {
+    return [
+      `${tag} no step in job container runs the AWS Emulator reference command as agent (docker run --rm --user agent, exactly one read-only infra/cloudformation volume at D, --entrypoint D/test-aws-emulator.sh, image \${IMAGE}) with its exit status intact`,
+    ];
+  }
+  const problems: string[] = [];
+  if (
+    job["continue-on-error"] !== undefined &&
+    job["continue-on-error"] !== false
+  ) {
+    problems.push(
+      `${tag} job container must not set continue-on-error: a soft-failing job hides the agent run`,
+    );
+  }
+  if (job.if !== undefined) {
+    problems.push(
+      `${tag} job container must not have an if:: a skipped job hides the agent run`,
+    );
+  }
+  const coe = step["continue-on-error"];
+  if (coe !== undefined && coe !== false) {
+    problems.push(
+      `${tag} the agent-run step must not set continue-on-error: a failed run must fail the check`,
+    );
+  }
+  if (step.if !== undefined && step.if !== "env.IMAGE_CHANGED == 'true'") {
+    problems.push(
+      `${tag} the agent-run step's if: must be absent or exactly env.IMAGE_CHANGED == 'true', the job's image gate; got ${
+        JSON.stringify(step.if)
+      }`,
+    );
+  }
+  const steps = stepsOf(job);
+  const stepIndex = steps.indexOf(step);
+  if (step.env !== undefined) {
+    problems.push(
+      `${tag} the agent-run step must not set env: IMAGE, BASH_ENV or DOCKER_HOST there would change what runs`,
+    );
+  }
+  const inherited = [workflow.env, job.env].flatMap((env) =>
+    isObject(env) ? Object.keys(env) : []
+  ).filter((key) => INHERITED_ENV_REFUSED.includes(key));
+  if (inherited.length > 0) {
+    problems.push(
+      `${tag} the job and workflow env must not set ${
+        inherited.join(", ")
+      }: each reaches the agent-run step and could replace its shell start-up, docker or daemon`,
+    );
+  }
+  const envWriter = steps.find((s) => /GITHUB_(?:ENV|PATH)/.test(codeOf(s)));
+  if (envWriter !== undefined) {
+    problems.push(
+      `${tag} no step in job container may write GITHUB_ENV or GITHUB_PATH: either could change IMAGE, IMAGE_CHANGED or the docker on the PATH for the agent run`,
+    );
+  }
+  const jobEnv = job.env;
+  const jobTag = isObject(jobEnv) && typeof jobEnv.IMAGE === "string"
+    ? jobEnv.IMAGE
+    : "";
+  if (jobTag === "") {
+    problems.push(
+      `${tag} job container must set env.IMAGE to the tag its docker build step builds`,
+    );
+  }
+  if (
+    !isObject(jobEnv) ||
+    jobEnv.IMAGE_CHANGED !== "${{ needs.changes.outputs.image }}"
+  ) {
+    problems.push(
+      `${tag} job container must set env.IMAGE_CHANGED to exactly \${{ needs.changes.outputs.image }}: a constant would skip the build and the agent run`,
+    );
+  }
+  const buildIndex = steps.findIndex((s, k) =>
+    k < stepIndex && !stepOverridesImage(s) &&
+    segmentsOf(s).some(segmentBuildsImage)
+  );
+  if (buildIndex === -1) {
+    problems.push(
+      `${tag} no earlier step in job container runs docker build -t "\${IMAGE}" without its own env.IMAGE: the agent run must use the image just built`,
+    );
+  } else if (
+    steps.slice(buildIndex + 1, stepIndex).some((s) =>
+      stepMayRetagImage(s, jobTag)
+    )
+  ) {
+    problems.push(
+      `${tag} a step between the docker build and the agent run builds, tags, pulls, loads, imports or commits an image, so \${IMAGE} may no longer be the image just built`,
+    );
+  }
+  const shell = effectiveShell(workflow, job, step);
+  if (!shell.runsBody) {
+    problems.push(
+      `${tag} the agent-run step's shell (step, job or workflow defaults.run.shell) must be bash or sh that runs the body; got ${
+        JSON.stringify(shell.value)
+      }`,
+    );
+  }
   return problems;
 }
 
