@@ -30,6 +30,10 @@
  * note when no call is in view. String and comment contents
  * are masked before any pattern runs, so an assertion named inside a fixture
  * string does not count. Every pattern is linear (no nested quantifiers).
+ * Each helper's assertions are worked out once per scan, and an inline test
+ * body is judged from per-hunk indexes of its calls, assertions, ignore
+ * markers and lines, so a body nested in another is not re-read and the cost
+ * grows linearly with the diff (Issue #5236).
  *
  * The fleet reviewer (`.claude/skills/review-fleet-prs/scripts/gate.ts` and
  * `post.ts`) and the worker's pre-PR verifier (`pre_pr_verifier.ts`) both
@@ -564,6 +568,11 @@ function tsStrength(
 const HELPER_CALL =
   /(?:^|[^\w$.])(?:(?:assert|expect|verify|check|ensure)\w*|\w+(?:Assert|Expect|Verify|_assert|_expect|_check|_verify)\w*)\s*\(/g;
 
+const TS_ASSERT = /(?:^|[^\w$.])((?:assert|expect|fail)\w*)\s*\(/g;
+const TS_THROW = /(?:^|[^\w$.])throw\b/g;
+const TS_CALLEE = /(?:^|[^\w$.])([A-Za-z_$][\w$]*)\s*\(/g;
+const TS_IGNORE = /\bignore\s*:\s*true\b/g;
+
 /** Every assertion in a masked test body, as its strength. */
 function assertionsIn(body: string, lang: Lang): Strength[] {
   const found: Strength[] = [];
@@ -578,11 +587,7 @@ function assertionsIn(body: string, lang: Lang): Strength[] {
     return found;
   }
   const named = new Set<number>();
-  for (
-    const m of body.matchAll(
-      /(?:^|[^\w$.])((?:assert|expect|fail)\w*)\s*\(/g,
-    )
-  ) {
+  for (const m of body.matchAll(TS_ASSERT)) {
     const open = (m.index ?? 0) + m[0].length - 1;
     named.add(open);
     found.push(tsStrength(body, m[1]!, open));
@@ -591,7 +596,7 @@ function assertionsIn(body: string, lang: Lang): Strength[] {
     const open = (m.index ?? 0) + m[0].length - 1;
     if (!named.has(open)) found.push("strong");
   }
-  if (/(?:^|[^\w$.])throw\b/.test(body)) found.push("strong");
+  if (body.search(TS_THROW) >= 0) found.push("strong");
   return found;
 }
 
@@ -611,18 +616,22 @@ const TS_KEYWORDS = new Set([
 ]);
 const RUST_KEYWORDS = new Set(["if", "while", "for", "match", "return", "fn"]);
 
+/** Whether a TS call is one `calleesIn` returns: not a keyword, not after `new`. */
+function keptCall(name: string, before: string): boolean {
+  return !TS_KEYWORDS.has(name) && !/new\s*$/.test(before);
+}
+
 /** Names of the plain (not method, not path) calls in a masked body. */
 function calleesIn(body: string, lang: Lang): string[] {
   const out = new Set<string>();
-  const re = lang === "rust"
-    ? /(?:^|[^\w.:])([a-z_]\w*)\s*\(/g
-    : /(?:^|[^\w$.])([A-Za-z_$][\w$]*)\s*\(/g;
-  const keywords = lang === "rust" ? RUST_KEYWORDS : TS_KEYWORDS;
+  const re = lang === "rust" ? /(?:^|[^\w.:])([a-z_]\w*)\s*\(/g : TS_CALLEE;
   for (const m of body.matchAll(re)) {
     const name = m[1]!;
     const before = body.slice(Math.max(0, (m.index ?? 0) - 4), m.index ?? 0);
-    if (keywords.has(name) || /new\s*$/.test(before)) continue;
-    out.add(name);
+    const kept = lang === "rust"
+      ? !RUST_KEYWORDS.has(name) && !/new\s*$/.test(before)
+      : keptCall(name, before);
+    if (kept) out.add(name);
   }
   return [...out];
 }
@@ -638,10 +647,242 @@ const NONE: Delegation = { out: [], unseen: false };
 const NO_SKIP: ReadonlySet<string> = new Set();
 
 /**
+ * What calling a name adds, keyed `${isNew}:${depth}:${name}`; one map per
+ * file per scan (Issue #5236).
+ */
+type CalleeMemo = Map<string, Delegation>;
+
+/** Only which strengths occur is ever read, so repeats are dropped (Issue #5236). */
+function distinct(found: Strength[]): Strength[] {
+  return [...new Set(found)];
+}
+
+const WEAK = 1; // a weak assertion (Issue #5236)
+const STRONG = 2; // a strong or interaction assertion: anything not weak (Issue #5236)
+const UNSEEN = 4; // a call out of view that may assert (Issue #5236)
+
+/** The strengths in `found` as WEAK and STRONG bits (Issue #5236). */
+function strengthBits(found: readonly Strength[]): number {
+  let b = 0;
+  for (const s of found) b |= s === "weak" ? WEAK : STRONG;
+  return b;
+}
+
+/** A delegation as bits: its strengths and whether a call is unseen (Issue #5236). */
+function delegationBits(d: Delegation): number {
+  return strengthBits(d.out) | (d.unseen ? UNSEEN : 0);
+}
+
+/** First index of the sorted `xs` whose value is at least `x` (Issue #5236). */
+function lowerBound(xs: readonly number[], x: number): number {
+  let lo = 0;
+  let hi = xs.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (xs[mid]! < x) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** OR of `bits[lo..hi)` (three-bit values) by prefix counts (Issue #5236). */
+function rangeOr(
+  bits: readonly number[],
+): (lo: number, hi: number) => number {
+  const prefix = [0, 1, 2].map(() => new Int32Array(bits.length + 1));
+  for (let k = 0; k < bits.length; k++) {
+    for (let b = 0; b < 3; b++) {
+      prefix[b]![k + 1] = prefix[b]![k]! + ((bits[k]! >> b) & 1);
+    }
+  }
+  return (lo, hi) => {
+    if (hi <= lo) return 0;
+    let r = 0;
+    for (let b = 0; b < 3; b++) {
+      if (prefix[b]![hi]! > prefix[b]![lo]!) r |= 1 << b;
+    }
+    return r;
+  };
+}
+
+/**
+ * Visits each position of a sorted list once however many ranges cover it, so
+ * nested bodies do not re-read what they share (Issue #5236).
+ */
+function visitOnce(
+  positions: readonly number[],
+): (from: number, to: number, fn: (p: number) => void) => void {
+  const next = Int32Array.from({ length: positions.length + 1 }, (_, k) => k);
+  const find = (k: number): number => {
+    let r = k;
+    while (next[r] !== r) r = next[r]!;
+    while (next[k] !== r) {
+      const up = next[k]!;
+      next[k] = r;
+      k = up;
+    }
+    return r;
+  };
+  return (from, to, fn) => {
+    for (
+      let k = find(lowerBound(positions, from));
+      k < positions.length && positions[k]! < to;
+      k = find(k + 1)
+    ) {
+      next[k] = k + 1;
+      fn(positions[k]!);
+    }
+  };
+}
+
+/** One call `TS_CALLEE` reads in a hunk (Issue #5236). */
+interface CallMatch {
+  start: number;
+  end: number;
+  name: string;
+  /** Not a keyword or after `new`: a call calleesIn returns. */
+  kept: boolean;
+}
+
+/** Every call of a hunk, read once (Issue #5236). */
+interface CallIndex {
+  calls: CallMatch[];
+  starts: number[];
+  /** Positions in `calls` of each kept name, in order. */
+  byName: Map<string, number[]>;
+}
+
+/** The calls of a masked hunk, from one pass over it (Issue #5236). */
+function callIndex(masked: string): CallIndex {
+  const calls: CallMatch[] = [];
+  const starts: number[] = [];
+  const byName = new Map<string, number[]>();
+  for (const m of masked.matchAll(TS_CALLEE)) {
+    const start = m.index ?? 0;
+    const name = m[1]!;
+    const kept = keptCall(name, masked.slice(Math.max(0, start - 4), start));
+    if (kept) {
+      const list = byName.get(name) ?? [];
+      list.push(calls.length);
+      byName.set(name, list);
+    }
+    starts.push(start);
+    calls.push({ start, end: start + m[0].length, name, kept });
+  }
+  return { calls, starts, byName };
+}
+
+/**
+ * The calls `calleesIn(masked.slice(from, close + 1), "ts")` would read, taken
+ * from the hunk's index. `masked[from]` is a bracket and `masked[close]` its
+ * closing `)`. A hunk call that runs over `from` (the `test(` before an inline
+ * body consumes the `(` the slice can use as a prefix) means the slice can read
+ * a call the hunk does not; those are re-read with a sticky regex at that
+ * bracket until the two readings agree, and the index is used from there.
+ * `head` is the re-read calls, `rest` the first index call the slice reads and
+ * `stop` the first one past it (Issue #5236).
+ */
+function sliceCalls(
+  masked: string,
+  index: CallIndex,
+  from: number,
+  close: number,
+): { head: CallMatch[]; rest: number; stop: number } {
+  const sticky = new RegExp(TS_CALLEE.source, "y");
+  const head: CallMatch[] = [];
+  let at = from;
+  let rest = -1;
+  while (rest < 0) {
+    const k = lowerBound(index.starts, at) - 1;
+    const over = k >= 0 && index.calls[k]!.end > at ? index.calls[k]! : null;
+    if (over === null) {
+      rest = lowerBound(index.starts, at);
+      break;
+    }
+    sticky.lastIndex = over.end - 1;
+    const m = sticky.exec(masked);
+    if (m === null || m.index + m[0].length > close + 1) {
+      rest = lowerBound(index.starts, over.end);
+      break;
+    }
+    const start = m.index;
+    head.push({
+      start,
+      end: start + m[0].length,
+      name: m[1]!,
+      kept: keptCall(m[1]!, masked.slice(Math.max(from, start - 4), start)),
+    });
+    at = start + m[0].length;
+  }
+  return { head, rest, stop: Math.max(rest, lowerBound(index.starts, close)) };
+}
+
+/**
+ * The kept call names in `wanted` that the slice reads, in first-occurrence
+ * order (Issue #5236).
+ */
+function sliceCallNames(
+  masked: string,
+  index: CallIndex,
+  from: number,
+  close: number,
+  wanted: ReadonlySet<string>,
+): string[] {
+  const { head, rest, stop } = sliceCalls(masked, index, from, close);
+  const found = new Map<string, number>();
+  for (const c of head) {
+    if (c.kept && wanted.has(c.name) && !found.has(c.name)) {
+      found.set(c.name, c.start);
+    }
+  }
+  for (const name of wanted) {
+    if (found.has(name)) continue;
+    const list = index.byName.get(name);
+    if (list === undefined) continue;
+    const p = lowerBound(list, rest);
+    if (p < list.length && list[p]! < stop) {
+      found.set(name, index.calls[list[p]!]!.start);
+    }
+  }
+  return [...found].sort((x, y) => x[1] - y[1]).map(([name]) => name);
+}
+
+/**
+ * Every assertion of a masked TS hunk with its start, and the OR of the
+ * strength bits over a range of them (Issue #5236). Built after `scanHunk`, so
+ * the strengths read the bracket table.
+ */
+function assertionIndex(
+  masked: string,
+): { starts: number[]; or: (lo: number, hi: number) => number } {
+  const entries: Array<[number, Strength]> = [];
+  const named = new Set<number>();
+  for (const m of masked.matchAll(TS_ASSERT)) {
+    const at = m.index ?? 0;
+    const open = at + m[0].length - 1;
+    named.add(open);
+    entries.push([at, tsStrength(masked, m[1]!, open)]);
+  }
+  for (const m of masked.matchAll(HELPER_CALL)) {
+    const at = m.index ?? 0;
+    if (!named.has(at + m[0].length - 1)) entries.push([at, "strong"]);
+  }
+  for (const m of masked.matchAll(TS_THROW)) {
+    entries.push([m.index ?? 0, "strong"]);
+  }
+  entries.sort((x, y) => x[0] - y[0]);
+  return {
+    starts: entries.map(([at]) => at),
+    or: rangeOr(entries.map(([, s]) => strengthBits([s]))),
+  };
+}
+
+/**
  * What the calls in `body` add: the assertions of each function it calls that
  * is defined in view, one level deep and then one more. A callee named in
  * `skip` is ignored here (a parameter the caller judges at its own call
- * sites); a call out of view is unseen in an edited file.
+ * sites); a call out of view is unseen in an edited file. Each callee's share
+ * is worked out once per scan (Issue #5236).
  */
 function delegatedAssertions(
   body: string,
@@ -650,17 +891,38 @@ function delegatedAssertions(
   isNew: boolean,
   depth: number,
   skip: ReadonlySet<string>,
+  memo: CalleeMemo,
 ): Delegation {
   const out: Strength[] = [];
   let unseen = false;
   for (const name of calleesIn(body, lang)) {
     if (skip.has(name)) continue;
-    const helper = defs.get(name);
-    if (helper === undefined || helper === null) {
-      if (!isNew || helper === null) unseen = true;
-      continue;
-    }
-    out.push(...assertionsIn(helper, lang));
+    const c = calleeAssertions(name, lang, defs, isNew, depth, memo);
+    out.push(...c.out);
+    unseen ||= c.unseen;
+  }
+  return { out: distinct(out), unseen };
+}
+
+/** What calling `name` adds at `depth`, worked out once per memo (Issue #5236). */
+function calleeAssertions(
+  name: string,
+  lang: Lang,
+  defs: Map<string, string | null>,
+  isNew: boolean,
+  depth: number,
+  memo: CalleeMemo,
+): Delegation {
+  const key = `${isNew}:${depth}:${name}`;
+  const known = memo.get(key);
+  if (known !== undefined) return known;
+  const helper = defs.get(name);
+  let result: Delegation;
+  if (helper === undefined || helper === null) {
+    result = { out: [], unseen: !isNew || helper === null };
+  } else {
+    const out = assertionsIn(helper, lang);
+    let unseen = false;
     if (depth < 2) {
       const deeper = delegatedAssertions(
         helper,
@@ -669,12 +931,15 @@ function delegatedAssertions(
         isNew,
         depth + 1,
         NO_SKIP,
+        memo,
       );
       out.push(...deeper.out);
-      unseen ||= deeper.unseen;
+      unseen = deeper.unseen;
     }
+    result = { out: distinct(out), unseen };
   }
-  return { out, unseen };
+  memo.set(key, result);
+  return result;
 }
 
 /** A registration helper's callback positions one test registration passes. */
@@ -864,6 +1129,11 @@ interface Scope {
   byScopeName: Map<string, Definition>;
   /** No bracket is cut, so ancestry in view is the whole ancestry. */
   balanced: boolean;
+  /**
+   * The innermost definition body enclosing each offset, so a lookup skips
+   * the brackets between them (Issue #5236).
+   */
+  defEnclosing: Int32Array;
 }
 
 function scopeOf(masked: string, spans: Definition[]): Scope {
@@ -892,6 +1162,11 @@ function scopeOf(masked: string, spans: Definition[]): Scope {
     const key = `${enclosing[d.declaration] ?? -1}:${d.name}`;
     if (!byScopeName.has(key)) byScopeName.set(key, d);
   }
+  const defEnclosing = new Int32Array(masked.length).fill(-1);
+  for (let k = 0; k < masked.length; k++) {
+    const b = enclosing[k]!;
+    defEnclosing[k] = b < 0 ? -1 : byBody.has(b) ? b : defEnclosing[b]!;
+  }
   // A cut block has unknown ancestry: callback scope is not inferred from it.
   const stack: string[] = [];
   let balanced = true;
@@ -908,6 +1183,7 @@ function scopeOf(masked: string, spans: Definition[]): Scope {
     arrowsByLine,
     byScopeName,
     balanced: balanced && stack.length === 0,
+    defEnclosing,
   };
 }
 
@@ -931,11 +1207,15 @@ function registrarOf(
       best = { helper: d.name, index, start: d.start };
     }
   }
-  for (let b = scope.enclosing[open] ?? -1; b >= 0; b = scope.enclosing[b]!) {
+  for (
+    let b = scope.defEnclosing[open] ?? -1;
+    b >= 0;
+    b = scope.defEnclosing[b]!
+  ) {
     if (best !== null && b < best.start) break;
-    const d = scope.byBody.get(b);
-    const index = d?.params.get(name);
-    if (d !== undefined && index !== undefined) {
+    const d = scope.byBody.get(b)!;
+    const index = d.params.get(name);
+    if (index !== undefined) {
       if (best === null || d.start > best.start) {
         best = { helper: d.name, index, start: d.start };
       }
@@ -943,6 +1223,33 @@ function registrarOf(
     }
   }
   return best === null ? null : { helper: best.helper, index: best.index };
+}
+
+/**
+ * Every parameter name of the functions that enclose the call at `open`: the
+ * arrows on its line and the definitions on its enclosing chain. A name not in
+ * it has no registrar (Issue #5236).
+ */
+function enclosingParams(
+  scope: Scope,
+  masked: string,
+  open: number,
+): Set<string> {
+  const names = new Set<string>();
+  const line = masked.lastIndexOf("\n", open) + 1;
+  for (const d of scope.arrowsByLine.get(line) ?? []) {
+    if (d.start < open && open < d.end) {
+      for (const n of d.params.keys()) names.add(n);
+    }
+  }
+  for (
+    let b = scope.defEnclosing[open] ?? -1;
+    b >= 0;
+    b = scope.defEnclosing[b]!
+  ) {
+    for (const n of scope.byBody.get(b)!.params.keys()) names.add(n);
+  }
+  return names;
 }
 
 /**
@@ -1086,6 +1393,20 @@ export function scanDummyTests(diff: string): DummyTestScan {
   // its bracket lookups hit the same table.
   const maskedByHunk: string[] = [];
   const scopeByHunk: Scope[] = [];
+  const callsByHunk: CallIndex[] = [];
+  const callsOf = (
+    h: number,
+  ) => (callsByHunk[h] ??= callIndex(maskedByHunk[h]!));
+  // What each callee adds, worked out once per file per scan (Issue #5236).
+  const memos = new Map<string, CalleeMemo>();
+  const memoFor = (file: string): CalleeMemo => {
+    let m = memos.get(file);
+    if (m === undefined) {
+      m = new Map();
+      memos.set(file, m);
+    }
+    return m;
+  };
   for (const [h, hunk] of hunks.entries()) {
     const lang = langOf(hunk.file);
     if (lang === null) continue;
@@ -1114,7 +1435,11 @@ export function scanDummyTests(diff: string): DummyTestScan {
           const close = closingBracket(masked, open);
           if (close < 0) continue;
           const byHelper: Candidate["byHelper"] = new Map();
-          for (const name of calleesIn(masked.slice(open, close + 1), "ts")) {
+          const wanted = enclosingParams(scope, masked, open);
+          const names = wanted.size > 0
+            ? sliceCallNames(masked, callsOf(h), open, close, wanted)
+            : [];
+          for (const name of names) {
             const hit = registrarOf(scope, masked, open, name);
             if (hit === null) continue;
             const entry = byHelper.get(hit.helper) ??
@@ -1163,6 +1488,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
       c.isNew,
       1,
       skip,
+      memoFor(c.file),
     );
     const own = [...assertionsIn(body, "ts"), ...deleg.out];
     if (own.length > 0 && !own.every((s) => s === "weak")) continue;
@@ -1197,6 +1523,47 @@ export function scanDummyTests(diff: string): DummyTestScan {
     }
     const index = { starts };
     const maskedLines = masked.split("\n");
+    const addedBefore = new Int32Array(hunk.lines.length + 1);
+    hunk.lines.forEach((l, k) => {
+      addedBefore[k + 1] = addedBefore[k]! + (l.added ? 1 : 0);
+    });
+    // Whether any line from `a` to `b` (inclusive) is added.
+    const anyAdded = (a: number, b: number) =>
+      addedBefore[b + 1]! > addedBefore[a]!;
+    const visitInteractions = visitOnce(
+      hunk.lines.flatMap((l, k) =>
+        l.added && INTERACTION.test(maskedLines[k] ?? "") ? [k] : []
+      ),
+    );
+    const visitIgnores = lang === "ts"
+      ? visitOnce([...masked.matchAll(TS_IGNORE)].map((m) => m.index ?? 0))
+      : null;
+    // The assertions and callee strengths of the whole hunk, built on the
+    // first inline body judged (Issue #5236).
+    let inline: {
+      asserts: ReturnType<typeof assertionIndex>;
+      callOr: (lo: number, hi: number) => number;
+    } | null = null;
+    const inlineIndex = () =>
+      inline ??= {
+        asserts: assertionIndex(masked),
+        callOr: rangeOr(
+          callsOf(h).calls.map((c) =>
+            c.kept
+              ? delegationBits(
+                calleeAssertions(
+                  c.name,
+                  "ts",
+                  defs,
+                  hunk.isNew,
+                  1,
+                  memoFor(hunk.file),
+                ),
+              )
+              : 0
+          ),
+        ),
+      };
     const judge = (
       declLine: number,
       reportLine: number,
@@ -1207,45 +1574,76 @@ export function scanDummyTests(diff: string): DummyTestScan {
       callback: string | null,
       spans: Array<[number, number]> | null = null,
     ) => {
-      const span = hunk.lines.slice(declLine, lastLine + 1);
-      if (!span.some((l) => l.added)) return;
-      for (let k = declLine; k <= lastLine; k++) {
-        if (hunk.lines[k]!.added && INTERACTION.test(maskedLines[k] ?? "")) {
-          note(hunk.file, hunk.lines[k]!.line, "interaction");
-        }
-      }
+      if (!anyAdded(declLine, lastLine)) return;
+      visitInteractions(
+        declLine,
+        lastLine + 1,
+        (k) => note(hunk.file, hunk.lines[k]!.line, "interaction"),
+      );
       if (bodyEnd < 0) return; // body runs past the hunk: not judged
       const file = hunk.file;
       const line = hunk.lines[reportLine]!.line;
-      // A registration's own callback arguments: another registration's
-      // arguments of the same helper call are not this test's body.
-      let body = spans === null
-        ? masked.slice(bodyStart, bodyEnd + 1)
-        : spans.map(([a, b]) => masked.slice(a, b + 1)).join("\n");
-      if (callback !== null) {
-        // A callback passed by name is judged by the function it names.
-        const named = namedCallbackBody(scope, masked, callback, bodyStart);
-        if (named === null) {
-          note(file, line, "unseen");
-          return;
+      let bits: number;
+      if (lang === "ts" && spans === null && callback === null) {
+        // An inline body: judged from the hunk's indexes, not re-read.
+        const { asserts, callOr } = inlineIndex();
+        const { head, rest, stop } = sliceCalls(
+          masked,
+          callsOf(h),
+          bodyStart,
+          bodyEnd,
+        );
+        bits = asserts.or(
+          lowerBound(asserts.starts, bodyStart),
+          lowerBound(asserts.starts, bodyEnd),
+        ) | callOr(rest, stop) | delegationBits(extra);
+        for (const c of head) {
+          if (!c.kept) continue;
+          bits |= delegationBits(
+            calleeAssertions(
+              c.name,
+              "ts",
+              defs,
+              hunk.isNew,
+              1,
+              memoFor(hunk.file),
+            ),
+          );
         }
-        body = named;
+      } else {
+        // A registration's own callback arguments: another registration's
+        // arguments of the same helper call are not this test's body.
+        let body = spans === null
+          ? masked.slice(bodyStart, bodyEnd + 1)
+          : spans.map(([a, b]) => masked.slice(a, b + 1)).join("\n");
+        if (callback !== null) {
+          // A callback passed by name is judged by the function it names.
+          const named = namedCallbackBody(scope, masked, callback, bodyStart);
+          if (named === null) {
+            note(file, line, "unseen");
+            return;
+          }
+          body = named;
+        }
+        const found = assertionsIn(body, lang);
+        found.push(...extra.out);
+        const helpers = delegatedAssertions(
+          body,
+          lang,
+          defs,
+          hunk.isNew,
+          1,
+          NO_SKIP,
+          memoFor(hunk.file),
+        );
+        found.push(...helpers.out);
+        bits = strengthBits(found) |
+          (helpers.unseen || extra.unseen ? UNSEEN : 0);
       }
-      const found = assertionsIn(body, lang);
-      found.push(...extra.out);
-      const helpers = delegatedAssertions(
-        body,
-        lang,
-        defs,
-        hunk.isNew,
-        1,
-        NO_SKIP,
-      );
-      found.push(...helpers.out);
-      if (found.length === 0) {
-        if (helpers.unseen || extra.unseen) note(file, line, "unseen");
+      if ((bits & (WEAK | STRONG)) === 0) {
+        if (bits & UNSEEN) note(file, line, "unseen");
         else add(file, line, "no-assertion");
-      } else if (found.every((s) => s === "weak")) {
+      } else if ((bits & STRONG) === 0) {
         add(file, line, "success-only");
       }
     };
@@ -1312,16 +1710,15 @@ export function scanDummyTests(diff: string): DummyTestScan {
         }
         if (token.includes("describe")) continue;
         const bodyEnd = close < 0 ? masked.length : close;
-        const opts = masked.slice(open, bodyEnd);
-        for (const ig of opts.matchAll(/\bignore\s*:\s*true\b/g)) {
-          const k = lineAt(index, open + (ig.index ?? 0));
+        visitIgnores!(open, bodyEnd, (at) => {
+          const k = lineAt(index, at);
           if (
             hunk.lines[k]!.added &&
             !hasReasonComment(hunk.lines, maskedLines, k)
           ) {
             add(hunk.file, hunk.lines[k]!.line, "ignored-without-reason");
           }
-        }
+        });
         if (skipToken) continue; // a skipped test is judged by the rule above
         const cb = callbackName(masked, open);
         const reg = cb === null ? null : registrarOf(scope, masked, open, cb);
@@ -1329,7 +1726,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
         if (reg !== null || deferred !== undefined) {
           // The callback is a helper's parameter, or the body calls one: each
           // call of that helper is judged.
-          if (hunk.lines.slice(declLine, last + 1).some((l) => l.added)) {
+          if (anyAdded(declLine, last)) {
             pending.push({
               file: hunk.file,
               line: decl.line,
@@ -1362,9 +1759,7 @@ export function scanDummyTests(diff: string): DummyTestScan {
           const declLine = lineAt(index, open);
           const close = closingBracket(masked, open);
           const last = close < 0 ? hunk.lines.length - 1 : lineAt(index, close);
-          const inView = hunk.lines.slice(declLine, last + 1).some((l) =>
-            l.added
-          );
+          const inView = anyAdded(declLine, last);
           const args = flatArgs(masked, open);
           for (const reg of list) {
             const picked = reg.indices.map((k) => args?.[k]);
