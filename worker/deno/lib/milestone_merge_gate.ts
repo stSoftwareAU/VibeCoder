@@ -178,8 +178,9 @@ export interface MergeGateOutcome {
   /** Trimmed tail of the check output; empty when nothing ran. */
   output: string;
   /**
-   * Set on every `failed` outcome {@link checkMergedTree} returns (Issue #4847),
-   * naming why the tree was refused or could not be verified.
+   * Set on every `failed` outcome {@link checkMergedTree} returns (Issue #4847)
+   * and `verifyResolvedTree` returns (Issue #5162), naming why the tree was
+   * refused or could not be verified.
    */
   cause?: MergeGateCause;
   /**
