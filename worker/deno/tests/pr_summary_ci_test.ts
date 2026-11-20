@@ -421,6 +421,76 @@ function failNthGitCall(
   return { runGit, seen: () => seen };
 }
 
+Deno.test("runPrSummaryCi - a non-zero exit from the PR diff names git diff, the exit code and git's stderr", async () => {
+  await withRepo(async (clone) => {
+    await startBranch(clone, BRANCH);
+    await commitCode(clone, "export const a = 1;\n");
+    await commitSummary(clone);
+
+    // The first diff is runPrSummaryCi's own `<base>...HEAD` name listing.
+    const git = failNthGitCall("diff", 1);
+    const r = await runPrSummaryCi({
+      baseBranch: "main",
+      headBranch: BRANCH,
+      runGit: git.runGit,
+      repoRoot: clone,
+      readTextFile: () => Promise.reject(new Error("must not read")),
+    });
+    assertEquals(git.seen(), 1);
+    assert(!r.ok);
+    assertStringIncludes(r.error.message, "git diff --name-only");
+    assertStringIncludes(
+      r.error.message,
+      "exited 128: fatal: simulated diff failure",
+    );
+  });
+});
+
+Deno.test("runPrSummaryCi - a runner error on the PR diff names git diff and the cause", async () => {
+  await withRepo(async (clone) => {
+    await startBranch(clone, BRANCH);
+    await commitCode(clone, "export const a = 1;\n");
+    await commitSummary(clone);
+
+    const runGit: GitRunner = (args, options) =>
+      args[0] === "diff"
+        ? Promise.resolve({
+          ok: false as const,
+          error: new Error("spawn failed"),
+        })
+        : runGitCommand(args, options);
+    const r = await runPrSummaryCi({
+      baseBranch: "main",
+      headBranch: BRANCH,
+      runGit,
+      repoRoot: clone,
+      readTextFile: () => Promise.reject(new Error("must not read")),
+    });
+    assert(!r.ok);
+    assertStringIncludes(r.error.message, "git diff --name-only");
+    assertStringIncludes(r.error.message, "failed: spawn failed");
+  });
+});
+
+Deno.test("main - a failing PR diff exits 2 and writes the git error to stderr", async () => {
+  await withRepo(async (clone) => {
+    await startBranch(clone, BRANCH);
+    await commitCode(clone, "export const a = 1;\n");
+    await commitSummary(clone);
+
+    const git = failNthGitCall("diff", 1);
+    const d = captureDeps(git.runGit);
+    d.deps.repoRoot = () =>
+      Promise.resolve({ ok: true as const, value: clone });
+    assertEquals(
+      await main(["--base", "main", "--head-branch", BRANCH], d.deps),
+      2,
+    );
+    assertStringIncludes(d.err.join("\n"), "git diff --name-only");
+    assertStringIncludes(d.err.join("\n"), "exited 128");
+  });
+});
+
 Deno.test("runPrSummaryCi - a git failure inside the PR-summary gates is returned as an error", async () => {
   await withRepo(async (clone) => {
     await startBranch(clone, BRANCH);

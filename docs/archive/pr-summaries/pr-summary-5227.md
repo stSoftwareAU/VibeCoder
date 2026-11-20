@@ -71,9 +71,12 @@ flowchart LR
 - **Docs sweep** — grep:
   `judgeFreshness|listPrCommits|isCodePath|CODE_PATH_PREFIXES|CommitChange|Summary freshness|freshness and gates|for freshness|commit-order`
   across the repository, excluding `docs/archive/` and `docs/audits/`, on the
-  final head. The only hits left are the retirement notes and the #5227 test;
-  section: `CODING-STANDARDS.md` "PR Summary and Evidence" (the `pr-summary-ci`
-  paragraph and the final-state paragraph after it) and
+  final head. The hits left are the retirement notes (`validate-scripts.yml`,
+  the `pr_summary_ci.ts` and test-file headers), the #5227 test's
+  `Summary freshness` assertion, and one unrelated `codex_budget.ts` comment
+  ("for freshness" about a budget read instant, not PR summaries); section:
+  `CODING-STANDARDS.md` "PR Summary and Evidence" (the `pr-summary-ci` paragraph
+  and the final-state paragraph after it) and
   `docs/workflows/fleet-pr-babysitter.md` repair-prompt section, both read and
   updated; siblings: `no_summary`, `not_checked` — `PrSummaryCiResult` is listed
   only in `pr_summary_ci.ts` and its test, and both name `summary_missing`
@@ -110,8 +113,20 @@ flowchart LR
     and DEL. The removed stale-path tests were the only coverage of this
     escaping, which still guards the not-checked reason.
   - New: `pr-summary-ci - a blocked gate still fails CI end to end`.
-  - Updated: the `ciFailed` test and the `summary_missing` test now use the new
-    result kind.
+  - New:
+    `runPrSummaryCi - a selected summary missing from the checkout is summary_missing`
+    asserts the new result kind, that `ciFailed` is `true` for it, and the
+    `[BLOCKED] PR summary (#3768)` report.
+  - New: three tests on the PR diff's own git error handling (`runChecked`,
+    which guards `git diff --name-only … <base>...HEAD`). Red-checked: replacing
+    both `runChecked` error messages with placeholders fails these three and
+    leaves the other 25 green.
+    - `runPrSummaryCi - a non-zero exit from the PR diff names git diff, the exit code and git's stderr`
+      (`failNthGitCall("diff", 1)`).
+    - `runPrSummaryCi - a runner error on the PR diff names git diff and the cause`
+      (a runner `{ok:false}` on `diff`).
+    - `main - a failing PR diff exits 2 and writes the git error to stderr`.
+  - Updated: the `ciFailed` test now uses the `summary_missing` result kind.
 - Removed tests, and what still protects the behaviour:
   - Gone with the freshness behaviour, whose code and callers are deleted:
     - The `isCodePath` test.
@@ -126,13 +141,28 @@ flowchart LR
     - Escaping: the new not-checked escape test.
     - Gates still run on a fresh summary: the renamed
       `a summary commit newer than the code passes and runs the gates`.
-    - A git failure inside the gates:
+    - Git error handling (the removed `listPrCommits` and commit-listing
+      git-failure tests): the three new PR-diff git-failure tests above, which
+      reach both `runChecked` error branches. The separate gates' own git
+      failure stays covered by
       `runPrSummaryCi - a git failure inside the PR-summary gates is returned as an error`.
+    - Coverage carry-over, checked by hand because the automated check could not
+      run (see Results): `deno coverage` over `pr_summary_ci_test.ts` gives
+      `lib/pr_summary_ci.ts` 100% (170/170) on the head against 92.7% at the
+      merge base. `lib/pr_summary_ci_cli.ts` is 80.5% on both, and the uncovered
+      lines (114-130, the `import.meta.main` entry) are the same lines on both.
+      They run only in the subprocess test.
 - `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`: the step name in the
   test name and its doc comment changed to match. Its workflow invariants are
   unchanged.
 - Results on the final head:
-  - `deno task test:unit tests/pr_summary_ci_test.ts`: 25 passed.
+  - `deno task test:unit tests/pr_summary_ci_test.ts`: 28 passed.
+  - The coverage carry-over check could not run because a base test fails at the
+    merge base (`ce06e926b`). I reproduced that in a merge-base worktree:
+    `pr_summary_ci_test.ts` passes there, and the one failure is
+    `pr_summary_ci_workflow_3768_test.ts::PR summary CI task runs git with restricted environment permissions`,
+    the DNS failure described below. It cannot be fixed from this branch,
+    because the check runs the base's copy of the test.
   - `deno task test:unit tests/fleet_pr_babysitter_test.ts`: 122 passed.
   - `deno check` on the changed modules and tests: clean.
   - `pr_summary_ci_workflow_3768_test.ts`: 10 passed, 1 failed. The failure is
@@ -145,4 +175,7 @@ flowchart LR
     network, not this change. CI has network.
   - `./quality.sh`: every stage passed or was skipped except `deno tests`, where
     35227 passed and 1 failed. The one failure is the same environmental test.
+    This run came before the three PR-diff git-failure tests were added. For
+    those, `deno check`, `deno lint` and `deno fmt --check` on
+    `tests/pr_summary_ci_test.ts` are clean, along with the 28-pass run above.
     `config integration` and `checkov` were skipped.
