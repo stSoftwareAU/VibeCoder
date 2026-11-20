@@ -103,6 +103,10 @@ All the test files below are under `worker/deno/tests/`:
 - **Added** `support/new_file_diff.ts`: the `added` diff builder, moved out of
   `dummy_test_scan_5016_test.ts`. That file now imports it and its tests are
   otherwise unchanged. No assertion was removed.
+- **Changed** `worker/deno/lib/parallel_unsafe_test_manifest.ts`: the new
+  growth test is listed in `WALL_CLOCK_TEST_FILES`, beside
+  `dummy_test_scan_5016_test.ts`, so it runs in the serial pass. The first
+  gate run flagged it under `parallel_unsafe_test_manifest_test.ts`.
 - **Ran:** `deno task test:unit tests/dummy_test_scan_growth_5236_test.ts
   tests/dummy_test_scan_5016_test.ts
   tests/dummy_test_scan_wiring_5016_test.ts` on the head. Result: 11 passed in
@@ -114,6 +118,10 @@ All the test files below are under `worker/deno/tests/`:
 ## Not done or not checked
 
 - The tool's own bounds on findings and notes are unchanged.
+- On the first gate run, `tests/pr_summary_ci_workflow_3768_test.ts` failed
+  because this host has no DNS (`Failed caching npm package
+  'entities@3.0.1'`). I seeded the host's `~/.cache/deno` from the worker
+  cache; that is not a repository change. The test then passed (11 passed).
 - No new reviewer sub-agents were run, because the issue has no
   acceptance-criteria list.
 - The Rust and named-callback paths still read their bodies as strings.
