@@ -58,7 +58,8 @@
  * that runs the body, and has exactly the `FILTER_CODE` allowlist as its code
  * (ending in `.github/scripts/detect-image-changes.sh "$BASE_SHA"
  * "$HEAD_SHA"`). Job `changes` has no other step but `actions/checkout` and no
- * `env:`, and the workflow `env:` sets none of `WORKFLOW_SHELL_ENV`. Without these `IMAGE_CHANGED` may not be `true`, so the image
+ * `env:`, and the workflow sets no `env:`. Without these `IMAGE_CHANGED` may
+ * not be `true`, so the image
  * steps and the agent run skip and the required check passes without the run.
  * The check is textual and does not prove that the script itself is sound.
  *
@@ -398,7 +399,7 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
  */
 const DOCKER_VALUE_FLAGS = ["--user", "-u", "--volume", "-v", "--entrypoint"];
 const DOCKER_BOOLEAN_FLAGS = ["--rm"];
-/** Job or workflow env keys that would reach the agent-run step's shell or docker. */
+/** Container-job env keys that would reach the agent-run step's shell or docker. */
 const INHERITED_ENV_REFUSED = [
   "BASH_ENV",
   "ENV",
@@ -555,18 +556,6 @@ const FILTER_ENV = {
   BASE_SHA: "${{ github.event.pull_request.base.sha }}",
   HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
 };
-/**
- * Workflow env names that change how the filter step's bash starts or where
- * it writes its output. (Job `changes` may set no env at all; the workflow env
- * also feeds job `container`, whose own rules apply there.)
- */
-const WORKFLOW_SHELL_ENV = [
-  "BASH_ENV",
-  "ENV",
-  "SHELLOPTS",
-  "BASHOPTS",
-  "GITHUB_OUTPUT",
-];
 /** The only env keys the filter step may set. */
 const FILTER_ENV_KEYS = ["EVENT_NAME", ...Object.keys(FILTER_ENV)];
 
@@ -667,6 +656,11 @@ function imageGateProblems(
       `${tag} job changes must have no if: and no continue-on-error: a skipped or soft-failing job leaves its output empty, ${skipNote}`,
     );
   }
+  if (changes.container !== undefined) {
+    problems.push(
+      `${tag} job changes must set no container: a container can replace the checked-out filter script or change git path handling, ${skipNote}`,
+    );
+  }
   const outputs = changes.outputs;
   if (
     !isObject(outputs) ||
@@ -715,14 +709,17 @@ function imageGateProblems(
         FILTER_ENV_KEYS.join(", ")
       }: another variable such as GITHUB_OUTPUT or BASH_ENV could redirect the image output or run code before the filter, ${skipNote}`,
     );
-  } else if (
-    changes.env !== undefined ||
-    (workflow.env !== undefined &&
-      (!isObject(workflow.env) ||
-        WORKFLOW_SHELL_ENV.some((k) => k in (workflow.env as object))))
-  ) {
+  } else if (changes.env !== undefined) {
     problems.push(
-      `${tag} job changes must set no env: and the workflow env: none of BASH_ENV, ENV, SHELLOPTS, BASHOPTS or GITHUB_OUTPUT: a variable such as BASH_ENV, SHELLOPTS or GITHUB_OUTPUT could run code before the filter or redirect its output, ${skipNote}`,
+      `${tag} job changes must set no env: a variable can alter bash, git or the output path before the filter runs, ${skipNote}`,
+    );
+  } else if (workflow.env !== undefined) {
+    problems.push(
+      `${tag} workflow must set no env: workflow variables reach the filter and its git script and can change their result or redirect output, ${skipNote}`,
+    );
+  } else if (runOf(filter).includes("${{")) {
+    problems.push(
+      `${tag} the changes filter step's raw code must contain no GitHub expression: expressions are expanded before bash, including inside comments, ${skipNote}`,
     );
   } else if (!filterCodeIsCanonical(filter)) {
     problems.push(
@@ -744,8 +741,9 @@ function imageGateProblems(
  * `continue-on-error`, takes its SHAs from the pull request event, sets no
  * other env, has a shell that runs the body, and has exactly the allowlisted
  * code ending in the detect script call. The job allows only checkout and the
- * filter step and no job env. Workflow env cannot set BASH_ENV, ENV,
- * GITHUB_OUTPUT, SHELLOPTS or BASHOPTS. Never throws on malformed input.
+ * filter step, no job container and no job env. The workflow may set no env,
+ * and the raw filter body may contain no GitHub expression. Never throws on
+ * malformed input.
  */
 export function checkContainerBuildRunsAwsEmulator(
   workflow: unknown,
@@ -800,12 +798,15 @@ export function checkContainerBuildRunsAwsEmulator(
       `${tag} the agent-run step must not set env: IMAGE, BASH_ENV or DOCKER_HOST there would change what runs`,
     );
   }
-  const inherited = [workflow.env, job.env].flatMap((env) =>
-    isObject(env) ? Object.keys(env) : []
-  ).filter((key) => INHERITED_ENV_REFUSED.includes(key));
+  // Workflow env is rejected categorically by imageGateProblems because it
+  // also reaches the changes filter. Check only the container job here so one
+  // unsafe workflow variable produces one actionable finding.
+  const inherited = isObject(job.env)
+    ? Object.keys(job.env).filter((key) => INHERITED_ENV_REFUSED.includes(key))
+    : [];
   if (inherited.length > 0) {
     problems.push(
-      `${tag} the job and workflow env must not set ${
+      `${tag} job container env must not set ${
         inherited.join(", ")
       }: each reaches the agent-run step and could replace its shell start-up, docker or daemon`,
     );

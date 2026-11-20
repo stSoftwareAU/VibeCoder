@@ -1037,7 +1037,19 @@ for (
     ["the workflow setting GITHUB_OUTPUT in its env", [[
       "jobs:\n",
       "env:\n  GITHUB_OUTPUT: /dev/null\njobs:\n",
-    ]], "job changes must set no env:"],
+    ]], "workflow must set no env:"],
+    ["a GitHub expression inside a filter comment", [[
+      DETECT_CALL_LINE,
+      "          # ${{ github.event_name }}\n" + DETECT_CALL_LINE,
+    ]], "raw code must contain no GitHub expression"],
+    ["the workflow setting a git path variable", [[
+      "jobs:\n",
+      "env:\n  GIT_LITERAL_PATHSPECS: '1'\njobs:\n",
+    ]], "workflow must set no env:"],
+    ["job changes using a container", [[
+      CHANGES_JOB,
+      CHANGES_JOB + "    container: ubuntu:latest\n",
+    ]], "job changes must set no container:"],
     // Another step in job changes could rewrite the script the filter runs.
     ["a step rewriting the detect script before the filter", [[
       "      - name: Detect image-affecting changes\n",
@@ -1061,7 +1073,7 @@ for (
     ["the workflow env given as an expression", [[
       "jobs:\n",
       "env: ${{ fromJSON(vars.E) }}\njobs:\n",
-    ]], "job changes must set no env:"],
+    ]], "workflow must set no env:"],
     ["an echo of --image=foo before the script call", [[
       DETECT_CALL_LINE,
       '          echo "--image=foo"\n' + DETECT_CALL_LINE,

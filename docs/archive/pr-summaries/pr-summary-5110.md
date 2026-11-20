@@ -21,13 +21,16 @@ validator now also requires:
   `outputs.image` exactly `${{ steps.filter.outputs.image }}`;
 - the `filter` step to have no `if:` or soft `continue-on-error`, a shell that
   runs the body, and `BASE_SHA`/`HEAD_SHA` taken from the pull request event;
+- the raw filter body to contain no `${{ }}` expression, including in a
+  comment;
 - the `filter` step's code (comments, blank lines and `\` continuations aside)
   to be exactly the `FILTER_CODE` allowlist, ending in
   `.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`, and its env
-  to set nothing but `EVENT_NAME`, `BASE_SHA` and `HEAD_SHA`;
+  to set nothing but `EVENT_NAME`, `BASE_SHA` and `HEAD_SHA`; a comment is a
+  physical line whose first character after any leading spaces or tabs is `#`;
+  any other Unicode leading space remains code;
 - job `changes` to have no step but `actions/checkout` and the `filter` step,
-  and no `env:`; the workflow `env:` to set none of `BASH_ENV`, `ENV`,
-  `SHELLOPTS`, `BASHOPTS` or `GITHUB_OUTPUT`.
+  and no `container:` or `env:`; the workflow to set no `env:`.
 
 Part of #5110.
 
@@ -185,7 +188,7 @@ flowchart LR
 ## Test Plan
 
 - Added to `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`:
-  - **`(container-agent-run) refuses …` table, 46 cases, each asserting one
+  - **`(container-agent-run) refuses …` table, 49 cases, each asserting one
     finding with that rule's own message:**
     - a missing or wrong `needs`;
     - a constant `outputs.image`;
@@ -210,6 +213,8 @@ flowchart LR
       `GITHUB_OUTPUT` in the workflow env; a workflow env expression;
     - a step in job `changes` that rewrites the detect script, writes
       `GITHUB_ENV`, or uses a local action.
+    - a GitHub expression inside a comment, a workflow-level git path variable,
+      and a `container:` on job `changes`.
   - **`refuses job changes removed entirely with one finding`:** asserts "job
     changes must exist".
   - **Controls that return `[]`:** `needs: [changes]`, an extra comment line, an
@@ -229,6 +234,9 @@ flowchart LR
     against 0ac992ab2 with `[]` where one finding was expected.
   - The comment-backslash cases for `exit 0` and `true ||` both failed against
     aa8c2e6dc with `[]` where one finding was expected.
+  - The GitHub-expression comment, workflow git variable and job-container
+    cases were observed red by the pre-PR verifier against 782ef8b7: each
+    returned `[]` where one finding was expected.
 - **Existing tests:** none edited, and the diff removes no line from the test
   file. The real `container-build.yml` positive test still returns `[]`. The new
   check runs after the existing early return, so the malformed-input cases still
@@ -236,7 +244,7 @@ flowchart LR
 - **Focused run:**
   `cd worker/deno && deno task test:unit tests/issue_5110_aws_emulator_workflow_test.ts tests/aws_emulator_in_ci_check_test.ts tests/aws_emulator_cloudformation_5110_test.ts < /dev/null`
   gave 312 passed, 0 failed before the last 5 cases; the 5110 workflow test file
-  alone now gives 159 passed, 0 failed.
+  alone now gives 162 passed, 0 failed.
 - **Corpus:** `checkContainerBuildRunsAwsEmulator` over every
   `.github/workflows/*.yml` returns `[]` only for `container-build.yml`. Every
   other workflow gets findings. False positives 0; false negatives 0 against the
