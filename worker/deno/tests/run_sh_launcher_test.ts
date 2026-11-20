@@ -707,6 +707,21 @@ Deno.test("run.sh - reaps a container that outlives the watchdog deadline", asyn
       `the reaper could not read the host: ${host}`,
     );
     assert(host !== "unknown", "the record must not fall back to 'unknown'");
+    // The host facts (Issue #5250) come from the production `df` and memory
+    // seams; a narrowed permission or a wrong path records "unavailable:".
+    const hostState = (evidence.evidence as Record<string, unknown>)
+      ?.hostState as
+        | { disk: string; memory: string }
+        | undefined;
+    assert(hostState, "the hard-kill record lacks hostState");
+    assert(
+      /^available=\d+ total=\d+$/.test(hostState.disk),
+      `the reaper could not read the host disk: ${hostState.disk}`,
+    );
+    assert(
+      hostState.memory.startsWith("level="),
+      `the reaper could not read the host memory: ${hostState.memory}`,
+    );
     for (
       const field of [
         "host",

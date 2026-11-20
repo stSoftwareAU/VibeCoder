@@ -122,11 +122,13 @@ flowchart LR
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — every changed call site needs a test that goes red without it
-  — evidence: `worker/deno/lib/hard_kill_evidence.ts:783-784` — reason: open,
-  not fixed in this run. The production defaults `diskReading` and
-  `memoryReading` in `createEvidenceSeams` have no test, because every test
-  stubs both seams.
+- **fixed** — every changed call site needs a test that goes red without it —
+  evidence: `worker/deno/tests/run_sh_launcher_test.ts` (`run.sh - reaps a
+  container that outlives the watchdog deadline`) — reason: the test runs the
+  real `container-reap`, so the production `diskReading` and `memoryReading`
+  defaults in `createEvidenceSeams` run, and it asserts the written
+  `evidence.hostState.disk` matches `^available=\d+ total=\d+$` and
+  `evidence.hostState.memory` starts with `level=`.
 - **violation** — every outcome of an added branch needs a test — evidence:
   `worker/deno/lib/hard_kill_evidence.ts:640`, `:686-688` — reason: open, not
   fixed in this run. Three paths are unasserted: the disk read that throws or
@@ -183,6 +185,11 @@ New tests (all under `worker/deno/tests/`):
   patterns.
 
 Edited existing tests:
+
+- `run_sh_launcher_test.ts::run.sh - reaps a container that outlives the watchdog deadline`
+  now also asserts the real reap's written `hostState.disk` matches
+  `^available=\d+ total=\d+$` and `hostState.memory` starts with `level=`, so
+  the production `df` and memory seams are covered (observed passing at head).
 
 - `hard_kill_report_test.ts::the body carries the four guest figures under the last log time (Issue #5062)`:
   the four guest-figure lines are still asserted with the same values. The
