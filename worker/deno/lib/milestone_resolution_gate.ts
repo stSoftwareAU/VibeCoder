@@ -53,6 +53,7 @@ import {
   detectRustToolchainGap,
   findProjectManifests,
   isCargoOfflineRegistryGap,
+  type MergeGateCause,
   type MergeGateFn,
   type MergeGateOutcome,
   type ProjectKind,
@@ -168,6 +169,8 @@ export type ResolutionTaskRunner = (
     code: number;
     output: string;
     accountUnavailable?: string;
+    /** The command boundary failed before the repository check could run. */
+    unrunnable?: true;
     /**
      * Set when the task hit its time limit (Issue #4786), so the caller can
      * tell a timeout from a failing task. Set by the production runner only.
@@ -249,7 +252,7 @@ export const spawnTask = async (
       output: result.error.message,
       ...(result.error instanceof GateAccountUnavailable
         ? { accountUnavailable: result.error.message }
-        : {}),
+        : { unrunnable: true }),
     };
   }
   const { code, stdout, stderr, timedOut } = result.value;
@@ -267,6 +270,21 @@ export const spawnTask = async (
   }
   return { code, output };
 };
+
+/** A startup error leaves the resolution unverified. */
+function unrunnableTask(where: string, error: unknown): MergeGateOutcome {
+  return {
+    status: "failed",
+    detail: `${where} could not be run`,
+    output: tail(error instanceof Error ? error.message : String(error)),
+    cause: "check-could-not-run",
+  };
+}
+
+/** A step killed at its time limit is a timeout, not a verdict (Issue #5162). */
+function stepFailureCause(timedOut: boolean | undefined): MergeGateCause {
+  return timedOut ? "check-timed-out" : "tree-check-failed";
+}
 
 /**
  * Verify a tree whose conflicts the worker resolved itself.
@@ -311,6 +329,7 @@ export async function verifyResolvedTree(
         detail: `merged tree '${repoDir}' is not a directory — nothing ` +
           `verified the resolution`,
         output: "",
+        cause: "tree-unreadable",
       };
     }
   } catch (err) {
@@ -319,6 +338,7 @@ export async function verifyResolvedTree(
       detail: `merged tree '${repoDir}' could not be read — nothing verified ` +
         `the resolution`,
       output: tail(err instanceof Error ? err.message : String(err)),
+      cause: "tree-unreadable",
     };
   }
 
@@ -401,29 +421,21 @@ export async function verifyResolvedTree(
             `${RESOLUTION_GATE_BUDGET_MS}ms verification budget — the ` +
             `resolution is unverified, so it is not pushed`,
           output: "",
+          cause: "check-timed-out",
         };
       }
-      let result: {
-        code: number;
-        output: string;
-        accountUnavailable?: string;
-        timedOut?: boolean;
-      };
+      let result: Awaited<ReturnType<ResolutionTaskRunner>>;
       try {
         result = await runner({ ...step, timeoutMs });
       } catch (err) {
         // Unrunnable is not clean — the resolution stays unverified.
-        return {
-          status: "failed",
-          detail: `${where} could not be run`,
-          output: tail(err instanceof Error ? err.message : String(err)),
-        };
+        return unrunnableTask(where, err);
       }
       // The cause the first attempt named when it could not reach the crate
       // registry (Issue #4786); set only when the step was retried offline.
       let registryCause: string | undefined;
       const firstGap = step.kind === "cargo" && result.code !== 0 &&
-          !result.timedOut && !result.accountUnavailable
+          !result.timedOut && !result.accountUnavailable && !result.unrunnable
         ? detectCargoRegistryGap(result.output)
         : undefined;
       if (firstGap) {
@@ -439,6 +451,7 @@ export async function verifyResolvedTree(
               `${RESOLUTION_GATE_BUDGET_MS}ms verification budget — the ` +
               `resolution is unverified, so it is not pushed`,
             output: "",
+            cause: "check-timed-out",
           };
         }
         try {
@@ -448,16 +461,13 @@ export async function verifyResolvedTree(
             timeoutMs,
           });
         } catch (err) {
-          return {
-            status: "failed",
-            detail: `${where} could not be run`,
-            output: tail(err instanceof Error ? err.message : String(err)),
-          };
+          return unrunnableTask(where, err);
         }
         // Still no registry after the offline retry: the step is left to CI,
         // with the first attempt's cause (Issue #4786).
         if (
           result.code !== 0 && !result.accountUnavailable &&
+          !result.unrunnable &&
           isCargoOfflineRegistryGap(result.output)
         ) {
           skippedCargoSuite = true;
@@ -467,6 +477,7 @@ export async function verifyResolvedTree(
           continue;
         }
       }
+      if (result.unrunnable) return unrunnableTask(where, result.output);
       if (result.accountUnavailable) {
         leftToCi.push(`${where}: ${result.accountUnavailable}`);
         if (step.kind === "cargo" || isUnitSuite(task)) {
@@ -508,12 +519,14 @@ export async function verifyResolvedTree(
             detail: describeRustToolchainGap(where, result.code, gap),
             output: tail(result.output),
             toolchainGap: gap,
+            cause: "rust-toolchain-too-old",
           };
         }
         return {
           status: "failed",
           detail: `${where} failed (exit ${result.code})`,
           output: tail(result.output),
+          cause: stepFailureCause(result.timedOut),
         };
       }
       // A step that passed only on the offline retry says so (Issue #4786).
@@ -555,18 +568,16 @@ export async function verifyResolvedTree(
           `${RESOLUTION_GATE_BUDGET_MS}ms verification budget — the ` +
           `resolution is unverified, so it is not pushed`,
         output: "",
+        cause: "check-timed-out",
       };
     }
-    let result: { code: number; output: string; accountUnavailable?: string };
+    let result: Awaited<ReturnType<ResolutionTaskRunner>>;
     try {
       result = await runner({ ...step, timeoutMs });
     } catch (err) {
-      return {
-        status: "failed",
-        detail: `${where} could not be run`,
-        output: tail(err instanceof Error ? err.message : String(err)),
-      };
+      return unrunnableTask(where, err);
     }
+    if (result.unrunnable) return unrunnableTask(where, result.output);
     if (result.accountUnavailable) {
       leftToCi.push(`${where}: ${result.accountUnavailable}`);
       unitSuiteLeftToCi = true;
@@ -575,6 +586,7 @@ export async function verifyResolvedTree(
         status: "failed",
         detail: `${where} failed (exit ${result.code})`,
         output: tail(result.output),
+        cause: stepFailureCause(result.timedOut),
       };
     }
     if (!result.accountUnavailable) {

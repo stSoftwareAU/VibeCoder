@@ -126,8 +126,8 @@ integration tests and are still CI's, not the gate's.
 
 CI-enforced workflows live under `.github/workflows/`, including
 `validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, `semgrep.yml`,
-and `checkov.yml`. A green local `./quality.sh` is the best predictor of a
-green PR.
+`checkov.yml`, and `aws-emulator.yml`. A green local `./quality.sh` is the
+best predictor of a green PR.
 
 ### Semgrep (SAST) before the push
 

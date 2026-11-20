@@ -3,10 +3,11 @@
   "chunk": "top-up-3366",
   "title": "top-up: AWS-usage and Floci-in-CI check",
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3366",
-  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: aws_emulator_in_ci_check.ts (#3366)",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: aws_emulator_in_ci_check.ts (#3366), shell_command_words.ts (split out of it by #5110)",
   "status": "claimed",
   "paths": [
-    "worker/deno/lib/aws_emulator_in_ci_check.ts"
+    "worker/deno/lib/aws_emulator_in_ci_check.ts",
+    "worker/deno/lib/shell_command_words.ts"
   ],
   "sweptAt": "666b6151c9bbc2ab638bc53807617ac21d74e1a7"
 }

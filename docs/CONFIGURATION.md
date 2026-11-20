@@ -5746,15 +5746,20 @@ gates do (see that bullet):
      the repo tracks `infra/cloudformation/test-floci.sh`: it runs
      `bash infra/cloudformation/test-floci.sh` from the repo root, after the
      other changed-file checks. That is the same script
-     `.github/workflows/floci.yml` runs in CI. Outside CI, a template that
+     the repository's Floci CI workflow runs. VibeCoder itself no longer
+     tracks that script (Issue #5110 moved its CloudFormation test to the AWS
+     Emulator, run in CI by `.github/workflows/aws-emulator.yml`), so this
+     check applies to a repository that does. The gate does not plan the AWS
+     Emulator test: it runs as the worker account `vibe`, which
+     `aws-emulator-run` refuses (Issue #5109). Outside CI, a template that
      creates an `AWS::EC2::Instance` when there is no Docker socket is printed
      `SKIPPED (needs Docker): <template>` and left to CI. When every template
      is skipped the script exits 0 there, before it checks for the `aws` CLI
      or starts anything. Otherwise it exits 1 when the `aws` CLI is missing,
      and only then starts the baked `floci` on `127.0.0.1:4566` if nothing
      answers there. The worker container has no Docker socket and no `aws`
-     CLI, and today's only template creates an `AWS::EC2::Instance`, so inside
-     the container this check skips it, exits 0 and never starts `floci`; only
+     CLI, and where the repository's only template creates an
+     `AWS::EC2::Instance`, inside the container this check skips it, exits 0 and never starts `floci`; only
      a host with Docker and the `aws` CLI exercises it.
 2. **Configured `pre-flight` commands.** The commands are resolved by the
    run's repo from `repo_config`, so every agent run that names its repo gets

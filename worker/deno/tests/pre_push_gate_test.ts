@@ -2327,6 +2327,22 @@ Deno.test("planChangedFileChecks: no Floci deploy test outside infra/cloudformat
   assertEquals(result.value.filter((c) => c.label === FLOCI_CHECK), []);
 });
 
+Deno.test("planChangedFileChecks: the AWS Emulator script is never planned (Issue #5110)", () => {
+  const result = planChangedFileChecks(
+    ["infra/cloudformation/t.yaml"],
+    [
+      "infra/cloudformation/test-aws-emulator.sh",
+      "infra/cloudformation/t.yaml",
+    ],
+    { repoRoot: "/repo", markdownlintBinary: null },
+  );
+  assert(result.ok);
+  assertEquals(
+    result.value.filter((c) => c.command.includes("test-aws-emulator")),
+    [],
+  );
+});
+
 Deno.test("planChangedFileChecks: no Floci deploy test when the repo does not track the script", () => {
   const result = planChangedFileChecks(
     ["infra/cloudformation/linux-verification-host.yaml"],
