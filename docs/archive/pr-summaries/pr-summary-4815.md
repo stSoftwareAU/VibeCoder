@@ -18,10 +18,10 @@ this is Part of #4815.
 ### Intent and Rationale
 
 - Diagnosis still waits for evidence that cannot reach this run. PR #5294
-  (merged 20 November, 20:58Z) posts the archived facts from GRQ-3 to this
-  issue on that host's next worker start. When this run checked, those facts had
-  not been posted, and no `hard-kill-watchdog-completion` recurrence had been
-  filed since 4 November.
+  (merged 20 November, 20:58Z) posts the archived facts from GRQ-3 to this issue
+  on that host's next worker start. When this run checked, those facts had not
+  been posted, and no `hard-kill-watchdog-completion` recurrence had been filed
+  since 4 November.
 - The comment text is the part of the remaining scope this run can finish: the
   issue's own thread shows a worker comment promising a human hand-off that the
   code no longer performs.
@@ -31,16 +31,16 @@ this is Part of #4815.
 - Only the wording changes. The limit, the not-finished retry and the absence of
   `needs-human` (`worker/deno/lib/phases/declared_handoff.ts`, the branch after
   `history.length < MAX_TIME_DEFERRALS`) stay as they are.
-- No time-deferral marker is emitted. A deferral after a commit raises no PR, and
-  the facts' arrival depends on GRQ-3 restarting, not on a date this run can
+- No time-deferral marker is emitted. A deferral after a commit raises no PR,
+  and the facts' arrival depends on GRQ-3 restarting, not on a date this run can
   know.
 
 ### Undiscoverable Facts
 
-- The two completion steps that ran after the verifier in the killed runs are
-  no longer on `main`. #5095 retired the mutation check. Commit `5be66720e`
-  removed the coverage carry-over check. Whether either one was the wedge is
-  unproven until GRQ-3's facts are posted.
+- The two completion steps that ran after the verifier in the killed runs are no
+  longer on `main`. #5095 retired the mutation check. Commit `5be66720e` removed
+  the coverage carry-over check. Whether either one was the wedge is unproven
+  until GRQ-3's facts are posted.
 
 ## Evidence
 
@@ -86,17 +86,22 @@ run that delivers nothing is retried, not labelled needs-human as
 
 - **Edited** `worker/deno/tests/time_deferral_test.ts`: assertions added to two
   existing tests, with none removed. On the unchanged code both tests failed
-  with `Expected actual: "…handed to a human…" to contain: "retried as not
-  finished"` (25 passed, 2 failed). After the fix, `deno test -A
+  with
+  `Expected actual: "…handed to a human…" to contain: "retried as not
+  finished"`
+  (25 passed, 2 failed). After the fix,
+  `deno test -A
   tests/time_deferral_test.ts tests/handle_no_changes_time_deferral_test.ts`
   from `worker/deno` passed: 37 passed, 0 failed.
-- **Ran** `./quality.sh < /dev/null` on the head: `Result: PASSED (with skipped checks)`; the gate skipped `config integration` and `checkov`.
+- **Ran** `./quality.sh < /dev/null` on the head:
+  `Result: PASSED (with skipped checks)`; the gate skipped `config integration`
+  and `checkov`.
 - **Docs:** I grepped `docs/` (outside `docs/archive/`), `README.md`,
   `DESIGN-PRINCIPLES.md` and `prompts/` for `MAX_TIME_DEFERRALS`,
-  `Deferral limit reached` and the deferral limit. `docs/workflows/issue-processing.md`
-  ("Deferral has a budget"), `DESIGN-PRINCIPLES.md` and
-  `docs/TOKEN-ECONOMIZER-TRIAL.md` already describe the retry, so no doc needed
-  a change.
+  `Deferral limit reached` and the deferral limit.
+  `docs/workflows/issue-processing.md` ("Deferral has a budget"),
+  `DESIGN-PRINCIPLES.md` and `docs/TOKEN-ECONOMIZER-TRIAL.md` already describe
+  the retry, so no doc needed a change.
 
 ## Not done or not checked
 
