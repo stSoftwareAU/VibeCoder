@@ -78,6 +78,7 @@ function fakeGh(
     hideRows?: { value: boolean };
     failList?: { value: boolean };
     failMarkerList?: { value: boolean };
+    seedComments?: Array<{ author: string; body: string }>;
   } = {},
 ) {
   const calls: string[][] = [];
@@ -88,7 +89,13 @@ function fakeGh(
     created_at: string;
     updated_at: string;
     author: string;
-  }> = [];
+  }> = (opts.seedComments ?? []).map((comment, index) => ({
+    id: index + 1,
+    body: comment.body,
+    created_at: "2026-11-04T22:00:00Z",
+    updated_at: "2026-11-04T22:00:00Z",
+    author: comment.author,
+  }));
   const created: string[][] = [];
   const ghFn = (args: string[]): Promise<string> => {
     calls.push(args);
@@ -210,7 +217,7 @@ Deno.test("backfill posts one facts comment for an archived pre-change file, the
       RUN_FAILURE_TARGET_REPO,
     ]);
     const body = call[call.indexOf("--body") + 1]!;
-    assertStringIncludes(body, hardKillFactsMarker(RUN_ID));
+    assertStringIncludes(body, hardKillFactsMarker(ARCHIVED));
     assertStringIncludes(body, "**Phase:** `completion`");
     assertStringIncludes(body, "**Last step logged:** `quality gate`");
     assertStringIncludes(body, "**Guest probe:**");
@@ -322,6 +329,75 @@ Deno.test("a failed facts-posted rename is retried without duplicating the comme
   }
 });
 
+Deno.test("two unknown-run archives use distinct file markers and both post", async () => {
+  const { dir, archive } = await setup();
+  const first = "hard-kill-vibe-coder-111-1793830629.json";
+  const second = "hard-kill-vibe-coder-222-1793830630.json";
+  try {
+    await Deno.writeTextFile(
+      `${archive}/${first}`,
+      JSON.stringify(
+        evidence({ runId: "unknown", container: "vibe-coder-111" }),
+      ),
+    );
+    await Deno.writeTextFile(
+      `${archive}/${second}`,
+      JSON.stringify(
+        evidence({ runId: "unknown", container: "vibe-coder-222" }),
+      ),
+    );
+    const gh = fakeGh();
+    const result = await backfillArchivedHardKillFacts({
+      evidenceDir: dir,
+      ghFn: gh.ghFn,
+      fleetAuthors: FLEET,
+    });
+
+    assertEquals(result, { posted: 2, marked: 2, kept: 0 });
+    assertEquals(gh.comments.length, 2);
+    const bodies = gh.comments.map((call) => call[call.indexOf("--body") + 1]!);
+    assertStringIncludes(bodies[0]!, hardKillFactsMarker(first));
+    assertStringIncludes(bodies[1]!, hardKillFactsMarker(second));
+    assertEquals(
+      await names(archive),
+      [factsPostedName(first), factsPostedName(second)].sort(),
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a marker from outside the fleet cannot suppress a facts comment", async () => {
+  const { dir, archive } = await setup();
+  try {
+    await Deno.writeTextFile(
+      `${archive}/${ARCHIVED}`,
+      JSON.stringify(evidence()),
+    );
+    const gh = fakeGh({
+      seedComments: [{
+        author: "drive-by-user",
+        body: hardKillFactsMarker(ARCHIVED),
+      }],
+    });
+    const result = await backfillArchivedHardKillFacts({
+      evidenceDir: dir,
+      ghFn: gh.ghFn,
+      fleetAuthors: FLEET,
+    });
+
+    assertEquals(result, { posted: 1, marked: 1, kept: 0 });
+    assertEquals(gh.comments.length, 1);
+    assertStringIncludes(
+      gh.comments[0]![gh.comments[0]!.indexOf("--body") + 1]!,
+      hardKillFactsMarker(ARCHIVED),
+    );
+    assertEquals(await names(archive), [factsPostedName(ARCHIVED)]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("backfill keeps the file when the issue lookup fails and posts it next pass", async () => {
   const { dir, archive } = await setup();
   try {
@@ -353,7 +429,7 @@ Deno.test("backfill keeps the file when the issue lookup fails and posts it next
     assertEquals(gh.comments.length, 1);
     assertStringIncludes(
       gh.comments[0]![gh.comments[0]!.indexOf("--body") + 1]!,
-      hardKillFactsMarker(RUN_ID),
+      hardKillFactsMarker(ARCHIVED),
     );
     assertEquals(await names(archive), [factsPostedName(ARCHIVED)]);
   } finally {

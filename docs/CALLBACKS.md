@@ -522,8 +522,9 @@ flowchart TD
   existed carry none of them. On each reporting pass, for every archived file
   not named `*.facts.json`, the worker posts one comment on the open issue for
   its signature with the same fixed-shape facts the issue body uses (never log
-  text), marked `vibe-hard-kill-facts` with the run id, and then renames the
-  file to `*.facts.json`. Before posting, the worker checks for that run marker
+  text), marked `vibe-hard-kill-facts` with the encoded archive filename, and
+  then renames the file to `*.facts.json`. Before posting, the worker checks for
+  that file marker
   in a fleet-authored comment, so a failed rename cannot duplicate the comment
   on the next start. A file whose signature has
   no verified open issue is kept for a later start until retention expires. If the lookup or the comment

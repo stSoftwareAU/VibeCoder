@@ -11,7 +11,7 @@
  * each hard-kill reporting pass this module posts, once per archived file, ONE
  * comment on the open issue for the file's signature. The comment carries the
  * same fixed-shape facts the issue body uses (never log text), and the file is
- * then renamed to `*.facts.json`. Before posting, a fleet-authored run marker
+ * then renamed to `*.facts.json`. Before posting, a fleet-authored file marker
  * is checked so a failed rename cannot cause a duplicate on later starts. A
  * file whose post failed keeps its name and is retried on the next start.
  *
@@ -41,18 +41,21 @@ import {
 } from "./run_failure_issue.ts";
 import { fetchMarkerComments } from "./marker_comment_pages.ts";
 
-/** The marker that names the run whose facts a comment carries. */
-export function hardKillFactsMarker(runId: string): string {
-  return `<!-- vibe-hard-kill-facts run="${runId}" -->`;
+/** The marker that names the archived file whose facts a comment carries. */
+export function hardKillFactsMarker(archiveName: string): string {
+  return `<!-- vibe-hard-kill-facts file="${
+    encodeURIComponent(archiveName)
+  }" -->`;
 }
 
 /** The comment that adds the facts of an archived kill to its open issue. */
 export function formatHardKillFactsComment(
   evidence: HardKillEvidence,
   sig: HardKillSignature,
+  archiveName: string,
 ): string {
   return [
-    hardKillFactsMarker(evidence.runId),
+    hardKillFactsMarker(archiveName),
     "",
     "**Facts for an archived kill** (Issue #4815): added once from the evidence archived on the host, so this issue carries them even when it was filed before these fields were published.",
     "",
@@ -209,7 +212,7 @@ export async function backfillArchivedHardKillFacts(
       continue;
     }
 
-    const marker = hardKillFactsMarker(evidence.runId);
+    const marker = hardKillFactsMarker(name);
     let alreadyPosted: boolean;
     try {
       const markerComments = (await fetchMarkerComments(
@@ -245,7 +248,7 @@ export async function backfillArchivedHardKillFacts(
           "--repo",
           RUN_FAILURE_TARGET_REPO,
           "--body",
-          formatHardKillFactsComment(evidence, sig),
+          formatHardKillFactsComment(evidence, sig, name),
         ]);
       } catch (err) {
         logWarn(
@@ -263,7 +266,7 @@ export async function backfillArchivedHardKillFacts(
       result.marked++;
     } catch (err) {
       logWarn(
-        `hard-kill facts backfill: ${name} has a facts comment on #${issue} but could not be marked; the fleet-authored run marker will suppress a duplicate next start: ${
+        `hard-kill facts backfill: ${name} has a facts comment on #${issue} but could not be marked; the fleet-authored file marker will suppress a duplicate next start: ${
           firstLine(err)
         }`,
       );

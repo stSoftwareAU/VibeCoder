@@ -37,7 +37,7 @@ is not diagnosed or repaired here. Part of #4815.
   (`*.facts.json`). That name still matches `HARD_KILL_FILE_PATTERN`, so
   retention pruning applies unchanged and no comment search runs after a
   successful rename. Before posting, the backfill also checks for the run
-  marker in a fleet-authored comment; if the rename failed, the next start
+  file marker in a fleet-authored comment; if the rename failed, the next start
   retries the rename without duplicating the public comment.
 - A file whose signature has no verified open issue is kept for a later start. A failed lookup, a failed comment or a malformed
   file keeps the file as it is, logs a warning with the cause, and is retried on
@@ -75,7 +75,7 @@ Backend change, no UI files. Tests under `worker/deno/tests/`:
 
 - `hard_kill_facts_backfill_4815_test.ts` uses real temporary directories and a
   fake `gh` that answers the open-issue search by its input. The cases:
-  - An archived completion kill gets one comment with its run-id marker,
+  - An archived completion kill gets one comment with its archive-file marker,
     `**Phase:** \`completion\``, the last step and the guest probe. The file
     becomes`*.facts.json`. A second pass posts nothing. A private token in the
     log tail never reaches a`gh` argument. Non-secret canaries also prove that
@@ -89,10 +89,14 @@ Backend change, no UI files. Tests under `worker/deno/tests/`:
     name, posts no comment and warns with the gh error's first line; once the
     lookup succeeds, the next pass posts the comment and renames the file.
   - A failed rename returns `posted: 1, marked: 0, kept: 1`; the next pass finds
-    the fleet-authored run marker, posts nothing, retries the rename and warns
+    the fleet-authored file marker, posts nothing, retries the rename and warns
     with only the first line of the cause.
   - A failed marker-comment read keeps the file and posts nothing; the next
     successful pass posts and marks it.
+  - Two archives with `runId: unknown` but different filenames each get their
+    own comment and are both marked, rather than sharing one marker.
+  - A matching marker authored outside the fleet does not suppress the facts
+    comment or the file rename.
   - A malformed archived file is left byte-for-byte as it was, with a warning.
   - A newly reported file is archived as `*.facts.json`. Its newly filed issue
     receives an older file’s facts even when search still returns no rows.
@@ -179,14 +183,14 @@ flowchart TD
 
 ## Test Plan
 
-- **Added** `worker/deno/tests/hard_kill_facts_backfill_4815_test.ts` (10 tests,
+- **Added** `worker/deno/tests/hard_kill_facts_backfill_4815_test.ts` (12 tests,
   listed under Evidence). On the base branch they fail, because the module does
   not exist and the archive name is unchanged.
 - **Red-checked** the failed-lookup test: with the lookup's catch changed to
   fall through as `issue = null`, it fails (7 passed, 1 failed), because the
   warning says no verified issue was found rather than reporting the lookup
   failure. The file remains unchanged. With the head's code restored it passes
-  (10 passed, 0 failed).
+  (12 passed, 0 failed).
 - **Edited and re-run** `worker/deno/tests/hard_kill_report_test.ts`. Its
   `report()` helper and the direct AC3 reporter call inject an in-memory
   `factsSeams`, so no test using the fake pending-file seams can reach the
@@ -198,7 +202,7 @@ flowchart TD
   tests/hard_kill_report_test.ts tests/hard_kill_guest_facts_test.ts
   tests/hard_kill_evidence_test.ts tests/run_core_production_deps_hard_kill_test.ts
   tests/run_core_hard_kill_test.ts tests/lib_sweep_coverage_test.ts`
-  from `worker/deno` after adding the review tests: 188 passed, 0 failed.
+  from `worker/deno` after adding the review tests: 190 passed, 0 failed.
   `deno task check:manifests` passed (876 passed, 0 failed).
 - **Ran** `./quality.sh < /dev/null`. Every stage passed except `deno tests`,
   where one test failed, `tests/pr_summary_ci_workflow_3768_test.ts`, because
