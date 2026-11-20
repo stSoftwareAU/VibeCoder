@@ -103,6 +103,7 @@ flowchart LR
       `worker/deno/lib/config_unknown_keys.ts` (lines 496 and 507);
     - the tests that pin the retired key, in `worker/deno/tests/config_test.ts`
       and `worker/deno/tests/config_unknown_keys_test.ts`;
+    - the `jsonc_test.ts` header naming the removed `deno_test_config` tests;
     - the `hard_kill_report_test.ts` test that pins the removed label.
   - Left alone on purpose: the `exempt (untestable)` branch-outcome rule in
     `prompts/pr_feedback/prompt.md` (#3428) and the unrelated "baseline
@@ -142,6 +143,8 @@ flowchart LR
   - The `listTestFiles` and `importsModule` tests in
     `worker/deno/tests/mutation_runner_test.ts`. Its `confinePath`, seam
     environment, SIGTERM and temp-dir tests stay.
+  - Removed four `parseMutationExemptions` tests with the function and its only
+    caller, `coverage_carryover_gate.ts`. The `mdSafe` tests stay.
 - Tests added so the lines the removed tests reached stay covered:
   - `worker/deno/tests/jsonc_test.ts` (new) drives `stripJsonc` in
     `worker/deno/lib/jsonc.ts` directly: line comments, block comments, trailing
@@ -151,8 +154,6 @@ flowchart LR
     reaches `mutation_runner.ts:91-92` (`normalisePath`), which the deleted
     `listTestFiles` tests used to reach. A `deno coverage` run over the two
     files shows every one of the 11 lines hit.
-  - The `parseMutationExemptions` tests in
-    `worker/deno/tests/mutation_gate_test.ts`. The `mdSafe` tests stay.
 - Targeted runs on the final code all passed:
   - `tests/summary_rule_gate_retry_test.ts`, `tests/config_test.ts`,
     `tests/config_unknown_keys_test.ts`, `tests/hard_kill_report_test.ts` and
