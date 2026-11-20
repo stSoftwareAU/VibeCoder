@@ -43,10 +43,11 @@ every pull request to `Develop`, `main` and `milestone/*` (drafts run when
 marked ready), and a failed, cancelled or skipped run turns `gate` red.
 `checkQualityCallsAwsEmulator` in
 [`worker/deno/lib/aws_emulator_workflow_check.ts`](../worker/deno/lib/aws_emulator_workflow_check.ts)
-holds that wiring: `gate` needs `aws-emulator`, has `if: always()` and no
-`continue-on-error`, and has a step that runs `.github/scripts/gate.sh` as its
-only command with `NEEDS_JSON: ${{ toJSON(needs) }}`, no `if:` or
-`continue-on-error`, and a shell that runs the body.
+holds that wiring: `gate` needs `aws-emulator`, has `if: always()` and no soft
+`continue-on-error` (unset or `false`), and has a step that runs
+`.github/scripts/gate.sh` by its exact path as its only command with
+`NEEDS_JSON: ${{ toJSON(needs) }}`, no `if:` or soft `continue-on-error`, and a
+shell that runs the body. It has no other step but `actions/checkout`.
 [`worker/deno/tests/quality_gate_script_5110_test.ts`](../worker/deno/tests/quality_gate_script_5110_test.ts)
 runs that script and shows a skipped, cancelled or failed `aws-emulator` result
 closes the gate. The `aws-emulator` job needs no Docker socket and no service

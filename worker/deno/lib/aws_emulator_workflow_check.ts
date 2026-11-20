@@ -40,9 +40,10 @@
  * `checkQualityCallsAwsEmulator` checks the parsed quality.yml: a job calls
  * this workflow (`[gate-call]`) and the `gate` job needs it (`[gate-needs]`),
  * has `if: always()` (`[gate-always]`) and no soft `continue-on-error`
- * (`[gate-soft]`), and has a step that runs `.github/scripts/gate.sh` as its
- * only command with `NEEDS_JSON: ${{ toJSON(needs) }}`, no `if:` or soft
- * `continue-on-error`, and a shell that runs the body (`[gate-script]`).
+ * (`[gate-soft]`), and has a step that runs `.github/scripts/gate.sh` by its
+ * exact path as its only command with `NEEDS_JSON: ${{ toJSON(needs) }}`, no
+ * `if:` or soft `continue-on-error`, and a shell that runs the body, with no
+ * other step but `actions/checkout` (`[gate-script]`).
  *
  * `checkContainerBuildRunsAwsEmulator` checks the parsed container-build.yml:
  * job `container` has a step that runs the reference command as `agent` in a
@@ -890,10 +891,11 @@ export function checkContainerBuildRunsAwsEmulator(
 /**
  * Check a parsed quality.yml: some job calls the AWS Emulator workflow, the
  * `gate` job needs that job, and `gate` is wired to judge the result: `if:`
- * is `always()`, no soft `continue-on-error`, and a step runs
- * `.github/scripts/gate.sh` as its only command with `NEEDS_JSON` set to
- * `${{ toJSON(needs) }}`, no `if:` or soft `continue-on-error`, and a shell
- * that runs the body. Never throws on malformed input.
+ * is `always()`, no soft `continue-on-error` (unset or `false`), and a step
+ * runs `.github/scripts/gate.sh` by its exact path as its only command with
+ * `NEEDS_JSON` set to `${{ toJSON(needs) }}`, no `if:` or soft
+ * `continue-on-error`, and a shell that runs the body; no other step but
+ * `actions/checkout`. Never throws on malformed input.
  */
 export function checkQualityCallsAwsEmulator(quality: unknown): string[] {
   if (!isObject(quality)) return ["quality workflow is not an object"];
@@ -926,6 +928,23 @@ export function checkQualityCallsAwsEmulator(quality: unknown): string[] {
 
 const GATE_SCRIPT_PATH = ".github/scripts/gate.sh";
 const ALWAYS_CONDITIONS = ["always()", "${{ always() }}"];
+const GATE_SCRIPT_PATHS = [GATE_SCRIPT_PATH, `./${GATE_SCRIPT_PATH}`];
+
+/**
+ * Whether a step's code is, apart from `set -euo pipefail`, exactly one
+ * command: the gate script by its exact path, bare or after `bash`/`sh`. A
+ * path that merely ends with the script name could be another file.
+ */
+function stepRunsGateScript(step: unknown): boolean {
+  const rest = segmentsOf(step).filter((w) =>
+    w.join(" ") !== "set -euo pipefail"
+  );
+  if (rest.length !== 1) return false;
+  const words = rest[0] ?? [];
+  if (words.length === 1) return GATE_SCRIPT_PATHS.includes(words[0] ?? "");
+  return words.length === 2 && (words[0] === "bash" || words[0] === "sh") &&
+    GATE_SCRIPT_PATHS.includes(words[1] ?? "");
+}
 
 /**
  * The findings for the rest of the chain that turns a skipped, cancelled or
@@ -953,12 +972,18 @@ function gateJudgesNeeds(
       "[gate-soft] continue-on-error must not be set on the gate job: a failed gate would still report success",
     );
   }
-  const step = stepsOf(gate).find((s) => stepIsOnlyScript(s, GATE_SCRIPT_PATH));
+  const gateSteps = stepsOf(gate);
+  const step = gateSteps.find(stepRunsGateScript);
   if (!isObject(step)) {
     problems.push(
       `[gate-script] no gate step runs ${GATE_SCRIPT_PATH} as its only command with its exit status intact`,
     );
     return problems;
+  }
+  if (!gateSteps.every((s) => s === step || stepIsPlainCheckout(s))) {
+    problems.push(
+      `[gate-script] the gate job may have no step but actions/checkout and the gate script step, since another step could replace or skip the script`,
+    );
   }
   const env = step.env;
   const needsJson = isObject(env) ? env.NEEDS_JSON : undefined;

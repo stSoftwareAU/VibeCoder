@@ -621,6 +621,44 @@ Deno.test("(gate-script) accepts bash <path> and a set -euo pipefail block", () 
   );
 });
 
+for (
+  const path of [
+    "./evil.github/scripts/gate.sh",
+    "/tmp/x/.github/scripts/gate.sh",
+  ]
+) {
+  Deno.test(`(gate-script) refuses a command that is not the exact path ${path}`, () => {
+    assertOneFinding(
+      checkQualityCallsAwsEmulator(qualityMutated(GATE_RUN, `run: ${path}`)),
+      "[gate-script]",
+      "no gate step runs",
+    );
+  });
+}
+
+Deno.test("(gate-script) refuses an extra step that could replace the script", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_STEP_NAME,
+        '      - run: echo "exit 0" > .github/scripts/gate.sh\n' +
+          GATE_STEP_NAME,
+      ),
+    ),
+    "[gate-script]",
+    "no step but actions/checkout",
+  );
+});
+
+Deno.test("(gate-script) accepts ./.github/scripts/gate.sh", () => {
+  assertEquals(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(GATE_RUN, "run: ./.github/scripts/gate.sh"),
+    ),
+    [],
+  );
+});
+
 Deno.test("checkQualityCallsAwsEmulator reports non-object input without throwing", () => {
   assertEquals(checkQualityCallsAwsEmulator(null), [
     "quality workflow is not an object",
