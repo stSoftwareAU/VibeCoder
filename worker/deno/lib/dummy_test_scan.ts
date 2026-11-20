@@ -685,10 +685,13 @@ function lowerBound(xs: readonly number[], x: number): number {
   return lo;
 }
 
-/** OR of `bits[lo..hi)` (three-bit values) by prefix counts (Issue #5236). */
-function rangeOr(
+/**
+ * How many of `bits[lo..hi)` (three-bit values) set each bit, by prefix
+ * counts (Issue #5236).
+ */
+function rangeCounts(
   bits: readonly number[],
-): (lo: number, hi: number) => number {
+): (lo: number, hi: number) => [number, number, number] {
   const prefix = [0, 1, 2].map(() => new Int32Array(bits.length + 1));
   for (let k = 0; k < bits.length; k++) {
     for (let b = 0; b < 3; b++) {
@@ -696,13 +699,25 @@ function rangeOr(
     }
   }
   return (lo, hi) => {
-    if (hi <= lo) return 0;
-    let r = 0;
-    for (let b = 0; b < 3; b++) {
-      if (prefix[b]![hi]! > prefix[b]![lo]!) r |= 1 << b;
-    }
-    return r;
+    if (hi <= lo) return [0, 0, 0];
+    const n = (b: number) => prefix[b]![hi]! - prefix[b]![lo]!;
+    return [n(0), n(1), n(2)];
   };
+}
+
+/** Three per-bit counts as the bits that occur (Issue #5236). */
+function countsToBits(counts: readonly number[]): number {
+  let r = 0;
+  for (let b = 0; b < 3; b++) if (counts[b]! > 0) r |= 1 << b;
+  return r;
+}
+
+/** OR of `bits[lo..hi)` (three-bit values) by prefix counts (Issue #5236). */
+function rangeOr(
+  bits: readonly number[],
+): (lo: number, hi: number) => number {
+  const counts = rangeCounts(bits);
+  return (lo, hi) => countsToBits(counts(lo, hi));
 }
 
 /**
@@ -1253,21 +1268,22 @@ function enclosingParams(
 }
 
 /**
- * The body of the definition a named callback at `at` resolves to: the
- * innermost same-named definition whose scope encloses the registration. Null
- * when it is a helper's parameter, out of view, or the hunk cuts a block.
+ * The definition a named callback at `at` resolves to: the innermost
+ * same-named definition whose scope encloses the registration. Null when it is
+ * a helper's parameter, out of view, or the hunk cuts a block. Its body is
+ * `masked.slice(d.start, d.end + 1)`.
  */
-function namedCallbackBody(
+function namedCallbackDef(
   scope: Scope,
   masked: string,
   name: string,
   at: number,
-): string | null {
+): Definition | null {
   if (!scope.balanced) return null;
   if (registrarOf(scope, masked, at, name) !== null) return null;
   for (let b = scope.enclosing[at] ?? -1;; b = scope.enclosing[b]!) {
     const d = scope.byScopeName.get(`${b}:${name}`);
-    if (d !== undefined) return masked.slice(d.start, d.end + 1);
+    if (d !== undefined) return d;
     if (b < 0) return null;
   }
 }
@@ -1407,6 +1423,80 @@ export function scanDummyTests(diff: string): DummyTestScan {
     }
     return m;
   };
+  // What a callee adds as bits, for a TS hunk's file.
+  const calleeBits = (h: number, name: string): number =>
+    delegationBits(
+      calleeAssertions(
+        name,
+        "ts",
+        definitions.get(hunks[h]!.file)!,
+        hunks[h]!.isNew,
+        1,
+        memoFor(hunks[h]!.file),
+      ),
+    );
+  // The assertions and callee strengths of a whole TS hunk, built on the first
+  // body judged from them, once the definitions are complete (Issue #5236).
+  const inlineByHunk: Array<{
+    asserts: ReturnType<typeof assertionIndex>;
+    callCounts: (lo: number, hi: number) => [number, number, number];
+  }> = [];
+  const inlineOf = (h: number) => {
+    let built = inlineByHunk[h];
+    if (built === undefined) {
+      // The strengths read the bracket table of the hunk they are built from.
+      const masked = maskedByHunk[h]!;
+      if (hunkBrackets?.text !== masked) scanHunk(masked);
+      built = {
+        asserts: assertionIndex(masked),
+        callCounts: rangeCounts(
+          callsOf(h).calls.map((c) => c.kept ? calleeBits(h, c.name) : 0),
+        ),
+      };
+      inlineByHunk[h] = built;
+    }
+    return built;
+  };
+  /**
+   * What a TS inline body from the bracket at `from` to its `)` at `close`
+   * asserts, as bits: its own assertions and what its calls add, a call named
+   * in `skip` aside. Judged from the hunk's indexes, so a body nested in
+   * another is not re-read (Issue #5236).
+   */
+  const bodyBits = (
+    h: number,
+    from: number,
+    close: number,
+    skip: ReadonlySet<string>,
+  ): number => {
+    const masked = maskedByHunk[h]!;
+    const { asserts, callCounts } = inlineOf(h);
+    const index = callsOf(h);
+    const { head, rest, stop } = sliceCalls(masked, index, from, close);
+    const counts = callCounts(rest, stop);
+    // Each call of a name adds the same bits, so a skipped name's calls are
+    // taken back out of the counts.
+    for (const name of skip) {
+      const list = index.byName.get(name);
+      if (list === undefined) continue;
+      const n = lowerBound(list, stop) - lowerBound(list, rest);
+      if (n <= 0) continue;
+      const b = calleeBits(h, name);
+      for (let k = 0; k < 3; k++) if ((b >> k) & 1) counts[k]! -= n;
+    }
+    let bits = asserts.or(
+      lowerBound(asserts.starts, from),
+      lowerBound(asserts.starts, close),
+    ) | countsToBits(counts);
+    for (const c of head) {
+      if (c.kept && !skip.has(c.name)) bits |= calleeBits(h, c.name);
+    }
+    return bits;
+  };
+  // What a named callback's definition asserts, as bits, keyed
+  // `${hunk}:${start}`: read once however many tests register it
+  // (Issue #5236).
+  const namedBits = new Map<string, number>();
   for (const [h, hunk] of hunks.entries()) {
     const lang = langOf(hunk.file);
     if (lang === null) continue;
@@ -1440,8 +1530,8 @@ export function scanDummyTests(diff: string): DummyTestScan {
             ? sliceCallNames(masked, callsOf(h), open, close, wanted)
             : [];
           for (const name of names) {
-            const hit = registrarOf(scope, masked, open, name);
-            if (hit === null) continue;
+            // Every name in `wanted` has a registrar.
+            const hit = registrarOf(scope, masked, open, name)!;
             const entry = byHelper.get(hit.helper) ??
               { indices: [], names: new Set<string>() };
             entry.indices.push(hit.index);
@@ -1476,23 +1566,17 @@ export function scanDummyTests(diff: string): DummyTestScan {
   // of the helper it calls, with its own assertions counted (Issue #5233). The
   // definitions of every file are complete here, so the lookup is whole.
   for (const c of candidates) {
-    const body = maskedByHunk[c.h]!.slice(c.open, c.close + 1);
     const skip = new Set<string>();
     for (const entry of c.byHelper.values()) {
       for (const name of entry.names) skip.add(name);
     }
-    const deleg = delegatedAssertions(
-      body,
-      "ts",
-      definitions.get(c.file)!,
-      c.isNew,
-      1,
-      skip,
-      memoFor(c.file),
-    );
-    const own = [...assertionsIn(body, "ts"), ...deleg.out];
-    if (own.length > 0 && !own.every((s) => s === "weak")) continue;
-    const wrapper: Delegation = { out: own, unseen: deleg.unseen };
+    const own = bodyBits(c.h, c.open, c.close, skip);
+    if (own & STRONG) continue;
+    // Only which strengths occur is read where the wrapper is judged.
+    const wrapper: Delegation = {
+      out: own & WEAK ? ["weak"] : [],
+      unseen: (own & UNSEEN) !== 0,
+    };
     const regs = registrars.get(c.file) ?? new Map<string, Registration[]>();
     registrars.set(c.file, regs);
     for (const [helper, entry] of c.byHelper) {
@@ -1538,32 +1622,6 @@ export function scanDummyTests(diff: string): DummyTestScan {
     const visitIgnores = lang === "ts"
       ? visitOnce([...masked.matchAll(TS_IGNORE)].map((m) => m.index ?? 0))
       : null;
-    // The assertions and callee strengths of the whole hunk, built on the
-    // first inline body judged (Issue #5236).
-    let inline: {
-      asserts: ReturnType<typeof assertionIndex>;
-      callOr: (lo: number, hi: number) => number;
-    } | null = null;
-    const inlineIndex = () =>
-      inline ??= {
-        asserts: assertionIndex(masked),
-        callOr: rangeOr(
-          callsOf(h).calls.map((c) =>
-            c.kept
-              ? delegationBits(
-                calleeAssertions(
-                  c.name,
-                  "ts",
-                  defs,
-                  hunk.isNew,
-                  1,
-                  memoFor(hunk.file),
-                ),
-              )
-              : 0
-          ),
-        ),
-      };
     const judge = (
       declLine: number,
       reportLine: number,
@@ -1583,63 +1641,49 @@ export function scanDummyTests(diff: string): DummyTestScan {
       if (bodyEnd < 0) return; // body runs past the hunk: not judged
       const file = hunk.file;
       const line = hunk.lines[reportLine]!.line;
-      let bits: number;
-      if (lang === "ts" && spans === null && callback === null) {
-        // An inline body: judged from the hunk's indexes, not re-read.
-        const { asserts, callOr } = inlineIndex();
-        const { head, rest, stop } = sliceCalls(
-          masked,
-          callsOf(h),
-          bodyStart,
-          bodyEnd,
+      // What a masked body asserts and its calls add, as bits.
+      const readBits = (body: string): number =>
+        strengthBits(assertionsIn(body, lang)) |
+        delegationBits(
+          delegatedAssertions(
+            body,
+            lang,
+            defs,
+            hunk.isNew,
+            1,
+            NO_SKIP,
+            memoFor(hunk.file),
+          ),
         );
-        bits = asserts.or(
-          lowerBound(asserts.starts, bodyStart),
-          lowerBound(asserts.starts, bodyEnd),
-        ) | callOr(rest, stop) | delegationBits(extra);
-        for (const c of head) {
-          if (!c.kept) continue;
-          bits |= delegationBits(
-            calleeAssertions(
-              c.name,
-              "ts",
-              defs,
-              hunk.isNew,
-              1,
-              memoFor(hunk.file),
-            ),
-          );
+      let bits: number;
+      if (callback !== null) {
+        // A callback passed by name is judged by the function it names, read
+        // once per definition however many tests register it (Issue #5236).
+        const d = namedCallbackDef(scope, masked, callback, bodyStart);
+        if (d === null) {
+          note(file, line, "unseen");
+          return;
         }
+        const key = `${h}:${d.start}`;
+        let own = namedBits.get(key);
+        if (own === undefined) {
+          own = readBits(masked.slice(d.start, d.end + 1));
+          namedBits.set(key, own);
+        }
+        bits = own;
+      } else if (lang === "ts" && spans === null) {
+        // An inline body: judged from the hunk's indexes, not re-read.
+        bits = bodyBits(h, bodyStart, bodyEnd, NO_SKIP);
       } else {
         // A registration's own callback arguments: another registration's
         // arguments of the same helper call are not this test's body.
-        let body = spans === null
-          ? masked.slice(bodyStart, bodyEnd + 1)
-          : spans.map(([a, b]) => masked.slice(a, b + 1)).join("\n");
-        if (callback !== null) {
-          // A callback passed by name is judged by the function it names.
-          const named = namedCallbackBody(scope, masked, callback, bodyStart);
-          if (named === null) {
-            note(file, line, "unseen");
-            return;
-          }
-          body = named;
-        }
-        const found = assertionsIn(body, lang);
-        found.push(...extra.out);
-        const helpers = delegatedAssertions(
-          body,
-          lang,
-          defs,
-          hunk.isNew,
-          1,
-          NO_SKIP,
-          memoFor(hunk.file),
+        bits = readBits(
+          spans === null
+            ? masked.slice(bodyStart, bodyEnd + 1)
+            : spans.map(([a, b]) => masked.slice(a, b + 1)).join("\n"),
         );
-        found.push(...helpers.out);
-        bits = strengthBits(found) |
-          (helpers.unseen || extra.unseen ? UNSEEN : 0);
       }
+      bits |= delegationBits(extra);
       if ((bits & (WEAK | STRONG)) === 0) {
         if (bits & UNSEEN) note(file, line, "unseen");
         else add(file, line, "no-assertion");

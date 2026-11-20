@@ -2,9 +2,11 @@
  * Growth guards for the dummy-test scan (Issue #5236).
  *
  * The scan must cost time proportional to the diff for (1) one helper with
- * many assertion lines called by many one-line tests, and (2) many inline
- * `test(...)` registrations nested around one assertion. Output is also
- * pinned so the cheaper reading cannot change a verdict.
+ * many assertion lines called by many one-line tests, (2) many inline
+ * `test(...)` registrations nested around one assertion, (3) one named
+ * callback many tests register, and (4) nested registrations inside a helper
+ * that call its parameter. Output is also pinned so the cheaper reading cannot
+ * change a verdict.
  *
  * Australian English throughout.
  */
@@ -82,6 +84,73 @@ for (
       assertEquals(
         new Set(scan.findings.map((f) => f.rule)),
         new Set([inner === "assert(ok);" ? "success-only" : "no-assertion"]),
+      );
+    }
+  });
+}
+
+for (const kind of ["strong", "weak"] as const) {
+  Deno.test(`a named callback many tests register is read once per scan: ${kind}`, () => {
+    const build = (chars: number): string => {
+      const n = Math.max(1, Math.floor(chars / 50));
+      const asserts = Array.from(
+        { length: n },
+        (_, k) =>
+          kind === "strong"
+            ? `  assertEquals(x, ${k});`
+            : `  assertExists(x${k});`,
+      );
+      const tests = Array.from(
+        { length: n },
+        (_, k) => `Deno.test("t${k}", named);`,
+      );
+      const source = `function named() {\n${asserts.join("\n")}\n}\n` +
+        tests.join("\n") + "\n";
+      return added("tests/named_test.ts", source);
+    };
+    const scan = assertLinearGrowth(
+      "named callback registered by every test",
+      build,
+      scanDummyTests,
+      { baseChars: 40000, repeats: 1 },
+    );
+    assertEquals(scan.notes, []);
+    if (kind === "strong") {
+      assertEquals(scan.findings, []);
+    } else {
+      assertEquals(scan.findings.length, MAX_DUMMY_TEST_FINDINGS);
+      assertEquals(
+        new Set(scan.findings.map((f) => f.rule)),
+        new Set(["success-only"]),
+      );
+    }
+  });
+}
+
+for (const call of ["assertEquals(f(), 1);", "assertExists(x);"]) {
+  Deno.test(`nested registrations that call a helper's parameter are read once each: ${call}`, () => {
+    const build = (chars: number): string => {
+      const n = Math.max(1, Math.floor(chars / 24));
+      const open = Array.from({ length: n }, (_, k) => `test("t${k}", () => {`);
+      const close = Array.from({ length: n }, () => `});`);
+      const source = "function helper(fn: () => void) {\n" + open.join("\n") +
+        "\n  fn();\n" + close.join("\n") + `\n}\nhelper(() => { ${call} });\n`;
+      return added("tests/nested_helper_test.ts", source);
+    };
+    const scan = assertLinearGrowth(
+      "nested registrations calling a helper's parameter",
+      build,
+      scanDummyTests,
+      { baseChars: 30000, repeats: 1 },
+    );
+    assertEquals(scan.notes, []);
+    if (call.startsWith("assertEquals")) {
+      assertEquals(scan.findings, []);
+    } else {
+      // Every nested body is judged at the one call of the helper.
+      assertEquals(
+        scan.findings.map((f) => f.rule),
+        ["success-only"],
       );
     }
   });
