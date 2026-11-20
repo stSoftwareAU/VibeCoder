@@ -848,6 +848,102 @@ for (
   });
 }
 
+const CONTAINER_NEEDS = "  container:\n    needs: changes\n";
+const CHANGES_JOB = "  changes:\n";
+const CHANGES_OUTPUT_LINE = "      image: ${{ steps.filter.outputs.image }}\n";
+const FILTER_ID = "        id: filter\n";
+const DETECT_CALL_LINE =
+  '          .github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"\n';
+const IMAGE_FALSE_LINE = '          echo "image=false" >> "$GITHUB_OUTPUT"\n';
+
+// The `changes` job feeds IMAGE_CHANGED: if it cannot yield 'true' every image
+// step, the agent run included, skips and the required check still passes.
+for (
+  const [label, pairs, expected] of [
+    ["job container without needs: changes", [[
+      CONTAINER_NEEDS,
+      "  container:\n",
+    ]], "job container must need changes"],
+    ["job container needing only another job", [[
+      CONTAINER_NEEDS,
+      "  container:\n    needs: [setup]\n",
+    ]], "job container must need changes"],
+    ["a constant changes outputs.image", [[
+      CHANGES_OUTPUT_LINE,
+      "      image: 'false'\n",
+    ]], "must set outputs.image"],
+    ["job changes with if: false", [[
+      CHANGES_JOB,
+      CHANGES_JOB + "    if: false\n",
+    ]], "job changes must have no if:"],
+    ["job changes with continue-on-error: true", [[
+      CHANGES_JOB,
+      CHANGES_JOB + "    continue-on-error: true\n",
+    ]], "job changes must have no if:"],
+    [
+      "the filter step id renamed",
+      [[FILTER_ID, "        id: detect\n"]],
+      "must have a step with id: filter",
+    ],
+    ["the filter step with continue-on-error: true", [[
+      FILTER_ID,
+      FILTER_ID + "        continue-on-error: true\n",
+    ]], "the changes filter step must have no if:"],
+    ["the filter step with if: false", [[
+      FILTER_ID,
+      FILTER_ID + "        if: false\n",
+    ]], "the changes filter step must have no if:"],
+    ["the filter step writing image=false instead of the script", [[
+      DETECT_CALL_LINE,
+      IMAGE_FALSE_LINE,
+    ]], "must end by running"],
+    ["the filter step writing image=false before the script", [[
+      DETECT_CALL_LINE,
+      IMAGE_FALSE_LINE + DETECT_CALL_LINE,
+    ]], "must write no image= value"],
+    ["the filter step writing image=$x before the script", [[
+      DETECT_CALL_LINE,
+      '          echo "image=$x" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
+    ]], "must write no image= value"],
+  ] as [string, [string, string][], string][]
+) {
+  Deno.test(`(container-agent-run) refuses ${label}`, () => {
+    const problems = checkContainerBuildRunsAwsEmulator(
+      parseYaml(mutateText(CONTAINER_BUILD, ...pairs)),
+    );
+    assertEquals(problems.length, 1, JSON.stringify(problems));
+    assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+    assert(problems[0]?.includes(expected), problems[0]);
+  });
+}
+
+Deno.test("(container-agent-run) refuses job changes removed entirely with one finding", () => {
+  const start = CONTAINER_BUILD.indexOf(CHANGES_JOB);
+  const end = CONTAINER_BUILD.indexOf(CONTAINER_NEEDS);
+  assert(start > 0 && end > start, "anchors out of order");
+  const problems = checkContainerBuildRunsAwsEmulator(
+    parseYaml(mutateText(CONTAINER_BUILD, [
+      CONTAINER_BUILD.slice(start, end),
+      "",
+    ])),
+  );
+  assertEquals(problems.length, 1, JSON.stringify(problems));
+  assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+  assert(problems[0]?.includes("job changes"), problems[0]);
+});
+
+Deno.test("(container-agent-run) accepts job container with needs in list form", () => {
+  assertEquals(
+    checkContainerBuildRunsAwsEmulator(parseYaml(
+      mutateText(CONTAINER_BUILD, [
+        CONTAINER_NEEDS,
+        "  container:\n    needs: [changes]\n",
+      ]),
+    )),
+    [],
+  );
+});
+
 Deno.test("(container-agent-run) refuses the step removed entirely", () => {
   const start = CONTAINER_BUILD.indexOf(AGENT_STEP_NAME);
   const end = CONTAINER_BUILD.indexOf(AGENT_DOCKER_LINE) +

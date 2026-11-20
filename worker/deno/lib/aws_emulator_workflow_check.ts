@@ -49,7 +49,13 @@
  * `|`, `;` or `&`, no `!`), no `continue-on-error`, an `if:` of only
  * `env.IMAGE_CHANGED == 'true'`, and an effective shell that runs the body. Job
  * `container` itself has no `continue-on-error` and no `if:`, since a skipped
- * or soft-failing job hides the run.
+ * or soft-failing job hides the run. The image gate is checked end to end: job
+ * `container` needs `changes`; job `changes` exists, has no `if:` or soft
+ * `continue-on-error`, and its `outputs.image` is exactly
+ * `${{ steps.filter.outputs.image }}`; and its `filter` step has no `if:` or
+ * soft `continue-on-error`, ends by running `.github/scripts/detect-image-changes.sh`
+ * and writes no `image=` value but `true`. Otherwise `IMAGE_CHANGED` is not
+ * `true`, every image step skips and the required check passes without the run.
  *
  * Each finding names its invariant in square brackets, e.g. `[test-step]`.
  *
@@ -530,11 +536,96 @@ function stepIsAgentRun(step: unknown): boolean {
   return rest.length === 1 && segmentRunsAwsEmulatorAsAgent(rest[0] ?? []);
 }
 
+/** The path filter script the `changes` job's `filter` step must run. */
+const DETECT_SCRIPT_PATH = ".github/scripts/detect-image-changes.sh";
+
+/** Whether `o` sets `continue-on-error` to anything but `false`. */
+function softFails(o: Record<string, unknown>): boolean {
+  return o["continue-on-error"] !== undefined &&
+    o["continue-on-error"] !== false;
+}
+
+/**
+ * Whether the step's last code line is exactly one command running `path`. The
+ * real filter step has earlier `;` and `exit 0` in an `if` block, so
+ * `segmentsOf` (which refuses `;`) cannot be used; the final line is what
+ * decides the step's exit status under `set -e`.
+ */
+function lastLineInvokes(step: unknown, path: string): boolean {
+  const lines = codeOf(step).split("\n").map((l) => l.trim()).filter(Boolean);
+  const segments = shellSegments(lines[lines.length - 1] ?? "");
+  return segments.length === 1 && segmentInvokes(segments[0] ?? [], path);
+}
+
+/**
+ * Findings for the `changes` job and `container`'s `needs`: together they
+ * decide `IMAGE_CHANGED`, which gates the agent run.
+ */
+function imageGateProblems(
+  tag: string,
+  jobs: [string, Record<string, unknown>][],
+  container: Record<string, unknown>,
+): string[] {
+  const problems: string[] = [];
+  const skipNote =
+    "so needs.changes.outputs.image is not 'true', every image step and the agent run skip and the required check passes";
+  const needs = Array.isArray(container.needs)
+    ? container.needs
+    : [container.needs];
+  if (!needs.includes("changes")) {
+    problems.push(
+      `${tag} job container must need changes: without it needs.changes.outputs.image is empty, ${skipNote}`,
+    );
+  }
+  const changes = jobs.find(([id]) => id === "changes")?.[1];
+  if (changes === undefined) {
+    problems.push(
+      `${tag} job changes must exist: it computes IMAGE_CHANGED, and without it ${skipNote}`,
+    );
+    return problems;
+  }
+  if (changes.if !== undefined || softFails(changes)) {
+    problems.push(
+      `${tag} job changes must have no if: and no continue-on-error: a skipped or soft-failing job leaves its output empty, ${skipNote}`,
+    );
+  }
+  const outputs = changes.outputs;
+  if (
+    !isObject(outputs) ||
+    outputs.image !== "${{ steps.filter.outputs.image }}"
+  ) {
+    problems.push(
+      `${tag} job changes must set outputs.image to exactly \${{ steps.filter.outputs.image }}: any other value can be a constant, ${skipNote}`,
+    );
+  }
+  const filter = stepsOf(changes).find((s) => isObject(s) && s.id === "filter");
+  if (!isObject(filter)) {
+    problems.push(
+      `${tag} job changes must have a step with id: filter: outputs.image reads it, and without it ${skipNote}`,
+    );
+  } else if (filter.if !== undefined || softFails(filter)) {
+    problems.push(
+      `${tag} the changes filter step must have no if: and no continue-on-error: a skipped or soft-failing step leaves image unset, ${skipNote}`,
+    );
+  } else if (!lastLineInvokes(filter, DETECT_SCRIPT_PATH)) {
+    problems.push(
+      `${tag} the changes filter step must end by running ${DETECT_SCRIPT_PATH}: the path filter decides whether the image is built, and a step that skips it can leave image unset`,
+    );
+  } else if (/image=(?!true\b)/.test(codeOf(filter))) {
+    problems.push(
+      `${tag} the changes filter step must write no image= value other than image=true: image=false or a variable would turn off the image steps, ${skipNote}`,
+    );
+  }
+  return problems;
+}
+
 /**
  * Check a parsed container-build.yml: job `container` has a step that runs the
  * AWS Emulator reference command as `agent` in a fresh container, with its
- * exit status intact (`[container-agent-run]`). Never throws on malformed
- * input.
+ * exit status intact (`[container-agent-run]`). It also checks that the gate
+ * feeding `IMAGE_CHANGED` can yield `true`: `container` needs `changes`, and
+ * `changes` (with its `filter` step) is not skippable, soft-failing or
+ * constant. Never throws on malformed input.
  */
 export function checkContainerBuildRunsAwsEmulator(
   workflow: unknown,
@@ -550,7 +641,11 @@ export function checkContainerBuildRunsAwsEmulator(
       `${tag} no step in job container runs the AWS Emulator reference command as agent (docker run --rm --user agent, exactly one read-only infra/cloudformation volume at D, --entrypoint D/test-aws-emulator.sh, image \${IMAGE}) with its exit status intact`,
     ];
   }
-  const problems: string[] = [];
+  const problems: string[] = imageGateProblems(
+    tag,
+    jobEntries(workflow),
+    job,
+  );
   if (
     job["continue-on-error"] !== undefined &&
     job["continue-on-error"] !== false

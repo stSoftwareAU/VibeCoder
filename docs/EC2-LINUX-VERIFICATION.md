@@ -59,10 +59,18 @@ read-only volume holding the entrypoint and no flag outside `--rm`, `--user`,
 `env:` set none of `BASH_ENV`, `ENV`, `PATH` or the `DOCKER_*` connection
 variables. The job takes `IMAGE_CHANGED` from the change detector, an earlier
 step runs `docker build -t "${IMAGE}"`, and no step names `GITHUB_ENV` or
-`GITHUB_PATH`. It is a text check, so it does not catch everything. It misses
-an indirect write to those files, a step that rewrites the checked-out script
-or replaces docker or its context, and a retag the check does not recognise. It
-also does not check the `changes` job that sets `IMAGE_CHANGED`.
+`GITHUB_PATH`. The check also requires job `container` to need `changes`, the
+`changes` job to have no `if:` or `continue-on-error` and an `outputs.image` of
+exactly `${{ steps.filter.outputs.image }}`, and its step `id: filter` to have
+no `if:` or `continue-on-error`, to end by running
+`.github/scripts/detect-image-changes.sh`, and to write no `image=` value other
+than `image=true` (the non-pull-request branch). Otherwise `IMAGE_CHANGED` is
+not `true`, every image step and the agent run skip, and the required check
+passes without running the command. It is a text check, so it does not catch
+everything. It misses an indirect write to those files, a step that rewrites
+the checked-out script or replaces docker or its context, a retag the check
+does not recognise, and an unconditional `exit 0` added to the `filter` step
+before its script call, which leaves `image` unset.
 
 ```mermaid
 flowchart LR
