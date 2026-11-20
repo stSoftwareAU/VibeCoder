@@ -268,3 +268,10 @@ flowchart LR
   npm packages and is read-only, so the worker's pre-push gate blocks with
   "Failed caching npm package 'mdurl@1.0.1'". This is a worker environment
   fault, not a fault in this change.
+
+## Review follow-up
+
+The agent verification step must invoke `docker run` directly. The workflow
+checker now requires `docker` as its first word. Two additional regression
+cases cover a help-only wrapper and an inline Docker daemon override.
+The unmodified container build workflow remains the passing control.
