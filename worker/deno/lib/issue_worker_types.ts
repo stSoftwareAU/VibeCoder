@@ -647,6 +647,14 @@ interface WorkOnIssueResultBase {
    * post-run callback context.
    */
   tokenEconomizer?: TokenEconomizerRunStats;
+  /**
+   * Agent provider that served the run (Issue #5163), from
+   * `servedRunProvider`: the one provider every agent launch through the
+   * runner reported; the host's configured provider when the run launched no
+   * agent; absent when a launch reported none, the launches reported several,
+   * or the run never reported. Carried to the post-run callback context.
+   */
+  provider?: string;
 }
 
 /**

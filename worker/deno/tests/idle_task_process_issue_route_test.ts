@@ -128,17 +128,21 @@ Deno.test(
       summary: "security-scan complete: filed 3 findings",
     };
 
-    const outcome = await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
-      logger,
-      handleIdleTaskFn: () => Promise.resolve(handlerResult),
-      ensureCloneFn: okClone,
-      claimRouteFn: okClaim,
-      ghCommandFn: (args) => {
-        ghCalls.push(args);
-        return Promise.resolve("");
+    const outcome = await routeIdleTaskInProcessIssue(
+      { ...WRAPPER_INPUT, configuredProvider: "deepseek" },
+      {
+        logger,
+        handleIdleTaskFn: () => Promise.resolve(handlerResult),
+        ensureCloneFn: okClone,
+        claimRouteFn: okClaim,
+        ghCommandFn: (args) => {
+          ghCalls.push(args);
+          return Promise.resolve("");
+        },
       },
-    });
+    );
 
+    // A scan ran, so its provider provenance is unknown to this route.
     assertEquals(outcome, { routed: true, success: true });
 
     // Exactly two gh calls — the summary comment, then the close — both
@@ -179,21 +183,24 @@ Deno.test(
     const { logger } = makeLogger();
     const ghCalls: string[][] = [];
 
-    const outcome = await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
-      logger,
-      handleIdleTaskFn: () =>
-        Promise.resolve({
-          handled: true,
-          ok: false,
-          summary: "security-scan threw: timeout",
-        }),
-      ensureCloneFn: okClone,
-      claimRouteFn: okClaim,
-      ghCommandFn: (args) => {
-        ghCalls.push(args);
-        return Promise.resolve("");
+    const outcome = await routeIdleTaskInProcessIssue(
+      { ...WRAPPER_INPUT, configuredProvider: "deepseek" },
+      {
+        logger,
+        handleIdleTaskFn: () =>
+          Promise.resolve({
+            handled: true,
+            ok: false,
+            summary: "security-scan threw: timeout",
+          }),
+        ensureCloneFn: okClone,
+        claimRouteFn: okClaim,
+        ghCommandFn: (args) => {
+          ghCalls.push(args);
+          return Promise.resolve("");
+        },
       },
-    });
+    );
 
     assertEquals(outcome, { routed: true, success: false });
     assertEquals(ghCalls.length, 1);
@@ -357,7 +364,10 @@ Deno.test(
     const ghCalls: string[][] = [];
     let handlerCalled = false;
 
-    const outcome = await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
+    const outcome = await routeIdleTaskInProcessIssue({
+      ...WRAPPER_INPUT,
+      configuredProvider: "deepseek",
+    }, {
       logger,
       findTemplateFn: () => fakeTemplate("security-scan"),
       claimRouteFn: okClaim,
@@ -379,7 +389,11 @@ Deno.test(
     });
 
     assertEquals(handlerCalled, false);
-    assertEquals(outcome, { routed: true, success: false });
+    assertEquals(outcome, {
+      routed: true,
+      success: false,
+      provider: "deepseek",
+    });
     assertEquals(ghCalls.length, 1);
     assertEquals(ghCalls[0]?.[2], "POST");
     assertEquals(ghCalls[0]?.[3], "repos/owner/widget/issues/2726/comments");
