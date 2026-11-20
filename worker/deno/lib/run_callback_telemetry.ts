@@ -262,7 +262,8 @@ export function servedRunProvider(
  * launch to `launches` (Issue #5163). That is the one seam the execute phase,
  * quality-gate fix agent and gate retries launch through, so each call counts
  * once; a failed or thrown launch is recorded with no provider unless the
- * error carries a billed result. The pre-PR verifier, clarity assessment and
+ * error carries a billed result. Returned pre-PR verifier runs also count because their usage is recorded.
+ * Clarity assessment and
  * `/compact` prime do not use the seam and are deliberately not counted.
  */
 export function trackAgentLaunches(
@@ -287,5 +288,16 @@ export function trackAgentLaunches(
     );
     return result;
   }) as typeof run;
-  return { ...deps, claude: { ...deps.claude, runClaudeWithRetry: wrapped } };
+  return {
+    ...deps,
+    claude: {
+      ...deps.claude,
+      runClaudeWithRetry: wrapped,
+      runPrePrVerifier: async (input) => {
+        const result = await deps.claude.runPrePrVerifier(input);
+        if (result.run) record(result.run.runStats?.provider);
+        return result;
+      },
+    },
+  };
 }

@@ -5196,6 +5196,7 @@ export async function createProductionRunCoreDeps(
           // Issue #5096: opt-in templates (test-audit) need an owner request.
           // Checked against fleet-only logins, so an owner in allowed_authors
           // counts as a request.
+          configuredProvider: config.agentProvider?.trim(),
           ...idleRouteOptInInput({
             githubUser,
             issueAuthor: issueData.author,
@@ -5223,7 +5224,15 @@ export async function createProductionRunCoreDeps(
         // is reported as the failure it is. Neither is an ordinary success.
         return {
           ok: true,
-          value: { ...routeRunResult(idleRoute), ...(mode ? { mode } : {}) },
+          value: {
+            ...routeRunResult(
+              idleRoute,
+              "claimLost" in idleRoute
+                ? config.agentProvider
+                : idleRoute.provider,
+            ),
+            ...(mode ? { mode } : {}),
+          },
         };
       }
 
@@ -5255,7 +5264,10 @@ export async function createProductionRunCoreDeps(
         // is reported as the failure it is.
         return {
           ok: true,
-          value: { ...routeRunResult(addRepoRoute), ...(mode ? { mode } : {}) },
+          value: {
+            ...routeRunResult(addRepoRoute, config.agentProvider),
+            ...(mode ? { mode } : {}),
+          },
         };
       }
 
@@ -5284,7 +5296,10 @@ export async function createProductionRunCoreDeps(
       if (seedRoute.routed) {
         return {
           ok: true,
-          value: { ...routeRunResult(seedRoute), ...(mode ? { mode } : {}) },
+          value: {
+            ...routeRunResult(seedRoute, config.agentProvider),
+            ...(mode ? { mode } : {}),
+          },
         };
       }
 

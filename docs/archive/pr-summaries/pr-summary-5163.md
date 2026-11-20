@@ -42,12 +42,10 @@ three blocking review findings left on that PR.
   one.
 - The wrapper does not wrap `runOrchestratedIssueRun`: the execute phase passes
   the wrapped runner into it, so each orchestrated call counts once.
-- Three runs are not counted because they do not use that seam: the pre-PR
-  verifier (`runPrePrVerifier`), the clarity assessment (a direct import in
-  `lib/clarity_assessment.ts`) and a resumed stream session's `/compact` prime
-  (`primeStreamCompaction`). They are review, assessment and housekeeping runs,
-  not issue work. This replaces the earlier `reviewOnly` flag on run stats,
-  which this branch no longer adds.
+- A returned verifier run counts toward provider attribution along with its
+  usage. The clarity assessment and session compaction remain outside this
+  count. Routes known to have skipped agent work carry the configured provider;
+  idle scans and terminal errors without launch records omit it.
 - A pinned run whose later agent runs on the host's provider is reported as
   mixed (omitted), not as the pinned provider, because the issue asks that mixed
   provenance stay explicit.

@@ -415,8 +415,8 @@ plugin-off (sections 2 and 5), so it is left out of the population and counted o
 its own exclusion line. The report shows a per-status breakdown of the population
 (on, fallback, stopped, not-run) and the persisted count. A record
 written since #5163 names the provider that served the run (one with a
-launch that reported no provider, or launches on several providers, carries no
-provider and is excluded with the no-provider runs); a record written before #5163 names the host's configured
+launch (including the pre-PR verifier) that reported no provider, or launches on several providers, carries no
+provider and is excluded with the no-provider runs). Idle scans, unclassified failures and hard kills also omit the provider. Add-repo, seed-idle-tasks and idle wrappers declined before scanning use the configured provider; a record written before #5163 names the host's configured
 provider and nothing tells the two apart, so an earlier switch-off control run
 served by another provider cannot be excluded from the archive; the report says
 so.

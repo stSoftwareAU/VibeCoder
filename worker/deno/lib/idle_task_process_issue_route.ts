@@ -51,6 +51,7 @@ import { decideOptInClaim } from "./idle_task_opt_in.ts";
 
 /** Input describing the issue under consideration. */
 export interface RouteIdleTaskInput extends RouteClaimInput {
+  configuredProvider?: string;
   issueTitle: string;
   issueLabels: string[];
   issueBody: string;
@@ -121,7 +122,7 @@ export const IDLE_TASK_RUNWAY_DECLINED_MESSAGE =
  */
 export type RouteIdleTaskOutcome =
   | { routed: false }
-  | { routed: true; success: boolean }
+  | { routed: true; success: boolean; provider?: string }
   | ({ routed: true; success: false } & RouteClaimLost);
 
 /**
@@ -261,7 +262,13 @@ async function runRoutedScan(
         },
         { logger: deps.logger, ghCommandFn: ghCommand },
       );
-      return { routed: true, success: true };
+      return {
+        routed: true,
+        success: true,
+        ...(input.configuredProvider
+          ? { provider: input.configuredProvider }
+          : {}),
+      };
     }
 
     const clone = await ensureClone(input.repo, input.workDir);
@@ -284,7 +291,13 @@ async function runRoutedScan(
         },
         { logger: deps.logger, ghCommandFn: ghCommand },
       );
-      return { routed: true, success: false };
+      return {
+        routed: true,
+        success: false,
+        ...(input.configuredProvider
+          ? { provider: input.configuredProvider }
+          : {}),
+      };
     }
     if (clone.cloned) {
       deps.logger.info("Cloned repo for idle-task scan", {

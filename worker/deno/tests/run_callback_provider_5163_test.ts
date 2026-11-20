@@ -175,6 +175,7 @@ async function runIssue(
   config.agentProvider = "claude";
   if (pin) config.repoConfig = { [REPO]: { agentProvider: pin } };
   const deps = createMockDeps({
+    ...extra,
     claude: {
       env: hostEnv,
       prepareRtkRun: healthyRtkSeam(100, 140).prepare as never,
@@ -198,6 +199,7 @@ async function runIssue(
           },
         });
       }) as never,
+      ...extra?.claude,
     },
     github: {
       runGhCommand: () => Promise.resolve("https://github.com/org/repo/pull/1"),
@@ -206,7 +208,6 @@ async function runIssue(
       findExistingPrForIssue: () =>
         Promise.resolve({ ok: false, error: new Error("No PR found") }),
     },
-    ...extra,
   });
   return workOnIssue({
     repo: REPO,
@@ -290,6 +291,54 @@ for (
         assertEquals(invoked[0]!.agentProvider, "deepseek");
         assertEquals(result.provider, undefined);
         assertEquals(publishedProvider(result), undefined);
+      } finally {
+        setConfiguredAgentProviderId(undefined);
+        setConfiguredEnabledAgentProviderIds(undefined);
+      }
+    },
+  });
+}
+
+for (const verifierProvider of ["claude", "deepseek"]) {
+  Deno.test({
+    name: `#5163 - pinned workOnIssue counts a ${verifierProvider} verifier`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      setConfiguredAgentProviderId("claude");
+      setConfiguredEnabledAgentProviderIds(["claude", "deepseek"]);
+      let verified = false;
+      try {
+        const result = await runIssue("deepseek", [], undefined, {
+          git: {
+            runGitCommand: (args: string[]) => {
+              const outputs: Record<string, string> = {
+                "ls-tree": "docs/archive/pr-summaries/pr-summary-5163.md\0",
+                diff: "fix.ts\n",
+                "rev-parse": "a".repeat(40),
+                "rev-list": "1",
+                status: " M docs/archive/pr-summaries/pr-summary-5163.md",
+                show: "# Summary\n\nFixes #5163.\n",
+              };
+              return Promise.resolve({
+                ok: true,
+                value: { code: 0, stdout: outputs[args[0]!] ?? "", stderr: "" },
+              });
+            },
+          },
+          claude: {
+            runPrePrVerifier: async () => {
+              verified = true;
+              const run = (await okWith({ provider: verifierProvider })).value;
+              return { status: "not_checked", reason: "test", run };
+            },
+          },
+        });
+        assert(verified, "the verifier must run");
+        assertEquals(
+          publishedProvider(result),
+          verifierProvider === "deepseek" ? "deepseek" : undefined,
+        );
       } finally {
         setConfiguredAgentProviderId(undefined);
         setConfiguredEnabledAgentProviderIds(undefined);
