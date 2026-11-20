@@ -45,6 +45,6 @@ Backend/prompt-only change, with no UI file touched.
   - The operator doc's **Every finding ends fixed or rebutted** section says the re-sync never rebuilds the title.
 - Red on base: with `prompts/pr_feedback/prompt.md` and `docs/workflows/pr-feedback.md` restored from `origin/main`, both tests failed with missing-phrase assertions. On the head both pass (`deno test -A tests/pr_feedback_title_not_rebuilt_5239_docs_test.ts`: 2 passed, 0 failed).
 - Regression: ran `marker_less_body_rebuild_4515_docs_test.ts`, `pr_body_matches_final_diff_3015_test.ts`, `ci_fix_summary_additive_5023_docs_test.ts` and every test under `worker/deno/tests` that reads `prompts/pr_feedback/prompt.md`: 155 passed, 0 failed. No existing test pinned the old sentence, so no existing test was edited.
-- `./quality.sh < /dev/null` is run once on the final head before the PR is raised; its result is in the final message for this run.
+- `./quality.sh < /dev/null` on the head: exited 0, `Result: PASSED (with skipped checks)`. Config integration and checkov were skipped by the gate itself; deno tests, lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
 None left undone. Not checked: the behaviour of a live review-fix run on a real PR. This is prompt guidance, and only a later fleet review can observe it.
