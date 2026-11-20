@@ -2612,26 +2612,28 @@ flowchart TD
   threshold is reached in the first place, not how long the marker lasts
   once it is there.
 - **On every fast failure, on any host.** The worker finds the open,
-  fleet-authored tally issue for the repository (lowest issue number wins
-  when more than one is somehow open); if none exists it creates one, labelled
-  `bug` (retried once without the label if the repository refuses it). It
-  then adds one comment of the form
-  `<!-- vibe-fast-failure host="<host>" at="<ISO time>" issue="<repo>#<n>" -->`
-  plus a one-line human-readable reason. For a multiline Git failure, the
-  detail skips generic trailing lines such as `Aborting`, git's `Please commit
-  your changes or stash them…` / `Please move or remove them…` advice and the
-  indented path list (dropped before the last-20-lines window is cut, so a
-  refusal listing any number of paths still keeps its cause), so the comment
-  keeps the checkout refusal that explains why setup stopped. The detail is
-  redacted and length-bounded before it is posted. Only fleet-authored marker
-  comments count — `service_accounts` ∪ `fleet_pr_authors` ∪ the host's own
-  login — a comment from any other account is ignored, and a tally issue
-  authored by a non-fleet account is ignored outright (a new one is filed
-  instead). When
-  the count of fleet-authored marker comments dated inside
-  `repo_fast_failure_window_hours` reaches `repo_fast_failure_threshold` —
-  counted across the whole fleet, never per host — the body is edited to add
-  the back-off marker plus a short "backed off" line.
+  fleet-authored tally issue for the repository (lowest issue number wins when
+  more than one is somehow open); if none exists it creates one, labelled `bug`
+  (retried once without the label if the repository refuses it). It then adds
+  one comment of the form `<!-- vibe-fast-failure host="<host>" at="<ISO time>"
+  issue="<repo>#<n>" -->` plus a one-line human-readable reason. For a multiline
+  Git failure, the detail skips generic trailing lines such as `Aborting`, git's
+  `Please commit your changes or stash them…` / `Please move or remove them…`
+  advice and the indented path list (dropped before the last-20-lines window is
+  cut, so a refusal listing any number of paths still keeps its cause), so the
+  comment keeps the checkout refusal that explains why setup stopped. For the
+  worker's own failure message, the `### Diagnostics` heading and the `- Key:
+  value` bullets under it are dropped the same way, so when the run left no
+  last-output block the detail is the failure reason above them, not a bullet
+  such as `- Clarity: assessed as clear`. The detail is redacted and
+  length-bounded before it is posted. Only fleet-authored marker comments count
+  — `service_accounts` ∪ `fleet_pr_authors` ∪ the host's own login — a comment
+  from any other account is ignored, and a tally issue authored by a non-fleet
+  account is ignored outright (a new one is filed instead). When the count of
+  fleet-authored marker comments dated inside `repo_fast_failure_window_hours`
+  reaches `repo_fast_failure_threshold` — counted across the whole fleet, never
+  per host — the body is edited to add the back-off marker plus a short "backed
+  off" line.
 - **Failures in the diagnostic path are non-fatal.** A `gh` failure while
   finding, creating, commenting on, or editing the tally issue is logged at
   WARN with the repository and the error; the claim release still completes
