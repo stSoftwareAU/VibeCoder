@@ -50,8 +50,8 @@ such as an unrelated marker-less PR or an already-current description, do not
 block dismissal. GitHub CI then runs the repository's quality and regression
 checks on the updated branch.
 
-When a repository keeps a per-PR summary that CI checks for freshness, the
-repair prompt names the PR's own `docs/archive/pr-summaries/pr-summary-<N>.md`
+When a repository keeps a per-PR summary that CI checks, the repair
+prompt names the PR's own `docs/archive/pr-summaries/pr-summary-<N>.md`
 from its `issue-<N>` head branch and tells the agent to rewrite it so every
 claim, count and result matches the pushed head. Summaries brought in by the
 base merge belong to the PRs that wrote them. When the head branch has no issue

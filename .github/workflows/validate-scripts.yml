@@ -359,19 +359,19 @@ jobs:
             --default-branch "origin/$DEFAULT_BRANCH"
 
       # Issue #3768: a review-fix push made outside the worker (a laptop or
-      # cloud session, a human) reaches none of the worker's summary checks,
-      # so the archived PR summary kept describing the previous head. Every
-      # push to a PR that carries docs/archive/pr-summaries/pr-summary-<N>.md
-      # now fails here when a code commit is newer than the summary, or when
-      # a PR-summary gate blocks. Needs this job's full history
-      # (fetch-depth: 0). Refs pass through env, never interpolated into run.
-      - name: PR summary freshness and gates
+      # cloud session, a human) reaches none of the worker's summary checks.
+      # Every push to a PR that carries docs/archive/pr-summaries/pr-summary-<N>.md
+      # runs the PR-summary gates here and fails when one blocks or the summary
+      # is missing. Issue #5227 retired the commit-order freshness check.
+      # Needs this job's full history (fetch-depth: 0) for the merge-base diff.
+      # Refs pass through env, never interpolated into run.
+      - name: PR summary gates
         env:
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
         run: |
           set -euo pipefail
-          echo "=== PR summary freshness and gates (Issue #3768) ==="
+          echo "=== PR summary gates (Issue #3768) ==="
           cd worker/deno
           deno task pr-summary-ci --base "$BASE_REF" --head-branch "$HEAD_REF"
 
