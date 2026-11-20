@@ -63,6 +63,10 @@ import {
   RUN_FAILURE_FOLLOWUP_WINDOW_SECONDS,
   RUN_FAILURE_TARGET_REPO,
 } from "./run_failure_issue.ts";
+import {
+  backfillArchivedHardKillFacts,
+  type HardKillFactsSeams,
+} from "./hard_kill_facts_backfill.ts";
 import type { SelfDiagnosticFiling } from "./self_diagnostic_attestation.ts";
 
 /** The callback `failureClass` and the fleet failure class of a hard kill. */
@@ -73,6 +77,23 @@ export const HARD_KILL_FILE_PATTERN = /^hard-kill-.+\.json$/;
 const UNKNOWN_RUN_ID = "unknown";
 /** Where a reported evidence file is kept, inside the evidence directory. */
 export const HARD_KILL_ARCHIVE_DIR = "hard-kill-archive";
+/** The closing sentence of the issue body and the facts comment. */
+export const HARD_KILL_ARCHIVE_SENTENCE =
+  `The evidence (worker log, agent transcript, boot logs and guest probes) is kept on that host in \`~/logs/${HARD_KILL_ARCHIVE_DIR}/\`. It is never posted here, because it can hold private repository content.`;
+/**
+ * Suffix of an archived file whose facts are already public (Issue #4815):
+ * the filing posted them, or the facts backfill did. It still matches
+ * {@link HARD_KILL_FILE_PATTERN}, so retention applies to it.
+ */
+export const HARD_KILL_FACTS_POSTED_SUFFIX = ".facts.json";
+
+/** `hard-kill-x-1.json` to `hard-kill-x-1.facts.json`; idempotent. */
+export function factsPostedName(name: string): string {
+  return name.endsWith(HARD_KILL_FACTS_POSTED_SUFFIX)
+    ? name
+    : `${name.slice(0, -".json".length)}${HARD_KILL_FACTS_POSTED_SUFFIX}`;
+}
+
 /**
  * A phase name the public signature may carry: a lower-case identifier, as
  * every phase the worker logs is. Log text is untrusted, so anything else is
@@ -199,8 +220,12 @@ export interface HardKillSeams {
   /** Names (not paths) of the evidence files in `dir`. */
   listEvidenceFiles(dir: string): Promise<string[]>;
   readTextFile(path: string): Promise<string>;
-  /** Move a reported file into {@link HARD_KILL_ARCHIVE_DIR}. */
-  archiveFile(path: string): Promise<void>;
+  /**
+   * Move a reported file into {@link HARD_KILL_ARCHIVE_DIR}. Use
+   * {@link factsPostedName} only when the filing published the complete facts;
+   * a recurrence keeps its ordinary name for the backfill (Issue #4815).
+   */
+  archiveFile(path: string, factsPosted: boolean): Promise<void>;
   /** Remove expired archives and the oldest files above the transcript cap. */
   pruneArchive(dir: string, nowMs: number): Promise<void>;
 }
@@ -248,14 +273,18 @@ export const defaultHardKillSeams: HardKillSeams = {
       }
     }
   },
-  async archiveFile(path: string): Promise<void> {
+  async archiveFile(path: string, factsPosted: boolean): Promise<void> {
     const cut = path.lastIndexOf("/");
     const archive = `${path.slice(0, cut)}/${HARD_KILL_ARCHIVE_DIR}`;
     await Deno.mkdir(archive, { recursive: true });
     if (!(await Deno.lstat(archive)).isDirectory) {
       throw new Error("hard-kill archive is not a plain directory");
     }
-    await Deno.rename(path, `${archive}/${path.slice(cut + 1)}`);
+    const name = path.slice(cut + 1);
+    await Deno.rename(
+      path,
+      `${archive}/${factsPosted ? factsPostedName(name) : name}`,
+    );
   },
 };
 
@@ -500,6 +529,35 @@ export function hardKillLastStep(evidence: HardKillEvidence): string {
 }
 
 /**
+ * The fixed-shape public fact lines of one hard kill, shared by the issue body
+ * and the facts backfill (Issue #4815). Fixed labels, words and digits only,
+ * never log text.
+ */
+export function hardKillFactLines(
+  evidence: HardKillEvidence,
+  sig: HardKillSignature,
+): string[] {
+  return [
+    `**Host:** \`${inlineText(evidence.host, 200)}\``,
+    `**Container:** \`${inlineText(evidence.container, 200)}\``,
+    `**Run id:** \`${inlineText(evidence.runId, 200)}\``,
+    `**Handler:** \`${sig.handler}\``,
+    `**Phase:** \`${sig.phase}\``,
+    `**Last step logged:** \`${
+      hardKillLastStep(evidence)
+    }\` (the wedge is in or after this step)`,
+    `**Trigger:** ${inlineText(evidence.trigger, 100)}`,
+    `**Reason:** ${publicReason(evidence.trigger, evidence.reason)}`,
+    `**Captured at:** ${inlineText(evidence.capturedAt, 100)}`,
+    `**Last log time:** ${inlineText(evidence.lastLogTimestamp, 100)}`,
+    `**Silent before capture:** ${hardKillSilentFor(evidence)}`,
+    `**Guest probe:** \`${hardKillGuestProbe(evidence)}\``,
+    `**Guest memory:** ${hardKillGuestMemory(evidence)}`,
+    `**Guest pressure:** ${hardKillGuestPressure(evidence)}`,
+  ];
+}
+
+/**
  * Issue body: marker first, then the facts the worker and launcher wrote and
  * the guest figures derived from the evidence. No evidence text, last log
  * line, tool call or source repository: the issue is public and the run may
@@ -517,24 +575,9 @@ export function formatHardKillBody(
     "",
     "Auto-filed by the Vibe Coder (Issue #4254): a container wedged and the launcher watchdog reaped it, so the run never released its claim. The worker found the evidence file on its next start.",
     "",
-    `**Host:** \`${inlineText(evidence.host, 200)}\``,
-    `**Container:** \`${inlineText(evidence.container, 200)}\``,
-    `**Run id:** \`${inlineText(evidence.runId, 200)}\``,
-    `**Handler:** \`${sig.handler}\``,
-    `**Phase:** \`${sig.phase}\``,
-    `**Last step logged:** \`${
-      hardKillLastStep(evidence)
-    }\` (the wedge is in or after this step)`,
-    `**Trigger:** ${inlineText(evidence.trigger, 100)}`,
-    `**Reason:** ${publicReason(evidence.trigger, evidence.reason)}`,
-    `**Captured at:** ${inlineText(evidence.capturedAt, 100)}`,
-    `**Last log time:** ${inlineText(evidence.lastLogTimestamp, 100)}`,
-    `**Silent before capture:** ${hardKillSilentFor(evidence)}`,
-    `**Guest probe:** \`${hardKillGuestProbe(evidence)}\``,
-    `**Guest memory:** ${hardKillGuestMemory(evidence)}`,
-    `**Guest pressure:** ${hardKillGuestPressure(evidence)}`,
+    ...hardKillFactLines(evidence, sig),
     "",
-    `The evidence (worker log, agent transcript, boot logs and guest probes) is kept on that host in \`~/logs/${HARD_KILL_ARCHIVE_DIR}/\`. It is never posted here, because it can hold private repository content.`,
+    HARD_KILL_ARCHIVE_SENTENCE,
   ].join("\n");
 }
 
@@ -711,6 +754,8 @@ export interface ReportPendingHardKillsOptions {
   logWarn?: (message: string) => void;
   fleetAuthors?: readonly string[];
   recordFiling?: (filing: SelfDiagnosticFiling) => Promise<boolean>;
+  /** Seams of the facts backfill (Issue #4815); defaults to production. */
+  factsSeams?: HardKillFactsSeams;
 }
 
 /** Epoch from a `hard-kill-<container>-<epoch>.json` name; 0 when absent. */
@@ -830,7 +875,7 @@ export async function reportPendingHardKills(
       summary.reported++;
 
       try {
-        await seams.archiveFile(path);
+        await seams.archiveFile(path, filing.action === "filed");
       } catch (err) {
         summary.kept++;
         logWarn(
@@ -847,6 +892,24 @@ export async function reportPendingHardKills(
         }`,
       );
     }
+  }
+  try {
+    const backfill = await backfillArchivedHardKillFacts({
+      evidenceDir: opts.evidenceDir,
+      ghFn: opts.ghFn,
+      knownIssues: issueBySignature,
+      fleetAuthors: opts.fleetAuthors,
+      seams: opts.factsSeams,
+      log,
+      logWarn,
+    });
+    if (backfill.posted > 0 || backfill.marked > 0 || backfill.kept > 0) {
+      log(
+        `hard-kill facts backfill: posted ${backfill.posted}, marked ${backfill.marked}, kept ${backfill.kept} (Issue #4815)`,
+      );
+    }
+  } catch (err) {
+    logWarn(`hard-kill facts backfill failed: ${errorText(err)}`);
   }
   await pruneArchive();
   return summary;
