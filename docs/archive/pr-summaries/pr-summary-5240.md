@@ -87,6 +87,50 @@ this page, the README row and Codex's code-mode host:
 `container/providers/codex.sh`, `docs/CONTAINER.md`, the run-outcome classifier
 and its tests.
 
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — A page `docs/CODE-MODE-EXPERIMENT.md` exists with a
+  `Status: blocked` line and records: - the warning above, verbatim, with the
+  CLI version it was observed on (2.1.322) and the date (18 November 2026); -
+  the command that reproduces it,
+  `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 claude -p "Reply OK" --no-session-persistence`,
+  and the fact that the warning is printed before the CLI checks its login, so
+  the command needs no credential; - two further refusal reasons the 2.1.322
+  binary lists and the fleet configuration meets, each marked as read from the
+  binary and not observed: `DO_NOT_TRACK=1`, set image-wide at
+  `container/Containerfile` line 269, stops the CLI downloading the settings
+  Code Mode needs; and Code Mode works only with Opus 5.5 and Sonnet 5.5, which
+  excludes the review and planning runs on Fable 5.2; - the documented minimum
+  CLI version, 2.1.323, beside the `container/tools.json` Claude pin on the
+  observation date, 2.1.322; - the pass bar for an experiment once the status is
+  `feasible` (see Assumptions); - the restart rule: a person runs the
+  reproducing command, and once the warning is absent a new issue restarts the
+  experiment — evidence: `docs/CODE-MODE-EXPERIMENT.md` (§2.1–§2.3, §3, §4, §5)
+  — reviewer: met
+- **met** — The Documentation table in `README.md` has a row linking to the
+  page, as it has for the sibling pages `docs/TOKEN-ECONOMIZER-TRIAL.md` and
+  `docs/RTK-OUTPUT-TRIAL.md` — evidence: `README.md:481`,
+  `tests/readme_docs_reachability_test.ts` — reviewer: met
+- **met** — The pull request changes no worker, container or configuration file:
+  the switch is not wired while the status is `blocked`, the Claude pin in
+  `container/tools.json` stays at 2.1.322, and no build step or scheduled task
+  runs the reproducing command — evidence: `git diff --name-only` lists only
+  `README.md`, `docs/CODE-MODE-EXPERIMENT.md` and this summary;
+  `container/tools.json:53` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — spelling (no American forms in the added lines), KISS/DRY (the
+  page refers to #4959 by issue rather than copying its protocol), docs match
+  the code (Containerfile line 269, the 2.1.322 pin, `buildClaudeCliArgs`,
+  `PHASE_MODEL_TIERS`, no `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE` outside the new
+  files), the docs-drift test omission and its stated reason, TDD for a
+  docs-only change, and the PR summary structure and evidence rules.
+
 ## Test Plan
 
 No test was added or edited; the reasons are under Essential Design Decisions.
