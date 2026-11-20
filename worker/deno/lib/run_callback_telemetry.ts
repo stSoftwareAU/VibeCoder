@@ -15,6 +15,9 @@
  * provider that never reported `num_turns` reports no turn count, not nought
  * turns.
  *
+ * It also names the provider that served the run and wraps the runner seam to
+ * record each agent launch (Issue #5163).
+ *
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
@@ -32,6 +35,8 @@ import {
   CODEX_PROVIDER_ID,
   GEMINI_PROVIDER_ID,
 } from "./agent_provider.ts";
+import type { WorkerDeps } from "./issue_worker_wiring.ts";
+import { billedResultOfError } from "./failed_invocation_result.ts";
 
 /** The per-invocation stats this summariser reads. */
 export interface TelemetrySource {
@@ -212,5 +217,87 @@ export function breakdownInvocationTelemetry(
         ? {}
         : { estimatedApiEquivalentUsd: item.breakdown.totalCost }),
     })),
+  };
+}
+
+/** One agent launch the run made, as `trackAgentLaunches` records it. */
+export interface AgentLaunch {
+  /** Provider the launch reported serving it; absent when it reported none. */
+  provider?: string;
+}
+
+/**
+ * The provider that served a run, for the post-run callback document
+ * (Issue #5163).
+ *
+ * The document's `provider` used to be the host's configured provider, which
+ * is wrong whenever a repository pin, a subscription allocation, a reroute or
+ * an `agent_provider_fallback` switch sent the run elsewhere. Each launch's
+ * provider is stamped by `buildRunStats` in `lib/claude_runner.ts`; the
+ * launches come from `trackAgentLaunches`, which sees every agent launched
+ * through the runner seam, including the ones that failed.
+ *
+ * - No launches: no agent spawned, so the configured provider (undefined when
+ *   blank or absent).
+ * - Any launch that named no provider: undefined, as provenance is unknown.
+ * - Exactly one distinct provider named: that id.
+ * - Several distinct providers: undefined, never the configured one.
+ */
+export function servedRunProvider(
+  launches: readonly AgentLaunch[],
+  configuredProvider: string | undefined,
+): string | undefined {
+  if (launches.length === 0) return configuredProvider?.trim() || undefined;
+  const named = new Set<string>();
+  for (const launch of launches) {
+    const id = launch.provider?.trim();
+    if (!id) return undefined;
+    named.add(id);
+  }
+  return named.size === 1 ? [...named][0] : undefined;
+}
+
+/**
+ * A shallow copy of `deps` whose `claude.runClaudeWithRetry` appends each
+ * launch to `launches` (Issue #5163). That is the one seam the execute phase,
+ * quality-gate fix agent and gate retries launch through, so each call counts
+ * once; a failed or thrown launch is recorded with no provider unless the
+ * error carries a billed result. Returned pre-PR verifier runs also count because their usage is recorded.
+ * Clarity assessment and
+ * `/compact` prime do not use the seam and are deliberately not counted.
+ */
+export function trackAgentLaunches(
+  deps: WorkerDeps,
+  launches: AgentLaunch[],
+): WorkerDeps {
+  const run = deps.claude.runClaudeWithRetry;
+  const record = (provider: string | undefined) =>
+    launches.push(provider === undefined ? {} : { provider });
+  const wrapped = (async (...args: Parameters<typeof run>) => {
+    let result;
+    try {
+      result = await run(...args);
+    } catch (error) {
+      record(undefined);
+      throw error;
+    }
+    record(
+      result.ok
+        ? result.value.runStats?.provider
+        : billedResultOfError(result.error)?.runStats?.provider,
+    );
+    return result;
+  }) as typeof run;
+  return {
+    ...deps,
+    claude: {
+      ...deps.claude,
+      runClaudeWithRetry: wrapped,
+      runPrePrVerifier: async (input) => {
+        const result = await deps.claude.runPrePrVerifier(input);
+        if (result.run) record(result.run.runStats?.provider);
+        return result;
+      },
+    },
   };
 }

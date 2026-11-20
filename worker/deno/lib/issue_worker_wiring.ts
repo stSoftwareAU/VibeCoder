@@ -208,11 +208,6 @@ import { runQualityGate } from "./quality_gate.ts";
 import { formatSummary } from "./quality_helpers.ts";
 import { collectDiffableGateFindings } from "./baseline_gate.ts";
 import { defaultMutationRunnerSeams } from "./mutation_runner.ts";
-import type { CoverageCarryOverResult } from "./coverage_carryover_gate.ts";
-import {
-  type CoverageCarryOverInput,
-  runCoverageCarryOverCheck,
-} from "./coverage_carryover_runner.ts";
 import {
   type DiscriminationRunInput,
   runSecurityFixDiscrimination,
@@ -562,15 +557,6 @@ export interface QualityDeps {
   /** Record a baseline gate outcome for reuse (Issue #4283). */
   writeBaselineQualityCache: typeof writeBaselineQualityCache;
   /**
-   * Run the coverage carry-over check over the PR diff (Issue #3795): every
-   * line a test edited or removed by the PR reached must still be covered.
-   * Optional: when absent the coverage carry-over gate is not applicable and
-   * never blocks, so fixtures that build their own deps never run the check.
-   */
-  runCoverageCarryOverCheck?: (
-    input: CoverageCarryOverInput,
-  ) => Promise<CoverageCarryOverResult>;
-  /**
    * Run the cited security test red→green: against the base production files,
    * then against the fix (Issue #3659). Optional: when absent, a security-fix
    * PR whose discrimination check is due blocks as `discrimination-not-checked`
@@ -874,8 +860,6 @@ export function createDefaultDeps(
       fileRedCheckTracker,
       readBaselineQualityCache,
       writeBaselineQualityCache,
-      runCoverageCarryOverCheck: (input) =>
-        runCoverageCarryOverCheck(input, defaultMutationRunnerSeams()),
       runSecurityFixDiscrimination: (input) =>
         runSecurityFixDiscrimination(input, defaultMutationRunnerSeams()),
     },

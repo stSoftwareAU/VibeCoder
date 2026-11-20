@@ -1509,7 +1509,7 @@ recovery prompt lists those violations as fenced `CODE FIX` items: the turn may
 edit the cited
 files and add the tests the finding or reason names, re-dispatch the Standards
 reviewer over the new diff, and write `reason: fixed in this diff` only for a
-breach it actually fixed. Coverage carry-over items allow test fixes, pre-PR
+breach it actually fixed. Pre-PR
 verifier items allow the code and test fixes their findings request, and unmet
 criteria allow finishing the implementation. The remaining `REQUIRED ITEM`s
 keep the documentation-shortfall rule, "do not change the code", and "this turn
@@ -1535,7 +1535,7 @@ still has its summary's `## Standards Review` read (Issue #3761, NEAT-AI#4065).
 
 The summary gates that still run route through it: closure (#518),
 independent review (#663), reproduction status (#521), the placeholder-token
-gate (#3124), coverage carry-over (#3795), the pre-PR verifier (#3395) and unmet
+gate (#3124), the pre-PR verifier (#3395) and unmet
 criteria (#4146). Each is advice: the first report is one in-session note, and
 whatever remains is one pull-request comment (Issue #4234). The automatic
 mutation check that once ran here (Issue #3393) was retired by

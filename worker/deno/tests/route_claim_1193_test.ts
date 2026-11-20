@@ -337,6 +337,11 @@ Deno.test(
       }),
       { success: false, skipped: false, claimNotHeld: true },
     );
+    assertEquals(routeRunResult({ success: true }, "claude"), {
+      success: true,
+      skipped: false,
+      provider: "claude",
+    });
     assertEquals(routeRunResult({ success: true }), {
       success: true,
       skipped: false,

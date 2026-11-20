@@ -475,6 +475,39 @@ Deno.test("config_unknown_keys - a retired mutation-check repo_config key is war
   }
 });
 
+Deno.test("config_unknown_keys - retired coverage carry-over keys cite Issue #5247, mutation keys still cite Issue #5095", () => {
+  const warnings = detectRetiredRepoConfigKeys({
+    "org/repo": {
+      skip_coverage_carryover_check: true,
+      skipCoverageCarryOverCheck: true,
+      skip_mutation_check: true,
+      skipScreenshotCheck: true,
+    },
+  });
+  assertEquals(
+    warnings.map((warning) => warning.field),
+    [
+      "repo_config.org/repo.skip_coverage_carryover_check",
+      "repo_config.org/repo.skipCoverageCarryOverCheck",
+      "repo_config.org/repo.skip_mutation_check",
+    ],
+  );
+  for (const warning of warnings) {
+    const retiredByCoverage = warning.field.includes("carryover") ||
+      warning.field.includes("CarryOver");
+    assertEquals(
+      warning.message.includes("Issue #5247"),
+      retiredByCoverage,
+      warning.field,
+    );
+    assertEquals(
+      warning.message.includes("Issue #5095"),
+      !retiredByCoverage,
+      warning.field,
+    );
+  }
+});
+
 Deno.test("config_unknown_keys - detectRetiredRepoConfigKeys is empty when no repo_config is set (Issue #5095)", () => {
   assertEquals(detectRetiredRepoConfigKeys(undefined), []);
   assertEquals(detectRetiredRepoConfigKeys({}), []);
