@@ -119,8 +119,17 @@ flowchart LR
   - **Production wiring:** `runIssueCallbacks` publishes the run's provider and
     never substitutes the configured one. `processIssue` surfaces the provider
     for a normal run and an expected-skip run.
-- `worker/deno/tests/run_core_callbacks_test.ts`: new test "the terminal run
-  carries / omits an absent provider". No existing assertion was changed.
+- `worker/deno/tests/run_core_callbacks_test.ts`: new tests, and no existing
+  assertion was changed. Each covers one caller of `dispatchIssueCallbacks`
+  in `lib/run_core.ts`:
+  - "the terminal run carries / omits an absent provider" covers the call at
+    the end of `releaseIssueClaim` (line 2502). It is changed and tested.
+  - "the exit-threshold branch carries the run's provider" covers the call in
+    the serial loop's failure-threshold branch (line 3257). It is changed and
+    tested.
+  - Both callers pass a `TerminalRun` built by `withProcessCallbackFacts`, which
+    now copies `provider`. No caller's arguments changed. Removing that copy
+    makes the carries test and the exit-threshold test fail.
 - `worker/deno/tests/run_callback_context_test.ts`: the provider fixtures moved
   from the identity to the run, because the identity no longer has a `provider`
   field. The expected values (`claude`, and none for a blank) are unchanged.
