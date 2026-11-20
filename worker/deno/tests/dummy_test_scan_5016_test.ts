@@ -8,6 +8,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { assertLinearGrowth } from "./support/growth.ts";
+import { added } from "./support/new_file_diff.ts";
 import {
   applyDummyTestScan,
   DUMMY_TEST_CHECKLIST,
@@ -16,19 +17,6 @@ import {
   type DummyTestRule,
   scanDummyTests,
 } from "../lib/dummy_test_scan.ts";
-
-/** A diff that adds `path` with `body` as its whole content. */
-function added(path: string, body: string): string {
-  const lines = body.replace(/\n$/, "").split("\n");
-  return [
-    `diff --git a/${path} b/${path}`,
-    "new file mode 100644",
-    "--- /dev/null",
-    `+++ b/${path}`,
-    `@@ -0,0 +1,${lines.length} @@`,
-    ...lines.map((l) => `+${l}`),
-  ].join("\n") + "\n";
-}
 
 /** The rule and line of every finding, in order. */
 function rules(diff: string): Array<[DummyTestRule, number]> {
