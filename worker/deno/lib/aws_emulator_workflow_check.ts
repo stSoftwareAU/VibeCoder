@@ -18,9 +18,11 @@
  *   a failure into success (PR #5276 review); and neither the
  *   job nor that step sets `continue-on-error` or an `if:` (PR #3478 review);
  *   and the step's effective shell (its `shell:`, else the job's or the
- *   workflow's `defaults.run.shell`) is unset, or `bash`/`sh` without
- *   `noexec`, because `bash -n {0}` or `true {0}` would pass without running
- *   the body (PR #5276 review);
+ *   workflow's `defaults.run.shell`) is unset or on an allowlist: `bash` or
+ *   `sh`, then only `--noprofile`, `--norc` and `-e`/`-u`/`-x`/`-o <name>`
+ *   options, then optionally `{0}`; `-c`, `-s`, `-n`, `-o noexec`, extra
+ *   words, `true {0}` and the like could pass without running the body
+ *   (PR #5276 review);
  * - (b) a step runs `container/toolchains/aws-emulator.sh` (the pinned,
  *   checksum-verified install), a step runs `container/toolchains/aws-cli.sh`
  *   (the pinned aws-cli, not the runner's own), and a step installs
@@ -60,7 +62,7 @@ import {
   shellSegments,
   statusPreservingCommandIndex,
 } from "./shell_command_words.ts";
-import { defaultShell, shellIsNoexec } from "./aws_emulator_in_ci_check.ts";
+import { defaultShell } from "./aws_emulator_in_ci_check.ts";
 
 /** The test script the workflow must run in command position. */
 export const SCRIPT_PATH = "infra/cloudformation/test-aws-emulator.sh";
@@ -159,10 +161,38 @@ function stepIsOnlyScript(step: unknown, path: string): boolean {
   return rest.length === 1 && segmentInvokes(rest[0] ?? [], path);
 }
 
+const SHELL_OPTION_NAMES = ["pipefail", "errexit", "nounset", "xtrace"];
+
+/**
+ * Whether a `shell:` value runs the `run:` body, by allowlist: `bash` or `sh`
+ * (by basename), then zero or more of `--noprofile`, `--norc`, a cluster of
+ * `e`/`u`/`x` flags, or `-o`/`-eo` followed by pipefail, errexit, nounset or
+ * xtrace; then, if anything follows, exactly `{0}`. Everything else (`-c`,
+ * `-s`, `-n`, `-o noexec`, extra words, other commands) is refused.
+ */
+function shellRunsBody(value: string): boolean {
+  const words = value.trim().split(/\s+/);
+  const command = (words[0] ?? "").replace(/^.*\//, "");
+  if (command !== "bash" && command !== "sh") return false;
+  let i = 1;
+  while (i < words.length) {
+    const w = words[i] ?? "";
+    if (w === "--noprofile" || w === "--norc" || /^-[eux]+$/.test(w)) {
+      i += 1;
+    } else if (
+      /^-[eux]*o$/.test(w) && SHELL_OPTION_NAMES.includes(words[i + 1] ?? "")
+    ) {
+      i += 2;
+    } else break;
+  }
+  const rest = words.slice(i);
+  return rest.length === 0 || (rest.length === 1 && rest[0] === "{0}");
+}
+
 /**
  * Whether a step's effective shell (`step.shell`, else the job's, else the
- * workflow's `defaults.run.shell`) runs the `run:` body: unset, or `bash`/`sh`
- * without `noexec`. Returns the shell value in `value`, for the finding message.
+ * workflow's `defaults.run.shell`) runs the `run:` body: unset, or allowed by
+ * `shellRunsBody`. Returns the shell value in `value`, for the finding message.
  */
 function effectiveShell(
   workflow: Record<string, unknown>,
@@ -173,10 +203,7 @@ function effectiveShell(
     defaultShell(job) ?? defaultShell(workflow);
   if (value === undefined) return { runsBody: true, value };
   if (typeof value !== "string") return { runsBody: false, value };
-  const command = (value.trim().split(/\s+/)[0] ?? "").replace(/^.*\//, "");
-  const runsBody = (command === "bash" || command === "sh") &&
-    !shellIsNoexec(value);
-  return { runsBody, value };
+  return { runsBody: shellRunsBody(value), value };
 }
 
 /** The job entries of a parsed workflow as `[name, job]` pairs. */
@@ -348,32 +375,88 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
   return problems;
 }
 
-/** The word after `flag` in `words`, or after `flag=` in one word. */
-function flagValues(words: string[], flags: string[]): string[] {
-  const values: string[] = [];
-  words.forEach((w, i) => {
-    for (const flag of flags) {
-      if (w === flag && i + 1 < words.length) values.push(words[i + 1] ?? "");
-      if (w.startsWith(flag + "=")) values.push(w.slice(flag.length + 1));
-    }
-  });
-  return values;
+const DOCKER_VALUE_FLAGS = [
+  "--user",
+  "-u",
+  "--volume",
+  "-v",
+  "--entrypoint",
+  "--env",
+  "-e",
+  "--workdir",
+  "-w",
+  "--network",
+  "--name",
+];
+const DOCKER_BOOLEAN_FLAGS = ["--rm", "--init"];
+
+/** Strip one surrounding pair of matching quotes. */
+function unquote(word: string): string {
+  const m = /^(["'])(.*)\1$/.exec(word);
+  return m ? (m[2] ?? "") : word;
 }
 
-/** Whether one segment is the `docker run` of the agent reference command. */
+/**
+ * Whether one segment is exactly the `docker run` of the agent reference
+ * command. The arguments are parsed positionally and fail closed: an unknown
+ * flag, a different image or any trailing word other than `< /dev/null` means
+ * the segment does not count. The last `--user` must be `agent`, the last
+ * `--entrypoint` must end with `/test-aws-emulator.sh`, and some `--volume`
+ * must mount `${GITHUB_WORKSPACE}/infra/cloudformation:` read-only.
+ */
 function segmentRunsAwsEmulatorAsAgent(words: string[]): boolean {
   const i = statusPreservingCommandIndex(words);
   if (i === -1 || words[i] !== "docker" || words[i + 1] !== "run") return false;
-  const rest = words.slice(i + 2);
-  return flagValues(rest, ["--user"]).includes("agent") &&
-    flagValues(rest, ["--entrypoint"]).some((v) =>
-      v.endsWith("/test-aws-emulator.sh")
+  const users: string[] = [];
+  const entrypoints: string[] = [];
+  const volumes: string[] = [];
+  let j = i + 2;
+  while (j < words.length) {
+    const w = words[j] ?? "";
+    if (!w.startsWith("-")) break;
+    if (DOCKER_BOOLEAN_FLAGS.includes(w)) {
+      j += 1;
+      continue;
+    }
+    const eq = w.indexOf("=");
+    const flag = eq === -1 ? w : w.slice(0, eq);
+    if (!DOCKER_VALUE_FLAGS.includes(flag)) return false;
+    let value: string;
+    if (eq !== -1) {
+      value = w.slice(eq + 1);
+      j += 1;
+    } else {
+      if (j + 1 >= words.length) return false;
+      value = words[j + 1] ?? "";
+      j += 2;
+    }
+    value = unquote(value);
+    if (flag === "--user" || flag === "-u") users.push(value);
+    else if (flag === "--entrypoint") entrypoints.push(value);
+    else if (flag === "--volume" || flag === "-v") volumes.push(value);
+  }
+  if (unquote(words[j] ?? "") !== "${IMAGE}") return false;
+  const tail = words.slice(j + 1).join(" ");
+  if (tail !== "< /dev/null" && tail !== "</dev/null") return false;
+  return users[users.length - 1] === "agent" &&
+    (entrypoints[entrypoints.length - 1] ?? "").endsWith(
+      "/test-aws-emulator.sh",
     ) &&
-    flagValues(rest, ["--volume", "-v"]).some((v) =>
-      v.replace(/^["']/, "").startsWith(
-        "${GITHUB_WORKSPACE}/infra/cloudformation:",
-      )
+    volumes.some((v) =>
+      v.startsWith("${GITHUB_WORKSPACE}/infra/cloudformation:") &&
+      v.endsWith(":ro")
     );
+}
+
+/**
+ * Whether the step's code is only `set -euo pipefail` (optional) and exactly
+ * one segment that is the agent `docker run`.
+ */
+function stepIsAgentRun(step: unknown): boolean {
+  const rest = segmentsOf(step).filter((w) =>
+    w.join(" ") !== "set -euo pipefail"
+  );
+  return rest.length === 1 && segmentRunsAwsEmulatorAsAgent(rest[0] ?? []);
 }
 
 /**
@@ -390,9 +473,7 @@ export function checkContainerBuildRunsAwsEmulator(
   const job = jobEntries(workflow).find(([id]) => id === "container")?.[1];
   const step = job === undefined
     ? undefined
-    : stepsOf(job).find((s) =>
-      segmentsOf(s).some(segmentRunsAwsEmulatorAsAgent)
-    );
+    : stepsOf(job).find(stepIsAgentRun);
   if (job === undefined || step === undefined || !isObject(step)) {
     return [
       `${tag} no step in job container runs the AWS Emulator reference command as agent (docker run --user agent --entrypoint .../test-aws-emulator.sh with the infra/cloudformation volume) with its exit status intact`,

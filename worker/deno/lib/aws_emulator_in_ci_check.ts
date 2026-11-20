@@ -434,7 +434,7 @@ export function defaultShell(record: Record<string, unknown>): unknown {
  * reads the `run:` body without running it. Other shells, and a missing
  * value, run it.
  */
-export function shellIsNoexec(shell: unknown): boolean {
+function shellIsNoexec(shell: unknown): boolean {
   if (typeof shell !== "string") return false;
   const words = shell.trim().split(/\s+/);
   const command = (words[0] ?? "").replace(/^.*\//, "");

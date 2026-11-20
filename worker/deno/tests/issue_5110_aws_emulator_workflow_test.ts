@@ -273,6 +273,10 @@ for (
     ["sh -n {0}", "sh -n {0}"],
     ["true {0}", "true {0}"],
     ["python {0}", "python {0}"],
+    ["bash -c true {0}", "bash -c true {0}"],
+    ["sh -c true {0}", "sh -c true {0}"],
+    ["bash -s {0}", "bash -s {0}"],
+    ["bash --version {0}", "bash --version {0}"],
   ] as const
 ) {
   Deno.test(`(a) refuses shell: ${label} on the test step`, () => {
@@ -305,7 +309,11 @@ Deno.test("(a) refuses a workflow-level defaults.run.shell of bash -n {0}", () =
 
 Deno.test("(a) accepts shell: bash and the GitHub default bash form", () => {
   for (
-    const shell of ["bash", "bash --noprofile --norc -eo pipefail {0}"]
+    const shell of [
+      "bash",
+      "bash --noprofile --norc -eo pipefail {0}",
+      "bash -eo pipefail {0}",
+    ]
   ) {
     expectFindings(
       mutate([TEST_STEP_NAME, TEST_STEP_NAME + `        shell: ${shell}\n`]),
@@ -546,6 +554,45 @@ for (
       "a negated docker line",
       [[AGENT_DOCKER_LINE, "          ! " + AGENT_DOCKER_LINE.trimStart()]],
     ],
+    [
+      "an extra --entrypoint after the real one",
+      [[
+        'test-aws-emulator.sh "${IMAGE}"',
+        'test-aws-emulator.sh --entrypoint /bin/true "${IMAGE}"',
+      ]],
+    ],
+    ["an extra --user root after --user agent", [[
+      AGENT_USER,
+      "--user agent --user root --volume",
+    ]]],
+    ["a different image", [[
+      AGENT_TAIL,
+      "test-aws-emulator.sh ubuntu:latest < /dev/null",
+    ]]],
+    [
+      "a mount without :ro",
+      [[':/workspace/cloudformation:ro"', ':/workspace/cloudformation"']],
+    ],
+    [
+      "a set +e line before the docker line",
+      [[AGENT_DOCKER_LINE, "          set +e\n" + AGENT_DOCKER_LINE]],
+    ],
+    [
+      "a commented-out docker line",
+      [[AGENT_DOCKER_LINE, "          # " + AGENT_DOCKER_LINE.trimStart()]],
+    ],
+    [
+      "an echo look-alike",
+      [[AGENT_DOCKER_LINE, "          echo " + AGENT_DOCKER_LINE.trimStart()]],
+    ],
+    [
+      "shell: bash -c true {0}",
+      [[AGENT_STEP_IF, AGENT_STEP_IF + "        shell: bash -c true {0}\n"]],
+    ],
+    [
+      "an extra argument after the image",
+      [[AGENT_TAIL, 'test-aws-emulator.sh "${IMAGE}" --help < /dev/null']],
+    ],
   ] as [string, [string, string][]][]
 ) {
   Deno.test(`(container-agent-run) refuses ${label}`, () => {
@@ -557,6 +604,28 @@ for (
       `expected one finding, got: ${JSON.stringify(problems)}`,
     );
     assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+  });
+}
+
+const AGENT_ONE_LINE_ARGS = [
+  "docker run --rm --user agent",
+  '--volume "${GITHUB_WORKSPACE}/infra/cloudformation:/workspace/cloudformation:ro"',
+  '--entrypoint /workspace/cloudformation/test-aws-emulator.sh "${IMAGE}" < /dev/null',
+];
+
+for (
+  const [label, pairs] of [
+    ["-u agent", [["--user agent --volume", "-u agent --volume"]]],
+    ["--user=agent", [["--user agent --volume", "--user=agent --volume"]]],
+    ["backslash continuations", [[
+      AGENT_DOCKER_LINE,
+      "          " + AGENT_ONE_LINE_ARGS.join(" \\\n            ") + "\n",
+    ]]],
+  ] as [string, [string, string][]][]
+) {
+  Deno.test(`(container-agent-run) accepts ${label}`, () => {
+    const text = mutateText(CONTAINER_BUILD, ...pairs);
+    assertEquals(checkContainerBuildRunsAwsEmulator(parseYaml(text)), []);
   });
 }
 
