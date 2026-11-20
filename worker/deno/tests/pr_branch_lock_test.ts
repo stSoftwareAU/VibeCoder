@@ -593,6 +593,55 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock tie-breaks by created_at whe
   }
 });
 
+// A tie on created_at (GitHub reports whole seconds) must give both hosts the
+// same winner: the lower comment id. Each host reads the same thread, so a
+// stable sort over [own, ...competing] would crown both.
+Deno.test("pr_branch_lock - acquireBranchUpdateLock tie on created_at has exactly one winner (lowest comment id)", async () => {
+  const thread = JSON.stringify([
+    {
+      id: 100,
+      body: "<!-- BRANCH_UPDATE_LOCK:worker-01:1700000000 -->",
+      created_at: "2023-11-14T22:13:20Z",
+      author: FLEET_AUTHOR,
+    },
+    {
+      id: 200,
+      body: "<!-- BRANCH_UPDATE_LOCK:worker-02:1700000000 -->",
+      created_at: "2023-11-14T22:13:20Z",
+      author: FLEET_AUTHOR,
+    },
+  ]);
+  const acquire = (workerId: string, ownId: number) => {
+    const { ghCommandFn } = createMockGh((args) => {
+      if (args[0] === "issue" && args[1] === "comment") {
+        return postedCommentUrl(ownId);
+      }
+      if (args[0] === "api" && isCommentRead(args)) return thread;
+      return "";
+    });
+    return acquireBranchUpdateLock({
+      authorOptions: FLEET_OPTIONS,
+      log: () => {},
+      repo: "org/repo",
+      prNumber: 42,
+      workerId,
+      sleepFn: noSleep,
+      ghCommandFn,
+      nowFn: () => 1700000000,
+    });
+  };
+
+  const first = await acquire("worker-01", 100);
+  const second = await acquire("worker-02", 200);
+
+  assertEquals(first.ok && first.value.acquired, true);
+  assertEquals(second.ok, true);
+  if (second.ok) {
+    assertEquals(second.value.acquired, false);
+    assertEquals(second.value.winnerId, "worker-01");
+  }
+});
+
 // ---------------------------------------------------------------------------
 // acquireBranchUpdateLock — identifies own lock comment ID correctly
 // ---------------------------------------------------------------------------
