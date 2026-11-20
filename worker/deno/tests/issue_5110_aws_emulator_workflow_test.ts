@@ -604,6 +604,20 @@ for (
       [[AGENT_DOCKER_LINE, "          # " + AGENT_DOCKER_LINE.trimStart()]],
     ],
     [
+      "a help-only wrapper",
+      [[
+        AGENT_DOCKER_LINE,
+        "          timeout --help 30 " + AGENT_DOCKER_LINE.trimStart(),
+      ]],
+    ],
+    [
+      "an inline daemon override",
+      [[
+        AGENT_DOCKER_LINE,
+        "          env DOCKER_HOST=unused " + AGENT_DOCKER_LINE.trimStart(),
+      ]],
+    ],
+    [
       "an echo look-alike",
       [[AGENT_DOCKER_LINE, "          echo " + AGENT_DOCKER_LINE.trimStart()]],
     ],
