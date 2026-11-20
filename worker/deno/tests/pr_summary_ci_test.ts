@@ -2,9 +2,9 @@
  * Tests for the PR-summary CI gate (Issue #3768). Issue #5227 retired the
  * commit-order freshness check.
  *
- * The pure cases exercise the judgement directly. The integration cases build
- * a real remote and clone with the git fixture and drive the CLI entry with
- * the real git runner.
+ * The pure cases exercise summary selection, argument parsing, the CI verdict
+ * and the report directly. The integration cases build a real remote and clone
+ * with the git fixture and drive the CLI entry with the real git runner.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -172,6 +172,17 @@ Deno.test("ciFailed - missing and blocked fail; clean, no-summary and not-checke
   assert(!ciFailed(checked({})));
   assert(!ciFailed({ kind: "no_summary" }));
   assert(!ciFailed({ kind: "not_checked", reason: "not an issue branch" }));
+});
+
+Deno.test("formatCiReport - control characters in a not-checked reason are escaped, not printed raw", () => {
+  const s = selectSummary([SUMMARY_PATH], "milestone/a\n::error::x\u007fb");
+  assert(s.kind === "not_checked");
+  const text = formatCiReport(s);
+  assert(!text.includes("\n::error"));
+  assert(!text.includes("\u007f"));
+  assertStringIncludes(text, "\\u000a::error::x");
+  assertStringIncludes(text, "\\u007fb");
+  assertStringIncludes(text, "[NOT CHECKED] PR summary (#3768)");
 });
 
 // --- Integration: a real remote and clone -------------------------------------
