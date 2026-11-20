@@ -544,6 +544,12 @@ Deno.test("AC3: the real recordOutcome counts the hard kill as one failure", asy
       evidenceDir: DIR,
       ghFn: gh.ghFn,
       seams: fs.seams,
+      factsSeams: {
+        listArchivedFiles: () => Promise.resolve([]),
+        readTextFile: fs.seams.readTextFile,
+        markFactsPosted: () =>
+          Promise.reject(new Error("unexpected archive write")),
+      },
       runFailureCallback: () => Promise.resolve(),
       countFailure: () => recordOutcome("failure", HARD_KILL_FAILURE_CLASS),
       nowSeconds: NOW,

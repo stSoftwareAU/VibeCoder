@@ -97,8 +97,8 @@ flowchart TD
     B --> Q{"Open issue for<br/>its signature?"}
     Q -- yes --> C["One comment: marker + fixed-shape facts"]
     C --> M["Rename to *.facts.json"]
-    Q -- no --> M
-    Q -- lookup failed --> K["Kept, warned, retried next start"]
+    Q -- no --> K["Kept, warned, retried next start"]
+    Q -- lookup failed --> K
     C -- comment failed --> K
 ```
 
@@ -174,11 +174,13 @@ flowchart TD
   not exist and the archive name is unchanged.
 - **Red-checked** the failed-lookup test: with the lookup's catch changed to
   fall through as `issue = null`, it fails (7 passed, 1 failed), because the
-  file is renamed to `*.facts.json` with no comment. With the head's code
-  restored it passes (8 passed, 0 failed).
-- **Unchanged and re-run** `worker/deno/tests/hard_kill_report_test.ts`. Its
-  fake filesystem records archived names, so the suffix is visible only through
-  the default seam, which the new test covers. No assertion was removed.
+  warning says no verified issue was found rather than reporting the lookup
+  failure. The file remains unchanged. With the head's code restored it passes
+  (8 passed, 0 failed).
+- **Edited and re-run** `worker/deno/tests/hard_kill_report_test.ts`. Its
+  `report()` helper and the direct AC3 reporter call inject an in-memory
+  `factsSeams`, so no test using the fake pending-file seams can reach the
+  host's archive. No assertion was removed.
 - **Added** `docs/audits/lib-sweep-coverage/top-up-4815.json` to claim the new
   module, which `tests/lib_sweep_coverage_test.ts` requires.
 - **Ran**
