@@ -23,10 +23,15 @@ that a fix makes false. The operator manual says the same. Closes #5239.
 - The summary file is still the only way to change a worker-built **body**, and
   the agent still never edits that body directly. Only the title gets a direct
   `gh pr edit` path.
-- The fix stays in `prompts/pr_feedback/prompt.md`. `prompts/ci_fix/prompt.md`
-  already names the title (Issue #4893). `prompts/merge_conflict/prompt.md` has
-  no "only place to change it" sentence, so it carries neither the gap nor the
-  contradiction.
+- The fix stays in `prompts/pr_feedback/prompt.md`, the one sentence the issue
+  asks to reword. `prompts/ci_fix/prompt.md:104` and
+  `prompts/merge_conflict/prompt.md:123` also say, for a worker-built
+  description, "do not edit the description yourself — the summary file is the
+  only place to change it". They are left alone: they already say "the
+  description" rather than "it", so they do not read as covering the title.
+  `prompts/ci_fix/prompt.md:106` names the title only for a description the
+  worker does not rebuild (Issue #4893). Neither prompt gives a title command
+  for a worker-built PR; that is outside this issue.
 
 ### Undiscoverable Facts
 
@@ -58,15 +63,24 @@ Backend/prompt-only change, with no UI file touched.
 - Related rules checked:
   - "Fix the defect everywhere it lives" in `prompts/pr_feedback/prompt.md`
     already lists the PR title, and agrees with the new sentence.
-  - `prompts/ci_fix/prompt.md:106` already names the title.
-  - `prompts/merge_conflict/prompt.md:123` makes no body-only claim.
-  - No other prompt or `CODING-STANDARDS.md` rule says the summary file is the
-    only place to change the PR page.
+  - `prompts/ci_fix/prompt.md:104` and `prompts/merge_conflict/prompt.md:123`
+    each carry "do not edit the description yourself — the summary file is the
+    only place to change it" for a worker-built description, worded about the
+    description, not the title. `prompts/ci_fix/prompt.md:106` names the title
+    for a description the worker does not rebuild.
+  - No `CODING-STANDARDS.md` rule says the summary file is the only place to
+    change the PR page.
 - Applied the new rule to this PR's own diff: it changes no PR title or body
   behaviour, and found nothing to fix.
 - Docs sweep: grepped `prompts/`, `docs/` (excluding `docs/archive/`),
   `README.md` and `worker/deno/` for "only place to change it" and "do not edit
-  it yourself". The only hits are the reworded sentence and this PR's own test.
+  it yourself". The hits are the reworded sentence
+  (`prompts/pr_feedback/prompt.md:77`), the two sibling sentences above
+  (`prompts/ci_fix/prompt.md:104`, `prompts/merge_conflict/prompt.md:123`) and
+  this PR's own test
+  (`worker/deno/tests/pr_feedback_title_not_rebuilt_5239_docs_test.ts:31,45`).
+  "do not edit it yourself" now appears only in that test, as the old wording it
+  checks is gone.
 - Issue numbers the diff cites: #5239 is this issue ("Review-fix runs leave a
   worker-built PR's title false…").
 
