@@ -1,39 +1,40 @@
 ## Summary
 
 Run `vibe-mwkg63yf-dfc9a6` on `GRQ-25` was working issue #5169 when it was
-hard-killed. Its issue shows the guest probe `did not answer`, with guest
-memory and guest pressure both `not available`. The evidence record read
-nothing from the host itself, so this kill, and the other `did not answer`
-kills (#5062 on `GRQ-25`, #5161 on `GRQ-3`), could not show whether the host
-was out of disk or memory when its guest froze.
+hard-killed. Its issue shows the guest probe `did not answer`, with guest memory
+and guest pressure both `not available`. The evidence record read nothing from
+the host itself, so this kill, and the other `did not answer` kills (#5062 on
+`GRQ-25`, #5161 on `GRQ-3`), could not show whether the host was out of disk or
+memory when its guest froze.
 
 The capture now records the host's own state, read on the host at reap time:
+
 - free and total bytes of the filesystem holding the evidence directory
   (`df -kP`);
 - host memory pressure (level, plus available and total bytes on Linux).
 
-A new issue's body and a recurrence's follow-up line both show them as
-**Host disk** and **Host memory**. Evidence files written before this change
-still parse; their host figures read `not available`.
+A new issue's body and a recurrence's follow-up line both show them as **Host
+disk** and **Host memory**. Evidence files written before this change still
+parse; their host figures read `not available`.
 
-The wedge's cause is still not established, so this PR does not close the
-issue. Part of #5250.
+The wedge's cause is still not established, so this PR does not close the issue.
+Part of #5250.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The archived agent session for the run
-  (`GRQ-VibeCoder-logs`, `runs/GRQ-25/2026-11-17/stSoftwareAU-VibeCoder-5169-vibe-mwkg63yf-dfc9a6.session.jsonl`)
+- The archived agent session for the run (`GRQ-VibeCoder-logs`,
+  `runs/GRQ-25/2026-11-17/stSoftwareAU-VibeCoder-5169-vibe-mwkg63yf-dfc9a6.session.jsonl`)
   ends at 09:36:15Z. That is nearly two hours before the issue's last worker-log
   line (11:25:47Z), so it cannot name what blocked at the reap.
-- That session's quality-gate heartbeats should come about 30 s apart (the
-  later ones do). Earlier, two gaps lasted 251 s and 628 s, which points to the
-  guest being starved well before the reap.
+- That session's quality-gate heartbeats should come about 30 s apart (the later
+  ones do). Earlier, two gaps lasted 251 s and 628 s, which points to the guest
+  being starved well before the reap.
 - Three other runs on `GRQ-25` the same day ended as `disk-full`/`host_disk`
-  (03:09Z, 08:28Z and 14:14Z), so host disk pressure is the leading suspect.
-  The evidence could neither confirm nor rule it out, because every guest
-  figure needs a guest that answers.
+  (03:09Z, 08:28Z and 14:14Z), so host disk pressure is the leading suspect. The
+  evidence could neither confirm nor rule it out, because every guest figure
+  needs a guest that answers.
 - Host facts are read by the launcher-side `container-reap` on the host, so a
   frozen guest cannot blank them. That makes the next recurrence decisive on
   this question rather than another `not available`.
@@ -45,14 +46,14 @@ issue. Part of #5250.
   `unavailable: not recorded (evidence written before host facts were captured)`.
   `HARD_KILL_EVIDENCE_VERSION` stays 1, so a file the old launcher left behind
   is still filed rather than refused (old shape read, not a key bump).
-- The public issue gets only numbers and fixed words. Each host field is
-  matched against an anchored pattern with bounded digit runs; anything else,
-  including a `df` error that names a path, shows as `not available`.
+- The public issue gets only numbers and fixed words. Each host field is matched
+  against an anchored pattern with bounded digit runs; anything else, including
+  a `df` error that names a path, shows as `not available`.
 - Disk is measured on the evidence directory's filesystem (`~/logs` on the
   host). That is the host user's home volume, which is not necessarily the
   volume holding the container store.
-- Each host read is bounded by `DEFAULT_STEP_TIMEOUT_MS` and runs alongside
-  the existing branches, so it does not extend the 60 s collection cap.
+- Each host read is bounded by `DEFAULT_STEP_TIMEOUT_MS` and runs alongside the
+  existing branches, so it does not extend the 60 s collection cap.
 
 ### Undiscoverable Facts
 
@@ -84,20 +85,21 @@ flowchart LR
   The `tool_progress` heartbeat `elapsed_time_seconds` values were 357, 608,
   1236, 1267 and 1297. The last record is the tool result at
   `2026-11-17T09:36:15.683Z`.
-- Same-day `GRQ-25` metadata: `vibe-mwk3lbxq-de2ff9`, `vibe-mwkdqspk-f649ee`
-  and `vibe-mwkqnozl-ab950e` all have `"category": "host_disk"`,
+- Same-day `GRQ-25` metadata: `vibe-mwk3lbxq-de2ff9`, `vibe-mwkdqspk-f649ee` and
+  `vibe-mwkqnozl-ab950e` all have `"category": "host_disk"`,
   `"failureClass": "disk-full"`.
 
 ## Reproduction
 
-- **symptom** — the hard-kill issue for a guest that did not answer carries
-  no figure that says whether the host was short of disk or memory (guest
-  memory and guest pressure `not available`, nothing about the host)
+- **symptom** — the hard-kill issue for a guest that did not answer carries no
+  figure that says whether the host was short of disk or memory (guest memory
+  and guest pressure `not available`, nothing about the host)
 - **status** — `partial` — reason: the wedge itself was not reproduced, since
   its worker log and guest probes are only on `GRQ-25`. Only the missing host
   evidence for an unanswering guest is covered, and it is pinned by the tests
   below.
-- **regression test** — `worker/deno/tests/hard_kill_evidence_test.ts::captureHardKillEvidence - records the host's disk and memory even when the guest does not answer (Issue #5250)`
+- **regression test** —
+  `worker/deno/tests/hard_kill_evidence_test.ts::captureHardKillEvidence - records the host's disk and memory even when the guest does not answer (Issue #5250)`
 
 ## Acceptance Criteria
 
@@ -121,15 +123,16 @@ New tests (all under `worker/deno/tests/`):
     `unavailable: …` field carrying the cause.
 - `hard_kill_report_test.ts`:
   - `parseHardKillEvidence reads a file written before host facts were captured (Issue #5250)`
-    is the old-shape persisted-data test: the body says `not available` for
-    both host lines.
+    is the old-shape persisted-data test: the body says `not available` for both
+    host lines.
   - `parseHardKillEvidence refuses a hostState that is not an object (Issue #5250)`.
-- `hard_kill_guest_facts_test.ts`: `hardKillHostDisk words the free space in GiB and percent`,
+- `hard_kill_guest_facts_test.ts`:
+  `hardKillHostDisk words the free space in GiB and percent`,
   `hardKillHostDisk never echoes free text or a path`,
   `hardKillHostMemory words the pressure level and bytes`, and
   `hardKillHostMemory gives not available for unknown, inconsistent or hostile fields`.
-  The hostile cases include a 50,000-digit run against each of the two
-  anchored patterns.
+  The hostile cases include a 50,000-digit run against each of the two anchored
+  patterns.
 
 Edited existing tests:
 
@@ -159,12 +162,11 @@ Results:
 - Head: the 10 hard-kill test files (`hard_kill_evidence`, `hard_kill_report`,
   `hard_kill_guest_facts`, `container_reap_command`, `container_watchdog`,
   `guest_silence_watch`, `spawn_timeout_callers_4251`,
-  `run_core_production_deps_hard_kill`, `run_core_hard_kill`,
-  `setup_step_log`): 240 passed, 0 failed.
-  `run_failure_issue_test.ts`: 26 passed, 0 failed.
-- `./quality.sh` on `0b8314542`: `Result: PASSED (with skipped checks)`.
-  Config integration was skipped (`deno or .config.json not available`) and so
-  was checkov (no checkov on PATH).
+  `run_core_production_deps_hard_kill`, `run_core_hard_kill`, `setup_step_log`):
+  240 passed, 0 failed. `run_failure_issue_test.ts`: 26 passed, 0 failed.
+- `./quality.sh` on `0b8314542`: `Result: PASSED (with skipped checks)`. Config
+  integration was skipped (`deno or .config.json not available`) and so was
+  checkov (no checkov on PATH).
 - After merging `origin/main` (`877bb2f49`; the one conflict was the
   `docs/TROUBLESHOOTING.md` step list, where main had dropped
   `coverage carry-over check`): nine of the test files above, including
