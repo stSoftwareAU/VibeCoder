@@ -221,7 +221,8 @@ Results:
   `hard_kill_guest_facts`, `container_reap_command`, `container_watchdog`,
   `guest_silence_watch`, `spawn_timeout_callers_4251`,
   `run_core_production_deps_hard_kill`, `run_core_hard_kill`, `setup_step_log`):
-  240 passed, 0 failed. `run_failure_issue_test.ts`: 26 passed, 0 failed.
+  241 passed, 0 failed (34, 74, 32, 10, 37, 10, 34, 4, 3 and 3, in that order).
+  `run_failure_issue_test.ts`: 26 passed, 0 failed.
 - `./quality.sh` on `0b8314542`: `Result: PASSED (with skipped checks)`. Config
   integration was skipped (`deno or .config.json not available`) and so was
   checkov (no checkov on PATH).
@@ -249,4 +250,5 @@ Not done:
 - The wedge's cause, as stated above.
 - I did not check whether `GRQ-25` runs the #5266 early reap; merge time alone
   does not prove deployment.
-- The five standards findings above are recorded but not fixed in this run.
+- The four open standards findings above are recorded but not fixed in this run;
+  the first (the untested `diskReading` and `memoryReading` defaults) is fixed.
