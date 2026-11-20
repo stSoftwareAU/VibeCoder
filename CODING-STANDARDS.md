@@ -2072,18 +2072,18 @@ implementation, absent tests or known failing checks. Failed checks, absent test
 known defects and mixed criteria with unfinished product work remain gaps.
 Required CI, review and acceptance gates still apply.
 
-CI runs the same gates on every push to a pull request: the `PR summary
-freshness and gates` step in `.github/workflows/validate-scripts.yml` runs
+CI runs the same gates on every push to a pull request: the `PR summary gates`
+step in `.github/workflows/validate-scripts.yml` runs
 `deno task pr-summary-ci --base <base-branch> --head-branch <head-branch>`
 (Issue #3768). On an `issue-<N>-…` head branch whose diff carries
-`pr-summary-<N>.md`, it fails when the PR's newest non-merge
-commit changing `worker/`, `prompts/` or `.claude/` is newer than the newest
-commit changing that summary. The digest is of the summary alone. Rewrite the summary for the head
-in that push, whoever makes it. The step then runs the `pr-summary-check` gates
-and fails on a blocked one; gates needing the issue body or labels are reported
-as not checked. A PR carrying no summary passes with a log line. On a head
-branch that is not an `issue-<N>` branch (milestone roll-ups, sync PRs) the
-summary is reported as not checked.
+`pr-summary-<N>.md`, it runs the `pr-summary-check` gates and fails on a
+blocked one, or when that summary is not in the checkout; gates needing the
+issue body or labels are reported as not checked. It does not compare commit
+order: editing the summary does not make its claims current, and a later commit
+that leaves every claim true owes the summary no change (Issue #5227). Keep the
+summary true to the head as the next paragraph describes. A PR carrying no
+summary passes with a log line. On a head branch that is not an `issue-<N>`
+branch (milestone roll-ups, sync PRs) the summary is reported as not checked.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
