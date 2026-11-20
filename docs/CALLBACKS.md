@@ -523,7 +523,7 @@ flowchart TD
   its signature with the same fixed-shape facts the issue body uses (never log
   text), marked `vibe-hard-kill-facts` with the run id, and then renames the
   file to `*.facts.json` so it is never posted again. A file whose signature has
-  no open issue is renamed without a comment. If the lookup or the comment
+  no verified open issue is kept for a later start until retention expires. If the lookup or the comment
   fails, or the file is malformed, the file is kept untouched and retried on the
   next start. No callback fires and nothing is counted.
 - **Additive contract.** `hard_kill` is a new value of the existing

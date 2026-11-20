@@ -75,6 +75,7 @@ function evidence(
 function fakeGh(
   opts: {
     failComment?: { value: boolean };
+    hideRows?: { value: boolean };
     failList?: { value: boolean };
   } = {},
 ) {
@@ -90,7 +91,7 @@ function fakeGh(
         );
       }
       const search = args[args.indexOf("--search") + 1]!;
-      const open = created.length > 0 || search.includes(`:${OPEN_CLASS}"`);
+      const open = !opts.hideRows?.value && search.includes(`:${OPEN_CLASS}"`);
       const rows = open
         ? [{
           number: OPEN_ISSUE,
@@ -179,23 +180,29 @@ Deno.test("backfill posts one facts comment for an archived pre-change file, the
   }
 });
 
-Deno.test("backfill marks a file with no open issue without commenting", async () => {
+Deno.test("backfill retries empty and unverifiable searches until the issue is visible", async () => {
   const { dir, archive } = await setup();
   try {
-    const name = "hard-kill-vibe-coder-1-1.json";
     await Deno.writeTextFile(
-      `${archive}/${name}`,
-      JSON.stringify(evidence({}, "execute")),
+      `${archive}/${ARCHIVED}`,
+      JSON.stringify(evidence()),
     );
-    const gh = fakeGh();
-    const result = await backfillArchivedHardKillFacts({
-      evidenceDir: dir,
-      ghFn: gh.ghFn,
-      fleetAuthors: FLEET,
-    });
-    assertEquals(result, { posted: 0, marked: 1, kept: 0 });
+    const hideRows = { value: true };
+    const gh = fakeGh({ hideRows });
+    const run = (fleetAuthors: readonly string[]) =>
+      backfillArchivedHardKillFacts({
+        evidenceDir: dir,
+        ghFn: gh.ghFn,
+        fleetAuthors,
+      });
+    assertEquals((await run(FLEET)).kept, 1);
+    hideRows.value = false;
+    assertEquals((await run([])).kept, 1);
     assertEquals(gh.comments, []);
-    assertEquals(await names(archive), ["hard-kill-vibe-coder-1-1.facts.json"]);
+    assertEquals(await names(archive), [ARCHIVED]);
+    assertEquals((await run(FLEET)).posted, 1);
+    assertEquals(gh.comments[0]?.[2], String(OPEN_ISSUE));
+    assertEquals(await names(archive), [factsPostedName(ARCHIVED)]);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -305,7 +312,11 @@ Deno.test("a newly reported file is archived as facts-posted and never backfille
       `${dir}/${name}`,
       JSON.stringify(evidence({}, "execute")),
     );
-    const gh = fakeGh();
+    await Deno.writeTextFile(
+      `${archive}/${ARCHIVED}`,
+      JSON.stringify(evidence({}, "execute")),
+    );
+    const gh = fakeGh({ hideRows: { value: true } });
     const pass = () =>
       reportPendingHardKills({
         evidenceDir: dir,
@@ -318,14 +329,18 @@ Deno.test("a newly reported file is archived as facts-posted and never backfille
       });
     assertEquals(await pass(), { found: 1, reported: 1, kept: 0 });
     assertEquals(gh.created.length, 1);
-    assertEquals(await names(archive), [
-      "hard-kill-vibe-coder-46887-1793830700.facts.json",
-    ]);
+    assertEquals(
+      await names(archive),
+      [
+        factsPostedName(ARCHIVED),
+        "hard-kill-vibe-coder-46887-1793830700.facts.json",
+      ].sort(),
+    );
     assertEquals(await names(dir), [HARD_KILL_ARCHIVE_DIR]);
-    assertEquals(gh.comments, []);
+    assertEquals(gh.comments.map((call) => call[2]), ["9001"]);
 
     assertEquals(await pass(), { found: 0, reported: 0, kept: 0 });
-    assertEquals(gh.comments, []);
+    assertEquals(gh.comments.map((call) => call[2]), ["9001"]);
     assertEquals(gh.created.length, 1);
     assertNoSecret(gh.calls);
   } finally {

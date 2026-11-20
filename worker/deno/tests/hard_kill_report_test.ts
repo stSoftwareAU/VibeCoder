@@ -280,6 +280,12 @@ async function report(
     evidenceDir: DIR,
     ghFn: gh.ghFn,
     seams: fs.seams,
+    factsSeams: {
+      listArchivedFiles: () => Promise.resolve([]),
+      readTextFile: fs.seams.readTextFile,
+      markFactsPosted: () =>
+        Promise.reject(new Error("unexpected archive write")),
+    },
     runFailureCallback: (run) => {
       runs.push(run);
       return Promise.resolve();

@@ -36,8 +36,7 @@ is not diagnosed or repaired here. Part of #4815.
 - The "posted" record is the archived file's own name (`*.facts.json`), not
   GitHub state. That name still matches `HARD_KILL_FILE_PATTERN`, so retention
   pruning applies to it unchanged, and no comment search runs on later starts.
-- A file whose signature has no open issue is renamed with no comment, because
-  there is nothing to add to. A failed lookup, a failed comment or a malformed
+- A file whose signature has no verified open issue is kept for a later start. A failed lookup, a failed comment or a malformed
   file keeps the file as it is, logs a warning with the cause, and is retried on
   the next start. The backfill never throws out of `reportPendingHardKills`,
   fires no callback and counts nothing.
@@ -77,14 +76,16 @@ Backend change, no UI files. Tests under `worker/deno/tests/`:
     becomes`*.facts.json`. A second pass posts nothing. A private token in the
     log tail never reaches a`gh`
     argument.
-  - With no open issue, the file is marked and no comment is posted.
+  - An empty search and unresolved fleet authors both keep the file. Once the
+    issue can be verified, the next pass posts the facts.
   - A failed comment keeps the file name and warns with the cause; the next pass
     posts it.
   - A failed issue lookup (the `gh issue list` search rejects) keeps the file
     name, posts no comment and warns with the gh error's first line; once the
     lookup succeeds, the next pass posts the comment and renames the file.
   - A malformed archived file is left byte-for-byte as it was, with a warning.
-  - A newly reported file is archived as `*.facts.json` and never backfilled.
+  - A newly reported file is archived as `*.facts.json`. Its newly filed issue
+    receives an older file’s facts even when search still returns no rows.
   - The backfill runs through `reportPendingHardKills` and logs its count line.
   - A symlinked archive directory is refused.
 

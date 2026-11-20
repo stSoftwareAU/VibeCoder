@@ -199,18 +199,10 @@ export async function backfillArchivedHardKillFacts(
     }
 
     if (issue === null) {
-      // No open issue: nothing to add the facts to.
-      try {
-        await seams.markFactsPosted(path);
-        result.marked++;
-      } catch (err) {
-        logWarn(
-          `hard-kill facts backfill: ${name} could not be marked: ${
-            firstLine(err)
-          }`,
-        );
-        result.kept++;
-      }
+      logWarn(
+        `hard-kill facts backfill: ${name}: no verified open issue, kept for the next start`,
+      );
+      result.kept++;
       continue;
     }
 
