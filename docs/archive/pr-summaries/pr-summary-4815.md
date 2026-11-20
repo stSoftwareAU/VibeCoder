@@ -90,6 +90,7 @@ run that delivers nothing is retried, not labelled needs-human as
   finished"` (25 passed, 2 failed). After the fix, `deno test -A
   tests/time_deferral_test.ts tests/handle_no_changes_time_deferral_test.ts`
   from `worker/deno` passed: 37 passed, 0 failed.
+- **Ran** `./quality.sh < /dev/null` on the head: `Result: PASSED (with skipped checks)`; the gate skipped `config integration` and `checkov`.
 - **Docs:** I grepped `docs/` (outside `docs/archive/`), `README.md`,
   `DESIGN-PRINCIPLES.md` and `prompts/` for `MAX_TIME_DEFERRALS`,
   `Deferral limit reached` and the deferral limit. `docs/workflows/issue-processing.md`
