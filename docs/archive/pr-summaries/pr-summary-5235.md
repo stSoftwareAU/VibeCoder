@@ -79,18 +79,18 @@ Documentation and rule text only; no runtime code changed.
   `timeout_cmd_portability_3675_test.ts`,
   `completion_phase_pre_pr_verifier_3395_test.ts` and
   `pr_claims_verified_3058_test.ts`, all under `worker/deno/tests/`.
-- `./quality.sh` on the head: every stage passed except `deno tests`, where
-  35238 tests passed and 1 failed. The failure was
-  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`, which failed with
-  `dns error: failed to lookup address information: Temporary failure in name
-  resolution` while fetching `registry.npmjs.org`. That test runs `deno task`
-  with `clearEnv: true`, which drops the sandbox's proxy, so it can only use
-  the default deno cache, and that cache lacked `commonmark`. The test reads
-  neither changed document. After the default cache was filled through the
-  proxy (an environment change, not a repo change), it passed when run alone
-  (11 passed), and the pre-push gate passed.
+- `./quality.sh` on the head (after merging `origin/main`): `Result: PASSED
+  (with skipped checks)`. `config integration` and `checkov` were skipped by
+  the gate itself; every other stage passed, `deno tests` included.
+- Environment note: `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`
+  runs `deno task` with `clearEnv: true`, which drops the sandbox's proxy and
+  `DENO_DIR`. That made it fail with `dns error: failed to lookup address
+  information` while fetching `registry.npmjs.org/minimist`, which is what
+  stopped the earlier attempt at the pre-push gate. Running the same task once
+  with the proxy set filled the default deno cache. This changed the
+  environment, not the repo. The test then passed (12 passed with the drift
+  test). It reads neither changed document.
 
-Not checked: the full `./quality.sh` was not re-run after the cache was filled.
-Only the one failing test was re-run. Remaining risk: none known.
+Not checked: none. Remaining risk: none known.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
