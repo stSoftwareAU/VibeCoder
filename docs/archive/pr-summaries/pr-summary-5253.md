@@ -87,7 +87,7 @@ Issue numbers the diff cites:
 
 ## Test Plan
 
-New file `worker/deno/tests/secret_redaction_prose_heading_5253_test.ts` (10
+New file `worker/deno/tests/secret_redaction_prose_heading_5253_test.ts` (11
 tests). No existing test was edited.
 
 - `the reported PR title survives byte-for-byte`: tests `redactSecrets`,
@@ -99,13 +99,19 @@ tests). No existing test was edited.
   `ApiKey: secret`, `AccessKey: open`, `ClientSecret: banana`,
   `Credentials: letmein` and `SecretValue: hunter`. It also covers the product
   name after `=`, with a quoted key, as an underscore key and as a lower-camel
-  key.
+  key. Each of those, and `Credentials`, `SecretValue` and `Passwd`, also has a
+  variant with a further word after the value on the line
+  (`… run the agreed
+  trial`, `… for the service`), so the continuation check
+  cannot be what masks it and only the separator, key-shape and key-ending
+  checks can.
 - `a lower-case password keeps the word after it masked`: exact output
   `password: ***REDACTED*** the job now`.
 - `a quoted product-name value stays masked`.
 - `long and short synthetic values under a product heading stay masked`: the
   16-character synthetic secret, a 40-character AWS-shaped key,
-  `correcthorsebatterystaple`, `hunter2`, and `"run"`.
+  `correcthorsebatterystaple`, `hunter2`, and `"run"`. The first four also have
+  a `is the value` variant, so only the plain-word check can mask them.
 - `a product heading split across a line break stays masked`.
 - `only the key's ending decides a prose heading`: the same body survives under
   the product name and is masked under `GithubToken`.
@@ -118,24 +124,34 @@ tests). No existing test was edited.
   `TokenString`, `PrivateKeyFile` and the product name, each with `: hunter` at
   end of text, before a line break, before a full stop and inside braces. The
   reported title still survives beside them.
+- `the decode-then-rescan pass keeps a heading's mask and exemption`: through
+  `redactSecrets` and `containsSecret`, `"blob " + btoa(<reported title>)`
+  survives byte-for-byte (the exemption in `detectsSecretAssignment`), while the
+  base64 of `<product>: hunter` and of `GithubToken: run the agreed trial` are
+  masked and detected.
 
-Red against the base code (`origin/main`): 4 of the 10 failed (the two title
-tests, the survive half of the key-ending test, and the title assertion at the
-end of the qualified-field test). The base code returned the title with
-`***REDACTED***` in place of `run`. The other 6 passed, as expected, because
-they pin masking the fix keeps.
+Red against the base code (`origin/main`): 5 of the 11 failed (the two title
+tests, the survive half of the key-ending test, the title assertion at the end
+of the qualified-field test, and the decode-then-rescan test). The base code
+returned the title with `***REDACTED***` in place of `run`. The other 6 passed,
+as expected, because they pin masking the fix keeps.
 
 Red against the first cut of this fix (commit `dcdb8e953`, which read the key's
 last capitalised word and had no continuation check): the last two tests failed,
 because `Userpassword: hunter` and `SecretString: hunter` were published
-verbatim. The other 8 passed.
+verbatim (run before the extra fixtures were added to the other tests).
 
 After the fix:
 
 - The new file plus the existing redaction suites under `worker/deno/tests/`
   (`secret_redaction*_test.ts`, `gh_body_redaction*_test.ts` and
-  `*redact*_test.ts`), run together on the head: 359 passed, 0 failed.
-- `./quality.sh < /dev/null`: Result PASSED (with skipped checks).
+  `*redact*_test.ts`), run together on the head: 360 passed, 0 failed.
+- Removing, one at a time, the separator check, the key-shape check, the
+  plain-word check, the credential-key endings (`passwd`, `credentials?`,
+  `values?`) or the `following` text in `detectsSecretAssignment` each fails the
+  new file (observed on this head's fixtures).
+- `./quality.sh < /dev/null`: not run in the review-fix round (skipped for
+  budget); the earlier PASSED result predates this test-only change.
 
 Emphasis-wrapped headings are outside this change. `**Name:** run` and
 `**Name**: run` are not matched by the rule at all, before or after this change:

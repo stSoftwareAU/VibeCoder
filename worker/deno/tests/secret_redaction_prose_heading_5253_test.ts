@@ -125,6 +125,15 @@ Deno.test("Issue #5253 - credential fields with short dictionary-word values sta
     [`"${PRODUCT}": "run"`, "run"],
     [`${PRODUCT_SNAKE}: run`, "run"],
     [`${PRODUCT_LOWER}: run`, "run"],
+    // A further word on the line, so the continuation check cannot be what
+    // masks them: only the separator, key-shape and key-ending checks can.
+    ["Credentials: letmein for the service", "letmein"],
+    ["SecretValue: hunter for the service", "hunter"],
+    ["Passwd: hunter for the service", "hunter"],
+    [`"${PRODUCT}": run the agreed trial`, "run"],
+    [`${PRODUCT}=run the agreed trial`, "run"],
+    [`${PRODUCT_SNAKE}: run the agreed trial`, "run"],
+    [`${PRODUCT_LOWER}: run the agreed trial`, "run"],
   ];
   for (const [body, secret] of cases) {
     assertMasked(body, secret, body);
@@ -153,6 +162,14 @@ Deno.test("Issue #5253 - long and short synthetic values under a product heading
     [`${PRODUCT}: correcthorsebatterystaple`, "correcthorsebatterystaple"],
     [`${PRODUCT}: hunter2`, "hunter2"],
     [`${PRODUCT}: "run"`, "run"],
+    // A further word on the line, so only the plain-word check can mask them.
+    [`${PRODUCT}: ${SECRET} is the value`, SECRET],
+    [`${PRODUCT}: ${AWS_SECRET} is the value`, AWS_SECRET],
+    [
+      `${PRODUCT}: correcthorsebatterystaple is the value`,
+      "correcthorsebatterystaple",
+    ],
+    [`${PRODUCT}: hunter2 is the value`, "hunter2"],
   ];
   for (const [body, secret] of cases) {
     assertMasked(body, secret, body);
@@ -212,4 +229,25 @@ Deno.test("Issue #5253 - a qualified credential field ending its line keeps the 
   }
   // The reported title still survives beside them.
   assertSurvives(TITLE, "title beside qualified fields");
+});
+
+Deno.test("Issue #5253 - the decode-then-rescan pass keeps a heading's mask and exemption", () => {
+  // A base64 copy is decoded and rescanned by `detectsSecretAssignment`, which
+  // shares the prose-heading verdict with the replacement pass.
+  const encoded = (text: string) => "blob " + btoa(text);
+
+  // The reported title, encoded after a word, is prose and survives.
+  assertSurvives(encoded(ISSUE_TITLE), "encoded reported title");
+
+  // The same decoded shapes with a credential stay masked.
+  for (
+    const text of [
+      `${PRODUCT}: hunter`,
+      `GithubToken: run the agreed trial`,
+    ]
+  ) {
+    const body = encoded(text);
+    assertEquals(redactSecrets(body) !== body, true, `masked: ${text}`);
+    assertEquals(containsSecret(body), true, `detected: ${text}`);
+  }
 });
