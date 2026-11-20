@@ -164,8 +164,12 @@ Results:
   `run_failure_issue_test.ts`: 26 passed, 0 failed.
 - `./quality.sh` on `0b8314542`: `Result: PASSED (with skipped checks)`.
   Config integration was skipped (`deno or .config.json not available`) and so
-  was checkov (no checkov on PATH). The first gate run, before the
-  `run_failure_issue_test.ts` fixture fix, failed only that test.
+  was checkov (no checkov on PATH).
+- After merging `origin/main` (`877bb2f49`; the one conflict was the
+  `docs/TROUBLESHOOTING.md` step list, where main had dropped
+  `coverage carry-over check`): nine of the test files above, including
+  `run_failure_issue_test.ts`, 230 passed and 0 failed, and `./quality.sh`
+  returned `Result: PASSED (with skipped checks)`.
 - Docs: `docs/TROUBLESHOOTING.md` (the hard-kill paragraph) and
   `docs/workflows/resilience-and-concurrency.md` (the "Hard-kill evidence" and
   "On the next worker start" paragraphs) were read through and updated.
