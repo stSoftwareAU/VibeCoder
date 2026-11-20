@@ -120,10 +120,10 @@ flowchart LR
     never substitutes the configured one. `processIssue` surfaces the provider
     for a normal run and an expected-skip run.
 - `worker/deno/tests/run_core_callbacks_test.ts`: new tests, and no existing
-  assertion was changed. Each covers one caller of `dispatchIssueCallbacks`
-  in `lib/run_core.ts`:
-  - "the terminal run carries / omits an absent provider" covers the call at
-    the end of `releaseIssueClaim` (line 2502). It is changed and tested.
+  assertion was changed. Each covers one caller of `dispatchIssueCallbacks` in
+  `lib/run_core.ts`:
+  - "the terminal run carries / omits an absent provider" covers the call at the
+    end of `releaseIssueClaim` (line 2502). It is changed and tested.
   - "the exit-threshold branch carries the run's provider" covers the call in
     the serial loop's failure-threshold branch (line 3257). It is changed and
     tested.
