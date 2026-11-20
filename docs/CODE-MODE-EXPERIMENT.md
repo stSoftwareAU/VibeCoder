@@ -91,13 +91,12 @@ after it.
 
 An experiment keeps Code Mode only if it shows **at least 10% lower mean cost
 per completed Claude implementation run**, with **success and PR merge rates no
-worse** than runs without Code Mode. This is the bar the TokenEconomizer trial
-uses ([TokenEconomizer trial](TOKEN-ECONOMIZER-TRIAL.md), Issue
-[#4959](https://github.com/stSoftwareAU/VibeCoder/issues/4959)).
+worse** than runs without Code Mode. This is the bar the trial of Issue
+[#4959](https://github.com/stSoftwareAU/VibeCoder/issues/4959) uses.
 
 No host or window is chosen while the status is `blocked`. The issue that
 restarts the experiment chooses them, and does not share a host and window with
-another running trial: the TokenEconomizer trial page names GRQ-25 as its trial
+another running trial: the #4959 trial's protocol names GRQ-25 as its trial
 host, and a Code Mode window on the same host would confound both results.
 
 ## 5. ▶️ How the experiment restarts
