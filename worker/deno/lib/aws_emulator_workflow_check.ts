@@ -434,12 +434,11 @@ function volumeHoldsEntrypoint(volume: string, entrypoint: string): boolean {
  * `D/test-aws-emulator.sh`, so no second mount can shadow the script.
  */
 function segmentRunsAwsEmulatorAsAgent(words: string[]): boolean {
-  const i = statusPreservingCommandIndex(words);
-  if (i === -1 || words[i] !== "docker" || words[i + 1] !== "run") return false;
+  if (words[0] !== "docker" || words[1] !== "run") return false;
   const users: string[] = [];
   const entrypoints: string[] = [];
   const volumes: string[] = [];
-  let j = i + 2;
+  let j = 2;
   while (j < words.length) {
     const w = words[j] ?? "";
     if (!w.startsWith("-")) break;
