@@ -9,14 +9,16 @@ that image, and both build the same launch plan, so a Windows host is
 contained exactly as a macOS one is. The image is also built and exercised by
 CI (`.github/workflows/container-build.yml`) — on a pull request only when it
 touches something that can change the image (`container/**` — the
-Containerfile, entrypoint, tools manifest, provider scripts — or the workflow
-itself); any other PR gets the required `container` check reported as passed
+Containerfile, entrypoint, tools manifest, provider scripts — the workflow
+itself, or a worker module one of the image's live checks exercises, such as
+the toolchain self-check, the containment launch plan or the babysitter repair
+gate); any other PR gets the required `container` check reported as passed
 without a build. That decision is made by
 [`.github/scripts/detect-image-changes.sh`](../.github/scripts/detect-image-changes.sh),
 which fails the job loudly when the diff cannot run rather than skipping the
 build (Issue #1929). A weekly scheduled sweep (and `workflow_dispatch`)
-rebuilds the image regardless, so drift from `worker/**` or `quality.sh` — the
-paths the pull-request filter deliberately skips — is still caught. Inside the image CI runs the
+rebuilds the image regardless, so drift from the rest of `worker/**` or
+`quality.sh` — the paths the pull-request filter skips — is still caught. Inside the image CI runs the
 container-specific checks (`deno check` plus the entrypoint, launch-plan,
 runtime, manifest, run-mode and launcher-contract tests), not the whole test
 suite — the unit suite runs on the same commit in the sharded

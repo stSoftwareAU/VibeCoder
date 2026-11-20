@@ -252,6 +252,28 @@ Deno.test("image filter - containment changes run the live Docker checks (Issue 
   }
 });
 
+Deno.test("image filter - babysitter gate changes run the containment probes (Issue #5255)", async () => {
+  // The containment suite's babysitter step runs these with the image's real Deno and markdownlint, so a change to them must reach that step.
+  for (
+    const path of [
+      "worker/deno/lib/babysitter_tree_gate.ts",
+      "worker/deno/lib/pre_push_gate.ts",
+      "worker/deno/commands/babysitter_repair.ts",
+      "worker/deno/lib/fleet_babysitter_container.ts",
+      "worker/deno/tests/support/babysitter_gate_container_probe.ts",
+    ]
+  ) {
+    await withTempDir(async (dir) => {
+      const base = await repoWithBase(dir);
+      const head = await commitFile(dir, path, "changed\n");
+      const run = await filter(dir, base, head);
+      assertEquals(run.code, 0, run.stdout + run.stderr);
+      assertStringIncludes(run.githubOutput, "image=true", path);
+      assertStringIncludes(run.stdout, path);
+    });
+  }
+});
+
 Deno.test("image filter - an unrelated worker change still skips the image build (Issue #4047)", async () => {
   await withTempDir(async (dir) => {
     const base = await repoWithBase(dir);
