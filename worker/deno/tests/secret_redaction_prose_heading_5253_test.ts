@@ -10,8 +10,8 @@
  * word after its colon published as the placeholder.
  *
  * The exemption is narrow. It needs a bare colon and spaces, a Capitalised key
- * whose last word is not a credential field, and a plain single word as the
- * value. Credential fields keep their mask whatever the value, and so do `=`
+ * that does not end in a credential word, a plain single word as the value,
+ * and a further word after it on the same line. Credential fields keep their mask whatever the value, and so do `=`
  * assignments, quoted keys, underscore keys and lower-camel identifiers. Most
  * cases here are a pair: a survive assertion beside the mask it must not
  * weaken.
@@ -163,9 +163,53 @@ Deno.test("Issue #5253 - a product heading split across a line break stays maske
   assertMasked(`${PRODUCT}:\n${SECRET}\n`, SECRET, "cross-line");
 });
 
-Deno.test("Issue #5253 - only the key's last word decides a prose heading", () => {
-  // Positive control: the same body, decided by the key's last component alone.
+Deno.test("Issue #5253 - only the key's ending decides a prose heading", () => {
+  // Positive control: the same body, decided by how the key ends alone.
   const body = (key: string) => `${key}: run the agreed trial`;
   assertSurvives(body(PRODUCT), "product-name key survives");
   assertMasked(body("GithubToken"), "run", "credential-field key is masked");
+});
+
+Deno.test("Issue #5253 - a credential word as a lower-case suffix keeps the mask", () => {
+  // The key's ending decides, not its last capitalised word: `Userpassword`
+  // has one capitalised word, `Userpassword`, yet ends in `password`.
+  for (
+    const key of [
+      "Userpassword",
+      "Rootpassword",
+      "Accesskey",
+      "Privatekey",
+      "Secretkey",
+      "Authtoken",
+      "Apitoken",
+      "Clientsecret",
+    ]
+  ) {
+    assertMasked(`${key}: hunter`, "hunter", key);
+    assertMasked(`${key}: run the agreed trial`, "run", `${key} in prose`);
+  }
+});
+
+Deno.test("Issue #5253 - a qualified credential field ending its line keeps the mask", () => {
+  // A credential word not at the end (`SecretString`) passes the key check, so
+  // only the prose test protects it: a field's value ends its line.
+  for (
+    const key of [
+      "SecretString",
+      "PasswordConfirmation",
+      "PasswordPlain",
+      "SecretAnswer",
+      "SecretText",
+      "TokenString",
+      "PrivateKeyFile",
+      PRODUCT,
+    ]
+  ) {
+    assertMasked(`${key}: hunter`, "hunter", key);
+    assertMasked(`${key}: hunter\nnext: line`, "hunter", `${key} newline`);
+    assertMasked(`${key}: hunter.`, "hunter", `${key} full stop`);
+    assertMasked(`{"a": 1, ${key}: hunter}`, "hunter", `${key} in braces`);
+  }
+  // The reported title still survives beside them.
+  assertSurvives(TITLE, "title beside qualified fields");
 });

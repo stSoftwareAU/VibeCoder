@@ -552,13 +552,15 @@ itself must not report as carrying a secret, and vice versa.
 A product-name heading is not an assignment (Issue #5253). The PR title for
 Issue #4959, a product-name heading, had the word after its colon published as
 the placeholder, because the rule read the heading's `Name:` as a label. The
-word after a bare `: ` is now left alone when the key is a Capitalised product
-name whose last word is not a credential word (`Budget` in `TokenBudget`, though
-`GithubToken` ends in `Token`) and the value is a single plain word of at most 15
-letters. It is the one judgement made on a single line, and it looks at the key
-and the value rather than a line break. A credential field keeps its mask
-whatever its value, and `=`, quoted keys, underscore keys and lower-camel
-identifiers are never exempt.
+word after a bare `: ` is now left alone when four things hold: the key is a
+Capitalised product name that does not end in a credential word (`TokenBudget`,
+though `GithubToken` and `Userpassword` do), the value is a single plain word of
+at most 15 letters, and a further word follows it on the same line, so the
+heading leads into a sentence. It is the one judgement made on a single line,
+and it looks at the key, the value and what follows rather than a line break. A
+key ending in a credential word keeps its mask whatever its value, a
+`Key: word` that ends its line (`SecretString: hunter`) stays masked, and `=`,
+quoted keys, underscore keys and lower-camel identifiers are never exempt.
 
 The accepted costs are two rules. The first: a credential shorter than eight
 characters, or one whose emphasis-stripped value is a single lower-case word,
@@ -567,8 +569,8 @@ positive it removes, which silently degraded every PR body whose lead-in
 sentence ended in a credential label. A credential in that position still
 carrying a provider prefix is masked by its own signature rule regardless. The
 second: a credential that is a single plain word of at most 15 letters, sitting
-after a PascalCase heading whose last word is not a credential word, on the same
-line after `: `.
+after a PascalCase heading that does not end in a credential word, on the same
+line after `: `, with a further word after it on that line.
 
 ### Transformed secrets are decoded, then re-scanned
 
