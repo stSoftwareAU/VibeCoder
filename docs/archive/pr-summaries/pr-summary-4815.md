@@ -16,9 +16,11 @@ GRQ-3 has now posted the redacted facts for its three archived completion kills
 on this issue. In all three, the guest did not answer its exec probe, and the
 last step logged differs: `agent turn` twice and `pre-PR verifier` once. The
 guest VM itself hung, so no single completion step is at fault. The launcher's
-early silent-guest reap (#5161, already on `main`) is the repair for a hung
-guest. A new bounded replay test runs each kill's recorded timestamps through
-that reap's decision at the launcher's real check cadence.
+early silent-guest reap (#5161, already on `main`) bounds a hung guest: it is a
+mitigation, not a cure. A new bounded replay test runs each kill's recorded timestamps through
+that reap's decision at the launcher's real check cadence. Why the guest hangs is
+still unknown, so the reap shortens a hang but does not prevent it. This is Part
+of #4815.
 
 ## Spec
 
@@ -39,11 +41,14 @@ that reap's decision at the launcher's real check cadence.
 
 ### Essential Design Decisions
 
-- Only the wording changes. The limit, the not-finished retry and the absence of
-  `needs-human` (`worker/deno/lib/phases/declared_handoff.ts`, the branch after
+- The deferral behaviour does not change, only its wording. The limit, the
+  not-finished retry and the absence of `needs-human` (`worker/deno/lib/phases/declared_handoff.ts`, the branch after
   `history.length < MAX_TIME_DEFERRALS`) stay as they are.
+- The replay adds no production behaviour. The only code addition is the
+  `DEFAULT_GUEST_SILENCE_CHECK_SECONDS` constant, which mirrors `run.sh`'s
+  default so the test does not read shell text.
 - No time-deferral marker is emitted. A deferral after a commit raises no PR,
-  and the facts' arrival depends on GRQ-3 restarting, not on a date this run can
+  and the next diagnostic step waits on a recurrence, not on a date this run can
   know.
 
 ### Undiscoverable Facts
@@ -100,14 +105,54 @@ run that delivers nothing is retried, not labelled needs-human as
 
 ## Acceptance Criteria
 
-- **missing** — "use a bounded replay or the next applicable recurrence to
-  diagnose and repair the completion failure" — reason: GRQ-3 has not yet posted
-  the archived facts (PR #5294), and no recurrence has been filed, so there is
-  nothing to diagnose from.
-- **missing** — "Complete the issue through an implemented fix and automated
-  regression/recovery evidence" — reason: the coding standards rule out a
-  speculative fix for an unreproduced fault. This diff fixes the deferral
-  comment wording, not the wedge.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — "use a bounded replay or the next applicable recurrence to
+  diagnose and repair the completion failure" — evidence:
+  `worker/deno/tests/guest_silence_replay_4815_test.ts::replay #4815 vibe-coder-46887 (pre-PR verifier) - the early reap fires before the recorded silence`
+  (and the same test for `vibe-coder-53371` and `vibe-coder-9753`) —
+  reviewer: partial — reason: the replay narrows the wedge to a guest-VM hang
+  that the #5161 early reap ends after about 20 minutes instead of 30–90. Why
+  the guest hangs is still unknown, and the run still dies, so the failure is
+  reaped sooner, not repaired. The replay also assumes the guest stopped
+  answering from the last log line onward, and no recurrence has been seen
+  since #5161.
+- **partial** — "Complete the issue through an implemented fix and automated
+  regression/recovery evidence" — evidence:
+  `worker/deno/tests/guest_silence_replay_4815_test.ts` (6 tests, red-checked)
+  — reviewer: partial — reason: the automated evidence exists and needs no
+  manual step, but the diff changes no code for the completion failure itself.
+  The fix it relies on is the #5161 mitigation, and the cause is still unknown.
+- **met** — "A missing evidence file on the claiming host, repeated deferral,
+  or exhausted retry counter alone must not turn this implementation issue
+  into `needs-human`" — evidence:
+  `worker/deno/tests/time_deferral_test.ts::deferIssueUntil - posts a comment and records the body line`,
+  `worker/deno/tests/time_deferral_test.ts::buildDeferralExhaustedComment - lists prior deferrals and the latest reason`
+  — reviewer: met
+- **partial** — "preserve the existing private diagnostic boundary, make the
+  necessary redacted cause/last-step evidence available to the automated
+  diagnostic path" — evidence: `worker/deno/lib/hard_kill_facts_backfill.ts`
+  (PR #5294) — reviewer: partial — reason: the boundary is kept and the last
+  step and probe result now reach the issue, but there is no cause evidence:
+  guest memory and pressure read `not available` in all three facts.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — no source-text gate — evidence:
+  `worker/deno/tests/guest_silence_replay_4815_test.ts` (scraped
+  `run.sh` for the check cadence) — reason: fixed in this diff; the cadence
+  is now `DEFAULT_GUEST_SILENCE_CHECK_SECONDS` in
+  `worker/deno/lib/guest_silence_watch.ts`, and the `run.sh` comment names it.
+- **violation** — retyped constant — evidence:
+  `worker/deno/tests/time_deferral_test.ts:370` — reason: not changed, and
+  disputed. The assertions check the public comment text a reader sees.
+  Importing the phrase from the code under test would make the test agree
+  with itself and miss a wording regression.
+- **clean** — Australian English spelling, `deno fmt`, `deno lint`, KISS/DRY,
+  and test fakes (no sleeps or real signals; the runtime is faked through
+  `EvidenceSeams`).
 
 ## Test Plan
 
@@ -125,8 +170,13 @@ run that delivers nothing is retried, not labelled needs-human as
   with `DEFAULT_GUEST_SILENCE_SECONDS` temporarily set to 3600, 2 of the 6
   replay tests failed. The change was reverted, and
   `deno test -A tests/guest_silence_replay_4815_test.ts
-  tests/guest_silence_watch_test.ts < /dev/null` from `worker/deno` passed:
-  16 passed, 0 failed. `deno lint` and `deno check` on the new file are clean.
+  tests/guest_silence_watch_test.ts tests/container_reap_command_test.ts
+  < /dev/null` from `worker/deno` passed: 26 passed, 0 failed. With the
+  deferral tests,
+  `deno test -A tests/time_deferral_test.ts
+  tests/handle_no_changes_time_deferral_test.ts
+  tests/guest_silence_replay_4815_test.ts < /dev/null` passed: 43 passed,
+  0 failed. `deno lint` and `deno check` on the new file are clean.
 - **Ran** `./quality.sh < /dev/null` on the earlier head (before the replay
   test):
   `Result: PASSED (with skipped checks)`; the gate skipped `config integration`
