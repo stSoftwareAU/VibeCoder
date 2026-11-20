@@ -232,7 +232,10 @@ edited. A failed sync is logged once at warning and does not fail the run
 `vibe-worker-issue-N` marker, on a branch other than the run's own
 `issue-<N>-…` branch) is never rebuilt; the prompt tells the agent to update
 it with `gh pr edit <n> --body-file <file>` and name that in
-`.pr_response_message` (Issue #4515).
+`.pr_response_message` (Issue #4515). The re-sync rebuilds the description only,
+never the title: when a fix makes a pull request's title false, the prompt tells
+the agent to update it with `gh pr edit <n> --title <title>` and name that in
+`.pr_response_message` (Issue #5239).
 
 **Priority 1.64 — Reconcile PR Body Digests** (Issue #3760) covers pushes the
 worker did not make. The re-sync above runs only on the worker's own runs (PR
