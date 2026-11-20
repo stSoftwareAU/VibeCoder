@@ -504,9 +504,13 @@ flowchart TD
 | `startedAt`, `finishedAt`   | The evidence's capture time, for both, so `durationSeconds` is `0`; the real duration is unknown |
 
 - **Lifecycle.** The evidence file is moved into `~/logs/hard-kill-archive/`
-  once it is filed and reported, as `hard-kill-<container>-<epoch>.facts.json`
-  (its facts were posted by the filing itself). If filing fails, the file is
-  kept for the next launch and the failure is logged as a warning. No callback
+  once it is filed and reported. A newly filed issue contains every public fact,
+  so its file is immediately named
+  `hard-kill-<container>-<epoch>.facts.json`. A recurrence comment is shorter;
+  its file first keeps the ordinary `.json` name so the facts backfill posts
+  guest memory, pressure and the other full public facts, then becomes
+  `*.facts.json` in the same reporting pass. If filing fails, the file is kept
+  for the next launch and the failure is logged as a warning. No callback
   fires and nothing is counted until filing succeeds, so the retry reports the
   kill once. Within one pass, a repeat of a signature filed moments earlier goes
   straight to that issue, without waiting for GitHub search to index it. If the

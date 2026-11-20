@@ -36,8 +36,11 @@ is not diagnosed or repaired here. Part of #4815.
 - The primary "posted" record is the archived file's own name
   (`*.facts.json`). That name still matches `HARD_KILL_FILE_PATTERN`, so
   retention pruning applies unchanged and no comment search runs after a
-  successful rename. Before posting, the backfill also checks for the run
-  file marker in a fleet-authored comment; if the rename failed, the next start
+  successful rename. A newly filed issue already contains every public fact and
+  is archived as `*.facts.json`; a shorter recurrence comment keeps the ordinary
+  archive name until the backfill posts the full facts in the same pass. Before
+  posting, the backfill also checks for the file marker in a fleet-authored
+  comment; if the rename failed, the next start
   retries the rename without duplicating the public comment.
 - A file whose signature has no verified open issue is kept for a later start. A failed lookup, a failed comment or a malformed
   file keeps the file as it is, logs a warning with the cause, and is retried on
@@ -77,8 +80,8 @@ Backend change, no UI files. Tests under `worker/deno/tests/`:
   fake `gh` that answers the open-issue search by its input. The cases:
   - An archived completion kill gets one comment with its archive-file marker,
     `**Phase:** \`completion\``, the last step and the guest probe. The file
-    becomes`*.facts.json`. A second pass posts nothing. A private token in the
-    log tail never reaches a`gh` argument. Non-secret canaries also prove that
+    becomes `*.facts.json`. A second pass posts nothing. A private token in the
+    log tail never reaches a `gh` argument. Non-secret canaries also prove that
     the private repository name, last log line, quality tail and tool call do
     not reach the public comment.
   - An empty search and unresolved fleet authors both keep the file. Once the
@@ -100,6 +103,9 @@ Backend change, no UI files. Tests under `worker/deno/tests/`:
   - A malformed archived file is left byte-for-byte as it was, with a warning.
   - A newly reported file is archived as `*.facts.json`. Its newly filed issue
     receives an older file’s facts even when search still returns no rows.
+  - A newly reported recurrence first receives the short recurrence line, then
+    the backfill comment with guest memory and pressure; the archive is marked
+    only after those full facts are public, and a second pass posts nothing.
   - The backfill runs through `reportPendingHardKills` and logs its count line.
   - A symlinked archive directory is refused.
 
@@ -176,21 +182,21 @@ flowchart TD
   `worker/deno/lib/hard_kill_facts_backfill.ts:74` — reason: not fixed in this
   diff. The plain-directory check and the rename repeat the archive handling in
   `defaultHardKillSeams`.
-- **clean** — Australian English, behaviour tests (8 pass, including the
+- **clean** — Australian English, behaviour tests (13 pass, including the
   failed-lookup retry), security (facts only, no log text, a symlinked archive
   is refused), docs (`docs/CALLBACKS.md` and the coverage ledger), and Deno and
   TypeScript conventions.
 
 ## Test Plan
 
-- **Added** `worker/deno/tests/hard_kill_facts_backfill_4815_test.ts` (12 tests,
+- **Added** `worker/deno/tests/hard_kill_facts_backfill_4815_test.ts` (13 tests,
   listed under Evidence). On the base branch they fail, because the module does
   not exist and the archive name is unchanged.
 - **Red-checked** the failed-lookup test: with the lookup's catch changed to
   fall through as `issue = null`, it fails (7 passed, 1 failed), because the
   warning says no verified issue was found rather than reporting the lookup
   failure. The file remains unchanged. With the head's code restored it passes
-  (12 passed, 0 failed).
+  (13 passed, 0 failed).
 - **Edited and re-run** `worker/deno/tests/hard_kill_report_test.ts`. Its
   `report()` helper and the direct AC3 reporter call inject an in-memory
   `factsSeams`, so no test using the fake pending-file seams can reach the
@@ -202,7 +208,7 @@ flowchart TD
   tests/hard_kill_report_test.ts tests/hard_kill_guest_facts_test.ts
   tests/hard_kill_evidence_test.ts tests/run_core_production_deps_hard_kill_test.ts
   tests/run_core_hard_kill_test.ts tests/lib_sweep_coverage_test.ts`
-  from `worker/deno` after adding the review tests: 190 passed, 0 failed.
+  from `worker/deno` after adding the review tests: 191 passed, 0 failed.
   `deno task check:manifests` passed (876 passed, 0 failed).
 - **Ran** `./quality.sh < /dev/null`. Every stage passed except `deno tests`,
   where one test failed, `tests/pr_summary_ci_workflow_3768_test.ts`, because

@@ -221,11 +221,11 @@ export interface HardKillSeams {
   listEvidenceFiles(dir: string): Promise<string[]>;
   readTextFile(path: string): Promise<string>;
   /**
-   * Move a reported file into {@link HARD_KILL_ARCHIVE_DIR} under its
-   * {@link factsPostedName}: the filing just posted its facts, so the backfill
-   * must skip it (Issue #4815).
+   * Move a reported file into {@link HARD_KILL_ARCHIVE_DIR}. Use
+   * {@link factsPostedName} only when the filing published the complete facts;
+   * a recurrence keeps its ordinary name for the backfill (Issue #4815).
    */
-  archiveFile(path: string): Promise<void>;
+  archiveFile(path: string, factsPosted: boolean): Promise<void>;
   /** Remove expired archives and the oldest files above the transcript cap. */
   pruneArchive(dir: string, nowMs: number): Promise<void>;
 }
@@ -273,16 +273,17 @@ export const defaultHardKillSeams: HardKillSeams = {
       }
     }
   },
-  async archiveFile(path: string): Promise<void> {
+  async archiveFile(path: string, factsPosted: boolean): Promise<void> {
     const cut = path.lastIndexOf("/");
     const archive = `${path.slice(0, cut)}/${HARD_KILL_ARCHIVE_DIR}`;
     await Deno.mkdir(archive, { recursive: true });
     if (!(await Deno.lstat(archive)).isDirectory) {
       throw new Error("hard-kill archive is not a plain directory");
     }
+    const name = path.slice(cut + 1);
     await Deno.rename(
       path,
-      `${archive}/${factsPostedName(path.slice(cut + 1))}`,
+      `${archive}/${factsPosted ? factsPostedName(name) : name}`,
     );
   },
 };
@@ -874,7 +875,7 @@ export async function reportPendingHardKills(
       summary.reported++;
 
       try {
-        await seams.archiveFile(path);
+        await seams.archiveFile(path, filing.action === "filed");
       } catch (err) {
         summary.kept++;
         logWarn(

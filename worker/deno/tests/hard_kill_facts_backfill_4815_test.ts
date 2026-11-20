@@ -547,6 +547,39 @@ Deno.test("a newly reported file is archived as facts-posted and never backfille
   }
 });
 
+Deno.test("a newly reported recurrence backfills every public guest fact once", async () => {
+  const { dir, archive } = await setup();
+  const name = "hard-kill-vibe-coder-46887-1793830701.json";
+  try {
+    await Deno.writeTextFile(`${dir}/${name}`, JSON.stringify(evidence()));
+    const gh = fakeGh();
+    const pass = () =>
+      reportPendingHardKills({
+        evidenceDir: dir,
+        ghFn: gh.ghFn,
+        runFailureCallback: () => Promise.resolve(),
+        countFailure: () => {},
+        fleetAuthors: FLEET,
+        nowSeconds: Date.parse("2026-11-04T22:10:00Z") / 1000,
+      });
+
+    assertEquals(await pass(), { found: 1, reported: 1, kept: 0 });
+    const factBodies = gh.comments
+      .map((call) => call[call.indexOf("--body") + 1]!)
+      .filter((body) => body.includes(hardKillFactsMarker(name)));
+    assertEquals(factBodies.length, 1);
+    assertStringIncludes(factBodies[0]!, "**Guest memory:**");
+    assertStringIncludes(factBodies[0]!, "**Guest pressure:**");
+    assertEquals(await names(archive), [factsPostedName(name)]);
+
+    const commentCount = gh.comments.length;
+    assertEquals(await pass(), { found: 0, reported: 0, kept: 0 });
+    assertEquals(gh.comments.length, commentCount);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("backfill through reportPendingHardKills posts an archived file's facts", async () => {
   const { dir, archive } = await setup();
   try {
