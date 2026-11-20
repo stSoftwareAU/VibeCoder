@@ -14,8 +14,6 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import type { HardKillEvidence } from "../lib/hard_kill_evidence.ts";
-import type { CoverageCarryOverResult } from "../lib/coverage_carryover_gate.ts";
-import { evaluateCoverageCarryOverGate } from "../lib/coverage_carryover_gate.ts";
 import { agentProviderById, agentProviderIds } from "../lib/agent_provider.ts";
 import { HARD_KILL_EVIDENCE_VERSION } from "../lib/hard_kill_evidence.ts";
 import {
@@ -1030,12 +1028,7 @@ Deno.test("hardKillLastStep takes the mutation check from the tail and skips the
   );
 });
 
-/** The note the gate logs for a coverage result, from the real gate. */
-function coverageNote(result: CoverageCarryOverResult): string {
-  return evaluateCoverageCarryOverGate(result, "").note;
-}
-
-Deno.test("hardKillLastStep names the step for historical mutation notes and current coverage notes (Issue #4815 review)", () => {
+Deno.test("hardKillLastStep names the step for historical mutation notes (Issue #4815 review)", () => {
   // The notes the mutation gate logged for each result kind. The gate itself
   // was retired by Issue #5095, so the notes are written out here.
   const mutation: Record<string, string> = {
@@ -1046,30 +1039,11 @@ Deno.test("hardKillLastStep names the step for historical mutation notes and cur
       "mutation budget exhausted after 5 of 9 mutants (300 s) — remaining mutants untested, not passed",
     notApplicable: "mutation check not applicable: no Deno project",
   };
-  const coverage: Record<string, CoverageCarryOverResult> = {
-    clean: {
-      kind: "completed",
-      changedTests: ["a_test.ts"],
-      carried: 3,
-      uncovered: [],
-    },
-    budget: {
-      kind: "budget_exhausted",
-      changedTests: ["a_test.ts"],
-      budgetSeconds: 600,
-    },
-    notApplicable: { kind: "not_applicable", reason: "no tests changed" },
-  };
   const cases: [string, string, string][] = [
     ...Object.entries(mutation).map(([k, note]): [string, string, string] => [
       `mutation ${k}`,
       note,
       "mutation check",
-    ]),
-    ...Object.entries(coverage).map(([k, r]): [string, string, string] => [
-      `coverage ${k}`,
-      coverageNote(r),
-      "coverage carry-over check",
     ]),
   ];
   for (const [name, note, label] of cases) {
@@ -1085,6 +1059,18 @@ Deno.test("hardKillLastStep names the step for historical mutation notes and cur
     });
     assertEquals(hardKillLastStep(ev), label, `${name}: ${note}`);
   }
+});
+
+Deno.test("hardKillLastStep: an old coverage carry-over note no longer has its own label (Issue #5247)", () => {
+  const note = "coverage carry-over: 3 of 3 carried-over lines still covered";
+  const ev = makeEvidence({ lastLogLine: note }, {
+    workerLogTail: [
+      "Pre-PR verifier reported findings",
+      note,
+      "[phase] completion (x): still running · 5m0s elapsed",
+    ].join("\n"),
+  });
+  assertEquals(hardKillLastStep(ev), "pre-PR verifier");
 });
 
 Deno.test("hardKillLastStep: each table operand names its step from the log shapes the worker writes (PR #4819 review)", () => {
@@ -1178,7 +1164,6 @@ Deno.test("hardKillLastStep: an agent-progress line is the agent turn whatever i
       'grep -rn "mutation check" docs',
       'grep -rn "Pre-PR verifier" docs',
       'grep -rn "Quality gate" docs',
-      'grep -rn "3 of 3 carried-over lines" docs',
       // These details resemble other worker log lines.
       'grep -rn "Status: " docs',
       'grep -rn "[liveness]" docs',

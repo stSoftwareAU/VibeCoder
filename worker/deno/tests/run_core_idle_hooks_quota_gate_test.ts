@@ -14,6 +14,14 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { createLogger } from "../lib/logger.ts";
+import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
+import {
+  rateLimitSignalPath,
+  writeRateLimitSignal,
+} from "../lib/rate_limit_signal.ts";
 import {
   createDefaultRunCoreConfig,
   type RunCoreDeps,
@@ -319,3 +327,91 @@ Deno.test(
     }
   },
 );
+
+for (const slots of [1, 2]) {
+  for (const limited of [false, true]) {
+    const condition = limited
+      ? "preserves quota during cooldown"
+      : "spends quota on idle work";
+    Deno.test(`run_core - an empty scan ${condition} (maxConcurrentIssues=${slots})`, async () => {
+      const workDir = await Deno.makeTempDir({
+        prefix: "idle_secondary_limit_",
+      });
+      let now = 0;
+      const initialQuota = 5000;
+      let quota = initialQuota;
+      let signal: string | undefined;
+      let cleanup: (() => void) | undefined;
+      try {
+        const production = await createProductionRunCoreDeps({
+          repoDir: workDir,
+          workDir,
+          githubUser: "worker-bot",
+          env: (key) =>
+            key === "HOME" || key === "USERPROFILE" ? workDir : undefined,
+          logger: createLogger({ write: () => {} }),
+          config: {
+            ...buildDefaultWorkerConfig(),
+            repos: ["org/idle-fixture"],
+            workDir,
+          },
+        });
+        cleanup = production.cleanup;
+        // An empty GitHub repository. Charge each external request one point.
+        _setGhSpawnRunner((args) => {
+          quota--;
+          return Promise.resolve({
+            code: 0,
+            success: true,
+            stdout: args[0] === "issue" && args[1] === "create"
+              ? "https://github.com/org/idle-fixture/issues/1"
+              : "[]",
+            stderr: "",
+          });
+        });
+        const config = idleRunConfig(workDir, 60);
+        config.maxConcurrentIssues = slots;
+        const { deps } = production;
+        await runCoreLoop(
+          config,
+          createMockDeps({
+            now: () => now,
+            sleep: () => {
+              now = 61000;
+              return Promise.resolve();
+            },
+            isRateLimitActive: deps.isRateLimitActive,
+            runTranscriptScan: deps.runTranscriptScan,
+            runIdleDetectAudit: deps.runIdleDetectAudit,
+            runIdleDecisionCensus: deps.runIdleDecisionCensus,
+            runIdleTaskFiler: deps.runIdleTaskFiler,
+            findNextIssue: async () => {
+              if (limited && signal === undefined) {
+                assert((await writeRateLimitSignal(workDir, 3600)).ok);
+                signal = await Deno.readTextFile(rateLimitSignalPath(workDir));
+              }
+              return { ok: true, value: null };
+            },
+          }),
+        );
+        if (limited) {
+          assertEquals(quota, initialQuota);
+          assert(signal !== undefined);
+          assertEquals(
+            await Deno.readTextFile(rateLimitSignalPath(workDir)),
+            signal,
+          );
+        } else {
+          assert(
+            quota < initialQuota,
+            "the healthy idle audit must spend GitHub quota",
+          );
+        }
+      } finally {
+        _resetGhSpawnRunner();
+        cleanup?.();
+        await Deno.remove(workDir, { recursive: true });
+      }
+    });
+  }
+}

@@ -248,7 +248,7 @@ after the container is gone (see
 The next worker start files that record as a `bug` issue carrying only the run's
 facts, the figures derived from the record (silence before capture, the
 guest-probe state, guest memory and guest pressure) and a last step logged, from
-a fixed list (`pre-PR verifier`, `coverage carry-over check`, `quality gate`,
+a fixed list (`pre-PR verifier`, `quality gate`,
 `agent turn`, a setup step (`setup: issue claim`, `setup: claim churn check`,
 `setup: repository setup`, `setup: heartbeat start`,
 `setup: default branch sync`, `setup: feature branch` or

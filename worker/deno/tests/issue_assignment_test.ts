@@ -50,6 +50,7 @@ import {
   HAIKU_ISSUE_EXECUTOR_EFFORT,
   HAIKU_ISSUE_EXECUTOR_MODEL,
 } from "../lib/issue_executor_agents.ts";
+import { denoCacheEnv } from "./support/deno_cache_env.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const ISSUE = 3718;
@@ -994,7 +995,7 @@ Deno.test("issue assignment - the production seams record the machine hostname a
     args: ["eval", script],
     cwd: new URL("..", import.meta.url).pathname,
     clearEnv: true,
-    env: { VIBE_HOST_ID: "different-report-host" },
+    env: { VIBE_HOST_ID: "different-report-host", ...denoCacheEnv() },
     stdout: "piped",
     stderr: "piped",
   }).output();
