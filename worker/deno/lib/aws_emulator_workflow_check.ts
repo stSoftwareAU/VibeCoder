@@ -597,7 +597,12 @@ function codeLines(step: unknown): string[] {
     // Keep executable text closed over the shell syntax we model. Valid Bash
     // comments may contain prose Unicode, but a Unicode space before `#` is
     // executable text rather than a comment and must be refused.
-    if (/[^\x09\x20-\x7e]/.test(physical)) return ["invalid non-ASCII code"];
+    if (
+      [...physical].some((character) => {
+        const point = character.codePointAt(0) ?? 0;
+        return point !== 0x09 && (point < 0x20 || point > 0x7e);
+      })
+    ) return ["invalid non-ASCII code"];
     const line = `${continued}${physical}`;
     if (line.endsWith("\\")) {
       // Bash removes backslash-newline without inserting a blank. Preserve
