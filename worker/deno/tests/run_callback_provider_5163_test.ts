@@ -571,3 +571,70 @@ for (const expectedSkip of [false, true]) {
     }
   });
 }
+
+Deno.test("#5163 - production add-repo route publishes the configured provider", async () => {
+  const root = await Deno.makeTempDir({ prefix: "provider-add-repo-" });
+  try {
+    const title = "add-repo: org/another-repo";
+    const body = "Add the repository to the fleet.";
+    const config = {
+      ...buildDefaultWorkerConfig(),
+      workDir: root,
+      allowedAuthors: ["test-user"],
+      agentProvider: "deepseek",
+      enabledAgentProviders: ["deepseek"],
+    };
+    const snapshot = await captureContentSnapshot(
+      resolveContentApprovalStateDir(root),
+      REPO,
+      42,
+      title,
+      body,
+      "test-user",
+      null,
+    );
+    assertEquals(snapshot.ok, true);
+    const worker = createMockDeps({
+      github: {
+        runGhCommand: () =>
+          Promise.resolve(JSON.stringify({
+            title,
+            body,
+            author: { login: "test-user" },
+            labels: [{ name: "work-on" }],
+            comments: [],
+            state: "OPEN",
+          })),
+      },
+    });
+    let routed = false;
+    const production = await createProductionRunCoreDeps({
+      repoDir: root,
+      workDir: root,
+      githubUser: "test-user",
+      logger: createLogger({ write: () => {} }),
+      config,
+      workerDeps: worker,
+      env: envFrom({ HOME: root }),
+      routeAddRepoInProcessIssueFn: () => {
+        routed = true;
+        return Promise.resolve({ routed: true, success: true });
+      },
+    });
+    try {
+      const result = await production.deps.processIssue({
+        repo: REPO,
+        issueNumber: 42,
+        issueTitle: title,
+        milestoneTitle: "",
+      });
+      assert(routed, "the add-repo route must handle the issue");
+      assert(result.ok);
+      assertEquals(result.value.provider, "deepseek");
+    } finally {
+      production.cleanup();
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

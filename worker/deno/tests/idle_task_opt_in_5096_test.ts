@@ -77,6 +77,7 @@ function wrapperInput(
     issueBody?: string;
     ownerRequested?: boolean;
     authorisedOptInTemplates?: ReadonlySet<string>;
+    configuredProvider?: string;
   },
 ) {
   return {
@@ -94,6 +95,7 @@ function wrapperInput(
     ownerRequested: overrides.ownerRequested,
     authorisedOptInTemplates: overrides.authorisedOptInTemplates ??
       NO_AUTHORISED,
+    configuredProvider: overrides.configuredProvider,
   };
 }
 
@@ -432,10 +434,15 @@ Deno.test(
       wrapperInput({
         issueTitle: "Run a test-audit scan",
         issueAuthor: FLEET_AUTHOR,
+        configuredProvider: "deepseek",
       }),
     );
 
-    assertEquals(run.outcome, { routed: true, success: true });
+    assertEquals(run.outcome, {
+      routed: true,
+      success: true,
+      provider: "deepseek",
+    });
     assertEquals(run.filed, []);
     assert(run.closed);
     assertStringIncludes(run.comments.join("\n"), "without an owner request");

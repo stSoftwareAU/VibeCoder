@@ -113,10 +113,19 @@ flowchart LR
     - A later quality-gate fix agent on `claude` makes the run mixed and the
       provider absent. The same flow with both launches on DeepSeek gives
       `deepseek`.
+    - A returned pre-PR verifier on the pinned provider keeps `deepseek`; a
+      verifier on the Claude host makes the run mixed and omits the provider.
     - A refused claim launches nothing and reports the configured provider.
   - **Production wiring:** `runIssueCallbacks` publishes the run's provider and
     never substitutes the configured one. `processIssue` surfaces the provider
-    for a normal run and an expected-skip run.
+    for a normal run and an expected-skip run. An `add-repo:` route that invokes
+    no agent publishes the configured provider.
+- `worker/deno/tests/idle_task_process_issue_route_test.ts` pins that a scan
+  which ran omits provider provenance, while a pre-scan clone failure publishes
+  the configured provider.
+- `worker/deno/tests/idle_task_opt_in_5096_test.ts` pins the configured provider
+  on an opt-in wrapper declined before any scan.
+- The three focused files pass together: 69 passed, 0 failed.
 - `worker/deno/tests/run_core_callbacks_test.ts`: new tests, and no existing
   assertion was changed. Each covers one caller of `dispatchIssueCallbacks` in
   `lib/run_core.ts`:

@@ -684,6 +684,8 @@ export interface ProductionDepsOptions {
   /** Coding-run seams: real phases remain injectable without live GitHub writes (#3977). */
   workerDeps?: WorkerDeps;
   workOnIssue?: typeof workOnIssue;
+  /** Test seam for pinning provider propagation through the add-repo route. */
+  routeAddRepoInProcessIssueFn?: typeof routeAddRepoInProcessIssue;
   /**
    * Override the derived-author resolver (Issue #256). Production leaves
    * this unset and gets {@link resolveDerivedAuthors}, which shells out to
@@ -935,6 +937,8 @@ export async function createProductionRunCoreDeps(
   const setupRepoFn = options.setupRepoFn ?? setupRepo;
   const runGitCommandFn = options.runGitCommandFn ?? runGitCommand;
   const processPrFeedbackFn = options.processPrFeedbackFn ?? processPrFeedback;
+  const routeAddRepoFn = options.routeAddRepoInProcessIssueFn ??
+    routeAddRepoInProcessIssue;
   const dispatchCustomLabelPrPromptsFn =
     options.dispatchCustomLabelPrPromptsFn ?? dispatchCustomLabelPrPrompts;
   const buildCustomPrPromptFn = options.buildCustomPrPromptFn ??
@@ -5242,7 +5246,7 @@ export async function createProductionRunCoreDeps(
       // request). The route claims the request itself (Issue #1193); the
       // allowed-author gate on the claim path already applies, and the slug
       // is re-validated downstream by `process-add-repo` (defence in depth).
-      const addRepoRoute = await routeAddRepoInProcessIssue(
+      const addRepoRoute = await routeAddRepoFn(
         {
           repo: issue.repo,
           issueNumber: issue.issueNumber,
