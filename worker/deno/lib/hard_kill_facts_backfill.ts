@@ -11,8 +11,9 @@
  * each hard-kill reporting pass this module posts, once per archived file, ONE
  * comment on the open issue for the file's signature. The comment carries the
  * same fixed-shape facts the issue body uses (never log text), and the file is
- * then renamed to `*.facts.json` so it is never posted again. A file whose
- * post failed keeps its name and is retried on the next start.
+ * then renamed to `*.facts.json`. Before posting, a fleet-authored run marker
+ * is checked so a failed rename cannot cause a duplicate on later starts. A
+ * file whose post failed keeps its name and is retried on the next start.
  *
  * Nothing here throws for a per-file fault; a fault is logged and the file is
  * kept. No run callback fires and nothing is counted: the kill was reported
@@ -22,6 +23,7 @@
  */
 
 import type { HardKillEvidence } from "./hard_kill_evidence.ts";
+import { selectFleetAuthoredComments } from "./alert_dedup_authors.ts";
 import {
   factsPostedName,
   HARD_KILL_ARCHIVE_DIR,
@@ -37,6 +39,7 @@ import {
   findOpenRunFailureIssue,
   RUN_FAILURE_TARGET_REPO,
 } from "./run_failure_issue.ts";
+import { fetchMarkerComments } from "./marker_comment_pages.ts";
 
 /** The marker that names the run whose facts a comment carries. */
 export function hardKillFactsMarker(runId: string): string {
@@ -206,34 +209,65 @@ export async function backfillArchivedHardKillFacts(
       continue;
     }
 
+    const marker = hardKillFactsMarker(evidence.runId);
+    let alreadyPosted: boolean;
     try {
-      await opts.ghFn([
-        "issue",
-        "comment",
-        String(issue),
-        "--repo",
+      const markerComments = (await fetchMarkerComments(
         RUN_FAILURE_TARGET_REPO,
-        "--body",
-        formatHardKillFactsComment(evidence, sig),
-      ]);
+        issue,
+        "vibe-hard-kill-facts",
+        opts.ghFn,
+      )).filter((comment) => comment.body.includes(marker));
+      const ours = await selectFleetAuthoredComments(
+        markerComments,
+        `hard-kill facts for ${name}`,
+        { fleetAuthors: opts.fleetAuthors },
+        logWarn,
+        "the marker is ignored and the fixed-shape facts are posted",
+      );
+      alreadyPosted = ours.length > 0;
     } catch (err) {
       logWarn(
-        `hard-kill facts backfill: ${name}: comment on #${issue} failed, kept for the next start: ${
+        `hard-kill facts backfill: ${name}: marker lookup on #${issue} failed, kept to avoid a duplicate comment: ${
           firstLine(err)
         }`,
       );
       result.kept++;
       continue;
     }
-    result.posted++;
+
+    if (!alreadyPosted) {
+      try {
+        await opts.ghFn([
+          "issue",
+          "comment",
+          String(issue),
+          "--repo",
+          RUN_FAILURE_TARGET_REPO,
+          "--body",
+          formatHardKillFactsComment(evidence, sig),
+        ]);
+      } catch (err) {
+        logWarn(
+          `hard-kill facts backfill: ${name}: comment on #${issue} failed, kept for the next start: ${
+            firstLine(err)
+          }`,
+        );
+        result.kept++;
+        continue;
+      }
+      result.posted++;
+    }
     try {
       await seams.markFactsPosted(path);
+      result.marked++;
     } catch (err) {
       logWarn(
-        `hard-kill facts backfill: ${name} was posted to #${issue} but could not be marked, so the facts may be posted again next start: ${
+        `hard-kill facts backfill: ${name} has a facts comment on #${issue} but could not be marked; the fleet-authored run marker will suppress a duplicate next start: ${
           firstLine(err)
         }`,
       );
+      result.kept++;
     }
   }
   return result;

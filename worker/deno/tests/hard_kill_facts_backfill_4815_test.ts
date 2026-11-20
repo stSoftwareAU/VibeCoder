@@ -77,10 +77,18 @@ function fakeGh(
     failComment?: { value: boolean };
     hideRows?: { value: boolean };
     failList?: { value: boolean };
+    failMarkerList?: { value: boolean };
   } = {},
 ) {
   const calls: string[][] = [];
   const comments: string[][] = [];
+  const commentRows: Array<{
+    id: number;
+    body: string;
+    created_at: string;
+    updated_at: string;
+    author: string;
+  }> = [];
   const created: string[][] = [];
   const ghFn = (args: string[]): Promise<string> => {
     calls.push(args);
@@ -106,7 +114,26 @@ function fakeGh(
         return Promise.reject(new Error("gh: HTTP 502\nsecond line"));
       }
       comments.push(args);
+      commentRows.push({
+        id: commentRows.length + 1,
+        body: args[args.indexOf("--body") + 1]!,
+        created_at: "2026-11-04T22:10:00Z",
+        updated_at: "2026-11-04T22:10:00Z",
+        author: FLEET_LOGIN,
+      });
       return Promise.resolve("");
+    }
+    if (
+      args[0] === "api" &&
+      (args[1]?.includes(`/issues/${OPEN_ISSUE}/comments`) ||
+        args[1]?.includes("/issues/9001/comments"))
+    ) {
+      if (opts.failMarkerList?.value) {
+        return Promise.reject(
+          new Error("gh: comments unavailable\nsecond line"),
+        );
+      }
+      return Promise.resolve(JSON.stringify(commentRows));
     }
     if (args[0] === "issue" && args[1] === "create") {
       created.push(args);
@@ -138,12 +165,30 @@ function assertNoSecret(calls: string[][]) {
   }
 }
 
+function assertNoPrivateLogText(
+  body: string,
+  fixture: HardKillEvidence,
+): void {
+  for (
+    const text of [
+      "GRQ-AutoTrader",
+      fixture.lastLogLine ?? "",
+      "Quality gate passed attempt=1",
+      fixture.lastToolCall ?? "",
+    ]
+  ) {
+    assert(text.length > 0, "private-log canary must not be blank");
+    assertFalse(body.includes(text), `public facts comment contains ${text}`);
+  }
+}
+
 Deno.test("backfill posts one facts comment for an archived pre-change file, then never again", async () => {
   const { dir, archive } = await setup();
   try {
+    const archivedEvidence = evidence();
     await Deno.writeTextFile(
       `${archive}/${ARCHIVED}`,
-      JSON.stringify(evidence()),
+      JSON.stringify(archivedEvidence),
     );
     const gh = fakeGh();
     const warns: string[] = [];
@@ -154,7 +199,7 @@ Deno.test("backfill posts one facts comment for an archived pre-change file, the
         fleetAuthors: FLEET,
         logWarn: (m) => warns.push(m),
       });
-    assertEquals(await run(), { posted: 1, marked: 0, kept: 0 });
+    assertEquals(await run(), { posted: 1, marked: 1, kept: 0 });
     assertEquals(gh.comments.length, 1);
     const call = gh.comments[0]!;
     assertEquals(call.slice(0, 5), [
@@ -169,6 +214,7 @@ Deno.test("backfill posts one facts comment for an archived pre-change file, the
     assertStringIncludes(body, "**Phase:** `completion`");
     assertStringIncludes(body, "**Last step logged:** `quality gate`");
     assertStringIncludes(body, "**Guest probe:**");
+    assertNoPrivateLogText(body, archivedEvidence);
     assertNoSecret(gh.calls);
     assertEquals(await names(archive), [factsPostedName(ARCHIVED)]);
 
@@ -232,9 +278,45 @@ Deno.test("backfill keeps the file when the comment fails and posts it next pass
     assertFalse(warns[0]!.includes("second line"));
 
     failing.value = false;
-    assertEquals(await run(), { posted: 1, marked: 0, kept: 0 });
+    assertEquals(await run(), { posted: 1, marked: 1, kept: 0 });
     assertEquals(gh.comments.length, 1);
     assertEquals(await names(archive), [factsPostedName(ARCHIVED)]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a failed facts-posted rename is retried without duplicating the comment", async () => {
+  const { dir, archive } = await setup();
+  const path = `${archive}/${ARCHIVED}`;
+  try {
+    await Deno.writeTextFile(path, JSON.stringify(evidence()));
+    const gh = fakeGh();
+    const warns: string[] = [];
+    const run = () =>
+      backfillArchivedHardKillFacts({
+        evidenceDir: dir,
+        ghFn: gh.ghFn,
+        fleetAuthors: FLEET,
+        logWarn: (message) => warns.push(message),
+        seams: {
+          listArchivedFiles: () => Promise.resolve([path]),
+          readTextFile: (file) => Deno.readTextFile(file),
+          markFactsPosted: () =>
+            Promise.reject(new Error("read-only archive\nprivate second line")),
+        },
+      });
+
+    assertEquals(await run(), { posted: 1, marked: 0, kept: 1 });
+    assertEquals(gh.comments.length, 1);
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, ARCHIVED);
+    assertStringIncludes(warns[0]!, "read-only archive");
+    assertFalse(warns[0]!.includes("private second line"));
+
+    assertEquals(await run(), { posted: 0, marked: 0, kept: 1 });
+    assertEquals(gh.comments.length, 1);
+    assertEquals(warns.length, 2);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -267,12 +349,47 @@ Deno.test("backfill keeps the file when the issue lookup fails and posts it next
     assertFalse(warns[0]!.includes("second line"));
 
     failing.value = false;
-    assertEquals(await run(), { posted: 1, marked: 0, kept: 0 });
+    assertEquals(await run(), { posted: 1, marked: 1, kept: 0 });
     assertEquals(gh.comments.length, 1);
     assertStringIncludes(
       gh.comments[0]![gh.comments[0]!.indexOf("--body") + 1]!,
       hardKillFactsMarker(RUN_ID),
     );
+    assertEquals(await names(archive), [factsPostedName(ARCHIVED)]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("backfill keeps the file when its marker comments cannot be read", async () => {
+  const { dir, archive } = await setup();
+  try {
+    await Deno.writeTextFile(
+      `${archive}/${ARCHIVED}`,
+      JSON.stringify(evidence()),
+    );
+    const failing = { value: true };
+    const gh = fakeGh({ failMarkerList: failing });
+    const warns: string[] = [];
+    const run = () =>
+      backfillArchivedHardKillFacts({
+        evidenceDir: dir,
+        ghFn: gh.ghFn,
+        fleetAuthors: FLEET,
+        logWarn: (message) => warns.push(message),
+      });
+
+    assertEquals(await run(), { posted: 0, marked: 0, kept: 1 });
+    assertEquals(gh.comments, []);
+    assertEquals(await names(archive), [ARCHIVED]);
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, "marker lookup");
+    assertStringIncludes(warns[0]!, "gh: comments unavailable");
+    assertFalse(warns[0]!.includes("second line"));
+
+    failing.value = false;
+    assertEquals(await run(), { posted: 1, marked: 1, kept: 0 });
+    assertEquals(gh.comments.length, 1);
     assertEquals(await names(archive), [factsPostedName(ARCHIVED)]);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -308,13 +425,15 @@ Deno.test("a newly reported file is archived as facts-posted and never backfille
   const { dir, archive } = await setup();
   try {
     const name = "hard-kill-vibe-coder-46887-1793830700.json";
+    const newlyReportedEvidence = evidence({}, "execute");
+    const archivedEvidence = evidence({}, "execute");
     await Deno.writeTextFile(
       `${dir}/${name}`,
-      JSON.stringify(evidence({}, "execute")),
+      JSON.stringify(newlyReportedEvidence),
     );
     await Deno.writeTextFile(
       `${archive}/${ARCHIVED}`,
-      JSON.stringify(evidence({}, "execute")),
+      JSON.stringify(archivedEvidence),
     );
     const gh = fakeGh({ hideRows: { value: true } });
     const pass = () =>
@@ -338,6 +457,10 @@ Deno.test("a newly reported file is archived as facts-posted and never backfille
     );
     assertEquals(await names(dir), [HARD_KILL_ARCHIVE_DIR]);
     assertEquals(gh.comments.map((call) => call[2]), ["9001"]);
+    assertNoPrivateLogText(
+      gh.comments[0]![gh.comments[0]!.indexOf("--body") + 1]!,
+      archivedEvidence,
+    );
 
     assertEquals(await pass(), { found: 0, reported: 0, kept: 0 });
     assertEquals(gh.comments.map((call) => call[2]), ["9001"]);
@@ -368,7 +491,7 @@ Deno.test("backfill through reportPendingHardKills posts an archived file's fact
     assertEquals(gh.comments.length, 1);
     assert(
       logs.includes(
-        "hard-kill facts backfill: posted 1, marked 0, kept 0 (Issue #4815)",
+        "hard-kill facts backfill: posted 1, marked 1, kept 0 (Issue #4815)",
       ),
     );
     assertEquals(await names(archive), [factsPostedName(ARCHIVED)]);

@@ -523,10 +523,13 @@ flowchart TD
   not named `*.facts.json`, the worker posts one comment on the open issue for
   its signature with the same fixed-shape facts the issue body uses (never log
   text), marked `vibe-hard-kill-facts` with the run id, and then renames the
-  file to `*.facts.json` so it is never posted again. A file whose signature has
+  file to `*.facts.json`. Before posting, the worker checks for that run marker
+  in a fleet-authored comment, so a failed rename cannot duplicate the comment
+  on the next start. A file whose signature has
   no verified open issue is kept for a later start until retention expires. If the lookup or the comment
-  fails, or the file is malformed, the file is kept untouched and retried on the
-  next start. No callback fires and nothing is counted.
+  fails, the marker comments cannot be read, the rename fails, or the file is
+  malformed, the file is kept and retried on the next start. No callback fires
+  and nothing is counted.
 - **Additive contract.** `hard_kill` is a new value of the existing
   `outcome.failureClass` field, and a new key in the fleet summary's failure
   classes. Nothing is removed and no meaning changes, so `schemaVersion` stays
