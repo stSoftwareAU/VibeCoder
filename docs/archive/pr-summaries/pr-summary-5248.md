@@ -66,8 +66,9 @@ files and the reviewer brief noted above).
 - No tests added or changed; no test pins the removed sentences.
 - `markdownlint-cli2 CODING-STANDARDS.md docs/workflows/issue-processing.md`:
   0 issues.
-- `deno test` on `tests/agents_md_pointer_anchors_test.ts`,
-  `tests/coding_guidelines_twin_drift_test.ts`,
-  `tests/failure_diagnosis_test.ts`, `tests/pre_pr_verifier_3395_test.ts`
-  (from `worker/deno`): 193 passed, 0 failed.
-- `./quality.sh`: see the result below.
+- `deno test` on `worker/deno/tests/agents_md_pointer_anchors_test.ts`,
+  `worker/deno/tests/coding_guidelines_twin_drift_test.ts`,
+  `worker/deno/tests/failure_diagnosis_test.ts` and
+  `worker/deno/tests/pre_pr_verifier_3395_test.ts`: 193 passed, 0 failed.
+- `./quality.sh`: passed (config integration and checkov skipped by the gate
+  itself).
