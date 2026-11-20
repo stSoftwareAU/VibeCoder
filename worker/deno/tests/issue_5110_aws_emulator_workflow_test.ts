@@ -522,6 +522,18 @@ const AGENT_USER = "--user agent --volume";
 const AGENT_TAIL = 'test-aws-emulator.sh "${IMAGE}" < /dev/null';
 const AGENT_DOCKER_LINE =
   '          docker run --rm --user agent --volume "${GITHUB_WORKSPACE}/infra/cloudformation:/workspace/cloudformation:ro" --entrypoint /workspace/cloudformation/test-aws-emulator.sh "${IMAGE}" < /dev/null\n';
+const JOB_IMAGE_LINE = "      IMAGE: vibe-coder:ci\n";
+const BUILD_STEP_IF = "      - name: Build image with Docker\n" +
+  "        if: env.IMAGE_CHANGED == 'true'\n";
+const BUILD_TAG =
+  'docker build -f /tmp/Containerfile.stripped -t "${IMAGE}" container/\n';
+
+/** A new step, just before the agent run, whose `run:` is `line`. */
+function insertedStep(line: string): string {
+  return "      - name: Inserted step\n" +
+    "        if: env.IMAGE_CHANGED == 'true'\n" +
+    `        run: |\n          ${line}\n` + AGENT_STEP_NAME;
+}
 
 Deno.test("real container-build.yml runs the reference command as agent", () => {
   assertEquals(
@@ -593,6 +605,98 @@ for (
       "an extra argument after the image",
       [[AGENT_TAIL, 'test-aws-emulator.sh "${IMAGE}" --help < /dev/null']],
     ],
+    // Verifier evasions on the image (Issue #5110): the step must run the
+    // image the job's docker build just tagged.
+    [
+      "a step-level env IMAGE override",
+      [[
+        AGENT_STEP_IF,
+        AGENT_STEP_IF + "        env:\n          IMAGE: busybox\n",
+      ]],
+    ],
+    [
+      "a step-level env that is an expression",
+      [[AGENT_STEP_IF, AGENT_STEP_IF + "        env: ${{ fromJSON('{}') }}\n"]],
+    ],
+    ["no job-level env IMAGE", [[JOB_IMAGE_LINE, ""]]],
+    [
+      "a build step with its own env IMAGE",
+      [[
+        BUILD_STEP_IF,
+        BUILD_STEP_IF + "        env:\n          IMAGE: other:tag\n",
+      ]],
+    ],
+    ["a build step tagging another image", [[
+      BUILD_TAG,
+      '-t "other:tag" container/',
+    ]]],
+    [
+      "a later step retagging ${IMAGE}",
+      [[AGENT_STEP_NAME, insertedStep('docker tag busybox "${IMAGE}"')]],
+    ],
+    [
+      "a later step retagging the job's literal tag",
+      [[
+        AGENT_STEP_NAME,
+        insertedStep("docker pull busybox && docker tag busybox vibe-coder:ci"),
+      ]],
+    ],
+    [
+      "a later step writing GITHUB_ENV",
+      [[
+        AGENT_STEP_NAME,
+        insertedStep('echo "IMAGE=busybox" >> "$GITHUB_ENV"'),
+      ]],
+    ],
+    // Verifier evasions on the mount (Issue #5110): exactly one volume, and
+    // the entrypoint is the script inside it.
+    [
+      "a second volume shadowing the entrypoint's directory",
+      [[
+        "--entrypoint /workspace/cloudformation/test-aws-emulator.sh",
+        '--volume "${GITHUB_WORKSPACE}/evil:/workspace/cloudformation" --entrypoint /workspace/cloudformation/test-aws-emulator.sh',
+      ]],
+    ],
+    [
+      "the reference mount moved aside and a second volume at the entrypoint's directory",
+      [[
+        ':/workspace/cloudformation:ro"',
+        ':/x:ro" --volume "${GITHUB_WORKSPACE}/evil:/workspace/cloudformation"',
+      ]],
+    ],
+    [
+      "an entrypoint outside the mounted directory",
+      [[
+        "--entrypoint /workspace/cloudformation/test-aws-emulator.sh",
+        "--entrypoint /usr/local/bin/test-aws-emulator.sh",
+      ]],
+    ],
+    [
+      "an entrypoint reached through ..",
+      [[
+        "--entrypoint /workspace/cloudformation/test-aws-emulator.sh",
+        "--entrypoint /workspace/cloudformation/../cloudformation/test-aws-emulator.sh",
+      ]],
+    ],
+    [
+      "a volume from another source directory",
+      [["/infra/cloudformation:/workspace", "/infra/other:/workspace"]],
+    ],
+    ["a mount mode other than :ro", [[
+      ':/workspace/cloudformation:ro"',
+      ':/workspace/cloudformation:ro,z"',
+    ]]],
+    [
+      "a --mount flag",
+      [[
+        "--entrypoint /workspace/cloudformation/test-aws-emulator.sh",
+        "--mount type=bind,src=/tmp,dst=/workspace/cloudformation --entrypoint /workspace/cloudformation/test-aws-emulator.sh",
+      ]],
+    ],
+    [
+      "an --env BASH_ENV for the bash script",
+      [[AGENT_USER, "--user agent --env BASH_ENV=/tmp/x --volume"]],
+    ],
   ] as [string, [string, string][]][]
 ) {
   Deno.test(`(container-agent-run) refuses ${label}`, () => {
@@ -617,6 +721,20 @@ for (
   const [label, pairs] of [
     ["-u agent", [["--user agent --volume", "-u agent --volume"]]],
     ["--user=agent", [["--user agent --volume", "--user=agent --volume"]]],
+    ["--volume= and --entrypoint= forms", [
+      [
+        AGENT_USER + ' "${GITHUB_WORKSPACE}',
+        "--user agent --volume=" + '"${GITHUB_WORKSPACE}',
+      ],
+      [
+        "--entrypoint /workspace/cloudformation/test-aws-emulator.sh",
+        "--entrypoint=/workspace/cloudformation/test-aws-emulator.sh",
+      ],
+    ]],
+    ["a mount at another absolute directory", [[
+      ':/workspace/cloudformation:ro" --entrypoint /workspace/cloudformation/test-aws-emulator.sh',
+      ':/opt/cfn:ro" --entrypoint /opt/cfn/test-aws-emulator.sh',
+    ]]],
     ["backslash continuations", [[
       AGENT_DOCKER_LINE,
       "          " + AGENT_ONE_LINE_ARGS.join(" \\\n            ") + "\n",

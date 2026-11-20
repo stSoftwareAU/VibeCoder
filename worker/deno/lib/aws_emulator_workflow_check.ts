@@ -375,20 +375,16 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
   return problems;
 }
 
-const DOCKER_VALUE_FLAGS = [
-  "--user",
-  "-u",
-  "--volume",
-  "-v",
-  "--entrypoint",
-  "--env",
-  "-e",
-  "--workdir",
-  "-w",
-  "--network",
-  "--name",
-];
-const DOCKER_BOOLEAN_FLAGS = ["--rm", "--init"];
+/**
+ * The only `docker run` flags the agent run may carry. Anything else fails
+ * closed: `--env` could set `BASH_ENV` for the bash script, and `--mount` or
+ * `--volumes-from` could shadow the mounted reference script.
+ */
+const DOCKER_VALUE_FLAGS = ["--user", "-u", "--volume", "-v", "--entrypoint"];
+const DOCKER_BOOLEAN_FLAGS = ["--rm"];
+/** The one volume source: the checkout's CloudFormation directory. */
+const AGENT_VOLUME_SOURCE = "${GITHUB_WORKSPACE}/infra/cloudformation";
+const AGENT_SCRIPT_NAME = "test-aws-emulator.sh";
 
 /** Strip one surrounding pair of matching quotes. */
 function unquote(word: string): string {
@@ -397,12 +393,31 @@ function unquote(word: string): string {
 }
 
 /**
+ * Whether `volume` is `AGENT_VOLUME_SOURCE:D:ro` with `entrypoint` exactly
+ * `D/test-aws-emulator.sh`, D an absolute path with no `.`, `..` or empty
+ * segment. The entrypoint then names the script from the read-only mount.
+ */
+function volumeHoldsEntrypoint(volume: string, entrypoint: string): boolean {
+  const parts = volume.split(":");
+  if (parts.length !== 3) return false;
+  const [source, dest, mode] = parts as [string, string, string];
+  if (source !== AGENT_VOLUME_SOURCE || mode !== "ro") return false;
+  const segments = dest.split("/");
+  if (
+    segments[0] !== "" || segments.length < 2 ||
+    segments.slice(1).some((x) => x === "" || x === "." || x === "..")
+  ) return false;
+  return entrypoint === `${dest}/${AGENT_SCRIPT_NAME}`;
+}
+
+/**
  * Whether one segment is exactly the `docker run` of the agent reference
  * command. The arguments are parsed positionally and fail closed: an unknown
  * flag, a different image or any trailing word other than `< /dev/null` means
- * the segment does not count. The last `--user` must be `agent`, the last
- * `--entrypoint` must end with `/test-aws-emulator.sh`, and some `--volume`
- * must mount `${GITHUB_WORKSPACE}/infra/cloudformation:` read-only.
+ * the segment does not count. The last `--user` must be `agent`; there must be
+ * exactly one `--volume`, mounting `${GITHUB_WORKSPACE}/infra/cloudformation`
+ * read-only at some D; and the last `--entrypoint` must be
+ * `D/test-aws-emulator.sh`, so no second mount can shadow the script.
  */
 function segmentRunsAwsEmulatorAsAgent(words: string[]): boolean {
   const i = statusPreservingCommandIndex(words);
@@ -433,19 +448,61 @@ function segmentRunsAwsEmulatorAsAgent(words: string[]): boolean {
     value = unquote(value);
     if (flag === "--user" || flag === "-u") users.push(value);
     else if (flag === "--entrypoint") entrypoints.push(value);
-    else if (flag === "--volume" || flag === "-v") volumes.push(value);
+    else volumes.push(value);
   }
   if (unquote(words[j] ?? "") !== "${IMAGE}") return false;
   const tail = words.slice(j + 1).join(" ");
   if (tail !== "< /dev/null" && tail !== "</dev/null") return false;
-  return users[users.length - 1] === "agent" &&
-    (entrypoints[entrypoints.length - 1] ?? "").endsWith(
-      "/test-aws-emulator.sh",
-    ) &&
-    volumes.some((v) =>
-      v.startsWith("${GITHUB_WORKSPACE}/infra/cloudformation:") &&
-      v.endsWith(":ro")
+  return users[users.length - 1] === "agent" && volumes.length === 1 &&
+    volumeHoldsEntrypoint(
+      volumes[0] ?? "",
+      entrypoints[entrypoints.length - 1] ?? "",
     );
+}
+
+/**
+ * Whether a step sets its own `IMAGE` (or an `env:` that is not a plain map,
+ * such as an expression, which could resolve to one).
+ */
+function stepOverridesImage(step: unknown): boolean {
+  if (!isObject(step) || step.env === undefined) return false;
+  return !isObject(step.env) || "IMAGE" in step.env;
+}
+
+/**
+ * Whether a segment is `docker build` tagging `${IMAGE}` (`-t`, `--tag`, or
+ * either with `=`).
+ */
+function segmentBuildsImage(words: string[]): boolean {
+  const i = statusPreservingCommandIndex(words);
+  if (i === -1 || words[i] !== "docker" || words[i + 1] !== "build") {
+    return false;
+  }
+  return words.slice(i + 2).some((w, k, rest) => {
+    if (w === "-t" || w === "--tag") {
+      return unquote(rest[k + 1] ?? "") === "${IMAGE}";
+    }
+    const m = /^(?:-t|--tag)=(.*)$/.exec(w);
+    return m !== null && unquote(m[1] ?? "") === "${IMAGE}";
+  });
+}
+
+/**
+ * A step that could change what `${IMAGE}` names between the build and the
+ * agent run: it writes `GITHUB_ENV`, or runs a docker/podman command that
+ * builds, tags, pulls, loads, imports or commits an image and mentions
+ * `IMAGE` or the job's literal tag. A build of some other tag (the job's
+ * bad-provider-set probe) does not count. Matched over the step's text, so a
+ * mention fails closed.
+ */
+function stepMayRetagImage(step: unknown, jobTag: string): boolean {
+  const text = codeOf(step);
+  if (text.includes("GITHUB_ENV")) return true;
+  const retags =
+    /\b(?:docker|podman)\s+(?:image\s+)?(?:build|buildx|tag|pull|load|import|commit)\b/
+      .test(text);
+  return retags &&
+    (text.includes("IMAGE") || (jobTag !== "" && text.includes(jobTag)));
 }
 
 /**
@@ -476,7 +533,7 @@ export function checkContainerBuildRunsAwsEmulator(
     : stepsOf(job).find(stepIsAgentRun);
   if (job === undefined || step === undefined || !isObject(step)) {
     return [
-      `${tag} no step in job container runs the AWS Emulator reference command as agent (docker run --user agent --entrypoint .../test-aws-emulator.sh with the infra/cloudformation volume) with its exit status intact`,
+      `${tag} no step in job container runs the AWS Emulator reference command as agent (docker run --rm --user agent, exactly one read-only infra/cloudformation volume at D, --entrypoint D/test-aws-emulator.sh, image \${IMAGE}) with its exit status intact`,
     ];
   }
   const problems: string[] = [];
@@ -504,6 +561,39 @@ export function checkContainerBuildRunsAwsEmulator(
       `${tag} the agent-run step's if: must be absent or exactly env.IMAGE_CHANGED == 'true', the job's image gate; got ${
         JSON.stringify(step.if)
       }`,
+    );
+  }
+  const steps = stepsOf(job);
+  const stepIndex = steps.indexOf(step);
+  if (stepOverridesImage(step)) {
+    problems.push(
+      `${tag} the agent-run step must not set env.IMAGE: it must run the image the job builds`,
+    );
+  }
+  const jobEnv = job.env;
+  const jobTag = isObject(jobEnv) && typeof jobEnv.IMAGE === "string"
+    ? jobEnv.IMAGE
+    : "";
+  if (jobTag === "") {
+    problems.push(
+      `${tag} job container must set env.IMAGE to the tag its docker build step builds`,
+    );
+  }
+  const buildIndex = steps.findIndex((s, k) =>
+    k < stepIndex && !stepOverridesImage(s) &&
+    segmentsOf(s).some(segmentBuildsImage)
+  );
+  if (buildIndex === -1) {
+    problems.push(
+      `${tag} no earlier step in job container runs docker build -t "\${IMAGE}" without its own env.IMAGE: the agent run must use the image just built`,
+    );
+  } else if (
+    steps.slice(buildIndex + 1, stepIndex).some((s) =>
+      stepMayRetagImage(s, jobTag)
+    )
+  ) {
+    problems.push(
+      `${tag} a step between the docker build and the agent run writes GITHUB_ENV or builds, tags, pulls, loads, imports or commits an image, so \${IMAGE} may no longer be the image just built`,
     );
   }
   const shell = effectiveShell(workflow, job, step);

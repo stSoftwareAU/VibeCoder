@@ -53,7 +53,10 @@ change (`.github/scripts/detect-image-changes.sh`), the scheduled sweep or a
 manual run. Its exit status fails the check.
 `checkContainerBuildRunsAwsEmulator` in
 [`worker/deno/lib/aws_emulator_workflow_check.ts`](../worker/deno/lib/aws_emulator_workflow_check.ts)
-holds that step to its contract.
+holds that step to its contract: exactly one read-only volume holding the
+entrypoint, no flag outside `--rm`, `--user`, `--volume` and `--entrypoint`, and
+`${IMAGE}` resolving to the tag the job's `docker build` step just built (no
+step-level `IMAGE` override, no later retag or `GITHUB_ENV` write).
 
 ```mermaid
 flowchart LR
