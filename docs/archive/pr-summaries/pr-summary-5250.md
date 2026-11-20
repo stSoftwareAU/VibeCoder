@@ -2,11 +2,10 @@
 
 Run `vibe-mwkg63yf-dfc9a6` on `GRQ-25` was working issue #5169 when it was
 hard-killed. Its issue shows the guest probe `did not answer`, with guest
-memory and guest pressure both `not available`. The other hard kills where
-the guest did not answer (#5062 on `GRQ-25`, and the `GRQ-3` setup kills fixed
-in #5161) recorded the same blanks. The evidence record read nothing from the
-host itself, so no recurrence could show whether the host was out of disk or
-memory when its guest froze.
+memory and guest pressure both `not available`. The evidence record read
+nothing from the host itself, so this kill, and the other `did not answer`
+kills (#5062 on `GRQ-25`, #5161 on `GRQ-3`), could not show whether the host
+was out of disk or memory when its guest froze.
 
 The capture now records the host's own state, read on the host at reap time:
 - free and total bytes of the filesystem holding the evidence directory
@@ -109,4 +108,73 @@ flowchart LR
 
 ## Test Plan
 
-TEST_PLAN_TO_FILL
+New tests (all under `worker/deno/tests/`):
+
+- `hard_kill_evidence_test.ts`:
+  - `captureHardKillEvidence - records the host's disk and memory even when the guest does not answer (Issue #5250)`:
+    the guest exec fails, and the record still holds
+    `available=3435973837 total=493921239040` and
+    `level=high available=858993459 total=17179869184`, beside the
+    did-not-answer guest fields.
+  - `captureHardKillEvidence - a host reading that fails is recorded with its cause (Issue #5250)`:
+    a null `df` reading and a thrown `sysctl timed out` each become an
+    `unavailable: …` field carrying the cause.
+- `hard_kill_report_test.ts`:
+  - `parseHardKillEvidence reads a file written before host facts were captured (Issue #5250)`
+    is the old-shape persisted-data test: the body says `not available` for
+    both host lines.
+  - `parseHardKillEvidence refuses a hostState that is not an object (Issue #5250)`.
+- `hard_kill_guest_facts_test.ts`: `hardKillHostDisk words the free space in GiB and percent`,
+  `hardKillHostDisk never echoes free text or a path`,
+  `hardKillHostMemory words the pressure level and bytes`, and
+  `hardKillHostMemory gives not available for unknown, inconsistent or hostile fields`.
+  The hostile cases include a 50,000-digit run against each of the two
+  anchored patterns.
+
+Edited existing tests:
+
+- `hard_kill_report_test.ts::the body carries the four guest figures under the last log time (Issue #5062)`:
+  the four guest-figure lines are still asserted with the same values. The
+  "blank line after the four figures" expectation now sits after the two new
+  host lines, which the test also asserts (literal values). Nothing was dropped.
+- `hard_kill_report_test.ts::a recurrence's follow-up line carries the silent time and the guest probe (Issue #5062)`:
+  the existing silence and guest-probe assertion is kept, and a host disk and
+  host memory assertion is added.
+- `hard_kill_evidence_test.ts::captureHardKillEvidence - writes one file holding every field with its expected value`
+  and the key list in `container_watchdog_test.ts` now include `hostState`.
+  Every other field's expectation is unchanged.
+- Fixtures only: the seams literals in `container_reap_command_test.ts`,
+  `container_watchdog_test.ts` and `guest_silence_watch_test.ts` gained the two
+  new seams. `setup_step_log_test.ts`, `run_failure_issue_test.ts` and
+  `run_core_production_deps_hard_kill_test.ts` gained a `hostState`. The last
+  one writes its file without `hostState`, so the run-core path still reads an
+  old-shape file.
+
+Results:
+
+- Red on base: the two edited test files were copied onto the unfixed base
+  `b3f7d788a` and run with `deno test -A --no-check`. Result: 99 passed and 8
+  failed, covering the five new #5250 tests in those files, the edited body and
+  follow-up-line tests, and the exact-record test.
+- Head: the 10 hard-kill test files (`hard_kill_evidence`, `hard_kill_report`,
+  `hard_kill_guest_facts`, `container_reap_command`, `container_watchdog`,
+  `guest_silence_watch`, `spawn_timeout_callers_4251`,
+  `run_core_production_deps_hard_kill`, `run_core_hard_kill`,
+  `setup_step_log`): 240 passed, 0 failed.
+  `run_failure_issue_test.ts`: 26 passed, 0 failed.
+- `./quality.sh` on `0b8314542`: `Result: PASSED (with skipped checks)`.
+  Config integration was skipped (`deno or .config.json not available`) and so
+  was checkov (no checkov on PATH). The first gate run, before the
+  `run_failure_issue_test.ts` fixture fix, failed only that test.
+- Docs: `docs/TROUBLESHOOTING.md` (the hard-kill paragraph) and
+  `docs/workflows/resilience-and-concurrency.md` (the "Hard-kill evidence" and
+  "On the next worker start" paragraphs) were read through and updated.
+  `docs/CALLBACKS.md` mentions the archive only, and needed no change.
+
+Not done:
+
+- The wedge's cause, as stated above.
+- I did not check whether `GRQ-25` runs the #5266 early reap; merge time alone
+  does not prove deployment.
+- No independent spec or standards reviewers ran, because the issue states no
+  acceptance criteria.
