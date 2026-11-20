@@ -123,11 +123,12 @@ flowchart LR
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **fixed** — every changed call site needs a test that goes red without it —
-  evidence: `worker/deno/tests/run_sh_launcher_test.ts` (`run.sh - reaps a
-  container that outlives the watchdog deadline`) — reason: the test runs the
-  real `container-reap`, so the production `diskReading` and `memoryReading`
-  defaults in `createEvidenceSeams` run, and it asserts the written
-  `evidence.hostState.disk` matches `^available=\d+ total=\d+$` and
+  evidence: `worker/deno/tests/run_sh_launcher_test.ts`
+  (`run.sh - reaps a
+  container that outlives the watchdog deadline`) — reason:
+  the test runs the real `container-reap`, so the production `diskReading` and
+  `memoryReading` defaults in `createEvidenceSeams` run, and it asserts the
+  written `evidence.hostState.disk` matches `^available=\d+ total=\d+$` and
   `evidence.hostState.memory` starts with `level=`.
 - **violation** — every outcome of an added branch needs a test — evidence:
   `worker/deno/lib/hard_kill_evidence.ts:640`, `:686-688` — reason: open, not
