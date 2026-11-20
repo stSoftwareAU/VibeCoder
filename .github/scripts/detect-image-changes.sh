@@ -61,6 +61,14 @@ readonly IMAGE_PATHS=(
   'worker/deno/commands/egress_*.ts'
   'worker/deno/egress_proxy_main.ts'
   'worker/deno/tests/container_containment_test.ts'
+  # Issue #5255: the containment suite's babysitter step runs the production
+  # repair gate with the image's real Deno and markdownlint through this probe,
+  # so a change to the gate or the probe must run that step before it merges.
+  'worker/deno/lib/babysitter_tree_gate.ts'
+  'worker/deno/lib/pre_push_gate.ts'
+  'worker/deno/commands/babysitter_repair.ts'
+  'worker/deno/lib/fleet_babysitter_container.ts'
+  'worker/deno/tests/support/babysitter_gate_container_probe.ts'
 )
 
 usage() {

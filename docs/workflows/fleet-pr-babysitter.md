@@ -513,7 +513,12 @@ GitHub and git publication, so it publishes no live PR. With
 `VIBE_CONTAINMENT_REQUIRED=1`, the existing suite fails if a supported runtime
 or image is unavailable; an ordinary local run reports that integration test
 as skipped. See `worker/deno/tests/container_containment_test.ts` and its
-`support/babysitter_gate_container_probe.ts` fixture.
+`support/babysitter_gate_container_probe.ts` fixture. A pull request that
+changes the repair gate (`babysitter_tree_gate.ts`, `pre_push_gate.ts`,
+`commands/babysitter_repair.ts`, `fleet_babysitter_container.ts`) or this probe
+counts as image-affecting in `.github/scripts/detect-image-changes.sh`, so the
+required `container` check runs this step on it rather than skipping it
+(Issue #5255).
 
 A repair session's container timeout is the lesser of the remaining 90-minute
 budget and the read token's expiry minus two minutes. On timeout the container
