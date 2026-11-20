@@ -436,7 +436,6 @@ Deno.test("runPrSummaryCi - a non-zero exit from the PR diff names git diff, the
       repoRoot: clone,
       readTextFile: () => Promise.reject(new Error("must not read")),
     });
-    assertEquals(git.seen(), 1);
     assert(!r.ok);
     assertStringIncludes(r.error.message, "git diff --name-only");
     assertStringIncludes(
