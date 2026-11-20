@@ -2225,7 +2225,8 @@ watchdog_reap_on_deadline() {
       ((check_budget > 300)) && check_budget=300
       bounded "${check_budget}" "${DENO_CMD}" run \
         --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
-        --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \
+        --allow-env --allow-read --allow-write --allow-run \
+        --allow-sys=hostname,systemMemoryInfo \
         "${BASE_DIR}/worker/deno/mod.ts" container-reap \
         --runtime "${RUNTIME}" \
         --name "${CONTAINER_NAME}" \
@@ -2275,7 +2276,8 @@ watchdog_reap_on_deadline() {
 
   # Issue #4253: the reaper writes hard-kill evidence into the worker log
   # directory before it kills anything. Capture is best-effort and bounded, so
-  # it never blocks the reap; --allow-sys=hostname lets it record the host.
+  # it never blocks the reap; --allow-sys=hostname,systemMemoryInfo lets it record
+  # the host and its memory.
   # An early command cut short after it wrote its record has captured already;
   # the completing reap then skips a second capture (no --evidence-dir).
   local evidence_args=(--evidence-dir "${RUN_CORE_LOG_DIR}")
@@ -2285,7 +2287,8 @@ watchdog_reap_on_deadline() {
   fi
   if ! bounded 300 "${DENO_CMD}" run \
     --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
-    --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \
+    --allow-env --allow-read --allow-write --allow-run \
+    --allow-sys=hostname,systemMemoryInfo \
     "${BASE_DIR}/worker/deno/mod.ts" container-reap \
     --runtime "${RUNTIME}" \
     --name "${CONTAINER_NAME}" \

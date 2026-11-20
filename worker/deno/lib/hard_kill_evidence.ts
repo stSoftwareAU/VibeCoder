@@ -27,7 +27,7 @@ import { redactGhBodyText } from "./gh_body_redaction.ts";
 import { type DiskReading, probeDiskReading } from "./host_disk.ts";
 import {
   type MemoryPressureReading,
-  probeHostMemoryPressure,
+  probeHostMemoryPressureFromSystem,
 } from "./memory_pressure.ts";
 
 /** Schema version of the evidence file. */
@@ -781,7 +781,7 @@ export function createEvidenceSeams(
       await Deno.writeTextFile(path, text, { mode: 0o600 });
     },
     diskReading: probeDiskReading,
-    memoryReading: () => probeHostMemoryPressure(),
+    memoryReading: () => probeHostMemoryPressureFromSystem(),
     hostname: () => Deno.hostname(),
     timeout: (ms) => {
       let handle: ReturnType<typeof setTimeout> | undefined;

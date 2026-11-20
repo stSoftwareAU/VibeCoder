@@ -718,8 +718,13 @@ Deno.test("run.sh - reaps a container that outlives the watchdog deadline", asyn
       /^available=\d+ total=\d+$/.test(hostState.disk),
       `the reaper could not read the host disk: ${hostState.disk}`,
     );
+    // "level=unknown" is what a refused or failed read records and the issue
+    // renders as "not available", so only "ok" and "high" count as read. This
+    // goes red if run.sh drops systemMemoryInfo from the reap's --allow-sys.
     assert(
-      hostState.memory.startsWith("level="),
+      /^level=(?:ok|high)(?: available=\d+ total=\d+)?$/.test(
+        hostState.memory,
+      ),
       `the reaper could not read the host memory: ${hostState.memory}`,
     );
     for (

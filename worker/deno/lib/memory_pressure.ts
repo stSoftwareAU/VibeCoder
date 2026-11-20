@@ -121,6 +121,36 @@ export async function probeHostMemoryPressure(options: {
   return { level: "unknown" };
 }
 
+/**
+ * Host probe for a record that must say why a reading is missing (Issue
+ * #5250): on Linux it asks `Deno.systemMemoryInfo()` rather than reading
+ * `/proc/meminfo`, because Deno refuses `/proc/meminfo` to anything short of
+ * `--allow-all` while `systemMemoryInfo` needs only `--allow-sys`. Unlike
+ * `probeMemoryPressure`, a refused or failed read throws, so the caller
+ * records the cause instead of a bare `unknown`. Other platforms use
+ * `probeHostMemoryPressure`.
+ */
+export async function probeHostMemoryPressureFromSystem(options: {
+  os?: string;
+  systemMemoryInfo?: () => { total: number; available: number };
+  threshold?: number;
+} = {}): Promise<MemoryPressureReading> {
+  const os = options.os ?? Deno.build.os;
+  if (os !== "linux") return await probeHostMemoryPressure({ os });
+  const read = options.systemMemoryInfo ?? (() => Deno.systemMemoryInfo());
+  const { total, available } = read();
+  if (!(total > 0) || !(available >= 0)) {
+    throw new Error(
+      `systemMemoryInfo returned total=${total} available=${available}`,
+    );
+  }
+  return {
+    level: classifyPressure(total, available, options.threshold),
+    totalBytes: total,
+    availableBytes: available,
+  };
+}
+
 export async function readDarwinPressureLevel(
   timeoutMs: number = MEMORY_PROBE_TIMEOUT_MS,
 ): Promise<string> {

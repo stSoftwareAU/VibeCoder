@@ -11,7 +11,12 @@ The capture now records the host's own state, read on the host at reap time:
 
 - free and total bytes of the filesystem holding the evidence directory
   (`df -kP`);
-- host memory pressure (level, plus available and total bytes on Linux).
+- host memory pressure (level, plus available and total bytes on Linux, read
+  with `Deno.systemMemoryInfo()` through `probeHostMemoryPressureFromSystem`;
+  `run.sh`'s two evidence-writing `container-reap` calls grant
+  `--allow-sys=hostname,systemMemoryInfo`, because Deno refuses `/proc/meminfo`
+  to anything short of `--allow-all` and the older probe would have recorded
+  `level=unknown` on every Linux host).
 
 A new issue's body and a recurrence's follow-up line both show them as **Host
 disk** and **Host memory**. Evidence files written before this change still
@@ -129,7 +134,10 @@ flowchart LR
   the test runs the real `container-reap`, so the production `diskReading` and
   `memoryReading` defaults in `createEvidenceSeams` run, and it asserts the
   written `evidence.hostState.disk` matches `^available=\d+ total=\d+$` and
-  `evidence.hostState.memory` starts with `level=`.
+  `evidence.hostState.memory` matches
+  `^level=(?:ok|high)(?: available=\d+ total=\d+)?$` (`level=unknown` fails).
+  With `systemMemoryInfo` removed from `run.sh`'s `--allow-sys` the test goes
+  red with `unavailable: Requires sys access to "systemMemoryInfo"`.
 - **violation** — every outcome of an added branch needs a test — evidence:
   `worker/deno/lib/hard_kill_evidence.ts:640`, `:686-688` — reason: open, not
   fixed in this run. Three paths are unasserted: the disk read that throws or
@@ -172,6 +180,10 @@ New tests (all under `worker/deno/tests/`):
   - `captureHardKillEvidence - a host reading that fails is recorded with its cause (Issue #5250)`:
     a null `df` reading and a thrown `sysctl timed out` each become an
     `unavailable: …` field carrying the cause.
+- `memory_pressure_test.ts`: three `probeHostMemoryPressureFromSystem` tests
+  (Linux classifies `systemMemoryInfo` with the bytes; a refused read throws its
+  cause rather than returning `unknown`; an implausible reading is refused and a
+  platform with no signal reports `unknown`).
 - `hard_kill_report_test.ts`:
   - `parseHardKillEvidence reads a file written before host facts were captured (Issue #5250)`
     is the old-shape persisted-data test: the body says `not available` for both
@@ -189,8 +201,9 @@ Edited existing tests:
 
 - `run_sh_launcher_test.ts::run.sh - reaps a container that outlives the watchdog deadline`
   now also asserts the real reap's written `hostState.disk` matches
-  `^available=\d+ total=\d+$` and `hostState.memory` starts with `level=`, so
-  the production `df` and memory seams are covered (observed passing at head).
+  `^available=\d+ total=\d+$` and `hostState.memory` matches
+  `^level=(?:ok|high)(?: available=\d+ total=\d+)?$`, so the production `df` and
+  memory seams are covered (observed passing at head).
 
 - `hard_kill_report_test.ts::the body carries the four guest figures under the last log time (Issue #5062)`:
   the four guest-figure lines are still asserted with the same values. The
