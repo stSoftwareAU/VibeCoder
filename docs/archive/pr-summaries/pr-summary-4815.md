@@ -140,8 +140,10 @@ flowchart TD
   where one test failed, `tests/pr_summary_ci_workflow_3768_test.ts`, because
   this host has no DNS (`Failed caching npm package 'minimist@1.2.8'`). After I
   seeded the host's Deno npm cache from the worker cache (not a repository
-  change), that test passed (11 passed). The serial pass did not run in that
-  gate attempt; the final gate result is recorded below.
+  change), that test passed (11 passed). I then re-ran `./quality.sh <
+  /dev/null` on the head. Result: `PASSED (with skipped checks)`, with both
+  the parallel and the serial Deno test passes green. The gate itself skipped
+  `config integration` and `checkov`.
 - **Docs:** `docs/CALLBACKS.md`, section "A hard-killed run". The Lifecycle
   bullet now names the archived `*.facts.json` file, and a new **Facts backfill
   (Issue #4815)** bullet describes the backfill. `deno fmt` re-wrapped the
