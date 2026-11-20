@@ -148,7 +148,8 @@ All the test files below are under `worker/deno/tests/`:
   on the head. Result: 78 passed, 0 failed. No other test imports the scan.
 - **Ran:** `deno fmt --check` and `deno lint` on the changed files. Both are
   clean.
-- **Ran:** `./quality.sh < /dev/null` on the head. Result:
+- **Ran:** `./quality.sh < /dev/null` on the head's tree (`f4dfdd237`), after
+  the named-callback and candidate changes. Result:
   `PASSED (with
   skipped checks)`. The gate itself skipped `config integration`
   and `checkov`.
