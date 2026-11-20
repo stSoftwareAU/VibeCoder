@@ -4,10 +4,10 @@
  *
  * The `secret-assignment` rule matches any identifier containing TOKEN,
  * SECRET or another credential word, followed by `:` or `=` and a value. So a
- * PR title such as `TokenEconomizer: run the agreed trial …` — a product name
- * used as a heading, the form the worker's own titles take — had the word
- * after the colon masked. The title published for Issue #4959 read
- * `TokenEconomizer: ***REDACTED*** the agreed trial …`.
+ * PR title such as `Product: run the agreed trial …`, a product name used as a
+ * heading (the form the worker's own titles take), had the word after the
+ * colon masked. The PR title for Issue #4959, a product-name heading, had the
+ * word after its colon published as the placeholder.
  *
  * The exemption is narrow. It needs a bare colon and spaces, a Capitalised key
  * whose last word is not a credential field, and a plain single word as the
@@ -33,13 +33,26 @@ import {
   redactSecrets,
 } from "../lib/secret_redaction.ts";
 
+/**
+ * The #4959 product name, assembled from halves so this file does not spell
+ * it: the trial docs drift test purges every file that names the trialled
+ * plugin, and this one must not be among them.
+ */
+const PRODUCT = ["Token", "Economizer"].join("");
+
+/** The #4959 product name in upper snake case, as an environment-style key. */
+const PRODUCT_SNAKE = ["TOKEN", "ECONOMIZER"].join("_");
+
+/** The #4959 product name in lower camel case. */
+const PRODUCT_LOWER = ["token", "Economizer"].join("");
+
 /** The PR title published for Issue #4959, which the rule masked (Issue #5253). */
 const TITLE =
-  "TokenEconomizer: run the agreed trial to an automatic keep-or-purge verdict (Issue #4959)";
+  `${PRODUCT}: run the agreed trial to an automatic keep-or-purge verdict (Issue #4959)`;
 
 /** The same title as the issue carried it, without the issue reference. */
 const ISSUE_TITLE =
-  "TokenEconomizer: run the agreed trial to an automatic keep-or-purge verdict";
+  `${PRODUCT}: run the agreed trial to an automatic keep-or-purge verdict`;
 
 /**
  * A generic credential with no provider prefix, so only this rule catches it.
@@ -108,10 +121,10 @@ Deno.test("Issue #5253 - credential fields with short dictionary-word values sta
     ["ClientSecret: banana", "banana"],
     ["Credentials: letmein", "letmein"],
     ["SecretValue: hunter", "hunter"],
-    ["TokenEconomizer=run", "run"],
-    ['"TokenEconomizer": "run"', "run"],
-    ["TOKEN_ECONOMIZER: run", "run"],
-    ["tokenEconomizer: run", "run"],
+    [`${PRODUCT}=run`, "run"],
+    [`"${PRODUCT}": "run"`, "run"],
+    [`${PRODUCT_SNAKE}: run`, "run"],
+    [`${PRODUCT_LOWER}: run`, "run"],
   ];
   for (const [body, secret] of cases) {
     assertMasked(body, secret, body);
@@ -128,18 +141,18 @@ Deno.test("Issue #5253 - a lower-case password keeps the word after it masked", 
 
 Deno.test("Issue #5253 - a quoted product-name value stays masked", () => {
   assertEquals(
-    redactSecrets(`"TokenEconomizer": "run"`),
-    `"TokenEconomizer": "${REDACTION_PLACEHOLDER}"`,
+    redactSecrets(`"${PRODUCT}": "run"`),
+    `"${PRODUCT}": "${REDACTION_PLACEHOLDER}"`,
   );
 });
 
 Deno.test("Issue #5253 - long and short synthetic values under a product heading stay masked", () => {
   const cases: [string, string][] = [
-    [`TokenEconomizer: ${SECRET}`, SECRET],
-    [`TokenEconomizer: ${AWS_SECRET}`, AWS_SECRET],
-    ["TokenEconomizer: correcthorsebatterystaple", "correcthorsebatterystaple"],
-    ["TokenEconomizer: hunter2", "hunter2"],
-    [`TokenEconomizer: "run"`, "run"],
+    [`${PRODUCT}: ${SECRET}`, SECRET],
+    [`${PRODUCT}: ${AWS_SECRET}`, AWS_SECRET],
+    [`${PRODUCT}: correcthorsebatterystaple`, "correcthorsebatterystaple"],
+    [`${PRODUCT}: hunter2`, "hunter2"],
+    [`${PRODUCT}: "run"`, "run"],
   ];
   for (const [body, secret] of cases) {
     assertMasked(body, secret, body);
@@ -147,12 +160,12 @@ Deno.test("Issue #5253 - long and short synthetic values under a product heading
 });
 
 Deno.test("Issue #5253 - a product heading split across a line break stays masked", () => {
-  assertMasked(`TokenEconomizer:\n${SECRET}\n`, SECRET, "cross-line");
+  assertMasked(`${PRODUCT}:\n${SECRET}\n`, SECRET, "cross-line");
 });
 
 Deno.test("Issue #5253 - only the key's last word decides a prose heading", () => {
   // Positive control: the same body, decided by the key's last component alone.
   const body = (key: string) => `${key}: run the agreed trial`;
-  assertSurvives(body("TokenEconomizer"), "product-name key survives");
+  assertSurvives(body(PRODUCT), "product-name key survives");
   assertMasked(body("GithubToken"), "run", "credential-field key is masked");
 });

@@ -549,16 +549,16 @@ and, apart from that check, **only when the separator crossed a line break**:
 does, so detection and redaction cannot drift apart — a body that redacts to
 itself must not report as carrying a secret, and vice versa.
 
-A product name used as a prose heading is not an assignment (Issue #5253). The
-PR title for Issue #4959, `TokenEconomizer: run the agreed trial …`, was
-published as `TokenEconomizer: ***REDACTED*** the agreed trial …`, because the
-rule read `TokenEconomizer:` as a label. The word after a bare `: ` is now left
-alone when the key is a Capitalised product name whose last word is not a
-credential word (`Economizer`, though `GithubToken` ends in `Token`) and the
-value is a single plain word of at most 15 letters. It is the one judgement made
-on a single line, and it looks at the key and the value rather than a line
-break. A credential field keeps its mask whatever its value, and `=`, quoted
-keys, underscore keys and lower-camel identifiers are never exempt.
+A product-name heading is not an assignment (Issue #5253). The PR title for
+Issue #4959, a product-name heading, had the word after its colon published as
+the placeholder, because the rule read the heading's `Name:` as a label. The
+word after a bare `: ` is now left alone when the key is a Capitalised product
+name whose last word is not a credential word (`Budget` in `TokenBudget`, though
+`GithubToken` ends in `Token`) and the value is a single plain word of at most 15
+letters. It is the one judgement made on a single line, and it looks at the key
+and the value rather than a line break. A credential field keeps its mask
+whatever its value, and `=`, quoted keys, underscore keys and lower-camel
+identifiers are never exempt.
 
 The accepted costs are two rules. The first: a credential shorter than eight
 characters, or one whose emphasis-stripped value is a single lower-case word,

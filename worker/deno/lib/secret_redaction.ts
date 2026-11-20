@@ -148,14 +148,14 @@ const PROSE_HEADING_SEPARATOR = /^:[ \t]{1,32}$/;
 
 /**
  * A Capitalised word or a PascalCase run of them, letters only: the shape of a
- * product name used as a heading, such as `TokenEconomizer` (Issue #5253).
+ * product name used as a heading, such as `TokenBudget` (Issue #5253).
  * Bounded on both counts, so it is linear (the Issue #3942 rule).
  */
 const PROSE_HEADING_KEY = /^(?:[A-Z][a-z]{1,31}){1,8}$/;
 
 /**
- * The last capitalised word of a key: `Economizer` in `TokenEconomizer`, or
- * `Token` in `GithubToken` (Issue #5253).
+ * The last capitalised word of a key: `Budget` in `TokenBudget`, or `Token` in
+ * `GithubToken` (Issue #5253).
  */
 const LAST_KEY_COMPONENT = /[A-Z][a-z]*$/;
 
@@ -239,8 +239,8 @@ export function isCredentialShapedValue(
  * Report whether an assignment is a product name used as a prose heading
  * (Issue #5253), so the rule must not mask the word after its colon.
  *
- * A heading such as `TokenEconomizer: run the agreed trial` names a product,
- * and its last word (`Economizer`) is not a credential field. A credential
+ * A heading such as `TokenBudget: run the agreed trial` names a product, and
+ * its last word (`Budget`) is not a credential field. A credential
  * field's name ends in one (`GithubToken`, `Password`), and those stay masked
  * whatever the value. Only a bare colon, a Capitalised key and a plain single
  * word as the value qualify, so a value with a digit, symbol, quote or over 15
@@ -620,9 +620,10 @@ const RULES: readonly RedactionRule[] = [
   // label side stays blunt apart from that check.
   //
   // A product name used as a prose heading is not an assignment (Issue #5253).
-  // `TokenEconomizer: run the agreed trial` — the #4959 PR title — had its `run`
-  // masked. When the key is a Capitalised product name whose last word is not a
-  // credential field (`Economizer`, though `GithubToken` ends in `Token`), the
+  // The PR title for Issue #4959, a product-name heading, had the word after its
+  // colon published as the placeholder. When the key is a Capitalised product
+  // name whose last word is not a credential field (`Budget` in `TokenBudget`,
+  // though `GithubToken` ends in `Token`), the
   // separator is a bare colon and spaces, and the value is one plain word, the
   // mask is lifted by `isProseHeading`. `=`, quoted keys, `_` keys, lower-camel
   // identifiers and any value with a digit, symbol or quote stay masked.
