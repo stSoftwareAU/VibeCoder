@@ -5,6 +5,7 @@ only it used, as #5247 proposes. Nothing replaces it. TDD rule 3, the
 test-change policy and the reviewer brief are unchanged, and auto-merge arming
 is untouched. The `skip_coverage_carryover_check` key is retired: a
 `.config.json` that still sets it keeps loading, and one warning names the key.
+
 Closes #5247.
 
 ## Spec
