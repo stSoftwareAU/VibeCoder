@@ -458,20 +458,18 @@ flowchart TD
   logged, the trigger, the fixed reason for that trigger, the capture and
   last-log times, the silence before capture, the guest-probe state and the
   guest memory and pressure figures. The last step logged is the last one the
-  log reported, so the
-  wedge is in or after it; it is one of `pre-PR verifier`,
+  log reported, so the wedge is in or after it; it is one of `pre-PR verifier`,
   `coverage carry-over check`, `quality gate`, `agent turn`, a setup step
   (`setup: issue claim`, `setup: claim churn check`, `setup: repository setup`,
   `setup: heartbeat start`, `setup: default branch sync`,
-  `setup: feature branch` or `setup: pre-setup command`, each logged as the
-  step starts, Issue #5128) or `unknown` (`mutation check` appears only for
-  logs written before Issue #5095 retired that step), matched from a fixed
-  table of log patterns; no log text is posted with it. It
-  is not part of the dedup signature. Posted facts must match the launcher
-  shapes: hostname, `vibe-coder-*` container name, `vibe-<base36>-<six-hex>` run
-  id (or `unknown`), `watchdog` or `pre_launch` trigger, timestamps, and the
-  silence, guest-probe, guest-memory and guest-pressure figures in their fixed
-  shapes.
+  `setup: feature branch` or `setup: pre-setup command`, each logged as the step
+  starts, Issue #5128) or `unknown` (`mutation check` appears only for logs
+  written before Issue #5095 retired that step), matched from a fixed table of
+  log patterns; no log text is posted with it. It is not part of the dedup
+  signature. Posted facts must match the launcher shapes: hostname,
+  `vibe-coder-*` container name, `vibe-<base36>-<six-hex>` run id (or
+  `unknown`), `watchdog` or `pre_launch` trigger, timestamps, and the silence,
+  guest-probe, guest-memory and guest-pressure figures in their fixed shapes.
   Free-text reasons or malformed facts are kept and logged as errors without
   filing, commenting or attesting. That repository is public and the killed run
   may have been working a private one, so no evidence text, last log line, tool
@@ -505,19 +503,29 @@ flowchart TD
 | `startedAt`, `finishedAt`   | The evidence's capture time, for both, so `durationSeconds` is `0`; the real duration is unknown |
 
 - **Lifecycle.** The evidence file is moved into `~/logs/hard-kill-archive/`
-  once it is filed and reported. If filing fails, the file is kept for the next
-  launch and the failure is logged as a warning. No callback fires and nothing
-  is counted until filing succeeds, so the retry reports the kill once. Within
-  one pass, a repeat of a signature filed moments earlier goes straight to that
-  issue, without waiting for GitHub search to index it. If the file cannot be
-  archived after the report, it stays, the failure is logged as a warning, and
-  the next start reports the kill again. A malformed or wrong-version file is
-  logged as an error and kept; it is never deleted. On each reporting pass,
-  archived evidence is pruned to the transcript retention window: 30 days and at
-  most 2,000 files, deleting the oldest first. Cleanup also runs after
-  archiving, so the cap applies to newly reported files. Symlink archives are
-  refused; cleanup failures are logged as warnings. Pending malformed evidence
-  is not pruned.
+  once it is filed and reported, as `hard-kill-<container>-<epoch>.facts.json`
+  (its facts were posted by the filing itself). If filing fails, the file is
+  kept for the next launch and the failure is logged as a warning. No callback
+  fires and nothing is counted until filing succeeds, so the retry reports the
+  kill once. Within one pass, a repeat of a signature filed moments earlier goes
+  straight to that issue, without waiting for GitHub search to index it. If the
+  file cannot be archived after the report, it stays, the failure is logged as a
+  warning, and the next start reports the kill again. A malformed or
+  wrong-version file is logged as an error and kept; it is never deleted. On
+  each reporting pass, archived evidence is pruned to the transcript retention
+  window: 30 days and at most 2,000 files, deleting the oldest first. Cleanup
+  also runs after archiving, so the cap applies to newly reported files. Symlink
+  archives are refused; cleanup failures are logged as warnings. Pending
+  malformed evidence is not pruned.
+- **Facts backfill (Issue #4815).** Issues filed before the public fact fields
+  existed carry none of them. On each reporting pass, for every archived file
+  not named `*.facts.json`, the worker posts one comment on the open issue for
+  its signature with the same fixed-shape facts the issue body uses (never log
+  text), marked `vibe-hard-kill-facts` with the run id, and then renames the
+  file to `*.facts.json` so it is never posted again. A file whose signature has
+  no open issue is renamed without a comment. If the lookup or the comment
+  fails, or the file is malformed, the file is kept untouched and retried on the
+  next start. No callback fires and nothing is counted.
 - **Additive contract.** `hard_kill` is a new value of the existing
   `outcome.failureClass` field, and a new key in the fleet summary's failure
   classes. Nothing is removed and no meaning changes, so `schemaVersion` stays

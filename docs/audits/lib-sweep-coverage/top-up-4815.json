@@ -1,0 +1,12 @@
+{
+  "issue": 4815,
+  "chunk": "top-up-4815",
+  "title": "top-up: hard-kill facts backfill",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4815",
+  "definition": "modules added for posting the archived facts of earlier hard kills on their open issue: hard_kill_facts_backfill.ts (#4815)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/hard_kill_facts_backfill.ts"
+  ],
+  "sweptAt": "01ce9b194dc41897b210d503ac4b38baf0a97b98"
+}
