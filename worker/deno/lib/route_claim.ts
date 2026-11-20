@@ -467,6 +467,7 @@ export async function runWithRouteClaim<T>(
 
 /** How the main loop records a routed run. */
 export interface RouteRunResult {
+  provider?: string;
   success: boolean;
   skipped: boolean;
   /**
@@ -494,12 +495,16 @@ export interface RouteRunResult {
  */
 export function routeRunResult(
   outcome: { success: boolean } | ({ success: false } & RouteClaimLost),
+  configuredProvider?: string,
 ): RouteRunResult {
+  const provider = configuredProvider?.trim();
+  const identity = provider ? { provider } : {};
   if (!("claimLost" in outcome)) {
-    return { success: outcome.success, skipped: false };
+    return { success: outcome.success, skipped: false, ...identity };
   }
   return {
     success: false,
+    ...identity,
     skipped: isRouteClaimUnavailable(outcome.claimReason),
     claimNotHeld: true,
   };

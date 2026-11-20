@@ -257,7 +257,11 @@ export interface IssueRunCallbackContext {
    * is additive. Absent when the dispatch could not name one.
    */
   mode?: string;
-  /** Agent provider that served the run, when known. */
+  /**
+   * Agent provider that served the run (Issue #5163): the one provider every
+   * agent launch reported; the configured provider when the run launched no
+   * agent; absent when a launch reported none or they reported several.
+   */
   provider?: string;
   /** Agent session id, when the run had one. */
   sessionId?: string;
@@ -530,6 +534,13 @@ export interface TerminalIssueRun {
   finishedAtEpochMs: number;
   /** The workflow the run served, when the dispatch named one (#2100). */
   mode?: string;
+  /**
+   * Agent provider that served the run (Issue #5163): the one provider every
+   * agent launch reported; the configured provider when the run launched no
+   * agent. Absent when a launch reported none, the launches reported several,
+   * or the run never reported (a hard-killed or thrown run).
+   */
+  provider?: string;
   /** Token and cost telemetry, when the run's invocations reported it. */
   telemetry?: CallbackRunTelemetry;
   /** What the run's Graft collection did, when it reached one (#2104). */

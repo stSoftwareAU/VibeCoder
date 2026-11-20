@@ -991,6 +991,64 @@ Deno.test("composition - a genuine setup fault in the same message shape still c
   assertEquals(diagnosticErrorLine(message), "bash: deno: command not found");
 });
 
+Deno.test("diagnosticErrorLine - with no last output the detail is the failure reason, not a Diagnostics bullet (Issue #5249)", () => {
+  const message = formatDetailedFailureMessage(
+    "Claude timed out without creating changes",
+    { elapsedSeconds: 40, outputSize: 0, clarityStatus: "clear" },
+  );
+  assertEquals(
+    diagnosticErrorLine(message),
+    "Claude timed out without creating changes",
+  );
+});
+
+Deno.test("diagnosticErrorLine - a fuller Diagnostics block still yields the reason, not a bullet (Issue #5249)", () => {
+  const message = formatDetailedFailureMessage(
+    "host disk below its floor: 2.1 GiB free, needs 5 GiB",
+    {
+      elapsedSeconds: 2224,
+      timedOut: true,
+      outputSize: 0,
+      timeoutSeconds: 2400,
+      rawExitCode: 137,
+      clarityStatus: "assessed_clear",
+      baselineQualityPassed: false,
+    },
+  );
+  assertEquals(
+    diagnosticErrorLine(message),
+    "host disk below its floor: 2.1 GiB free, needs 5 GiB",
+  );
+});
+
+Deno.test("recordRepoFastFailure - the stored detail is the reason above the Diagnostics block (Issue #5249)", async () => {
+  await withWorkDir(async (workDir) => {
+    const message = formatDetailedFailureMessage(
+      "Claude timed out without creating changes",
+      { elapsedSeconds: 40, outputSize: 0, clarityStatus: "clear" },
+    );
+    const state = await record(workDir, 1_000, { message });
+    assertEquals(
+      state.lastDetail,
+      "Claude timed out without creating changes",
+    );
+  });
+});
+
+Deno.test("diagnosticErrorLine - a bullet outside a Diagnostics block is still kept (Issue #5249)", () => {
+  assertEquals(
+    diagnosticErrorLine("lint failed:\n- missing: foo.ts"),
+    "- missing: foo.ts",
+  );
+});
+
+Deno.test("diagnosticErrorLine - a message that is only a Diagnostics block still records its last line (Issue #5249)", () => {
+  assertEquals(
+    diagnosticErrorLine("### Diagnostics\n- Elapsed: 3s"),
+    "- Elapsed: 3s",
+  );
+});
+
 Deno.test("diagnosticErrorLine - git's discovery-boundary trailer does not displace the cause (Issue #2848)", () => {
   // What git prints when a run's cwd holds no repository on a mounted volume:
   // the last line names an environment variable, never the directory.

@@ -64,6 +64,9 @@ export interface FailureDiagnosticContext {
   killDiagnostics?: string;
 }
 
+/** Heading of the `- Key: value` diagnostics block a failure message carries. */
+export const DIAGNOSTICS_HEADING = "### Diagnostics";
+
 const MAX_SNIPPET_LENGTH = 500;
 /** Cap on the kill-time process table carried in a message (Issue #4382). */
 const MAX_KILL_DIAGNOSTICS_LENGTH = 2000;
@@ -144,7 +147,7 @@ export function formatDetailedFailureMessage(
 
   if (diagnostics.length > 0) {
     parts.push("");
-    parts.push("### Diagnostics");
+    parts.push(DIAGNOSTICS_HEADING);
     for (const line of diagnostics) {
       parts.push(`- ${line}`);
     }

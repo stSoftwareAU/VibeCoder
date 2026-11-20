@@ -1509,7 +1509,7 @@ recovery prompt lists those violations as fenced `CODE FIX` items: the turn may
 edit the cited
 files and add the tests the finding or reason names, re-dispatch the Standards
 reviewer over the new diff, and write `reason: fixed in this diff` only for a
-breach it actually fixed. Coverage carry-over items allow test fixes, pre-PR
+breach it actually fixed. Pre-PR
 verifier items allow the code and test fixes their findings request, and unmet
 criteria allow finishing the implementation. The remaining `REQUIRED ITEM`s
 keep the documentation-shortfall rule, "do not change the code", and "this turn
@@ -1535,7 +1535,7 @@ still has its summary's `## Standards Review` read (Issue #3761, NEAT-AI#4065).
 
 The summary gates that still run route through it: closure (#518),
 independent review (#663), reproduction status (#521), the placeholder-token
-gate (#3124), coverage carry-over (#3795), the pre-PR verifier (#3395) and unmet
+gate (#3124), the pre-PR verifier (#3395) and unmet
 criteria (#4146). Each is advice: the first report is one in-session note, and
 whatever remains is one pull-request comment (Issue #4234). The automatic
 mutation check that once ran here (Issue #3393) was retired by
@@ -1856,21 +1856,38 @@ orchestrator and production failure handler retain it through the existing
 outcome and callback, so a network error caught by a gate wrapper stays
 infrastructure. The pre-push helper's existing errors now distinguish
 `infrastructure` from `verdict`; both still refuse the push. Declared hand-off
-pushes likewise retain their push/token-scope categories.
+pushes likewise retain their push/token-scope categories. A source scan in
+`worker/deno/tests/failure_diagnosis_test.ts` ("phase failure result literals
+declare causes instead of deriving them from prose") stops a result under
+`worker/deno/lib/phases/` deriving its category from its own reason text; it
+covers direct and assigned result objects, nested expressions, comments and
+literal lookalikes.
 
 Summary-rule folding records every category. Evidence-only findings remain
-`summary_incomplete`; implementation/test findings are `quality_check`, including
-mixed findings. These diagnostics also stay attached to an existing PR's outcome;
-all verifier findings still block and hold merge. Their category annotation is
-not authority to declare an outage or bypass a gate.
+`summary_incomplete`; implementation/test findings are `quality_check`,
+including mixed findings, and the existing diagnostic/event output keeps every
+simultaneous cause while selecting the substantive one. These diagnostics also
+stay attached to an existing PR's outcome, even when it keeps its established
+PR-attached outcome kind. Verifier findings are advisory at completion, as
+[Pre-PR verifier (Issue #3395)](#pre-pr-verifier-issue-3395) describes: the
+agent gets one in-session opportunity to address them, and the rest go into the
+PR's reviewer note. A finding cannot declare itself an infrastructure error, and
+its category annotation is not authority to declare an outage or bypass a gate.
 
 Raw external CLI/tool boundaries may capture the existing host classification
-once. Retry/label decisions and emitted outcomes retain that diagnosis rather
-than letting later quoted text replace it. Known scheduled releases, execution
-timeouts, watchdog lateness and incomplete termination retain their runner
-fields. Absent evidence does not acquire an inferred cause. Existing already-landed
-outcomes keep their semantics; this classification change does not decide
-completion or delivery target.
+once. Legacy records and raw external tool/CLI output may use the existing text
+adapter; choosing raw versus declared input to `classifyRunFailure` is explicit
+(its `declaredCategory` argument). Retry/label decisions and emitted outcomes
+retain that diagnosis rather than letting later quoted text replace it.
+Worker-authored kill probes remain distinct from agent narration about billing,
+crashes or memory. A scheduled handover remains `scheduled_release` and an
+exhausted execution budget remains a timeout; both keep the runner's known stop
+fields (raw exit status, watchdog reason/lateness, incomplete kill and
+scheduled/termination flags) in the existing outcome and callback. Absent
+evidence does not acquire an inferred cause, timeouts are not exempted
+wholesale, and preserved work is not discarded. Existing already-landed outcomes
+keep their semantics and their own provenance checks; this classification change
+does not decide completion or delivery target.
 
 The marker rules below remain the compatibility path for legacy text and posted
 records. New worker-written results carry their category explicitly.

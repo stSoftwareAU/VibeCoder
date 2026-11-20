@@ -1106,8 +1106,6 @@ export interface RepoConfig {
    * close a `security`-labelled finding (Issue #3540).
    */
   skipSecurityFixCheck?: boolean;
-  /** When true, skips the coverage carry-over gate on PR completion (Issue #3795). */
-  skipCoverageCarryOverCheck?: boolean;
   /**
    * Credentials this repository's own checks need (Issues #573, #574).
    *

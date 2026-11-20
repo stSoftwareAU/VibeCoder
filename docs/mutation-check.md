@@ -29,9 +29,6 @@ There is no automatic replacement. The checks that still run are:
 - the quality gate (lint, unit tests, markdownlint, mermaid and the other
   configured stages);
 - the pre-PR verifier;
-- the coverage carry-over gate (Issue #3795), which runs in the issue-run
-  completion phase and still accepts the PR-summary exemption syntax (see
-  [Coverage carry-over check](coverage-carryover-check.md));
 - the security-fix discrimination check.
 
 A repository whose own CI runs mutants still runs them in that CI. The worker
@@ -65,10 +62,9 @@ The retained security-fix discrimination check also removes a temporary clone
 in `worker/deno/lib/security_fix_discrimination.ts`. Its cleanup failure now logs
 a warning with the directory and cause, preserving the check's completed verdict.
 An injected ENOTEMPTY regression test verifies that handling; it does not prove
-or repair a live-writer race. The coverage carry-over check already treats
-cleanup as best effort.
+or repair a live-writer race.
 
 The modules `mutation_runner.ts`, `mutation_gate.ts` and `ci_mutation_contract.ts`
 keep only shared helpers, such as the runner seams, `isDenoTestFile`,
-`parseMutationExemptions`, `mdSafe` and the workflow-parsing helpers that
+`mdSafe` and the workflow-parsing helpers that
 `ci_cargo_checks` uses. None of them runs a mutation check.
