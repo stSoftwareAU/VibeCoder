@@ -1,6 +1,7 @@
 // Issue #4392 — the module `deno cache` resolves to pre-warm the image cache.
 // It only names the dependencies; nothing here runs.
 import "@playwright/mcp";
+import "commonmark";
 import "@std/assert";
 import "@std/crypto";
 import "@std/yaml/parse";
