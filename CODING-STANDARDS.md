@@ -989,27 +989,16 @@ means. List the messages checked in the PR summary's Test Plan
 (Issue #3259).
 
 **Changing what a shared helper returns, refuses or finds changes every
-caller.** Before a helper that other code already calls starts rejecting,
-refusing, throwing on, dropping, finding or returning something different for
-an input it already handled — a validator, type guard, allowed-value set,
-required field or ref/name check that narrows, a lookup that gains a fallback,
-a routine that gains a refusal or precondition — list its existing callers and
-the real values each can receive. Check those values against the tool or API's
-actual output, not its documentation's happy path (see **Observe the real tool
-before you rely on it**). For each existing caller, decide whether its
-behaviour changes under the new result. When one depends on the old result (it
-passes a value the new rule rejects, reads "nothing found" as "leave it
-alone", or runs where the new refusal fires), keep the shared helper as it was
-and apply the new behaviour at the new call site, or change that caller too.
-Add a test that exercises each existing caller whose behaviour the change
-touches, under the new result; a callers-checked list alone does not count,
-because nothing checks a wrong conclusion in it. List the callers checked in
-the PR summary. When the worker's pre-PR verifier runs, it is also given the
-callers outside the diff of each function whose body the diff changes, found
-by the worker's own word search and capped per function, and a listed caller
-left without a verdict, or reported `regressed`, blocks the PR. A changed
-shared helper with no test through an existing caller whose behaviour it
-touches is a blocking self-review finding (Issues #3100, #3779).
+caller.** Before a helper that other code already calls starts returning,
+refusing or finding something different for an input it already handled,
+decide for each existing caller whether its behaviour changes under the new
+result, using the real values that caller can receive (see **Observe the real
+tool before you rely on it**). When a caller depends on the old result, keep
+the shared helper as it was and apply the new behaviour at the new call site,
+or change that caller too. Add a test that exercises each existing caller
+whose behaviour the change touches, under the new result. A changed shared
+helper with no test through an existing caller whose behaviour it touches is a
+blocking self-review finding (Issues #3100, #3779).
 
 **Every outcome of a branch you add needs a test that reaches it.** For
 changed behaviour, review meaningful success, absent/empty and error outcomes,
@@ -2083,18 +2072,18 @@ implementation, absent tests or known failing checks. Failed checks, absent test
 known defects and mixed criteria with unfinished product work remain gaps.
 Required CI, review and acceptance gates still apply.
 
-CI runs the same gates on every push to a pull request: the `PR summary
-freshness and gates` step in `.github/workflows/validate-scripts.yml` runs
+CI runs the same gates on every push to a pull request: the `PR summary gates`
+step in `.github/workflows/validate-scripts.yml` runs
 `deno task pr-summary-ci --base <base-branch> --head-branch <head-branch>`
 (Issue #3768). On an `issue-<N>-…` head branch whose diff carries
-`pr-summary-<N>.md`, it fails when the PR's newest non-merge
-commit changing `worker/`, `prompts/` or `.claude/` is newer than the newest
-commit changing that summary. The digest is of the summary alone. Rewrite the summary for the head
-in that push, whoever makes it. The step then runs the `pr-summary-check` gates
-and fails on a blocked one; gates needing the issue body or labels are reported
-as not checked. A PR carrying no summary passes with a log line. On a head
-branch that is not an `issue-<N>` branch (milestone roll-ups, sync PRs) the
-summary is reported as not checked.
+`pr-summary-<N>.md`, it runs the `pr-summary-check` gates and fails on a
+blocked one, or when that summary is not in the checkout; gates needing the
+issue body or labels are reported as not checked. It does not compare commit
+order: editing the summary does not make its claims current, and a later commit
+that leaves every claim true owes the summary no change (Issue #5227). Keep the
+summary true to the head as the next paragraph describes. A PR carrying no
+summary passes with a log line. On a head branch that is not an `issue-<N>`
+branch (milestone roll-ups, sync PRs) the summary is reported as not checked.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests

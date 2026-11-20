@@ -1,6 +1,6 @@
 /**
  * Regression test for Issue #3768: every push to a pull request that carries
- * an archived PR summary must run the `PR summary freshness and gates` step
+ * an archived PR summary must run the `PR summary gates` step
  * in `validate-scripts.yml`, and that step must be able to fail the job.
  *
  * A review-fix push made outside the worker (a laptop or cloud session, a
@@ -90,7 +90,7 @@ function checkoutStep(workflow: unknown): Obj | undefined {
 }
 
 /**
- * Problems with the PR-summary freshness step in the `validate` job. An empty
+ * Problems with the PR summary gates step in the `validate` job. An empty
  * list means every invariant holds; each problem names the invariant it breaks.
  */
 function prSummaryCiStepProblems(workflow: unknown): string[] {
@@ -185,7 +185,7 @@ function summaryAndCheckout(workflow: unknown): { step: Obj; checkout: Obj } {
 }
 
 Deno.test(
-  "validate-scripts.yml runs the PR-summary freshness step on every PR push (Issue #3768)",
+  "validate-scripts.yml runs the PR-summary gates step on every PR push (Issue #3768)",
   async () => {
     const workflow = await readYaml(WORKFLOW_PATH);
     assertEquals(prSummaryCiStepProblems(workflow), []);
