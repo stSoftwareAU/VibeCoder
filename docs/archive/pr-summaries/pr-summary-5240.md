@@ -112,7 +112,7 @@ and its tests.
 - **met** — The Documentation table in `README.md` has a row linking to the
   page, as it has for the sibling pages `docs/TOKEN-ECONOMIZER-TRIAL.md` and
   `docs/RTK-OUTPUT-TRIAL.md` — evidence: `README.md:481`,
-  `tests/readme_docs_reachability_test.ts` — reviewer: met
+  `worker/deno/tests/readme_docs_reachability_test.ts` — reviewer: met
 - **met** — The pull request changes no worker, container or configuration file:
   the switch is not wired while the status is `blocked`, the Claude pin in
   `container/tools.json` stays at 2.1.322, and no build step or scheduled task
