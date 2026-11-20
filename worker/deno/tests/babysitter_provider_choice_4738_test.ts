@@ -9,6 +9,7 @@ import type { ProviderSubscriptionStatus } from "../lib/provider_quota.ts";
 import type { AutomaticProviderStatusResolver } from "../lib/provider_auto_runtime.ts";
 import { resetAutomaticProviderState } from "../lib/provider_auto_state.ts";
 import { envFrom } from "./support/env_lookup.ts";
+import { denoCacheEnv } from "./support/deno_cache_env.ts";
 
 const NOW = 10_000_000;
 const CONFIG = {
@@ -454,6 +455,7 @@ Deno.test("default DeepSeek export reads only its provider credential and isolat
       env: {
         VIBE_CREDENTIAL_DIR: dir,
         VIBE_IMAGE_AGENT_PROVIDERS: "claude,codex,deepseek",
+        ...denoCacheEnv(),
       },
       clearEnv: true,
       stdin: "null",

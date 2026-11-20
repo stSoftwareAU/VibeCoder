@@ -153,12 +153,10 @@ const AGENT_PROGRESS_LINE = /\[agent-progress\]/;
  * The fixed vocabulary of last steps, checked in order. The label comes only
  * from this table, so no log text (the run may be on a private repository) is
  * published. It does not feed the dedup key `hard-kill-<handler>-<phase>`.
- * Each pattern matches what its step logs when it ends, including the notes
- * `evaluateCoverageCarryOverGate` returns on every path (clean, capped, budget,
- * not applicable). The `mutation check` label is kept to classify logs written
- * before the mutation check was retired (Issue #5095). The pre-PR verifier and
- * the coverage check log nothing as they start, so a label names the last step
- * that logged: the wedge is in or after it. The setup steps' start lines
+ * Each pattern matches what its step logs when it ends. The `mutation check`
+ * label is kept to classify logs written before the mutation check was retired
+ * (Issue #5095). The pre-PR verifier logs nothing as it starts, so a label
+ * names the last step that logged: the wedge is in or after it. The setup steps' start lines
  * (`setupStepStartLine` in setup_steps.ts) are not in this table:
  * {@link hardKillLastStep} matches them as literal text after it and labels
  * them `setup: <step>`. Each setup step logs as it starts (Issue #5128), so
@@ -171,10 +169,6 @@ const STEP_PATTERNS: readonly { label: string; pattern: RegExp }[] = [
   {
     label: "mutation check",
     pattern: /\bmutants? killed\b|\bmutation (?:check|budget|gate|cap)\b/i,
-  },
-  {
-    label: "coverage carry-over check",
-    pattern: /\bcoverage carry-over\b|\bcarried-over lines\b/i,
   },
   { label: "quality gate", pattern: /\bQuality gate\b|\[phase\] quality_gate/ },
   {

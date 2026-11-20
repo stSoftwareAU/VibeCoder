@@ -458,8 +458,9 @@ flowchart TD
   logged, the trigger, the fixed reason for that trigger, the capture and
   last-log times, the silence before capture, the guest-probe state and the
   guest memory and pressure figures. The last step logged is the last one the
-  log reported, so the wedge is in or after it; it is one of `pre-PR verifier`,
-  `coverage carry-over check`, `quality gate`, `agent turn`, a setup step
+  log reported, so the
+  wedge is in or after it; it is one of `pre-PR verifier`,
+  `quality gate`, `agent turn`, a setup step
   (`setup: issue claim`, `setup: claim churn check`, `setup: repository setup`,
   `setup: heartbeat start`, `setup: default branch sync`,
   `setup: feature branch` or `setup: pre-setup command`, each logged as the step

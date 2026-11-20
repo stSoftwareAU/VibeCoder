@@ -267,10 +267,6 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // failure messages that quote git output; only a growth measurement
   // separates it from a backtracking one (Issue #3446).
   "tests/clone_corrupt_repeat_growth_3446_test.ts",
-  // The mutation runner's import-specifier scan reads test sources a PR
-  // author writes; only a growth measurement separates its linear scan of an
-  // unclosed specifier from a backtracking one (Issue #3393).
-  "tests/mutation_runner_test.ts",
   // The shared Markdown logical-unit splitter groups the lines of untrusted
   // PR summaries; only a growth measurement separates its single linear pass
   // from a rescan per line (Issue #3356).

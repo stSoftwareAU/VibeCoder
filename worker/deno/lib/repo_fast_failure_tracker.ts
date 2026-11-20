@@ -39,6 +39,7 @@ import {
   type FailureCategory,
   workerGateCategoryOf,
 } from "./failure_diagnosis.ts";
+import { DIAGNOSTICS_HEADING } from "./failure_message.ts";
 import {
   isPrimaryRateLimitMessage,
   primaryQuotaLatchedUntil,
@@ -327,6 +328,27 @@ function isGitPathLine(line: string): boolean {
 }
 
 /**
+ * Drop the worker's `### Diagnostics` block: its heading and the `- Key: value`
+ * bullets directly under it. A line that is not a bullet ends the block and is
+ * kept.
+ */
+function withoutDiagnosticsBlocks(lines: readonly string[]): string[] {
+  const kept: string[] = [];
+  let inBlock = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === DIAGNOSTICS_HEADING) {
+      inBlock = true;
+      continue;
+    }
+    if (inBlock && trimmed.startsWith("- ")) continue;
+    inBlock = false;
+    kept.push(line);
+  }
+  return kept;
+}
+
+/**
  * The last line of a failure message that says *why* it failed, redacted and
  * bounded.
  *
@@ -337,6 +359,9 @@ function isGitPathLine(line: string): boolean {
  * Git's checkout refusal also lists affected paths and ends with generic
  * advice and `Aborting`; the path lines are dropped before the window is cut
  * (however many there are) and the rest are skipped in favour of the refusal.
+ * The worker's `### Diagnostics` block (its heading and `- Key: value` bullets)
+ * is dropped before the window is cut too, so with no last-output block the
+ * reason above it is kept.
  *
  * The line is filed into a public issue body and the failure message quotes
  * the agent's own output, so the message is handed to `redactedLineTail`
@@ -345,17 +370,20 @@ function isGitPathLine(line: string): boolean {
  * span lines, and a rule that never sees the line above cannot match them.
  */
 export function diagnosticErrorLine(message: string): string {
-  // Redact the whole message, drop git's path list, and only then cut the
-  // window: a refusal listing 20+ paths would otherwise lose its cause line.
-  // The setup path joins several refusals with "; ", gluing git's `Aborting`
-  // trailer onto the next command's line, so split it back onto its own line.
+  // Redact the whole message, drop git's path list and the Diagnostics block,
+  // and only then cut the window: a refusal listing 20+ paths would otherwise
+  // lose its cause line. The setup path joins several refusals with "; ",
+  // gluing git's `Aborting` trailer onto the next command's line, so split it
+  // back onto its own line.
   const allLines = redactedLineTail(message ?? "", Number.MAX_SAFE_INTEGER)
     .replaceAll("Aborting; ", "Aborting\n")
     .split("\n")
     .map((line) => line.trimEnd())
     .filter((line) => line.trim().length > 0);
-  const withoutPaths = allLines.filter((line) => !isGitPathLine(line));
-  const lines = (withoutPaths.length > 0 ? withoutPaths : allLines)
+  const withoutNoise = withoutDiagnosticsBlocks(
+    allLines.filter((line) => !isGitPathLine(line)),
+  );
+  const lines = (withoutNoise.length > 0 ? withoutNoise : allLines)
     .slice(-LAST_LINE_WINDOW);
   const informative = lines.filter((line) => !isUninformativeLine(line));
   const candidates = informative.length > 0 ? informative : lines;

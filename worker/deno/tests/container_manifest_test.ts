@@ -2843,7 +2843,10 @@ Deno.test("container/deno-seed - pins agree with screenshot.ts, the Containerfil
   );
   const workerLock = JSON.parse(
     await Deno.readTextFile(new URL("worker/deno/deno.lock", REPO_ROOT)),
-  ) as { specifiers: Record<string, string> };
+  ) as {
+    specifiers: Record<string, string>;
+    npm?: Record<string, { integrity: string }>;
+  };
 
   // The MCP the seed warms is the one the worker launches...
   assertEquals(
@@ -2871,18 +2874,36 @@ Deno.test("container/deno-seed - pins agree with screenshot.ts, the Containerfil
     }`,
   );
 
-  // The worker's JSR deps in the seed are the versions the worker lock pins.
+  // Every worker dependency, JSR and npm, is in the seed at the version the
+  // worker lock pins. A cold Deno cache resolves the lock's whole npm
+  // snapshot on any run under the worker config, so one npm package missing
+  // here is fetched by every fresh cache, and fails where npm is unreachable
+  // (commonmark, GRQ-23 2026-11-19: "Failed caching npm package").
   for (const [spec, version] of Object.entries(workerLock.specifiers)) {
-    if (!spec.startsWith("jsr:")) continue;
-    const name = spec.slice("jsr:".length).replace(/@[^@]*$/, "");
+    const registry = spec.startsWith("jsr:")
+      ? "jsr"
+      : spec.startsWith("npm:")
+      ? "npm"
+      : null;
+    if (registry === null) continue;
+    const name = spec.slice(`${registry}:`.length).replace(/@[^@]*$/, "");
     const seeded = Object.entries(seedLock.specifiers).find(([k]) =>
-      k.startsWith(`jsr:${name}@`)
+      k.startsWith(`${registry}:${name}@`)
     );
     assert(seeded, `seed must pre-cache ${name} (worker lock has ${spec})`);
     assertEquals(
       seeded[1],
       version,
       `${name}: seed ${seeded[1]} vs worker ${version}`,
+    );
+  }
+  // ...and every npm package the worker lock resolves, transitive ones
+  // included, with the same integrity.
+  for (const [pkg, entry] of Object.entries(workerLock.npm ?? {})) {
+    assertEquals(
+      seedLock.npm[pkg]?.integrity,
+      entry.integrity,
+      `seed lock must pin npm ${pkg} with the worker lock's integrity`,
     );
   }
   // The build fails loud on lock drift and proves the seed runs offline.

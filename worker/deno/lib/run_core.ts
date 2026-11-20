@@ -5658,6 +5658,15 @@ function runIdleWorkHooks(
   // from outside priority dispatch — attribute them to the hooks.
   return withPriorityContext("Idle Work Hooks", async () => {
     const outcome: IdleHookOutcome = { filed: false };
+    // A scan interrupted by a cooldown is blocked, not idle. Both the
+    // per-slot and end-of-cycle callers share this gate: the audit and
+    // census also consume API quota and must not prolong a burst limit.
+    if (await deps.isRateLimitActive()) {
+      req.log(
+        `[idle-hooks] foundClaimableIssue=${req.scanFoundClaimable} scanHadSuccess=${req.scanHadSuccess} skipping=idle-hooks reason=rate_limit_active`,
+      );
+      return outcome;
+    }
     await deps.runTranscriptScan?.();
     const flagFragment =
       `foundClaimableIssue=${req.scanFoundClaimable} scanHadSuccess=${req.scanHadSuccess}`;
