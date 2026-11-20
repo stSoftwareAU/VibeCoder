@@ -19,6 +19,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { parse } from "@std/yaml/parse";
+import { denoCacheEnv } from "./support/deno_cache_env.ts";
 
 /** Repository root — three levels up from `worker/deno/tests/`. */
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
@@ -44,7 +45,7 @@ Deno.test("PR summary CI task runs git with restricted environment permissions",
     ],
     cwd: `${REPO_ROOT}/worker/deno`,
     clearEnv: true,
-    env: { PATH: Deno.env.get("PATH") ?? "" },
+    env: { PATH: Deno.env.get("PATH") ?? "", ...denoCacheEnv() },
     stdout: "piped",
     stderr: "piped",
   }).output();
