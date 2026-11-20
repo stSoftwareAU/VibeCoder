@@ -96,8 +96,14 @@ flowchart LR
   - A final case-insensitive grep across the repository, excluding
     `docs/archive/` and `docs/audits/`, for
     `coverage.carry|coverage-carryover|carried-over line|parseMutationExemptions|deno_test_config|importsModule`
-    finds only the retired `skip_coverage_carryover_check` row in
-    `docs/CONFIGURATION.md`, plus the tests that pin the retired key.
+    returns only these:
+    - the retired `skip_coverage_carryover_check` row in
+      `docs/CONFIGURATION.md`;
+    - the retired-key map and its comment in
+      `worker/deno/lib/config_unknown_keys.ts` (lines 496 and 507);
+    - the tests that pin the retired key, in `worker/deno/tests/config_test.ts`
+      and `worker/deno/tests/config_unknown_keys_test.ts`;
+    - the `hard_kill_report_test.ts` test that pins the removed label.
   - Left alone on purpose: the `exempt (untestable)` branch-outcome rule in
     `prompts/pr_feedback/prompt.md` (#3428) and the unrelated "baseline
     carryover" feature.
@@ -136,13 +142,23 @@ flowchart LR
   - The `listTestFiles` and `importsModule` tests in
     `worker/deno/tests/mutation_runner_test.ts`. Its `confinePath`, seam
     environment, SIGTERM and temp-dir tests stay.
+- Tests added so the lines the removed tests reached stay covered:
+  - `worker/deno/tests/jsonc_test.ts` (new) drives `stripJsonc` in
+    `worker/deno/lib/jsonc.ts` directly: line comments, block comments, trailing
+    commas, comment markers inside strings and unterminated comments. It reaches
+    `jsonc.ts:46-55`, which the deleted `deno_test_config` tests used to reach.
+  - `worker/deno/tests/mutation_runner_test.ts::findDenoConfigDir - normalises empty, '.' and '..' segments before walking up`
+    reaches `mutation_runner.ts:91-92` (`normalisePath`), which the deleted
+    `listTestFiles` tests used to reach. A `deno coverage` run over the two
+    files shows every one of the 11 lines hit.
   - The `parseMutationExemptions` tests in
     `worker/deno/tests/mutation_gate_test.ts`. The `mdSafe` tests stay.
 - Targeted runs on the final code all passed:
   - `tests/summary_rule_gate_retry_test.ts`, `tests/config_test.ts`,
     `tests/config_unknown_keys_test.ts`, `tests/hard_kill_report_test.ts` and
     `tests/issue_worker_wiring_test.ts`.
-  - `tests/mutation_runner_test.ts`, `tests/mutation_gate_test.ts` and
+  - `tests/mutation_runner_test.ts`, `tests/jsonc_test.ts`,
+    `tests/mutation_gate_test.ts` and
     `tests/security_fix_discrimination_test.ts`.
   - `tests/fleet_babysitter_app_test.ts` (17 passed) and
     `deno task check:manifests`.

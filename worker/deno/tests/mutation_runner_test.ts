@@ -12,6 +12,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   confinePath,
   defaultMutationRunnerSeams,
+  findDenoConfigDir,
   makeMutationTempDir,
   resolveMutationScratchRoot,
 } from "../lib/mutation_runner.ts";
@@ -42,6 +43,25 @@ Deno.test("confinePath - rejects a climb out of the repo, accepts one that stays
     assertEquals(
       await confinePath(repo, "a/../b/x.ts", seams),
       `${real}/b/x.ts`,
+    );
+  });
+});
+
+Deno.test("findDenoConfigDir - normalises empty, '.' and '..' segments before walking up", async () => {
+  await realRepo(async (repo) => {
+    const seams = defaultMutationRunnerSeams();
+    await Deno.mkdir(`${repo}/pkg/src`, { recursive: true });
+    await Deno.writeTextFile(`${repo}/pkg/deno.json`, "{}");
+    // `other/..` cancels out and `.`/empty segments are skipped, so the walk
+    // starts at pkg/src and finds pkg/deno.json.
+    assertEquals(
+      await findDenoConfigDir(repo, "./other/../pkg//src/./x_test.ts", seams),
+      "pkg",
+    );
+    // With no marker anywhere on the walk, the result is null.
+    assertEquals(
+      await findDenoConfigDir(repo, "lib/../tools/x_test.ts", seams),
+      null,
     );
   });
 });
