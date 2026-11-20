@@ -710,9 +710,12 @@ export async function acquireBranchUpdateLock(
     };
   }
 
-  // Multiple locks — earliest created_at wins (consistent with CLAIM_LOCK)
+  // Multiple locks — earliest created_at wins (consistent with CLAIM_LOCK).
+  // GitHub reports whole seconds, so a tie is routine: break it on the comment
+  // id so every host reading this thread crowns the same winner, rather than
+  // each crowning itself from its own position in the list.
   const sorted = [...allLockComments].sort((a, b) =>
-    a.createdAt.localeCompare(b.createdAt)
+    a.createdAt.localeCompare(b.createdAt) || a.id - b.id
   );
   const winnerComment = sorted[0]!;
   const winnerData = parseLockComment(winnerComment.body, lockKind);
