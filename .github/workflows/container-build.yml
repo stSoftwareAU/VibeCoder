@@ -568,6 +568,17 @@ jobs:
             exit 1
           fi
 
+      # Issue #5110: a fresh container from the image just built runs the AWS
+      # Emulator reference command as `agent` (aws-emulator-run refuses `vibe`
+      # and root). The script reads its templates from its own directory and
+      # writes only under mktemp and the helper's private HOME, so the mount is
+      # read-only. Its exit status fails this required check.
+      - name: Run the AWS Emulator reference command as agent in a fresh container
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          docker run --rm --user agent --volume "${GITHUB_WORKSPACE}/infra/cloudformation:/workspace/cloudformation:ro" --entrypoint /workspace/cloudformation/test-aws-emulator.sh "${IMAGE}" < /dev/null
+
       # Issue #4334: this used to run the ENTIRE quality gate (~940 tests,
       # lint, check, markdown, mermaid) inside the image — 5 minutes per PR,
       # serial, duplicating what `validate` and the sharded `validate (tests

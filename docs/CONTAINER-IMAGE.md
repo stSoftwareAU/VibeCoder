@@ -228,8 +228,9 @@ Issue #5109 adds the official AWS Emulator and a helper that runs a test
 command against it. Floci stays installed during the migration and nothing
 switches existing Floci users. VibeCoder's own CloudFormation CI now runs on the
 AWS Emulator (`infra/cloudformation/test-aws-emulator.sh` via
-`.github/workflows/aws-emulator.yml`, Issue #5110). The coding-standard and
-best-practices changes are planned (#5111, #5112) and are not part of this
+`.github/workflows/aws-emulator.yml`, Issue #5110), and `container-build.yml`
+runs the same script as `agent` in a fresh container of the built image. The
+coding-standard and best-practices changes are planned (#5111, #5112) and are not part of this
 change.
 
 ### What is installed

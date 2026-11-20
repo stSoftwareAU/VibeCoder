@@ -12,6 +12,7 @@ import { assert, assertEquals } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml/parse";
 import {
   checkAwsEmulatorWorkflow,
+  checkContainerBuildRunsAwsEmulator,
   checkQualityCallsAwsEmulator,
 } from "../lib/aws_emulator_workflow_check.ts";
 
@@ -30,7 +31,12 @@ const REAL = Deno.readTextFileSync(WORKFLOW_PATH);
  * passing against the unmutated file.
  */
 function mutate(...pairs: [string, string][]): string {
-  let text = REAL;
+  return mutateText(REAL, ...pairs);
+}
+
+/** `mutate` against any base text (the exactly-once anchor check applies). */
+function mutateText(base: string, ...pairs: [string, string][]): string {
+  let text = base;
   for (const [from, to] of pairs) {
     const occurrences = text.split(from).length - 1;
     assertEquals(
@@ -258,6 +264,56 @@ Deno.test("(a) refuses an if: on the job", () => {
   );
 });
 
+// PR #5276 review: a shell that only parses or never runs the body would pass
+// the step without deploying anything.
+for (
+  const [label, shell] of [
+    ["bash -n {0}", "bash -n {0}"],
+    ["bash -o noexec {0}", "bash -o noexec {0}"],
+    ["sh -n {0}", "sh -n {0}"],
+    ["true {0}", "true {0}"],
+    ["python {0}", "python {0}"],
+  ] as const
+) {
+  Deno.test(`(a) refuses shell: ${label} on the test step`, () => {
+    expectFindings(
+      mutate([TEST_STEP_NAME, TEST_STEP_NAME + `        shell: ${shell}\n`]),
+      ["[test-step] the infra/cloudformation/test-aws-emulator.sh step's shell"],
+    );
+  });
+}
+
+Deno.test("(a) refuses a job-level defaults.run.shell of bash -n {0}", () => {
+  expectFindings(
+    mutate([
+      "    timeout-minutes: 25\n",
+      "    timeout-minutes: 25\n    defaults:\n      run:\n        shell: bash -n {0}\n",
+    ]),
+    ["[test-step] the infra/cloudformation/test-aws-emulator.sh step's shell"],
+  );
+});
+
+Deno.test("(a) refuses a workflow-level defaults.run.shell of bash -n {0}", () => {
+  expectFindings(
+    mutate([
+      "\njobs:\n",
+      "\ndefaults:\n  run:\n    shell: bash -n {0}\n\njobs:\n",
+    ]),
+    ["[test-step] the infra/cloudformation/test-aws-emulator.sh step's shell"],
+  );
+});
+
+Deno.test("(a) accepts shell: bash and the GitHub default bash form", () => {
+  for (
+    const shell of ["bash", "bash --noprofile --norc -eo pipefail {0}"]
+  ) {
+    expectFindings(
+      mutate([TEST_STEP_NAME, TEST_STEP_NAME + `        shell: ${shell}\n`]),
+      [],
+    );
+  }
+});
+
 // (b) the pinned install and the runner install precede the test step.
 
 Deno.test("(b) refuses the test step placed before the install steps", () => {
@@ -442,4 +498,108 @@ Deno.test("(f) refuses checkout without persist-credentials: false", () => {
 Deno.test("checkAwsEmulatorWorkflow reports non-object input without throwing", () => {
   assertEquals(checkAwsEmulatorWorkflow(null), ["workflow is not an object"]);
   assertEquals(checkAwsEmulatorWorkflow("nope").length, 1);
+});
+
+// container-build.yml runs the reference command as agent in a fresh container.
+
+const CONTAINER_BUILD = Deno.readTextFileSync(
+  new URL("../../../.github/workflows/container-build.yml", import.meta.url)
+    .pathname,
+);
+const AGENT_STEP_NAME =
+  "      - name: Run the AWS Emulator reference command as agent in a fresh container\n";
+const AGENT_STEP_IF = AGENT_STEP_NAME +
+  "        if: env.IMAGE_CHANGED == 'true'\n";
+const AGENT_USER = "--user agent --volume";
+const AGENT_TAIL = 'test-aws-emulator.sh "${IMAGE}" < /dev/null';
+const AGENT_DOCKER_LINE =
+  '          docker run --rm --user agent --volume "${GITHUB_WORKSPACE}/infra/cloudformation:/workspace/cloudformation:ro" --entrypoint /workspace/cloudformation/test-aws-emulator.sh "${IMAGE}" < /dev/null\n';
+
+Deno.test("real container-build.yml runs the reference command as agent", () => {
+  assertEquals(
+    checkContainerBuildRunsAwsEmulator(parseYaml(CONTAINER_BUILD)),
+    [],
+  );
+});
+
+for (
+  const [label, pairs] of [
+    ["--user vibe", [[AGENT_USER, "--user vibe --volume"]]],
+    ["a trailing || true", [[AGENT_TAIL, AGENT_TAIL + " || true"]]],
+    ["if: false", [[AGENT_STEP_IF, AGENT_STEP_NAME + "        if: false\n"]]],
+    [
+      "continue-on-error: true",
+      [[AGENT_STEP_IF, AGENT_STEP_IF + "        continue-on-error: true\n"]],
+    ],
+    [
+      "shell: bash -n {0}",
+      [[AGENT_STEP_IF, AGENT_STEP_IF + "        shell: bash -n {0}\n"]],
+    ],
+    [
+      "a different entrypoint script",
+      [[
+        "--entrypoint /workspace/cloudformation/test-aws-emulator.sh",
+        "--entrypoint /workspace/cloudformation/other.sh",
+      ]],
+    ],
+    [
+      "a negated docker line",
+      [[AGENT_DOCKER_LINE, "          ! " + AGENT_DOCKER_LINE.trimStart()]],
+    ],
+  ] as [string, [string, string][]][]
+) {
+  Deno.test(`(container-agent-run) refuses ${label}`, () => {
+    const text = mutateText(CONTAINER_BUILD, ...pairs);
+    const problems = checkContainerBuildRunsAwsEmulator(parseYaml(text));
+    assertEquals(
+      problems.length,
+      1,
+      `expected one finding, got: ${JSON.stringify(problems)}`,
+    );
+    assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+  });
+}
+
+for (
+  const [label, line] of [
+    ["continue-on-error: true", "    continue-on-error: true\n"],
+    ["if: false", "    if: false\n"],
+  ] as const
+) {
+  Deno.test(`(container-agent-run) refuses job container with ${label}`, () => {
+    const anchor = "  container:\n    needs: changes\n";
+    const problems = checkContainerBuildRunsAwsEmulator(
+      parseYaml(mutateText(CONTAINER_BUILD, [anchor, anchor + line])),
+    );
+    assertEquals(problems.length, 1, JSON.stringify(problems));
+    assert(problems[0]?.startsWith("[container-agent-run] job container"));
+  });
+}
+
+Deno.test("(container-agent-run) refuses the step removed entirely", () => {
+  const start = CONTAINER_BUILD.indexOf(AGENT_STEP_NAME);
+  const end = CONTAINER_BUILD.indexOf(AGENT_DOCKER_LINE) +
+    AGENT_DOCKER_LINE.length;
+  assert(start > 0 && end > start, "anchors out of order");
+  const step = CONTAINER_BUILD.slice(start, end);
+  const problems = checkContainerBuildRunsAwsEmulator(
+    parseYaml(mutateText(CONTAINER_BUILD, [step, ""])),
+  );
+  assertEquals(problems.length, 1, JSON.stringify(problems));
+  assert(
+    problems[0]?.startsWith("[container-agent-run] no step in job container"),
+    problems[0],
+  );
+});
+
+Deno.test("checkContainerBuildRunsAwsEmulator reports malformed input without throwing", () => {
+  assertEquals(checkContainerBuildRunsAwsEmulator(null).length, 1);
+  assertEquals(checkContainerBuildRunsAwsEmulator({ jobs: 3 }).length, 1);
+  assertEquals(
+    checkContainerBuildRunsAwsEmulator({
+      jobs: { container: { steps: [1, null] } },
+    })
+      .length,
+    1,
+  );
 });

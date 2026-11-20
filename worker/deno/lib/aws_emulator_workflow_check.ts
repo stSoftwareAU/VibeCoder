@@ -17,6 +17,10 @@
  *   `if`/`while`/`until` word precedes the call, because `! ./script` turns
  *   a failure into success (PR #5276 review); and neither the
  *   job nor that step sets `continue-on-error` or an `if:` (PR #3478 review);
+ *   and the step's effective shell (its `shell:`, else the job's or the
+ *   workflow's `defaults.run.shell`) is unset, or `bash`/`sh` without
+ *   `noexec`, because `bash -n {0}` or `true {0}` would pass without running
+ *   the body (PR #5276 review);
  * - (b) a step runs `container/toolchains/aws-emulator.sh` (the pinned,
  *   checksum-verified install), a step runs `container/toolchains/aws-cli.sh`
  *   (the pinned aws-cli, not the runner's own), and a step installs
@@ -34,6 +38,17 @@
  * `checkQualityCallsAwsEmulator` checks the parsed quality.yml: a job calls
  * this workflow (`[gate-call]`) and the `gate` job needs it (`[gate-needs]`).
  *
+ * `checkContainerBuildRunsAwsEmulator` checks the parsed container-build.yml:
+ * job `container` has a step that runs the reference command as `agent` in a
+ * fresh container of the image just built (`[container-agent-run]`): one
+ * `docker run` with `--user agent`, an `--entrypoint` ending in
+ * `/test-aws-emulator.sh` and a `--volume` of
+ * `${GITHUB_WORKSPACE}/infra/cloudformation:`, with its exit status intact (no
+ * `|`, `;` or `&`, no `!`), no `continue-on-error`, an `if:` of only
+ * `env.IMAGE_CHANGED == 'true'`, and an effective shell that runs the body. Job
+ * `container` itself has no `continue-on-error` and no `if:`, since a skipped
+ * or soft-failing job hides the run.
+ *
  * Each finding names its invariant in square brackets, e.g. `[test-step]`.
  *
  * No I/O: callers parse the YAML and pass the parsed value in.
@@ -45,6 +60,7 @@ import {
   shellSegments,
   statusPreservingCommandIndex,
 } from "./shell_command_words.ts";
+import { defaultShell, shellIsNoexec } from "./aws_emulator_in_ci_check.ts";
 
 /** The test script the workflow must run in command position. */
 export const SCRIPT_PATH = "infra/cloudformation/test-aws-emulator.sh";
@@ -143,6 +159,26 @@ function stepIsOnlyScript(step: unknown, path: string): boolean {
   return rest.length === 1 && segmentInvokes(rest[0] ?? [], path);
 }
 
+/**
+ * Whether a step's effective shell (`step.shell`, else the job's, else the
+ * workflow's `defaults.run.shell`) runs the `run:` body: unset, or `bash`/`sh`
+ * without `noexec`. Returns the shell value in `value`, for the finding message.
+ */
+function effectiveShell(
+  workflow: Record<string, unknown>,
+  job: Record<string, unknown>,
+  step: unknown,
+): { runsBody: boolean; value: unknown } {
+  const value = (isObject(step) ? step.shell : undefined) ??
+    defaultShell(job) ?? defaultShell(workflow);
+  if (value === undefined) return { runsBody: true, value };
+  if (typeof value !== "string") return { runsBody: false, value };
+  const command = (value.trim().split(/\s+/)[0] ?? "").replace(/^.*\//, "");
+  const runsBody = (command === "bash" || command === "sh") &&
+    !shellIsNoexec(value);
+  return { runsBody, value };
+}
+
 /** The job entries of a parsed workflow as `[name, job]` pairs. */
 function jobEntries(
   workflow: Record<string, unknown>,
@@ -197,6 +233,15 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
     ) {
       problems.push(
         `[test-step] an if: on job ${jobId} or its ${SCRIPT_PATH} step could skip the deploy, and a skipped job reports success`,
+      );
+    }
+
+    const shell = effectiveShell(workflow, job, testStep);
+    if (!shell.runsBody) {
+      problems.push(
+        `[test-step] the ${SCRIPT_PATH} step's shell (step, job or workflow defaults.run.shell) must be bash or sh that runs the body; got ${
+          JSON.stringify(shell.value)
+        }`,
       );
     }
 
@@ -300,6 +345,94 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
     }
   }
 
+  return problems;
+}
+
+/** The word after `flag` in `words`, or after `flag=` in one word. */
+function flagValues(words: string[], flags: string[]): string[] {
+  const values: string[] = [];
+  words.forEach((w, i) => {
+    for (const flag of flags) {
+      if (w === flag && i + 1 < words.length) values.push(words[i + 1] ?? "");
+      if (w.startsWith(flag + "=")) values.push(w.slice(flag.length + 1));
+    }
+  });
+  return values;
+}
+
+/** Whether one segment is the `docker run` of the agent reference command. */
+function segmentRunsAwsEmulatorAsAgent(words: string[]): boolean {
+  const i = statusPreservingCommandIndex(words);
+  if (i === -1 || words[i] !== "docker" || words[i + 1] !== "run") return false;
+  const rest = words.slice(i + 2);
+  return flagValues(rest, ["--user"]).includes("agent") &&
+    flagValues(rest, ["--entrypoint"]).some((v) =>
+      v.endsWith("/test-aws-emulator.sh")
+    ) &&
+    flagValues(rest, ["--volume", "-v"]).some((v) =>
+      v.replace(/^["']/, "").startsWith(
+        "${GITHUB_WORKSPACE}/infra/cloudformation:",
+      )
+    );
+}
+
+/**
+ * Check a parsed container-build.yml: job `container` has a step that runs the
+ * AWS Emulator reference command as `agent` in a fresh container, with its
+ * exit status intact (`[container-agent-run]`). Never throws on malformed
+ * input.
+ */
+export function checkContainerBuildRunsAwsEmulator(
+  workflow: unknown,
+): string[] {
+  const tag = "[container-agent-run]";
+  if (!isObject(workflow)) return [`${tag} workflow is not an object`];
+  const job = jobEntries(workflow).find(([id]) => id === "container")?.[1];
+  const step = job === undefined
+    ? undefined
+    : stepsOf(job).find((s) =>
+      segmentsOf(s).some(segmentRunsAwsEmulatorAsAgent)
+    );
+  if (job === undefined || step === undefined || !isObject(step)) {
+    return [
+      `${tag} no step in job container runs the AWS Emulator reference command as agent (docker run --user agent --entrypoint .../test-aws-emulator.sh with the infra/cloudformation volume) with its exit status intact`,
+    ];
+  }
+  const problems: string[] = [];
+  if (
+    job["continue-on-error"] !== undefined &&
+    job["continue-on-error"] !== false
+  ) {
+    problems.push(
+      `${tag} job container must not set continue-on-error: a soft-failing job hides the agent run`,
+    );
+  }
+  if (job.if !== undefined) {
+    problems.push(
+      `${tag} job container must not have an if:: a skipped job hides the agent run`,
+    );
+  }
+  const coe = step["continue-on-error"];
+  if (coe !== undefined && coe !== false) {
+    problems.push(
+      `${tag} the agent-run step must not set continue-on-error: a failed run must fail the check`,
+    );
+  }
+  if (step.if !== undefined && step.if !== "env.IMAGE_CHANGED == 'true'") {
+    problems.push(
+      `${tag} the agent-run step's if: must be absent or exactly env.IMAGE_CHANGED == 'true', the job's image gate; got ${
+        JSON.stringify(step.if)
+      }`,
+    );
+  }
+  const shell = effectiveShell(workflow, job, step);
+  if (!shell.runsBody) {
+    problems.push(
+      `${tag} the agent-run step's shell (step, job or workflow defaults.run.shell) must be bash or sh that runs the body; got ${
+        JSON.stringify(shell.value)
+      }`,
+    );
+  }
   return problems;
 }
 

@@ -423,7 +423,7 @@ function ifIsStaticallyFalse(value: unknown): boolean {
 }
 
 /** A `defaults.run.shell` value, when the record has one. */
-function defaultShell(record: Record<string, unknown>): unknown {
+export function defaultShell(record: Record<string, unknown>): unknown {
   const defaults = record.defaults;
   if (!isRecord(defaults) || !isRecord(defaults.run)) return undefined;
   return defaults.run.shell;
@@ -434,7 +434,7 @@ function defaultShell(record: Record<string, unknown>): unknown {
  * reads the `run:` body without running it. Other shells, and a missing
  * value, run it.
  */
-function shellIsNoexec(shell: unknown): boolean {
+export function shellIsNoexec(shell: unknown): boolean {
   if (typeof shell !== "string") return false;
   const words = shell.trim().split(/\s+/);
   const command = (words[0] ?? "").replace(/^.*\//, "");
