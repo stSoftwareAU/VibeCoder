@@ -23,8 +23,8 @@ validator now also requires:
   runs the body, and `BASE_SHA`/`HEAD_SHA` taken from the pull request event;
 - the `filter` step's code (comments, blank lines and `\` continuations aside)
   to be exactly the `FILTER_CODE` allowlist, ending in
-  `.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`, and its
-  env to set nothing but `EVENT_NAME`, `BASE_SHA` and `HEAD_SHA`;
+  `.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`, and its env
+  to set nothing but `EVENT_NAME`, `BASE_SHA` and `HEAD_SHA`;
 - job `changes` to have no step but `actions/checkout` and the `filter` step,
   and no `env:`; the workflow `env:` to set none of `BASH_ENV`, `ENV`,
   `SHELLOPTS`, `BASHOPTS` or `GITHUB_OUTPUT`.
@@ -155,8 +155,7 @@ flowchart LR
   `worker/deno/lib/aws_emulator_workflow_check.ts:554` — reason: fixed in this
   diff (the filter code is an exact allowlist, so any other command before or
   around the call, including a guarded `exit 0`, an `||`/`if` guard, a loop, a
-  trailing `&` or a `GITHUB_OUTPUT` assignment, `export` or `unset`, is
-  refused)
+  trailing `&` or a `GITHUB_OUTPUT` assignment, `export` or `unset`, is refused)
 - **violation** — Check where you insert: after the new doc sentences, "It" and
   "those files" pointed at the wrong things — evidence:
   `docs/EC2-LINUX-VERIFICATION.md:62` — reason: fixed in this diff ("The
@@ -183,10 +182,9 @@ flowchart LR
   - the regex is linear.
 
   A second standards review on the allowlist version found stale comments, a
-  dead `isObject` branch and a three-name env denylist; all were fixed after
-  it (job `changes` env is now refused outright). The first reviewer saw the
-  first version of the diff. The fixes above were made
-  after it, in 503fe65f1.
+  dead `isObject` branch and a three-name env denylist; all were fixed after it
+  (job `changes` env is now refused outright). The first reviewer saw the first
+  version of the diff. The fixes above were made after it, in 503fe65f1.
 
 ## Test Plan
 
@@ -209,8 +207,8 @@ flowchart LR
     - `bash -n {0}` on the step, or on job `changes`;
     - the call behind a runtime `[[ ]] ||` or `&&`, inside an `if` on the event
       name, an empty `for` or a non-matching `case`, or run with `&`;
-    - a guarded `exit 0`; `GITHUB_OUTPUT` assigned, exported or unset on its
-      own line; an `echo "--image=foo"` line;
+    - a guarded `exit 0`; `GITHUB_OUTPUT` assigned, exported or unset on its own
+      line; an `echo "--image=foo"` line;
     - `GITHUB_OUTPUT` in the step env; any env on job `changes`; `BASH_ENV` or
       `GITHUB_OUTPUT` in the workflow env; a workflow env expression;
     - a step in job `changes` that rewrites the detect script, writes
@@ -226,18 +224,18 @@ flowchart LR
     controls, which the old regex fired on.
   - The here-document case was added after the fix, so it was never observed
     red.
-  - After the pre-PR verifier's review, the 14 new filter-code and env cases
-    all failed against the previous validator (`endsWithDetectCall`). The 5
-    later cases (other `changes` steps, job and expression env) were written
-    with the fix and not observed red.
+  - After the pre-PR verifier's review, the 14 new filter-code and env cases all
+    failed against the previous validator (`endsWithDetectCall`). The 5 later
+    cases (other `changes` steps, job and expression env) were written with the
+    fix and not observed red.
 - **Existing tests:** none edited, and the diff removes no line from the test
   file. The real `container-build.yml` positive test still returns `[]`. The new
   check runs after the existing early return, so the malformed-input cases still
   give one finding.
 - **Focused run:**
   `cd worker/deno && deno task test:unit tests/issue_5110_aws_emulator_workflow_test.ts tests/aws_emulator_in_ci_check_test.ts tests/aws_emulator_cloudformation_5110_test.ts < /dev/null`
-  gave 312 passed, 0 failed before the last 5 cases; the 5110 workflow test
-  file alone now gives 155 passed, 0 failed.
+  gave 312 passed, 0 failed before the last 5 cases; the 5110 workflow test file
+  alone now gives 155 passed, 0 failed.
 - **Corpus:** `checkContainerBuildRunsAwsEmulator` over every
   `.github/workflows/*.yml` returns `[]` only for `container-build.yml`. Every
   other workflow gets findings. False positives 0; false negatives 0 against the
@@ -269,9 +267,9 @@ flowchart LR
 - The validator cannot see runner-side edits in job `container`: a step there
   that rewrites the checked-out script, replaces docker or its context, or
   writes `GITHUB_ENV` indirectly, and a retag it does not recognise. In job
-  `changes` no such step can exist (only `actions/checkout` is allowed). An
-  edit to `.github/scripts/detect-image-changes.sh` itself is covered by that
-  script's own tests, not by this validator.
-  `docs/EC2-LINUX-VERIFICATION.md` lists them.
+  `changes` no such step can exist (only `actions/checkout` is allowed). An edit
+  to `.github/scripts/detect-image-changes.sh` itself is covered by that
+  script's own tests, not by this validator. `docs/EC2-LINUX-VERIFICATION.md`
+  lists them.
 - A PR that changes only `infra/cloudformation/**` gets the runner path, not a
   fresh-container run (see Essential Design Decisions).
