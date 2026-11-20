@@ -746,6 +746,17 @@ for (
       ]],
     ],
     [
+      "a job-level env BASH_ENV",
+      [[JOB_IMAGE_LINE, JOB_IMAGE_LINE + "      BASH_ENV: /tmp/x\n"]],
+    ],
+    [
+      "a workflow-level env DOCKER_HOST",
+      [[
+        "permissions:\n  contents: read\n",
+        "permissions:\n  contents: read\nenv:\n  DOCKER_HOST: unix:///tmp/fake.sock\n",
+      ]],
+    ],
+    [
       "a constant job IMAGE_CHANGED",
       [[JOB_IMAGE_CHANGED_LINE, "      IMAGE_CHANGED: 'false'\n"]],
     ],

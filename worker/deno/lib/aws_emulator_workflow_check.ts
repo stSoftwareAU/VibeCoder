@@ -387,6 +387,15 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
  */
 const DOCKER_VALUE_FLAGS = ["--user", "-u", "--volume", "-v", "--entrypoint"];
 const DOCKER_BOOLEAN_FLAGS = ["--rm"];
+/** Job or workflow env keys that would reach the agent-run step's shell or docker. */
+const INHERITED_ENV_REFUSED = [
+  "BASH_ENV",
+  "ENV",
+  "PATH",
+  "DOCKER_HOST",
+  "DOCKER_CONTEXT",
+  "DOCKER_CONFIG",
+];
 /** The one volume source: the checkout's CloudFormation directory. */
 const AGENT_VOLUME_SOURCE = "${GITHUB_WORKSPACE}/infra/cloudformation";
 const AGENT_SCRIPT_NAME = "test-aws-emulator.sh";
@@ -574,6 +583,16 @@ export function checkContainerBuildRunsAwsEmulator(
   if (step.env !== undefined) {
     problems.push(
       `${tag} the agent-run step must not set env: IMAGE, BASH_ENV or DOCKER_HOST there would change what runs`,
+    );
+  }
+  const inherited = [workflow.env, job.env].flatMap((env) =>
+    isObject(env) ? Object.keys(env) : []
+  ).filter((key) => INHERITED_ENV_REFUSED.includes(key));
+  if (inherited.length > 0) {
+    problems.push(
+      `${tag} the job and workflow env must not set ${
+        inherited.join(", ")
+      }: each reaches the agent-run step and could replace its shell start-up, docker or daemon`,
     );
   }
   const envWriter = steps.find((s) => /GITHUB_(?:ENV|PATH)/.test(codeOf(s)));
