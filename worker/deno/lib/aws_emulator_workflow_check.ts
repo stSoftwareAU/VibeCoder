@@ -49,13 +49,17 @@
  * `|`, `;` or `&`, no `!`), no `continue-on-error`, an `if:` of only
  * `env.IMAGE_CHANGED == 'true'`, and an effective shell that runs the body. Job
  * `container` itself has no `continue-on-error` and no `if:`, since a skipped
- * or soft-failing job hides the run. The image gate is checked end to end: job
- * `container` needs `changes`; job `changes` exists, has no `if:` or soft
- * `continue-on-error`, and its `outputs.image` is exactly
- * `${{ steps.filter.outputs.image }}`; and its `filter` step has no `if:` or
- * soft `continue-on-error`, ends by running `.github/scripts/detect-image-changes.sh`
- * and writes no `image=` value but `true`. Otherwise `IMAGE_CHANGED` is not
- * `true`, every image step skips and the required check passes without the run.
+ * or soft-failing job hides the run. It also checks the job that sets
+ * `IMAGE_CHANGED`: job `container` needs `changes`; job `changes` exists, has
+ * no `if:` or soft `continue-on-error`, and its `outputs.image` is exactly
+ * `${{ steps.filter.outputs.image }}`; and its `id: filter` step has no `if:`
+ * or soft `continue-on-error`, takes `BASE_SHA` and `HEAD_SHA` from the pull
+ * request event, has an effective shell that runs the body, has as its last
+ * reachable command exactly `.github/scripts/detect-image-changes.sh
+ * "$BASE_SHA" "$HEAD_SHA"`, and writes no `image` output other than
+ * `image=true`. Without these `IMAGE_CHANGED` may not be `true`, so the image
+ * steps and the agent run skip and the required check passes without the run.
+ * The check is textual and does not prove that the script itself is sound.
  *
  * Each finding names its invariant in square brackets, e.g. `[test-step]`.
  *
@@ -65,8 +69,10 @@
  */
 
 import {
+  reachableSegments,
   shellSegments,
   statusPreservingCommandIndex,
+  stripQuotes,
 } from "./shell_command_words.ts";
 import { defaultShell } from "./aws_emulator_in_ci_check.ts";
 
@@ -540,28 +546,46 @@ function stepIsAgentRun(step: unknown): boolean {
 const DETECT_SCRIPT_PATH = ".github/scripts/detect-image-changes.sh";
 
 /** Whether `o` sets `continue-on-error` to anything but `false`. */
-function softFails(o: Record<string, unknown>): boolean {
+function setsSoftContinueOnError(o: Record<string, unknown>): boolean {
   return o["continue-on-error"] !== undefined &&
     o["continue-on-error"] !== false;
 }
 
+/** The words the filter step's final reachable command must be, unquoted. */
+const DETECT_CALL_WORDS = [DETECT_SCRIPT_PATH, "$BASE_SHA", "$HEAD_SHA"];
+/** The pull request event values the filter step's env must pass on. */
+const FILTER_ENV = {
+  BASE_SHA: "${{ github.event.pull_request.base.sha }}",
+  HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+};
+
 /**
- * Whether the step's last code line is exactly one command running `path`. The
- * real filter step has earlier `;` and `exit 0` in an `if` block, so
- * `segmentsOf` (which refuses `;`) cannot be used; the final line is what
- * decides the step's exit status under `set -e`.
+ * Whether the last reachable command of the step's code (comments dropped,
+ * backslash continuations joined, commands after an unconditional `exit` or
+ * behind `true ||` dropped) is exactly the detect script with `"$BASE_SHA"
+ * "$HEAD_SHA"` and no assignment prefix. That command's status ends the step.
  */
-function lastLineInvokes(step: unknown, path: string): boolean {
-  const lines = codeOf(step).split("\n").map((l) => l.trim()).filter(Boolean);
-  const segments = shellSegments(lines[lines.length - 1] ?? "");
-  return segments.length === 1 && segmentInvokes(segments[0] ?? [], path);
+function endsWithDetectCall(step: unknown): boolean {
+  const last = reachableSegments(codeOf(step)).at(-1);
+  if (last === undefined || last.length !== DETECT_CALL_WORDS.length) {
+    return false;
+  }
+  return last.every((w, i) => stripQuotes(w) === DETECT_CALL_WORDS[i]);
 }
+
+/**
+ * Whether the code writes an `image` output other than exactly `image=true`:
+ * `image` as its own word (not `--image=` or `base_image=`) followed by `=` and
+ * anything but `true` ending the word, or by a `<<` heredoc delimiter.
+ */
+const WRITES_OTHER_IMAGE = /(?<![\w.-])image(?:<<|=(?!true(?![^\s"';|&)])))/;
 
 /**
  * Findings for the `changes` job and `container`'s `needs`: together they
  * decide `IMAGE_CHANGED`, which gates the agent run.
  */
 function imageGateProblems(
+  workflow: Record<string, unknown>,
   tag: string,
   jobs: [string, Record<string, unknown>][],
   container: Record<string, unknown>,
@@ -584,7 +608,7 @@ function imageGateProblems(
     );
     return problems;
   }
-  if (changes.if !== undefined || softFails(changes)) {
+  if (changes.if !== undefined || setsSoftContinueOnError(changes)) {
     problems.push(
       `${tag} job changes must have no if: and no continue-on-error: a skipped or soft-failing job leaves its output empty, ${skipNote}`,
     );
@@ -603,15 +627,32 @@ function imageGateProblems(
     problems.push(
       `${tag} job changes must have a step with id: filter: outputs.image reads it, and without it ${skipNote}`,
     );
-  } else if (filter.if !== undefined || softFails(filter)) {
+  } else if (filter.if !== undefined || setsSoftContinueOnError(filter)) {
     problems.push(
       `${tag} the changes filter step must have no if: and no continue-on-error: a skipped or soft-failing step leaves image unset, ${skipNote}`,
     );
-  } else if (!lastLineInvokes(filter, DETECT_SCRIPT_PATH)) {
+  } else if (
+    Object.entries(FILTER_ENV).some(([k, v]) =>
+      !isObject(filter.env) || filter.env[k] !== v
+    )
+  ) {
+    const wrong = Object.entries(FILTER_ENV).filter(([k, v]) =>
+      !isObject(filter.env) || filter.env[k] !== v
+    ).map(([k, v]) => `env ${k} to exactly ${v}`);
     problems.push(
-      `${tag} the changes filter step must end by running ${DETECT_SCRIPT_PATH}: the path filter decides whether the image is built, and a step that skips it can leave image unset`,
+      `${tag} the changes filter step must set ${
+        wrong.join(" and ")
+      }: other values make the path filter diff the wrong commit range`,
     );
-  } else if (/image=(?!true\b)/.test(codeOf(filter))) {
+  } else if (!effectiveShell(workflow, changes, filter).runsBody) {
+    problems.push(
+      `${tag} the changes filter step's shell (step, job changes or workflow defaults.run.shell) must be bash or sh that runs the body: otherwise the filter may not run, ${skipNote}`,
+    );
+  } else if (!endsWithDetectCall(filter)) {
+    problems.push(
+      `${tag} the changes filter step must end by running ${DETECT_SCRIPT_PATH} "$BASE_SHA" "$HEAD_SHA" as its last reachable command, with no assignment prefix: the path filter decides whether the image is built, and a step that skips it or ends elsewhere can leave image unset`,
+    );
+  } else if (WRITES_OTHER_IMAGE.test(codeOf(filter))) {
     problems.push(
       `${tag} the changes filter step must write no image= value other than image=true: image=false or a variable would turn off the image steps, ${skipNote}`,
     );
@@ -623,9 +664,12 @@ function imageGateProblems(
  * Check a parsed container-build.yml: job `container` has a step that runs the
  * AWS Emulator reference command as `agent` in a fresh container, with its
  * exit status intact (`[container-agent-run]`). It also checks that the gate
- * feeding `IMAGE_CHANGED` can yield `true`: `container` needs `changes`, and
- * `changes` (with its `filter` step) is not skippable, soft-failing or
- * constant. Never throws on malformed input.
+ * feeding `IMAGE_CHANGED` is intact: `container` needs `changes`; `changes`
+ * exists with no `if:` or soft `continue-on-error` and with `outputs.image`
+ * set to the filter step's output; and the `filter` step has no `if:` or soft
+ * `continue-on-error`, takes its SHAs from the pull request event, has a shell
+ * that runs the body, ends with the detect script call and writes no `image`
+ * output but `image=true`. Never throws on malformed input.
  */
 export function checkContainerBuildRunsAwsEmulator(
   workflow: unknown,
@@ -642,6 +686,7 @@ export function checkContainerBuildRunsAwsEmulator(
     ];
   }
   const problems: string[] = imageGateProblems(
+    workflow,
     tag,
     jobEntries(workflow),
     job,

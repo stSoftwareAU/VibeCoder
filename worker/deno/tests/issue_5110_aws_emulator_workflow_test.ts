@@ -851,6 +851,10 @@ for (
 const CONTAINER_NEEDS = "  container:\n    needs: changes\n";
 const CHANGES_JOB = "  changes:\n";
 const CHANGES_OUTPUT_LINE = "      image: ${{ steps.filter.outputs.image }}\n";
+const FILTER_BASE_LINE =
+  "          BASE_SHA: ${{ github.event.pull_request.base.sha }}\n";
+const FILTER_HEAD_LINE =
+  "          HEAD_SHA: ${{ github.event.pull_request.head.sha }}\n";
 const FILTER_ID = "        id: filter\n";
 const DETECT_CALL_LINE =
   '          .github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"\n';
@@ -905,6 +909,65 @@ for (
       DETECT_CALL_LINE,
       '          echo "image=$x" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
     ]], "must write no image= value"],
+    ["the script call behind true ||", [[
+      DETECT_CALL_LINE,
+      "          true || \\\n  " + DETECT_CALL_LINE,
+    ]], "must end by running"],
+    ["an unconditional exit 0 before the script call", [[
+      DETECT_CALL_LINE,
+      "          exit 0\n" + DETECT_CALL_LINE,
+    ]], "must end by running"],
+    ["an assignment prefix on the script call", [[
+      DETECT_CALL_LINE,
+      "          GITHUB_OUTPUT= " + DETECT_CALL_LINE.trimStart(),
+    ]], "must end by running"],
+    ["the script called with HEAD_SHA twice", [[
+      DETECT_CALL_LINE,
+      '          .github/scripts/detect-image-changes.sh "$HEAD_SHA" "$HEAD_SHA"\n',
+    ]], "must end by running"],
+    ["the filter step BASE_SHA taken from the head sha", [[
+      FILTER_BASE_LINE,
+      "          BASE_SHA: ${{ github.event.pull_request.head.sha }}\n",
+    ]], "must set env BASE_SHA to exactly"],
+    ["the filter step HEAD_SHA taken from the base sha", [[
+      FILTER_HEAD_LINE,
+      "          HEAD_SHA: ${{ github.event.pull_request.base.sha }}\n",
+    ]], "must set env HEAD_SHA to exactly"],
+    ["the filter step with shell: bash -n {0}", [[
+      FILTER_ID,
+      FILTER_ID + "        shell: bash -n {0}\n",
+    ]], "the changes filter step's shell"],
+    ["job changes with defaults.run.shell: bash -n {0}", [[
+      CHANGES_JOB,
+      CHANGES_JOB +
+      "    defaults:\n      run:\n        shell: bash -n {0}\n",
+    ]], "the changes filter step's shell"],
+    ["the filter step writing image=true-x", [[
+      DETECT_CALL_LINE,
+      '          echo "image=true-x" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
+    ]], "must write no image= value"],
+    ["the filter step writing image=true$X", [[
+      DETECT_CALL_LINE,
+      '          echo "image=true$X" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
+    ]], "must write no image= value"],
+    // The here-document body is dropped from the reachable commands, so the
+    // call stays last and the image rule is what refuses the output.
+    ["the filter step writing an image<<X output through a here-document", [[
+      DETECT_CALL_LINE,
+      [
+        "          cat >> \"$GITHUB_OUTPUT\" <<'OUT'",
+        "          image<<X",
+        "          false",
+        "          X",
+        "          OUT",
+      ].join("\n") + "\n" + DETECT_CALL_LINE,
+    ]], "must write no image= value"],
+    // The shell parser reads `<<` as a here-document even inside quotes, so
+    // the call is swallowed and the end-of-step rule refuses this first.
+    ["the filter step writing an image<< heredoc output", [[
+      DETECT_CALL_LINE,
+      '          echo "image<<" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
+    ]], "must end by running"],
   ] as [string, [string, string][], string][]
 ) {
   Deno.test(`(container-agent-run) refuses ${label}`, () => {
@@ -929,8 +992,27 @@ Deno.test("(container-agent-run) refuses job changes removed entirely with one f
   );
   assertEquals(problems.length, 1, JSON.stringify(problems));
   assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
-  assert(problems[0]?.includes("job changes"), problems[0]);
+  assert(problems[0]?.includes("job changes must exist"), problems[0]);
 });
+
+for (
+  const [label, line] of [
+    ["an echo of --image=foo", '          echo "--image=foo"\n'],
+    ["a base_image=x assignment", "          base_image=x\n"],
+  ] as const
+) {
+  Deno.test(`(container-agent-run) accepts the filter step with ${label}`, () => {
+    assertEquals(
+      checkContainerBuildRunsAwsEmulator(parseYaml(
+        mutateText(CONTAINER_BUILD, [
+          DETECT_CALL_LINE,
+          line + DETECT_CALL_LINE,
+        ]),
+      )),
+      [],
+    );
+  });
+}
 
 Deno.test("(container-agent-run) accepts job container with needs in list form", () => {
   assertEquals(

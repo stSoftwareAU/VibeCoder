@@ -62,15 +62,16 @@ step runs `docker build -t "${IMAGE}"`, and no step names `GITHUB_ENV` or
 `GITHUB_PATH`. The check also requires job `container` to need `changes`, the
 `changes` job to have no `if:` or `continue-on-error` and an `outputs.image` of
 exactly `${{ steps.filter.outputs.image }}`, and its step `id: filter` to have
-no `if:` or `continue-on-error`, to end by running
-`.github/scripts/detect-image-changes.sh`, and to write no `image=` value other
-than `image=true` (the non-pull-request branch). Otherwise `IMAGE_CHANGED` is
-not `true`, every image step and the agent run skip, and the required check
-passes without running the command. It is a text check, so it does not catch
-everything. It misses an indirect write to those files, a step that rewrites
-the checked-out script or replaces docker or its context, a retag the check
-does not recognise, and an unconditional `exit 0` added to the `filter` step
-before its script call, which leaves `image` unset.
+no `if:` or `continue-on-error`. That step's `BASE_SHA` and `HEAD_SHA` env must
+come from the pull request event, its shell must run the body, its last
+reachable command must be exactly
+`.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`, and it must
+write no `image=` value other than `image=true` (the non-pull-request branch).
+Otherwise `IMAGE_CHANGED` is not `true`, every image step and the agent run
+skip, and the required check passes without running the command. The validator
+is a text check, so it does not catch everything. It misses an indirect write to
+`GITHUB_ENV` or `GITHUB_PATH`, a step that rewrites the checked-out script or
+replaces docker or its context, and a retag the check does not recognise.
 
 ```mermaid
 flowchart LR
