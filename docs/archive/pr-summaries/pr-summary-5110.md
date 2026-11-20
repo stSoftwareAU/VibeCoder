@@ -133,11 +133,110 @@ flowchart LR
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-STANDARDS_REVIEW_TO_FILL
+- **violation** — Writing a gate over text (evasion table): the first
+  version of the `filter`-step check read only the step's last line, so
+  `true || \` above the call, a `GITHUB_OUTPUT=` prefix, swapped SHA
+  arguments and a `bash -n {0}` shell all passed, and the `image=` regex
+  accepted `image=true-x` and fired on `--image=foo` — evidence:
+  `worker/deno/lib/aws_emulator_workflow_check.ts:554` — reason: fixed in this
+  diff (`endsWithDetectCall` over `reachableSegments`, the `FILTER_ENV` and
+  effective-shell checks, `WRITES_OTHER_IMAGE`, each with a refusal test and
+  two look-alike controls)
+- **violation** — Writing a gate over text (reuse the parser the repo has): a
+  new last-line reader instead of `reachableSegments` — evidence:
+  `worker/deno/lib/aws_emulator_workflow_check.ts:548` — reason: fixed in this
+  diff (`lastLineInvokes` removed)
+- **violation** — Writing a gate over text (no silent pass on unread input):
+  lines above the last were never read — evidence:
+  `worker/deno/lib/aws_emulator_workflow_check.ts:554` — reason: fixed in this
+  diff (every reachable command is read; an `exit 0` or `true ||` before the
+  call is refused)
+- **violation** — Check where you insert: after the new doc sentences, "It"
+  and "those files" pointed at the wrong things — evidence:
+  `docs/EC2-LINUX-VERIFICATION.md:62` — reason: fixed in this diff ("The
+  validator is a text check", "`GITHUB_ENV` or `GITHUB_PATH`")
+- **violation** — Prose about the PR's own change: the code comments said
+  "checked end to end" and "not skippable, soft-failing or constant" —
+  evidence: `worker/deno/lib/aws_emulator_workflow_check.ts:52` — reason:
+  fixed in this diff (replaced by the list of what is checked)
+- **violation** — Summary must match the head: the old summary listed the
+  constant `outputs.image` and missing `needs: changes` cases as accepted —
+  evidence: `docs/archive/pr-summaries/pr-summary-5110.md:141` — reason: fixed
+  in this diff (summary rewritten)
+- **clean** — These rules were checked and comply:
+  - Australian English;
+  - no source-grep tests;
+  - no test-only members;
+  - the code hunks follow "Check where you insert";
+  - `outputs.image` is compared exactly;
+  - YAML is read as structure, and `needs` is tested in both scalar and list
+    form;
+  - each refusal test asserts one finding and its own message;
+  - each anchor is used exactly once;
+  - no `/tmp`, environment, clock or history use in the tests;
+  - the regex is linear.
+
+  The reviewer saw the first version of the diff. The fixes above were made
+  after it, in 503fe65f1.
 
 ## Test Plan
 
-TEST_PLAN_TO_FILL
+- Added to `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`:
+  - **`(container-agent-run) refuses …` table, 22 cases, each asserting one
+    finding with that rule's own message:**
+    - a missing or wrong `needs`;
+    - a constant `outputs.image`;
+    - `if:` or `continue-on-error` on job `changes` or on the `filter` step;
+    - a renamed `filter` id;
+    - an `image=false` write, in place of the call or before it;
+    - an `image=$x`, `image=true-x` or `image=true$X` write;
+    - an `image<<` output, both quoted on an `echo` line and in a
+      here-document body;
+    - `true ||` before the call;
+    - an unconditional `exit 0`;
+    - a `GITHUB_OUTPUT=` prefix;
+    - `"$HEAD_SHA"` passed twice;
+    - `BASE_SHA` or `HEAD_SHA` taken from the wrong event field;
+    - `bash -n {0}` on the step, or on job `changes`.
+  - **`refuses job changes removed entirely with one finding`:** asserts
+    "job changes must exist".
+  - **Controls that return `[]`:** `needs: [changes]`, `echo "--image=foo"` and
+    `base_image=x`.
+- **Red runs, observed:**
+  - With the first refusal cases written and the validator not yet changed,
+    12 failed.
+  - Before the review fixes, 13 failed: 11 new refusals and the 2 look-alike
+    controls, which the old regex fired on.
+  - The here-document case was added after the fix, so it was never observed
+    red.
+- **Existing tests:** none edited, and the diff removes no line from the test
+  file. The real `container-build.yml` positive test still returns `[]`. The
+  new check runs after the existing early return, so the malformed-input
+  cases still give one finding.
+- **Focused run:**
+  `cd worker/deno && deno task test:unit tests/issue_5110_aws_emulator_workflow_test.ts tests/aws_emulator_in_ci_check_test.ts tests/aws_emulator_cloudformation_5110_test.ts < /dev/null`
+  gave 297 passed, 0 failed.
+- **Corpus:** `checkContainerBuildRunsAwsEmulator` over every
+  `.github/workflows/*.yml` returns `[]` only for `container-build.yml`. Every
+  other workflow gets findings. False positives 0; false negatives 0 against
+  the refusal table.
+- **Full gate:** `./quality.sh < /dev/null` on 503fe65f1 gave
+  `Result: PASSED (with skipped checks)`. The gate itself skipped
+  `config integration` and `checkov`.
+  - The earlier run on cabce9170 failed one test,
+    `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`, on this host's
+    missing DNS ("Failed caching npm package 'entities@3.0.1'").
+  - That test clears the environment, so it uses `~/.cache/deno`. It passed
+    once I copied the four npm packages into that cache from the worker cache.
+    This was not a repository change.
+- **Docs:** I read `docs/EC2-LINUX-VERIFICATION.md`, section "Testing the
+  template against AWS Emulator (Issue #5110)", the paragraph on the required `container` check, and updated
+  it. I grepped `README.md`, `docs/` (not `docs/archive/`) and `*/README.md`
+  for `checkContainerBuildRunsAwsEmulator` and `container-agent-run`. The only
+  hit was that paragraph.
+- **Twinned-rule search:** `worker/deno/lib/aws_emulator_in_ci_check.ts`
+  (the fleet detector) judges whether a workflow runs the emulator. It has no
+  rule on a `changes` job or `needs`, so this check has no twin.
 
 ## Merge verification
 
