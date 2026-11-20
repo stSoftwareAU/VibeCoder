@@ -423,7 +423,7 @@ function ifIsStaticallyFalse(value: unknown): boolean {
 }
 
 /** A `defaults.run.shell` value, when the record has one. */
-function defaultShell(record: Record<string, unknown>): unknown {
+export function defaultShell(record: Record<string, unknown>): unknown {
   const defaults = record.defaults;
   if (!isRecord(defaults) || !isRecord(defaults.run)) return undefined;
   return defaults.run.shell;
