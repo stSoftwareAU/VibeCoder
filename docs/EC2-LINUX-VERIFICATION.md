@@ -40,8 +40,17 @@ a reusable workflow that
 [`quality.yml`](../.github/workflows/quality.yml) calls as the `aws-emulator`
 job, which the required `gate` job needs. There is no path filter: it runs on
 every pull request to `Develop`, `main` and `milestone/*` (drafts run when
-marked ready), and a failed, cancelled or skipped run turns `gate` red. It
-needs no Docker socket and no service container.
+marked ready), and a failed, cancelled or skipped run turns `gate` red.
+`checkQualityCallsAwsEmulator` in
+[`worker/deno/lib/aws_emulator_workflow_check.ts`](../worker/deno/lib/aws_emulator_workflow_check.ts)
+holds that wiring: `gate` needs `aws-emulator`, has `if: always()` and no
+`continue-on-error`, and has a step that runs `.github/scripts/gate.sh` as its
+only command with `NEEDS_JSON: ${{ toJSON(needs) }}`, no `if:` or
+`continue-on-error`, and a shell that runs the body.
+[`worker/deno/tests/quality_gate_script_5110_test.ts`](../worker/deno/tests/quality_gate_script_5110_test.ts)
+runs that script and shows a skipped, cancelled or failed `aws-emulator` result
+closes the gate. The `aws-emulator` job needs no Docker socket and no service
+container.
 
 The required `container` check in
 [`.github/workflows/container-build.yml`](../.github/workflows/container-build.yml)
