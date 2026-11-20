@@ -300,6 +300,8 @@ function stripHeredocBodies(script: string): string {
 interface Frame {
   /** Status of the left operand when this compound was short-circuited. */
   skippedStatus: boolean | null;
+  /** Possible exit statuses of completed if branches. */
+  branchStatuses: Set<boolean | null>;
   /** The compound is entered regardless of any runtime chain condition. */
   entryCertain: boolean;
   /** Whether the construct itself is reached. */
@@ -369,6 +371,7 @@ export function reachableSegments(script: string): string[][] {
   const push = (partial: Partial<Frame>) =>
     stack.push({
       outer: live() && chainRuns !== false,
+      branchStatuses: new Set(),
       skippedStatus: chainRuns === false ? prev : null,
       entryCertain: chainRuns === true,
       truth: null,
@@ -402,7 +405,20 @@ export function reachableSegments(script: string): string[][] {
     while (words.length > 0) {
       const w = words[0] ?? "";
       const top = stack.at(-1);
-      if (w === "fi" || w === "done" || w === "esac") {
+      if (top && (w === "fi" || w === "elif" || w === "else")) {
+        if (frameLive(top)) top.branchStatuses.add(prev);
+      }
+      if (w === "fi" && top) {
+        // With no matching branch and no else, Bash returns success.
+        if (!top.earlierTrue && top.truth !== true && top.branch !== "else") {
+          top.branchStatuses.add(true);
+        }
+        closedStatus = top.skippedStatus;
+        if (top.entryCertain && top.branchStatuses.size === 1) {
+          closedStatus = top.branchStatuses.values().next().value ?? null;
+        }
+        stack.pop();
+      } else if (w === "done" || w === "esac") {
         closedStatus = stack.pop()?.skippedStatus ?? null;
       } else if (w === "}") {
         if (top?.brace) {

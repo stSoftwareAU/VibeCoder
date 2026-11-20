@@ -116,6 +116,11 @@ container runs the command, so this is Part of #5110.
 
 ## Evidence
 
+The detector carries possible branch exit statuses through `fi`, including the
+successful status of an if with no matching branch. All 48 local comparisons
+against Bash agreed for conditional continuations. The end-to-end test covers
+the reported cases in workflow steps and via repository scripts.
+
 The reviewer’s two skipped-group continuations reproduced on the previous head.
 The detector now restores the outer chain status when a skipped compound ends.
 The end-to-end regression checks both operators and reachable controls in direct
