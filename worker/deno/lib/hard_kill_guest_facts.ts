@@ -4,11 +4,14 @@
  *
  * The auto-filed hard-kill issue is public, and the killed run may have been
  * working a private repository. A later recurrence still has to tell a frozen
- * guest VM from an agent hung in a live VM, so the issue carries four figures
- * read from the evidence record: how long the log had been silent before the
- * capture, whether the guest answered the exec probe, its memory and its
- * pressure stall figures. Each figure is either a fixed word or a number that
- * a strict pattern captured. No ps, meminfo or log text is ever returned.
+ * guest VM from an agent hung in a live VM, so the issue carries six figures
+ * read from the evidence record. Four are about the guest: how long the log
+ * had been silent before the capture, whether the guest answered the exec
+ * probe, its memory and its pressure stall figures. Two come from the host
+ * itself, not the guest: its free disk and its memory pressure. They say
+ * whether the host was short even when the guest never answered. Each figure
+ * is either a fixed word or a number that a strict pattern captured. No ps,
+ * meminfo or log text is ever returned.
  *
  * Every evidence string is cut to its first {@link SCAN_CHARS} characters
  * before it is matched, and every pattern is linear: no overlapping
@@ -46,6 +49,13 @@ const MEM_AVAILABLE_RE = /^MemAvailable:[ \t]+(\d{1,12}) kB/m;
 const PRESSURE_NUMBER_RE = /^\d{1,3}(?:\.\d{1,2})?$/;
 /** The pressure averages the issue keeps, in the order it prints them. */
 const PRESSURE_KEYS = ["avg10", "avg60", "avg300"] as const;
+
+/** The host disk field, `available=<bytes> total=<bytes>`; bounded digits. */
+const HOST_DISK_RE = /^available=(\d{1,16}) total=(\d{1,16})$/;
+/** The host memory field: a level, then optionally the byte figures. */
+const HOST_MEMORY_RE =
+  /^level=(ok|high|unknown)(?: available=(\d{1,16}) total=(\d{1,16}))?$/;
+const GIB = 1024 ** 3;
 
 /** Evidence text, cut to the scan cap. */
 function scanned(text: string): string {
@@ -181,4 +191,52 @@ export function hardKillGuestPressure(evidence: HardKillEvidence): string {
     ...pressureSegments("io", guest.pressureIo),
   ];
   return segments.length > 0 ? segments.join("; ") : "not available";
+}
+
+/** Bytes as GiB to one decimal. */
+function gib(bytes: number): string {
+  return (bytes / GIB).toFixed(1);
+}
+
+/**
+ * The host's free disk, read on the host from the filesystem holding the
+ * evidence directory.
+ *
+ * @param evidence - The evidence record
+ * @returns For example `3.2 GiB free of 460.0 GiB (0% free)`, or
+ *   `not available` when the field is not a well-formed reading
+ */
+export function hardKillHostDisk(evidence: HardKillEvidence): string {
+  const match = HOST_DISK_RE.exec(scanned(evidence.evidence.hostState.disk));
+  if (!match) return "not available";
+  const available = Number(match[1]);
+  const total = Number(match[2]);
+  if (!(total > 0) || available > total) return "not available";
+  const percent = Math.floor(available * 100 / total);
+  return `${gib(available)} GiB free of ${gib(total)} GiB (${percent}% free)`;
+}
+
+/**
+ * The host's memory pressure, read on the host.
+ *
+ * @param evidence - The evidence record
+ * @returns For example `pressure high, 0.8 GiB available of 16.0 GiB`,
+ *   `pressure ok`, or `not available` when the level is unknown or the field
+ *   is not well formed
+ */
+export function hardKillHostMemory(evidence: HardKillEvidence): string {
+  const match = HOST_MEMORY_RE.exec(
+    scanned(evidence.evidence.hostState.memory),
+  );
+  if (!match || match[1] === "unknown") return "not available";
+  const level = match[1]!;
+  if (match[2] === undefined || match[3] === undefined) {
+    return `pressure ${level}`;
+  }
+  const available = Number(match[2]);
+  const total = Number(match[3]);
+  if (!(total > 0) || available > total) return "not available";
+  return `pressure ${level}, ${gib(available)} GiB available of ${
+    gib(total)
+  } GiB`;
 }

@@ -81,6 +81,7 @@ function evidenceFrom(captured: string[]): HardKillEvidence {
         pressureMemory: "",
         pressureIo: "",
       },
+      hostState: { disk: "", memory: "" },
     },
   };
 }

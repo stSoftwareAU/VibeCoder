@@ -67,6 +67,8 @@ interface Fixture {
   readTail?: EvidenceSeams["readTail"];
   writeFile?: EvidenceSeams["writeFile"];
   hostname?: () => string;
+  diskReading?: EvidenceSeams["diskReading"];
+  memoryReading?: EvidenceSeams["memoryReading"];
   /** Which timers fire; the rest stay pending, as a hung step would. */
   firesFor?: (ms: number) => boolean;
 }
@@ -142,6 +144,9 @@ function harness(fixture: Fixture = {}): Harness {
       writes.push({ path, text });
       await fixture.writeFile?.(path, text);
     },
+    diskReading: fixture.diskReading ?? (() => Promise.resolve(null)),
+    memoryReading: fixture.memoryReading ??
+      (() => Promise.resolve({ level: "unknown" })),
     hostname: fixture.hostname ?? (() => "test-host"),
     timeout: timerSeam(
       fixture.firesFor ?? ((ms) => ms !== DEFAULT_TOTAL_CAP_MS),
@@ -205,6 +210,11 @@ const HAPPY_RECORD: HardKillEvidence = {
       pressureCpu: "some avg10=0.00 avg60=0.01",
       pressureMemory: "some avg10=1.50 avg60=0.90",
       pressureIo: "some avg10=0.10 avg60=0.20",
+    },
+    hostState: {
+      disk:
+        "unavailable: df could not read the evidence directory's filesystem",
+      memory: "level=unknown",
     },
   },
 };
@@ -786,4 +796,58 @@ Deno.test("captureHardKillEvidence - a token in the reason is redacted by the fi
   const text = h.writes[0]!.text;
   assert(!text.includes(TOKEN), "the raw token must not reach the file");
   assertStringIncludes(text, "***REDACTED***");
+});
+
+Deno.test("captureHardKillEvidence - records the host's disk and memory even when the guest does not answer (Issue #5250)", async () => {
+  const h = harness({
+    files: HAPPY_FILES,
+    runtime: (args) =>
+      args[0] === "exec"
+        ? Promise.resolve({ code: 1, stdout: "", stderr: "no answer" })
+        : healthyRuntime(args),
+    diskReading: () =>
+      Promise.resolve({
+        availableBytes: 3435973837,
+        usedBytes: 1,
+        totalBytes: 493921239040,
+      }),
+    memoryReading: () =>
+      Promise.resolve({
+        level: "high",
+        availableBytes: 858993459,
+        totalBytes: 17179869184,
+      }),
+  });
+
+  await captureHardKillEvidence(h.seams, BASE);
+
+  const record = recordOf(h);
+  assertEquals(record.evidence.hostState, {
+    disk: "available=3435973837 total=493921239040",
+    memory: "level=high available=858993459 total=17179869184",
+  });
+  assertEquals(
+    record.evidence.guest.ps.startsWith(
+      "unavailable: container exec did not answer",
+    ),
+    true,
+  );
+});
+
+Deno.test("captureHardKillEvidence - a host reading that fails is recorded with its cause (Issue #5250)", async () => {
+  const h = harness({
+    files: HAPPY_FILES,
+    diskReading: () => Promise.resolve(null),
+    memoryReading: () => Promise.reject(new Error("sysctl timed out")),
+  });
+
+  await captureHardKillEvidence(h.seams, BASE);
+
+  const { disk, memory } = recordOf(h).evidence.hostState;
+  assertEquals(
+    disk,
+    "unavailable: df could not read the evidence directory's filesystem",
+  );
+  assertEquals(memory.startsWith("unavailable: "), true);
+  assertEquals(memory.includes("sysctl timed out"), true);
 });

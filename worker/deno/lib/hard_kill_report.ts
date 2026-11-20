@@ -46,6 +46,8 @@ import {
   hardKillGuestMemory,
   hardKillGuestPressure,
   hardKillGuestProbe,
+  hardKillHostDisk,
+  hardKillHostMemory,
   hardKillSilentFor,
 } from "./hard_kill_guest_facts.ts";
 import {
@@ -346,6 +348,24 @@ export function parseHardKillEvidence(text: string): HardKillEvidence {
   };
   const evidence = obj(raw, "evidence");
   const guest = obj(evidence, "guest");
+  // Optional: a file written by the launcher before host facts were captured
+  // lacks it, and is read on the next start (persisted data).
+  const rawHostState = evidence["hostState"];
+  let hostState: { disk: string; memory: string };
+  if (rawHostState === undefined) {
+    const cause =
+      "unavailable: not recorded (evidence written before host facts were captured)";
+    hostState = { disk: cause, memory: cause };
+  } else if (isRecord(rawHostState)) {
+    hostState = {
+      disk: str(rawHostState, "disk"),
+      memory: str(rawHostState, "memory"),
+    };
+  } else {
+    throw new Error(
+      'hard-kill evidence field "hostState" is not an object',
+    );
+  }
   const capturedAt = str(raw, "capturedAt");
   if (
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(capturedAt) ||
@@ -412,6 +432,7 @@ export function parseHardKillEvidence(text: string): HardKillEvidence {
         pressureMemory: str(guest, "pressureMemory"),
         pressureIo: str(guest, "pressureIo"),
       },
+      hostState,
     },
   };
 }
@@ -539,6 +560,8 @@ export function formatHardKillBody(
     `**Guest probe:** \`${hardKillGuestProbe(evidence)}\``,
     `**Guest memory:** ${hardKillGuestMemory(evidence)}`,
     `**Guest pressure:** ${hardKillGuestPressure(evidence)}`,
+    `**Host disk:** ${hardKillHostDisk(evidence)}`,
+    `**Host memory:** ${hardKillHostMemory(evidence)}`,
     "",
     `The evidence (worker log, agent transcript, boot logs and guest probes) is kept on that host in \`~/logs/${HARD_KILL_ARCHIVE_DIR}/\`. It is never posted here, because it can hold private repository content.`,
   ].join("\n");
@@ -575,7 +598,12 @@ export function hardKillTerminalRun(
   };
 }
 
-/** The follow-up line one hard kill adds to the open issue. */
+/**
+ * The follow-up line one hard kill adds to the open issue: when and where, the
+ * container and run, the last step logged, the silent time, the guest probe
+ * and the host's own disk and memory (read on the host, so present even when
+ * the guest did not answer).
+ */
 function formatHardKillOccurrenceLine(
   evidence: HardKillEvidence,
 ): string {
@@ -585,7 +613,9 @@ function formatHardKillOccurrenceLine(
     inlineText(evidence.runId, 200)
   }\`, last step logged \`${hardKillLastStep(evidence)}\`, silent ${
     hardKillSilentFor(evidence)
-  }, guest probe \`${hardKillGuestProbe(evidence)}\``;
+  }, guest probe \`${hardKillGuestProbe(evidence)}\`, host disk ${
+    hardKillHostDisk(evidence)
+  }, host memory ${hardKillHostMemory(evidence)}`;
 }
 
 /** The first line of an error, redacted, for the decision's cause. */

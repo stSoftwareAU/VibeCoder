@@ -7,6 +7,10 @@
  * process and memory state. This module reads that evidence first and writes
  * it to `hard-kill-<container>-<epoch>.json` in the evidence directory.
  *
+ * The host's own state is recorded too: the free disk of the filesystem
+ * holding the evidence directory, and the host's memory pressure. Both are
+ * read on the host, so they are there even when the guest does not answer.
+ *
  * Capture never throws. Every step is bounded by a timeout. Collection stops
  * at `DEFAULT_TOTAL_CAP_MS` in all; any field not read by then stays marked
  * as not collected. The file is then written under its own
@@ -20,6 +24,11 @@
  */
 
 import { redactGhBodyText } from "./gh_body_redaction.ts";
+import { type DiskReading, probeDiskReading } from "./host_disk.ts";
+import {
+  type MemoryPressureReading,
+  probeHostMemoryPressure,
+} from "./memory_pressure.ts";
 
 /** Schema version of the evidence file. */
 export const HARD_KILL_EVIDENCE_VERSION = 1;
@@ -96,6 +105,10 @@ export interface EvidenceSeams {
   readTail(path: string, maxBytes: number): Promise<string>;
   /** Create the file's directory if needed and write the text to the file. */
   writeFile(path: string, text: string): Promise<void>;
+  /** Read the free space of the filesystem holding a path; null when `df` cannot. */
+  diskReading(path: string): Promise<DiskReading | null>;
+  /** Read the host's memory pressure. A failure throws, and the capture records its cause. */
+  memoryReading(): Promise<MemoryPressureReading>;
   /** The host's name. A failure throws, and the capture records its cause. */
   hostname(): string;
   /** A timer whose promise resolves after `ms`, and which can be cancelled. */
@@ -127,6 +140,20 @@ export interface GuestEvidence {
   pressureIo: string;
 }
 
+/** Host state read on the host, so it is there when the guest does not answer. */
+export interface HostStateEvidence {
+  /**
+   * Free disk of the filesystem holding the evidence directory, as
+   * `available=<bytes> total=<bytes>`, or `unavailable: <cause>`.
+   */
+  disk: string;
+  /**
+   * The host's memory pressure, as `level=<ok|high|unknown>` with
+   * ` available=<bytes> total=<bytes>` when known, or `unavailable: <cause>`.
+   */
+  memory: string;
+}
+
 /** The evidence file's contents. */
 export interface HardKillEvidence {
   version: number;
@@ -151,6 +178,8 @@ export interface HardKillEvidence {
     agentTranscriptTail: string;
     bootLogs: string;
     guest: GuestEvidence;
+    /** The host's own disk and memory, read on the host at capture time. */
+    hostState: HostStateEvidence;
   };
 }
 
@@ -395,6 +424,7 @@ export async function captureHardKillEvidence(
         pressureMemory: notCollected,
         pressureIo: notCollected,
       },
+      hostState: { disk: notCollected, memory: notCollected },
     },
   };
 
@@ -594,6 +624,44 @@ export async function captureHardKillEvidence(
     await Promise.all([bootP, guestBranch()]);
   };
 
+  const hostBranch = async (): Promise<void> => {
+    const [disk, memory] = await Promise.all([
+      bounded(
+        seams,
+        () => seams.diskReading(evidenceDir),
+        DEFAULT_STEP_TIMEOUT_MS,
+      ),
+      bounded(
+        seams,
+        () => seams.memoryReading(),
+        DEFAULT_STEP_TIMEOUT_MS,
+      ),
+    ]);
+    if (!disk.ok) {
+      record.evidence.hostState.disk = unavailable(disk.cause);
+    } else if (disk.value === null) {
+      record.evidence.hostState.disk = unavailable(
+        "df could not read the evidence directory's filesystem",
+      );
+    } else {
+      record.evidence.hostState.disk = `available=${
+        Math.trunc(disk.value.availableBytes)
+      } total=${Math.trunc(disk.value.totalBytes)}`;
+    }
+    if (!memory.ok) {
+      record.evidence.hostState.memory = unavailable(memory.cause);
+    } else {
+      const reading = memory.value;
+      const bytes = typeof reading.availableBytes === "number" &&
+          typeof reading.totalBytes === "number"
+        ? ` available=${Math.trunc(reading.availableBytes)} total=${
+          Math.trunc(reading.totalBytes)
+        }`
+        : "";
+      record.evidence.hostState.memory = `level=${reading.level}${bytes}`;
+    }
+  };
+
   // A step that fails is recorded in its own field. A branch that throws
   // anyway, or a timer that throws, is a bug in the capture: every field still
   // waiting for its value says so, rather than claiming the cap ended.
@@ -615,12 +683,16 @@ export async function captureHardKillEvidence(
     guest.pressureCpu = fill(guest.pressureCpu);
     guest.pressureMemory = fill(guest.pressureMemory);
     guest.pressureIo = fill(guest.pressureIo);
+    const hostState = record.evidence.hostState;
+    hostState.disk = fill(hostState.disk);
+    hostState.memory = fill(hostState.memory);
   };
 
   const branches = Promise.all([
     workerLogBranch(),
     transcriptBranch(),
     runtimeBranch(),
+    hostBranch(),
   ]).then(
     () => undefined,
     (error: unknown) => markUnfilled(stepFailure(error)),
@@ -708,6 +780,8 @@ export function createEvidenceSeams(
       await Deno.mkdir(dirnameOf(path), { recursive: true });
       await Deno.writeTextFile(path, text, { mode: 0o600 });
     },
+    diskReading: probeDiskReading,
+    memoryReading: () => probeHostMemoryPressure(),
     hostname: () => Deno.hostname(),
     timeout: (ms) => {
       let handle: ReturnType<typeof setTimeout> | undefined;
