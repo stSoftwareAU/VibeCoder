@@ -493,19 +493,24 @@ export function detectUnknownConfigKeys(
 
 /**
  * `repo_config` keys a repository used to set and the worker no longer reads
- * (Issue #5095). Both spellings are listed because the loader accepts either.
- * They are tolerated, not refused: the config still loads, the key is dropped
- * from the repository's config, and one warning names it.
+ * (the mutation check, Issue #5095, and the coverage carry-over check,
+ * Issue #5247). Both spellings are listed because the loader accepts either.
+ * Each key maps to the issue that retired it. They are tolerated, not refused:
+ * the config still loads, the key is dropped from the repository's config, and
+ * one warning names it and that issue.
  */
-export const RETIRED_REPO_CONFIG_KEYS: ReadonlySet<string> = new Set([
-  "skip_mutation_check",
-  "mutation_check_budget_seconds",
-  "skipMutationCheck",
-  "mutationCheckBudgetSeconds",
+export const RETIRED_REPO_CONFIG_KEYS: ReadonlyMap<string, number> = new Map([
+  ["skip_mutation_check", 5095],
+  ["mutation_check_budget_seconds", 5095],
+  ["skipMutationCheck", 5095],
+  ["mutationCheckBudgetSeconds", 5095],
+  ["skip_coverage_carryover_check", 5247],
+  ["skipCoverageCarryOverCheck", 5247],
 ]);
 
 /**
- * Warn about retired keys inside each `repo_config` entry (Issue #5095).
+ * Warn about retired keys inside each `repo_config` entry (Issues #5095 and
+ * #5247).
  *
  * `repo_config` is free-form, so {@link detectUnknownConfigKeys} never looks
  * inside it; this is the check a stale repository key gets.
@@ -529,12 +534,13 @@ export function detectRetiredRepoConfigKeys(
       continue;
     }
     for (const key of Object.keys(entry)) {
-      if (!RETIRED_REPO_CONFIG_KEYS.has(key)) continue;
+      const issue = RETIRED_REPO_CONFIG_KEYS.get(key);
+      if (issue === undefined) continue;
       const field = `repo_config.${repo}.${key}`;
       warnings.push({
         field,
         message:
-          `Config key "${field}" in .config.json is retired by Issue #5095 and ignored. Remove it.`,
+          `Config key "${field}" in .config.json is retired by Issue #${issue} and ignored. Remove it.`,
         suggestion: null,
       });
     }
