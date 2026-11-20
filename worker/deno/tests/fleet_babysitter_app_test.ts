@@ -30,6 +30,16 @@ import {
   withTestKey,
 } from "./fixtures/babysitter_container_fakes_4770.ts";
 
+/**
+ * Watchdog for each real babysitter CLI child below. The open under test gives
+ * up after 5 s (fleet_babysitter_exchange.ts), but the child also starts the
+ * CLI and snapshots the real checkout: about 19 s on an idle laptop, more in
+ * the gate's parallel pass on a loaded host, where a 25 s budget failed a run
+ * (GRQ-23, 2026-11-19). The watchdog only tells a hang from an exit, so it sits
+ * far above any normal pass; a hung open never finishes, however long it waits.
+ */
+const CLI_HANG_WATCHDOG_MS = 180_000;
+
 Deno.test("the non-watch container repair exits non-zero after cleanup despite a pending special-file open", async () => {
   const info = await runWithTimeout(Deno.execPath(), ["info", "--json"], {
     timeoutMs: 10_000,
@@ -113,7 +123,7 @@ Deno.test("the non-watch container repair exits non-zero after cleanup despite a
       // runner's read of it never completes.
       const blocked = await runWithTimeout(Deno.execPath(), cliArgs, {
         cwd: home,
-        timeoutMs: 25_000,
+        timeoutMs: CLI_HANG_WATCHDOG_MS,
         clearEnv: true,
         env: { ...childEnv, BABYSITTER_BLOCK_OPEN: "1" },
       });
@@ -134,7 +144,7 @@ Deno.test("the non-watch container repair exits non-zero after cleanup despite a
       await Deno.remove(`${home}/runtime-run.json`);
       const completed = await runWithTimeout(Deno.execPath(), cliArgs, {
         cwd: home,
-        timeoutMs: 40_000,
+        timeoutMs: CLI_HANG_WATCHDOG_MS,
         clearEnv: true,
         env: childEnv,
       });
