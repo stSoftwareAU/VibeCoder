@@ -59,10 +59,30 @@ read-only volume holding the entrypoint and no flag outside `--rm`, `--user`,
 `env:` set none of `BASH_ENV`, `ENV`, `PATH` or the `DOCKER_*` connection
 variables. The job takes `IMAGE_CHANGED` from the change detector, an earlier
 step runs `docker build -t "${IMAGE}"`, and no step names `GITHUB_ENV` or
-`GITHUB_PATH`. It is a text check, so it does not catch everything. It misses
-an indirect write to those files, a step that rewrites the checked-out script
-or replaces docker or its context, and a retag the check does not recognise. It
-also does not check the `changes` job that sets `IMAGE_CHANGED`.
+`GITHUB_PATH`. The check also requires job `container` to need `changes`, the
+`changes` job to have no `if:` or `continue-on-error` and an `outputs.image` of
+exactly `${{ steps.filter.outputs.image }}`, and its step `id: filter` to have
+no `if:` or `continue-on-error`. That step's `BASE_SHA` and `HEAD_SHA` env must
+come from the pull request event, it may set no other env but `EVENT_NAME`, and
+its shell must run the body. A comment line is one whose first character after
+any leading spaces or tabs is `#`; non-ASCII filter code is refused rather than
+treated as a blank or comment. Only a single backslash as the final character
+of a code line is accepted; its newline is removed without adding a space, as
+Bash removes it. The raw body may contain no `${{ }}` expression,
+including in a comment. Its code, comments and blank lines aside, must be
+exactly the current allowlist: `set -euo pipefail`, the non-pull-request branch
+that appends `image=true` to `"$GITHUB_OUTPUT"` and exits, then
+`.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`. Any other
+command is refused, including a `||`/`&&`/`if`/loop/`case` guard on the call, a
+trailing `&`, another `exit`, another `image=` write, and an assignment,
+`export` or `unset` of `GITHUB_OUTPUT`. The `changes` job permits only checkout
+and the filter step, with no job-level container or env. The workflow may set no
+env. Otherwise `IMAGE_CHANGED` may
+not be `true`, every image step and the agent run skip, and the required check
+passes without running the command. The validator is a text check, so it does
+not catch everything. It misses an indirect write to
+`GITHUB_ENV` or `GITHUB_PATH`, a step that rewrites the checked-out script or
+replaces docker or its context, and a retag the check does not recognise.
 
 ```mermaid
 flowchart LR
