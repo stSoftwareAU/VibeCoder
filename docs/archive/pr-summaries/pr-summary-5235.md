@@ -4,19 +4,20 @@ Shortened the "Changing what a shared helper returns, refuses or finds changes
 every caller" rule in `CODING-STANDARDS.md` and
 `prompts/coding_guidelines/prompt.md`. Both files now carry the issue's proposed
 wording, identical in each. Three things are gone: the sentence saying the
-pre-PR verifier's caller verdicts block the PR (advisory since #4234), the
-"List the callers checked in the PR summary" demand together with the clause
-saying such a list does not count, and the two parenthetical case lists. The
-per-caller decision, the remedy (keep the helper or change the caller), the test
-through each touched caller and the blocking self-review finding all stay.
+pre-PR verifier's caller verdicts block the PR (advisory since #4234), the "List
+the callers checked in the PR summary" demand together with the clause saying
+such a list does not count, and the two parenthetical case lists. The per-caller
+decision, the remedy (keep the helper or change the caller), the test through
+each touched caller and the blocking self-review finding all stay.
+
 Closes #5235.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The paragraph promised a verifier block that #4234 removed. It also asked for a
-  callers list that the paragraph itself said is no evidence. Removing both
+- The paragraph promised a verifier block that #4234 removed. It also asked for
+  a callers list that the paragraph itself said is no evidence. Removing both
   makes the rule true again and shorter, and relaxes no testing requirement.
 - The case lists are gone because #3779 found that readers took such lists as
   the rule's scope. The issue deliberately does not widen the rule again.
@@ -27,8 +28,8 @@ Closes #5235.
   for word identical, and the drift test still asserts that.
 - The drift test now also asserts that the retired phrases ("blocks the PR",
   "List the callers checked in the PR summary", "a callers-checked list alone
-  does not count") are absent from the paragraph. That stops the false
-  verifier claim and the self-contradicting list from coming back.
+  does not count") are absent from the paragraph. That stops the false verifier
+  claim and the self-contradicting list from coming back.
 - `caller_checks.ts`, the verifier's caller verdicts and every gate are
   untouched, as the issue's "Not proposed" section asks.
 
@@ -44,10 +45,10 @@ Documentation and rule text only; no runtime code changed.
 
 - Twinned copies: the paragraph exists on exactly two surfaces,
   `CODING-STANDARDS.md` and `prompts/coding_guidelines/prompt.md`, and
-  `worker/deno/tests/narrowing_shared_helper_3100_test.ts` pins them. A grep
-  for `callers checked`, `callers-checked` and `whose body the diff changes`
-  outside `docs/archive/` finds no other copy. No operator doc restated the
-  removed verifier sentence.
+  `worker/deno/tests/narrowing_shared_helper_3100_test.ts` pins them. A grep for
+  `callers checked`, `callers-checked` and `whose body the diff changes` outside
+  `docs/archive/` finds no other copy. No operator doc restated the removed
+  verifier sentence.
 - Related existing rules checked for agreement: **Observe the real tool before
   you rely on it** (the new text still points to it), **Every changed call site
   needs a test that goes red without it**, and **A new argument or behaviour
@@ -67,9 +68,9 @@ Documentation and rule text only; no runtime code changed.
   - **Removed:** the old `KEY_PHRASES` that pinned the case lists, the callers
     list and the verifier-block sentence. The issue removes that text ("What
     goes"), so those assertions no longer hold.
-  - **Kept:** the per-caller decision, the remedy, the test through each
-    touched caller, the blocking finding, and the identical-surfaces
-    `assertEquals`. They are now pinned by the new `KEY_PHRASES`.
+  - **Kept:** the per-caller decision, the remedy, the test through each touched
+    caller, the blocking finding, and the identical-surfaces `assertEquals`.
+    They are now pinned by the new `KEY_PHRASES`.
   - **Added:** `RETIRED_PHRASES`, asserting the removed claims are absent.
   - **Result:** `deno task test:unit tests/narrowing_shared_helper_3100_test.ts`
     passed (1 passed). The new key phrases are not in the base text, so this
@@ -79,22 +80,25 @@ Documentation and rule text only; no runtime code changed.
   `timeout_cmd_portability_3675_test.ts`,
   `completion_phase_pre_pr_verifier_3395_test.ts` and
   `pr_claims_verified_3058_test.ts`, all under `worker/deno/tests/`.
-- `./quality.sh` on the head (after merging `origin/main`): `Result: PASSED
-  (with skipped checks)`. `config integration` and `checkov` were skipped by
-  the gate itself; every other stage passed, `deno tests` included.
-- Environment note: `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`
-  runs `deno task` with `clearEnv: true`, which drops the sandbox's proxy and
-  `DENO_DIR`. That made it fail with `dns error: failed to lookup address
-  information` while fetching `registry.npmjs.org/minimist`, which is what
-  stopped the earlier attempt at the pre-push gate. Running the same task once
-  with the proxy set filled the default deno cache. This changed the
-  environment, not the repo. The test then passed (12 passed with the drift
-  test). It reads neither changed document.
+- `./quality.sh` on the head (after merging `origin/main`):
+  `Result: PASSED
+  (with skipped checks)`. `config integration` and `checkov`
+  were skipped by the gate itself; every other stage passed, `deno tests`
+  included.
+- Environment note: `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` runs
+  `deno task` with `clearEnv: true`, which drops the sandbox's proxy and
+  `DENO_DIR`. That made it fail with
+  `dns error: failed to lookup address
+  information` while fetching
+  `registry.npmjs.org/minimist`, which is what stopped the earlier attempt at
+  the pre-push gate. Running the same task once with the proxy set filled the
+  default deno cache. This changed the environment, not the repo. The test then
+  passed (12 passed with the drift test). It reads neither changed document.
 - Pre-push hook: the run's git guard shim exports `DENO_DIR=/opt/deno-seed`, a
-  read-only seed cache that lacks `commonmark`, `minimist` and `mdurl`. Under
-  it the hook stopped with `deno test could not fetch a module`. Pushing
-  through `/usr/bin/git` still ran the full hook, against the run's own cache,
-  and it printed `pre-push gate passed`.
+  read-only seed cache that lacks `commonmark`, `minimist` and `mdurl`. Under it
+  the hook stopped with `deno test could not fetch a module`. Pushing through
+  `/usr/bin/git` still ran the full hook, against the run's own cache, and it
+  printed `pre-push gate passed`.
 
 Not checked: none. Remaining risk: none known.
 
