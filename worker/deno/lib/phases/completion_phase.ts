@@ -2059,6 +2059,15 @@ async function completionBody(
       if (!turn.ran && turn.finishDeadline) {
         return await releaseRunAtFinishDeadline(ctx, state, deps);
       }
+      // A turn the host-disk floor refused never saw the block, so the block
+      // is no verdict the issue can be charged for: park it as infrastructure
+      // and let a later run, on a host with headroom, take the turn.
+      if (!turn.ran) {
+        const parked = hostDiskInfrastructureFailure(
+          `Pre-push gate blocked the push and its recovery turn could not run: ${turn.detail}`,
+        );
+        if (parked) return parked;
+      }
       if (turn.ran) gate = await runGateOnce();
     }
     if (gate.ok) {

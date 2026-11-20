@@ -186,12 +186,12 @@ Resources:
       VpcId:
         Ref: VerificationVpc
       SecurityGroupEgress:
-        - Description: HTTPS — SSM endpoints, GitHub, container registries, installers
+        - Description: HTTPS - SSM endpoints, GitHub, container registries, installers
           IpProtocol: tcp
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-        - Description: HTTP — Ubuntu package mirrors
+        - Description: HTTP - Ubuntu package mirrors
           IpProtocol: tcp
           FromPort: 80
           ToPort: 80
@@ -206,7 +206,7 @@ Resources:
           FromPort: 53
           ToPort: 53
           CidrIp: 0.0.0.0/0
-        - Description: NTP — clock skew breaks TLS and the SSM agent
+        - Description: NTP - clock skew breaks TLS and the SSM agent
           IpProtocol: udp
           FromPort: 123
           ToPort: 123

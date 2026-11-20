@@ -77,6 +77,7 @@ import {
 import { verifyResolvedTree } from "./milestone_resolution_gate.ts";
 import {
   checkMergedTree,
+  mergeGateFailureCause,
   mergeGateFailureError,
   type MergeGateFn,
   type MergeGateOutcome,
@@ -1340,6 +1341,7 @@ async function syncMilestoneBranchWithDefaultBody(
         gateFailure,
         preMergeSha,
         gateTimings,
+        mergeGateFailureCause(gatedResolved.error),
       ),
     };
   }

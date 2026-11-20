@@ -951,7 +951,12 @@ about either caller, and each fallback path passes it what that path observed.
   or the last run's conclusion with a refusal climb unwrapped to the reason it
   was refused and anything after the first colon dropped, so a second fallback
   for the same cause — on any branch of any repository — is appended as a
-  comment on the open record rather than filed again.
+  comment on the open record rather than filed again. A milestone resolution
+  the merge gate refused carries the gate's own cause in parentheses — for
+  example `the merge gate refused the resolution (the check timed out)` — so a
+  timed-out check and a genuinely failed one are filed as separate records, and
+  an escalation that carries no cause keeps the bare
+  `the merge gate refused the resolution` (Issue #5162).
 - **The match must be open and fleet-authored.** A title is chosen by whoever
   opens an issue, so an unverified match would both suppress the flag and post
   the fallback's contents onto somebody else's issue; the author is checked

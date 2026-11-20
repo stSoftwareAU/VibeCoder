@@ -1,9 +1,13 @@
 /**
- * Tests for Issue #3740: a Test Plan figure that `findUncheckedRunResults`
- * cannot check is a drift hit, not only a log line. It drives the one
- * recovery turn (fenced into the recovery prompt), is re-checked after
- * recovery against the fresh summaries, and is reported in the residual if it
- * survives.
+ * Tests for Issues #3740 and #5223. Issue #3740 made a Test Plan figure that
+ * `findUncheckedRunResults` cannot check a drift hit that drove the one
+ * recovery turn. Issue #5223 retired that trigger: an unchecked figure is a
+ * limit of the recount, not evidence the figure is false, so on its own it
+ * launches no recovery turn. It still prevents a `clean` outcome, is logged
+ * with the "could not check" warning and is listed in the residual as
+ * unverified, so the outcome is `reported`. A real defect (a Test Plan
+ * mismatch here) still runs the one recovery turn, whose prompt carries the
+ * mismatch but never the unchecked figure.
  *
  * Real temporary git repos throughout, mirroring
  * `pr_feedback_drift_check_3341_test.ts` and `pr_feedback_drift_check_3143_test.ts`.
@@ -141,63 +145,11 @@ function capturingLogger(
 }
 
 // ---------------------------------------------------------------------------
-// 1. An unchecked figure is a drift hit: it runs the recovery turn, and the
-// recovery prompt fences the figure into the untrusted-block list.
+// 1. An unchecked-only figure launches no recovery turn and is reported as
+// unverified (Issue #5223).
 // ---------------------------------------------------------------------------
 
-Deno.test("runPrFeedbackDriftCheck - an unchecked Test Plan figure runs the recovery turn with the figure fenced into it (Issue #3740)", async () => {
-  const { dir, beforeSha } = await setupBaseline(SUMMARY_CHECKABLE);
-  try {
-    await applyFixPush(dir);
-    await writeFile(dir, SUMMARY_PATH, SUMMARY_UNCHECKED);
-
-    const calls: AgentCall[] = [];
-    const runAgent = makeRunAgent(
-      [
-        { ok: true, output: verdictBlock([]) },
-        { ok: true, output: "did nothing" },
-      ],
-      calls,
-    );
-
-    await runPrFeedbackDriftCheck(
-      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
-      {
-        runGit: makeRunGit(dir),
-        runGh: makeRunGh(),
-        runAgent,
-        logger: noopLogger(),
-      },
-    );
-
-    assertEquals(calls.length, 2);
-    assertEquals(calls[0]!.readOnly, true);
-    assertEquals(calls[1]!.readOnly, false);
-    const prompt = calls[1]!.prompt;
-    assertStringIncludes(
-      prompt,
-      "Test Plan figures the recount could not check:",
-    );
-    assertStringIncludes(prompt, UNCHECKED_LINE);
-    assertStringIncludes(
-      prompt,
-      "the Test Plan figures the recount could not check",
-    );
-    assertStringIncludes(
-      prompt,
-      "re-run the tests it names on the head and restate the figure",
-    );
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// 2. The recovery turn leaves the figure in place, so it survives into the
-// residual and the reply message.
-// ---------------------------------------------------------------------------
-
-Deno.test("runPrFeedbackDriftCheck - an unchecked Test Plan figure that survives recovery is reported in the residual and the reply (Issue #3740)", async () => {
+Deno.test("runPrFeedbackDriftCheck - an unchecked-only Test Plan figure launches no recovery turn and is reported unverified (Issue #5223)", async () => {
   const { dir, beforeSha } = await setupBaseline(SUMMARY_CHECKABLE);
   try {
     await applyFixPush(dir);
@@ -205,31 +157,35 @@ Deno.test("runPrFeedbackDriftCheck - an unchecked Test Plan figure that survives
 
     await assertRejects(() => Deno.lstat(prResponseMessagePath(dir)));
 
+    const warnings: { message: string; fields?: unknown }[] = [];
+    const infos: string[] = [];
+    const logger: DriftCheckDeps["logger"] = {
+      ...capturingLogger(warnings),
+      info: (message: string) => {
+        infos.push(message);
+      },
+    };
+    const calls: AgentCall[] = [];
     const runAgent = makeRunAgent(
-      [
-        { ok: true, output: verdictBlock([]) },
-        { ok: true, output: "did nothing" },
-      ],
-      [],
+      [{ ok: true, output: verdictBlock([]) }],
+      calls,
     );
 
     const outcome = await runPrFeedbackDriftCheck(
       { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
-      {
-        runGit: makeRunGit(dir),
-        runGh: makeRunGh(),
-        runAgent,
-        logger: noopLogger(),
-      },
+      { runGit: makeRunGit(dir), runGh: makeRunGh(), runAgent, logger },
     );
 
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0]!.readOnly, true);
     assertEquals(outcome.status, "reported");
     if (outcome.status === "reported") {
-      assertEquals(outcome.recoveryRan, true);
+      assertEquals(outcome.recoveryRan, false);
       assertEquals(outcome.residual.testPlanUnchecked?.length, 1);
       assert(
         outcome.residual.testPlanUnchecked?.[0]?.includes(UNCHECKED_LINE),
       );
+      assertEquals(outcome.residual.mismatches, []);
     }
 
     const message = await Deno.readTextFile(prResponseMessagePath(dir));
@@ -238,34 +194,62 @@ Deno.test("runPrFeedbackDriftCheck - an unchecked Test Plan figure that survives
       "Test Plan figures the drift check could not verify:",
     );
     assertStringIncludes(message, UNCHECKED_LINE);
-    // With no other hit, the reply says the check could not check it fully.
     assertStringIncludes(message, "could not check it fully");
+
+    assert(
+      warnings.some((w) =>
+        w.message.includes("Test Plan recount could not check 1 figure(s)")
+      ),
+    );
+    const seen = [...warnings.map((w) => w.message), ...infos];
+    assert(
+      !seen.some((m) =>
+        m.includes(
+          "Drift check found hits \u2014 running one recovery turn (Issue #3143)",
+        )
+      ),
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
 });
 
 // ---------------------------------------------------------------------------
-// 3. The recovery turn restates the figure in a checkable form (here by
-// removing it), and the post-recovery recompute clears it: recovered, with no
-// residual.
+// 2. A real Test Plan mismatch beside an unchecked figure still runs the
+// recovery turn; its prompt carries the mismatch but not the unchecked figure.
 // ---------------------------------------------------------------------------
 
-Deno.test("runPrFeedbackDriftCheck - an unchecked Test Plan figure the recovery turn removes is recovered, not reported (Issue #3740)", async () => {
+const UNCHECKED_PLAN_TEXT = "Added 5 tests to `tests/rule_test.ts`.";
+const MISMATCH_AND_UNCHECKED_PLAN = [
+  "- Added `tests/rule_test.ts` (3 tests).",
+  "- Added 5 tests to `tests/rule_test.ts`.",
+].join("\n");
+const FIXED_MISMATCH_AND_UNCHECKED_PLAN = [
+  "- Added `tests/rule_test.ts` (1 test).",
+  "- Added 5 tests to `tests/rule_test.ts`.",
+].join("\n");
+
+Deno.test("runPrFeedbackDriftCheck - a Test Plan mismatch beside an unchecked figure still runs the recovery turn, whose prompt omits the unchecked figure (Issue #5223)", async () => {
   const { dir, beforeSha } = await setupBaseline(SUMMARY_CHECKABLE);
   try {
     await applyFixPush(dir);
-    await writeFile(dir, SUMMARY_PATH, SUMMARY_UNCHECKED);
+    await writeFile(
+      dir,
+      SUMMARY_PATH,
+      summaryWith(MISMATCH_AND_UNCHECKED_PLAN),
+    );
 
     const calls: AgentCall[] = [];
     const runAgent = makeRunAgent(
       [
         { ok: true, output: verdictBlock([]) },
         () => {
-          // The recovery turn rewrites the Test Plan so no figure is left
-          // uncheckable, as the restate step allows.
-          Deno.writeTextFileSync(`${dir}/${SUMMARY_PATH}`, SUMMARY_CHECKABLE);
-          return { ok: true, output: "restated" };
+          // The recovery turn fixes only the mismatch (3 -> 1).
+          Deno.writeTextFileSync(
+            `${dir}/${SUMMARY_PATH}`,
+            summaryWith(FIXED_MISMATCH_AND_UNCHECKED_PLAN),
+          );
+          return { ok: true, output: "fixed the count" };
         },
       ],
       calls,
@@ -282,8 +266,23 @@ Deno.test("runPrFeedbackDriftCheck - an unchecked Test Plan figure the recovery 
     );
 
     assertEquals(calls.length, 2);
-    assertEquals(outcome.status, "recovered");
-    await assertRejects(() => Deno.lstat(prResponseMessagePath(dir)));
+    assertEquals(calls[0]!.readOnly, true);
+    assertEquals(calls[1]!.readOnly, false);
+    const prompt = calls[1]!.prompt;
+    assertStringIncludes(prompt, "Test Plan mismatches:");
+    assert(!prompt.includes("could not check"));
+    assert(!prompt.includes("re-run the tests"));
+    assert(!prompt.includes(UNCHECKED_PLAN_TEXT));
+
+    assertEquals(outcome.status, "reported");
+    if (outcome.status === "reported") {
+      assertEquals(outcome.recoveryRan, true);
+      assertEquals(outcome.residual.mismatches, []);
+      assertEquals(outcome.residual.testPlanUnchecked?.length, 1);
+      assert(
+        outcome.residual.testPlanUnchecked?.[0]?.includes(UNCHECKED_PLAN_TEXT),
+      );
+    }
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -448,7 +447,7 @@ Deno.test("runPrFeedbackDriftCheck - a red result naming only a Rust test file i
   }
 });
 
-Deno.test("runPrFeedbackDriftCheck - the same Rust-named red result with a changed countable test file is still unchecked and runs the recovery turn (Issue #4537)", async () => {
+Deno.test("runPrFeedbackDriftCheck - the same Rust-named red result with a changed countable test file is still unchecked but launches no recovery turn (Issues #4537, #5223)", async () => {
   const { dir, beforeSha } = await setupBaseline(SUMMARY_CHECKABLE);
   try {
     await applyRustFixPush(dir);
@@ -459,10 +458,7 @@ Deno.test("runPrFeedbackDriftCheck - the same Rust-named red result with a chang
 
     const calls: AgentCall[] = [];
     const runAgent = makeRunAgent(
-      [
-        { ok: true, output: verdictBlock([]) },
-        { ok: true, output: "did nothing" },
-      ],
+      [{ ok: true, output: verdictBlock([]) }],
       calls,
     );
 
@@ -476,12 +472,11 @@ Deno.test("runPrFeedbackDriftCheck - the same Rust-named red result with a chang
       },
     );
 
-    assertEquals(calls.length, 2);
+    assertEquals(calls.length, 1);
     assertEquals(calls[0]!.readOnly, true);
-    assertEquals(calls[1]!.readOnly, false);
     assertEquals(outcome.status, "reported");
     if (outcome.status === "reported") {
-      assertEquals(outcome.recoveryRan, true);
+      assertEquals(outcome.recoveryRan, false);
       assertEquals(outcome.residual.testPlanUnchecked?.length, 1);
       assert(
         outcome.residual.testPlanUnchecked?.[0]?.includes(

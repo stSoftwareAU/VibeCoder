@@ -38,6 +38,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { MergeGateCause } from "./milestone_merge_gate.ts";
+
 /** Which side of a conflicted file a resolution takes. */
 export type ConflictSide = "ours" | "theirs";
 
@@ -201,6 +203,8 @@ export class MilestoneConflictEscalation extends Error {
      * in a log nobody keeps.
      */
     readonly timings?: string,
+    /** The cause the resolution gate named when it refused (Issue #5162). */
+    readonly gateCause?: MergeGateCause,
   ) {
     super(message);
   }

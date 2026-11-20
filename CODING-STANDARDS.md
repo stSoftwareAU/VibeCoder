@@ -42,7 +42,8 @@ those properties. Emulator tests must not fall back to real AWS.
 
 Apply this policy to new or materially changed AWS behaviour, with existing
 regression tests retained. Do not add unrelated test-discovery campaigns.
-The runtime and CI rollout remains planned in #5109 and #5110; #5111 owns
+Issue #5109 delivered the runtime and #5110 delivers VibeCoder's own
+reference CI path (`infra/cloudformation/test-aws-emulator.sh`); #5111 owns
 effective implementation/reviewer prompt wiring and #5112 owns detector
 migration. Enforce the new runtime requirement after its availability and
 reference CI path are verified, not merely because this policy is documented.
@@ -1473,35 +1474,43 @@ simply no longer waits out a stopwatch to do it.
   to pass as a unit test. If you need to confirm performance, prefer
   deterministic evidence (work counts); write a benchmark only for timings, and
   report any results in the PR summary as indicative evidence, never a gate.
-- **Guard super-linearity by behaviour first** — catastrophic backtracking on
-  an adversarial input of any real size does not cost a little more than some
+- **Guard super-linearity by behaviour first** — catastrophic backtracking on an
+  adversarial input of any real size does not cost a little more than some
   threshold, it never returns. So the first form to reach for is not a
   measurement at all: feed the hostile input and assert what the code
   **produces** — benign text unchanged, the credential masked, no suppression
-  found. A super-linear regression then hangs the case until the runner kills
-  it, which is a failure on every machine under every load. PR #1170 is what
-  it cost to learn this twice: an absolute millisecond budget went red on a
-  host 8% slower than the one it was chosen on, and the ratio assertion that
-  replaced it went red on a loaded laptop reading 30 ms against 355 ms for work
-  that is linear. **A fleet of unlike machines under unlike loads has no budget
-  and no ratio that means the same thing twice**, and a flaky gate teaches
-  everyone to re-run rather than read the result. Whichever form guards it,
-  build the test from the input shape that was slow, and run it against the
-  unfixed pattern to see it hang or fail the growth check before counting it:
-  Issue #3085's growth test fed dots that ran to the end of the value, which
-  never backtracks, when the input that does is dots followed by `x`.
-- **The target repository's own testing standard wins on timing.** Fleet
-  runs work in repositories whose standards keep timing out of unit tests
-  ("no `Instant`/`elapsed` for pass/fail", "timing belongs in `benches/`");
-  there that rule covers a ratio of two readings too, because the PR #1170
-  lesson above is a ratio going red on linear work. Guard super-linear cost
-  there by the output first, then by **deterministic work** counted through
-  an injected observer or counter and asserted to grow linearly
+  found. A backtracking regression then hangs the case until the runner kills
+  it, which is a failure on every machine under every load. PR #1170 is what it
+  cost to learn this twice: an absolute millisecond budget went red on a host 8%
+  slower than the one it was chosen on, and the ratio assertion that replaced it
+  went red on a loaded laptop reading 30 ms against 355 ms for work that is
+  linear. **A fleet of unlike machines under unlike loads has no budget and no
+  ratio that means the same thing twice**, and a flaky gate teaches everyone to
+  re-run rather than read the result. The behavioural form only works when the
+  pre-fix cost is large enough to hang. A polynomial cost, such as a quadratic
+  rescan or lookup, returns the same output in seconds, so an output-only test
+  passes on the unfixed code; guard it by counting deterministic work, as the
+  bullets below say. `plan_coverage_gate_bounds_1245_test.ts` guards a pattern
+  costing about twelve seconds on the largest input GitHub accepts, which stalls
+  a planning close but finishes well inside a test timeout, and a regex engine
+  exposes no step counter, so the last-resort ratio below is the only detector
+  it has (Issue #1245). Whichever form guards it, build the test from the input
+  shape that was slow, and run it against the unfixed pattern to see it hang or
+  fail the growth check before counting it: Issue #3085's growth test fed dots
+  that ran to the end of the value, which never backtracks, when the input that
+  does is dots followed by `x`.
+- **The target repository's own testing standard wins on timing.** Fleet runs
+  work in repositories whose standards keep timing out of unit tests ("no
+  `Instant`/`elapsed` for pass/fail", "timing belongs in `benches/`"); there
+  that rule covers a ratio of two readings too, because the PR #1170 lesson
+  above is a ratio going red on linear work. Guard super-linear cost there by
+  the output first where the pre-fix cost hangs, then by **deterministic work**
+  counted through an injected observer or counter and asserted to grow linearly
   (stSoftwareAU/NEAT-AI-Discovery PRs #2321 and #2345 replaced fleet-written
   ratio tests that way), and put timing comparisons in the repository's
   benchmark harness. Never cite this repository's helpers or issue numbers
-  (`assertLinearGrowth`, Issue #530) as a precedent in another repository,
-  and confirm a precedent file exists before naming it (Issue #3680).
+  (`assertLinearGrowth`, Issue #530) as a precedent in another repository, and
+  confirm a precedent file exists before naming it (Issue #3680).
 - **If, and only if, neither the output nor a work count distinguishes the
   two, this repository allows a ratio as a last resort** — catastrophic
   backtracking has no wrong output, only a runtime one, and a regex engine
@@ -1519,11 +1528,7 @@ simply no longer waits out a stopwatch to do it.
   (Issue #786). It is still a unit test. Prefer the behavioural form where it
   works: PR #1170 moved twelve ReDoS guards onto asserting what the code
   *produces* for an adversarial input, because a pattern that never returns
-  hangs the case on every host. It only works when the pre-fix cost is large
-  enough to hang — `plan_coverage_gate_bounds_1245_test.ts` guards a pattern
-  costing about twelve seconds on the largest input GitHub accepts, which
-  stalls a planning close but finishes well inside a test timeout, so the
-  ratio is the only detector it has (Issue #1245).
+  hangs the case on every host.
 - **Vet every regex on untrusted text, one hostile case per pattern.** Every
   regex a change adds or edits that runs on untrusted or agent-written text (an
   issue body, a PR summary, agent output) gets its own check, not one per
@@ -1539,12 +1544,12 @@ simply no longer waits out a stopwatch to do it.
   hostile case per pattern: a long run of the shared character followed by a
   character the pattern rejects. A parser with several patterns needs a case for
   each. Each case asserts the pattern's result on an input long enough that
-  catastrophic backtracking never returns, so it hangs on every host, or a
-  deterministic step count: guard super-linear cost by output, then by counted
-  work, as the timing bullets above say. It is not a wall-clock ratio where the
-  repository's own testing standard keeps timing out of unit tests.
-  Capping one pattern and leaving its sibling in the same file with the same
-  defect is the usual miss.
+  catastrophic backtracking never returns, so it hangs on every host, or,
+  where the cost is polynomial and still returns, a deterministic step count:
+  guard super-linear cost by output, then by counted work, as the timing bullets
+  above say. It is not a wall-clock ratio where the repository's own testing
+  standard keeps timing out of unit tests. Capping one pattern and leaving its
+  sibling in the same file with the same defect is the usual miss.
 
 ### Integration tests
 

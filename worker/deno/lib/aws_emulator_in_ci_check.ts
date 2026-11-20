@@ -4,7 +4,11 @@
  * A deterministic, file-based check answering two questions: does the repo
  * use AWS at all (dependency manifests, CloudFormation templates, or
  * Terraform), and — independently — does any GitHub Actions workflow run
- * the `floci/floci` emulator image. Modelled on `linter_in_ci_check.ts`:
+ * an emulator: the `floci/floci` image, or the official AWS Emulator
+ * (a `run:` step invoking `aws-emulator-run`, directly or through a
+ * repository script that itself invokes it). Merely installing the emulator
+ * (`container/toolchains/aws-emulator.sh`) is not coverage.
+ * Modelled on `linter_in_ci_check.ts`:
  * no LLM judgement, just text/structure matching against files already in
  * the checkout.
  *
@@ -14,6 +18,12 @@
 import { parse as parseYaml } from "@std/yaml/parse";
 import { loadWorkflows } from "./linter_in_ci_check.ts";
 import { parseCfnDocument } from "./cfn_cost_checks.ts";
+import {
+  commandIndex,
+  reachableSegments,
+  readShellOptions,
+  stripQuotes,
+} from "./shell_command_words.ts";
 
 /** Result of checking a repository for AWS usage and emulator wiring. */
 export interface AwsEmulatorCheckResult {
@@ -21,7 +31,7 @@ export interface AwsEmulatorCheckResult {
   usesAws: boolean;
   /** Repo-relative paths ("/"-separated) of every file that triggered, sorted and deduplicated. */
   awsEvidence: string[];
-  /** True iff any loaded workflow runs the `floci/floci` emulator image. Computed independently of `usesAws`. */
+  /** True iff any loaded workflow runs the `floci/floci` image or tests through the official AWS Emulator (`aws-emulator-run` invoked directly or by a repo script it runs; an install-only step does not count). Computed independently of `usesAws`. */
   emulatorConfigured: boolean;
   /** False when `loadWorkflows` returned none (Issue #2880 diagnostic guard). */
   workflowsLoaded: boolean;
@@ -311,6 +321,209 @@ export function workflowRunsFloci(parsedYaml: unknown): boolean {
   return false;
 }
 
+const AWS_EMULATOR_RUN_COMMAND = /(?:^|\/)aws-emulator-run$/;
+/** Largest repository script read for the one-level indirection check. */
+const MAX_SCRIPT_BYTES = 1024 * 1024;
+
+/** Reads a repo-relative script's text, or null when it is unavailable. */
+export type ScriptReader = (relPath: string) => string | null;
+
+/** `aws-emulator-run` options that take a separate value word. */
+const EMULATOR_RUN_VALUE_OPTIONS = new Set(["--ready-timeout", "--timeout"]);
+/** Commands that run nothing, so `aws-emulator-run -- true` tests nothing. */
+const NO_OP_COMMANDS = new Set([
+  "true",
+  ":",
+  "/bin/true",
+  "/usr/bin/true",
+]);
+
+/**
+ * True when one command segment actually runs a repository test through
+ * the emulator runner (#5109's usage): its command word (see
+ * {@link commandIndex}, with any surrounding quotes removed) is
+ * `aws-emulator-run` or a path ending `/aws-emulator-run`, followed by
+ * optional `--ready-timeout N` / `--timeout N`, then `--` and a COMMAND that
+ * is not a no-op (`true`, `:`). The helper's own `--smoke` self-check,
+ * `--smoke-client`, `-h`/`--help`, a bare `--` and any unknown option do not
+ * count; nor do `echo aws-emulator-run`, `command -v aws-emulator-run`, an
+ * `install ... /usr/local/bin/aws-emulator-run` or the install fragment
+ * `container/toolchains/aws-emulator.sh`: none of them runs a test.
+ */
+function segmentInvokesEmulatorRunner(words: string[]): boolean {
+  let i = commandIndex(words);
+  const command = words[i];
+  if (
+    command === undefined ||
+    !AWS_EMULATOR_RUN_COMMAND.test(stripQuotes(command))
+  ) {
+    return false;
+  }
+  i++;
+  while (i < words.length) {
+    const arg = stripQuotes(words[i] ?? "");
+    if (EMULATOR_RUN_VALUE_OPTIONS.has(arg)) {
+      if (i + 1 >= words.length) return false;
+      i += 2;
+    } else if (arg === "--") {
+      const testCommand = words[i + 1];
+      return testCommand !== undefined &&
+        stripQuotes(testCommand).length > 0 &&
+        !NO_OP_COMMANDS.has(stripQuotes(testCommand));
+    } else {
+      return false; // --smoke, --smoke-client, -h, --help or unknown
+    }
+  }
+  return false;
+}
+
+/**
+ * The repo-relative script a segment runs: its command word (see
+ * {@link commandIndex}) when that is a relative path (contains `/`), or the
+ * first operand of `bash`/`sh` after its options. Null when none, and for
+ * a `bash`/`sh` that would not run the script: `-n` / `-o noexec` /
+ * `--noexec` only checks syntax, and `-c` takes a command string.
+ */
+function segmentScriptPath(words: string[]): string | null {
+  const i = commandIndex(words);
+  const word = words[i];
+  if (word === undefined) return null;
+  const command = stripQuotes(word);
+  if (command === "bash" || command === "sh") {
+    const args = words.slice(i + 1);
+    const options = readShellOptions(args);
+    if (options.noexec || options.commandString) return null;
+    const arg = args[options.operand];
+    return arg === undefined ? null : stripQuotes(arg);
+  }
+  return command.includes("/") ? command : null;
+}
+
+/**
+ * True when `script` text has a reachable segment that invokes the emulator
+ * runner (see {@link reachableSegments}).
+ */
+function scriptInvokesEmulatorRunner(script: string): boolean {
+  return reachableSegments(script).some((w) => segmentInvokesEmulatorRunner(w));
+}
+
+/**
+ * True when a workflow `if:` value is statically false (`false`, `${{ false }}`,
+ * `0`, `''`, `null`, `!true`), so the job or step never runs. Any other
+ * expression is decided at run time and keeps its credit.
+ */
+function ifIsStaticallyFalse(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (value === false || value === null || value === 0) return true;
+  if (typeof value !== "string") return false;
+  const text = value.trim();
+  const wrapped = /^\$\{\{([^}]*)\}\}$/.exec(text);
+  const expr = (wrapped?.[1] ?? text).trim().toLowerCase();
+  return ["false", "0", "''", '""', "null", "!true"].includes(expr);
+}
+
+/** A `defaults.run.shell` value, when the record has one. */
+function defaultShell(record: Record<string, unknown>): unknown {
+  const defaults = record.defaults;
+  if (!isRecord(defaults) || !isRecord(defaults.run)) return undefined;
+  return defaults.run.shell;
+}
+
+/**
+ * True when a step's `shell:` value (`bash -n {0}`, `sh -o noexec {0}`)
+ * reads the `run:` body without running it. Other shells, and a missing
+ * value, run it.
+ */
+function shellIsNoexec(shell: unknown): boolean {
+  if (typeof shell !== "string") return false;
+  const words = shell.trim().split(/\s+/);
+  const command = (words[0] ?? "").replace(/^.*\//, "");
+  if (command !== "bash" && command !== "sh") return false;
+  return readShellOptions(words.slice(1)).noexec;
+}
+
+/**
+ * Build a `ScriptReader` confined to `repoRoot`. Rejects absolute paths,
+ * `~`, `..` segments and `$` expansions; resolves symlinks and requires the
+ * real path to sit inside the real repo root. Out-of-repo, non-file or
+ * over-1-MiB scripts read as null, as does a missing script (including a
+ * symlink to a missing target). Any other read error (for example permission
+ * denied) throws, so a script that exists but cannot be read is never
+ * mistaken for one that does not count.
+ */
+export function makeRepoScriptReader(repoRoot: string): ScriptReader {
+  return (relPath: string): string | null => {
+    if (
+      relPath.length === 0 || relPath.startsWith("/") ||
+      relPath.startsWith("~") || relPath.includes("$") ||
+      relPath.includes("\0") || relPath.split("/").includes("..")
+    ) {
+      return null;
+    }
+    try {
+      const realRoot = Deno.realPathSync(repoRoot);
+      const real = Deno.realPathSync(`${realRoot}/${relPath}`);
+      if (!real.startsWith(realRoot.replace(/\/+$/, "") + "/")) return null;
+      const info = Deno.statSync(real);
+      if (!info.isFile || info.size > MAX_SCRIPT_BYTES) return null;
+      return Deno.readTextFileSync(real);
+    } catch (err) {
+      if (err instanceof Deno.errors.NotFound) return null;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `aws-emulator check: cannot read repository script ${relPath}: ${message}`,
+        { cause: err },
+      );
+    }
+  };
+}
+
+/**
+ * True when a parsed workflow document runs tests through the official AWS
+ * Emulator in a `run:` step: either a segment invokes `aws-emulator-run`
+ * directly, or it runs a repository script (a relative path, or the first
+ * argument of `bash`/`sh`) that `readScript` returns and that itself has a
+ * segment invoking `aws-emulator-run` (one level of indirection only).
+ * Without `readScript` only direct invocations count. A job or step whose
+ * `if:` is statically false, and a command that cannot run (after `exit`,
+ * behind `false &&`, in a false branch, in a function body or here-document;
+ * see {@link reachableSegments}), earns no credit, in the workflow's `run:`
+ * and in the repository script alike, as does a step whose shell (`shell:`,
+ * or the job's or workflow's `defaults.run.shell`) is `bash -n` or another
+ * mode that never runs commands, and a script run by such a `bash`/`sh`. Floci is detected separately by
+ * `workflowRunsFloci`.
+ */
+export function workflowRunsAwsEmulator(
+  parsedYaml: unknown,
+  readScript?: ScriptReader,
+): boolean {
+  if (!isRecord(parsedYaml)) return false;
+  const jobs = parsedYaml.jobs;
+  if (!isRecord(jobs)) return false;
+
+  const workflowShell = defaultShell(parsedYaml);
+  for (const job of Object.values(jobs)) {
+    if (!isRecord(job) || ifIsStaticallyFalse(job.if)) continue;
+    const steps = job.steps;
+    if (!Array.isArray(steps)) continue;
+    const jobShell = defaultShell(job) ?? workflowShell;
+    for (const step of steps) {
+      if (!isRecord(step) || typeof step.run !== "string") continue;
+      if (ifIsStaticallyFalse(step.if)) continue;
+      if (shellIsNoexec(step.shell ?? jobShell)) continue;
+      for (const words of reachableSegments(step.run)) {
+        if (segmentInvokesEmulatorRunner(words)) return true;
+        if (readScript === undefined) continue;
+        const path = segmentScriptPath(words);
+        if (path === null) continue;
+        const text = readScript(path);
+        if (text !== null && scriptInvokesEmulatorRunner(text)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Local recursive walker
 // ---------------------------------------------------------------------------
@@ -423,9 +636,14 @@ async function readFileOrSkip(path: string): Promise<string | null> {
 
 /**
  * Check a repository checked out at `repoPath` for AWS usage and for a
- * GitHub Actions workflow that runs the `floci/floci` emulator image.
+ * GitHub Actions workflow that runs an emulator (`floci/floci`, or tests
+ * through the official AWS Emulator via `aws-emulator-run`, directly or in a
+ * repository script a `run:` step executes).
  * A missing or unreadable `repoPath` rejects rather than reading as "no
- * AWS" — a wrong path must never be mistaken for a genuine absence.
+ * AWS" — a wrong path must never be mistaken for a genuine absence. An
+ * unreadable repository script referenced by a `run:` step (one that exists
+ * but cannot be read, such as permission denied) rejects too; a missing one
+ * does not count.
  */
 export async function checkAwsEmulatorInCI(
   repoPath: string,
@@ -437,9 +655,11 @@ export async function checkAwsEmulatorInCI(
   // loadWorkflows only keeps workflows that parsed, so a throw here would
   // be a genuine fault (not a reachable "unparseable" case) and should
   // surface rather than be swallowed.
-  const emulatorConfigured = workflows.some((w) =>
-    workflowRunsFloci(parseYaml(w.rawContent))
-  );
+  const readScript = makeRepoScriptReader(repoPath);
+  const emulatorConfigured = workflows.some((w) => {
+    const doc = parseYaml(w.rawContent);
+    return workflowRunsFloci(doc) || workflowRunsAwsEmulator(doc, readScript);
+  });
 
   const awsEvidence = Array.from(evidence).sort();
   return {
