@@ -140,6 +140,47 @@ const MAPPING_KEY_VALUE = /^[A-Za-z0-9_.-]{1,128}:$/;
 const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
 
 /**
+ * The separator of a prose heading: a bare colon then spaces, on one line
+ * (Issue #5253). No quote, no `=` and no line break, so only `Name: text` reads
+ * as a heading.
+ */
+const PROSE_HEADING_SEPARATOR = /^:[ \t]{1,32}$/;
+
+/**
+ * A Capitalised word or a PascalCase run of them, letters only: the shape of a
+ * product name used as a heading, such as `TokenEconomizer` (Issue #5253).
+ * Bounded on both counts, so it is linear (the Issue #3942 rule).
+ */
+const PROSE_HEADING_KEY = /^(?:[A-Z][a-z]{1,31}){1,8}$/;
+
+/**
+ * The last capitalised word of a key: `Economizer` in `TokenEconomizer`, or
+ * `Token` in `GithubToken` (Issue #5253).
+ */
+const LAST_KEY_COMPONENT = /[A-Z][a-z]*$/;
+
+/**
+ * Last words that name a credential field: `GithubToken`, `ApiKey`,
+ * `ClientSecret`, `SecretValue` (Issue #5253). A key ending in one is a
+ * credential whatever its value, so its mask is never lifted.
+ */
+const CREDENTIAL_KEY_COMPONENTS: ReadonlySet<string> = new Set([
+  "token",
+  "tokens",
+  "secret",
+  "secrets",
+  "password",
+  "passwords",
+  "passwd",
+  "key",
+  "keys",
+  "apikey",
+  "credential",
+  "credentials",
+  "value",
+]);
+
+/**
  * Report whether a matched `secret-assignment` value is credential-shaped
  * (Issue #1727).
  *
@@ -151,12 +192,16 @@ const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
  * stopped rendering; the prose variant masked a sentence's first word.
  *
  * The label side of the rule is deliberately blunt and stays that way — it
- * catches real secrets. Only the value is judged, and only when the separator
- * crossed a line break. **An inline assignment is masked exactly as before**:
+ * catches real secrets. The one exception is a prose heading (Issue #5253),
+ * whose key is read only by {@link isProseHeading}. Apart from that check, only
+ * the value is judged, and only when the separator crossed a line break.
+ * **An inline assignment is masked exactly as before**, bar a prose heading:
  * `secret_scanning: enabled`, `PASSWORD=12345` and a value wrapped in
  * backticks, or opening with `#`, `>` or `|` — all legitimate password
  * characters — are untouched by this predicate. That boundary is load-bearing:
- * judging inline values too is what let a fence-wrapped secret through.
+ * judging inline values too is what let a fence-wrapped secret through. The
+ * one inline exception, a prose heading (Issue #5253), is decided before this
+ * predicate by {@link isProseHeading}.
  *
  * Across a line break the value must earn the mask: complete Markdown
  * ({@link FENCE_VALUE}, {@link IMAGE_VALUE}) and a child mapping key
@@ -191,13 +236,35 @@ export function isCredentialShapedValue(
 }
 
 /**
+ * Report whether an assignment is a product name used as a prose heading
+ * (Issue #5253), so the rule must not mask the word after its colon.
+ *
+ * A heading such as `TokenEconomizer: run the agreed trial` names a product,
+ * and its last word (`Economizer`) is not a credential field. A credential
+ * field's name ends in one (`GithubToken`, `Password`), and those stay masked
+ * whatever the value. Only a bare colon, a Capitalised key and a plain single
+ * word as the value qualify, so a value with a digit, symbol, quote or over 15
+ * letters is still masked under any key, as are `=`, quoted keys, `_` keys and
+ * lower-camel identifiers.
+ */
+function isProseHeading(key: string, sep: string, value: string): boolean {
+  if (!PROSE_HEADING_SEPARATOR.test(sep)) return false;
+  if (!PROSE_HEADING_KEY.test(key)) return false;
+  const last = (key.match(LAST_KEY_COMPONENT)?.[0] ?? "").toLowerCase();
+  if (CREDENTIAL_KEY_COMPONENTS.has(last)) return false;
+  return PLAIN_WORD.test(value);
+}
+
+/**
  * Apply {@link isCredentialShapedValue} to one `secret-assignment` match.
  *
  * The single place the separator's shape is turned into a `sameLine` verdict,
  * so the replacement pass and {@link matchesSignatureRule} cannot drift apart
- * (Issue #1727).
+ * (Issue #1727). A prose heading is not an assignment at all, so
+ * {@link isProseHeading} exempts it first (Issue #5253).
  */
-function assignmentIsMasked(sep: string, value: string): boolean {
+function assignmentIsMasked(key: string, sep: string, value: string): boolean {
+  if (isProseHeading(key, sep, value)) return false;
   return isCredentialShapedValue(value, !LINE_TERMINATOR.test(sep));
 }
 
@@ -549,7 +616,16 @@ const RULES: readonly RedactionRule[] = [
   // rendering. `isCredentialShapedValue` judges the value before the
   // substitution: Markdown structure is never a credential, and a value the
   // separator reached across a line break must look like one. An inline
-  // assignment is unaffected, so the label side stays as blunt as it was.
+  // assignment is unaffected, except a prose heading (Issue #5253, below); the
+  // label side stays blunt apart from that check.
+  //
+  // A product name used as a prose heading is not an assignment (Issue #5253).
+  // `TokenEconomizer: run the agreed trial` — the #4959 PR title — had its `run`
+  // masked. When the key is a Capitalised product name whose last word is not a
+  // credential field (`Economizer`, though `GithubToken` ends in `Token`), the
+  // separator is a bare colon and spaces, and the value is one plain word, the
+  // mask is lifted by `isProseHeading`. `=`, quoted keys, `_` keys, lower-camel
+  // identifiers and any value with a digit, symbol or quote stay masked.
   //
   // A bare switch is configuration, not a credential. The
   // `github-actions-audit` idle task filed fourteen issues whose whole
@@ -597,7 +673,7 @@ const RULES: readonly RedactionRule[] = [
     name: "secret-assignment",
     pattern: SECRET_ASSIGNMENT_PATTERN,
     replace: (match: string, key: string, sep: string, value: string) => {
-      if (!assignmentIsMasked(sep, value)) return match;
+      if (!assignmentIsMasked(key, sep, value)) return match;
       const quote = QUOTED_VALUE.test(value) ? value.charAt(0) : "";
       return `${key}${sep}${quote}${REDACTION_PLACEHOLDER}${quote}`;
     },
@@ -704,7 +780,9 @@ function detectsSecretAssignment(text: string): boolean {
   try {
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(text)) !== null) {
-      if (assignmentIsMasked(match[2] ?? "", match[3] ?? "")) return true;
+      if (
+        assignmentIsMasked(match[1] ?? "", match[2] ?? "", match[3] ?? "")
+      ) return true;
     }
     return false;
   } finally {
