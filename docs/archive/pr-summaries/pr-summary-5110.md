@@ -2,282 +2,164 @@
 
 ## Summary
 
-PRs #5276 and #5288 (both merged) moved VibeCoder's CloudFormation tests to the
-official AWS Emulator. They also added a step to the required `container` check
-that runs the reference command as `agent` in a fresh worker container. #5288's
-own CI has now run that step (see Evidence). The evidence the earlier summary
-said was still missing now exists.
+Earlier merged PRs (#5276, #5288, #5297) moved VibeCoder's CloudFormation tests
+to the official AWS Emulator. They also made the required `container` check run
+the reference command as `agent` and held `container-build.yml` to that
+contract. #5297 left one criterion `partial`: "missing required execution
+cannot become a green check". The `aws-emulator` job reaches a red check only
+through the required `gate` job in `quality.yml`, and that link was barely
+checked. `checkQualityCallsAwsEmulator` checked only that `gate` needs
+`aws-emulator`, and no test ran `.github/scripts/gate.sh`.
 
-This PR closes the last gap the earlier summary named in the step's validator.
-`checkContainerBuildRunsAwsEmulator`
-(`worker/deno/lib/aws_emulator_workflow_check.ts`) did not look at the `changes`
-job that sets `IMAGE_CHANGED`. Removing `needs: changes`, making `changes`
-skippable, or making its `image` output constant would skip every image step,
-including the agent run, and still report the required check green. The
-validator now also requires:
+This PR closes that link:
 
-- job `container` to need `changes`;
-- job `changes` to exist, with no `if:` or soft `continue-on-error`, and
-  `outputs.image` exactly `${{ steps.filter.outputs.image }}`;
-- the `filter` step to have no `if:` or soft `continue-on-error`, a shell that
-  runs the body, and `BASE_SHA`/`HEAD_SHA` taken from the pull request event;
-- the raw filter body to contain no `${{ }}` expression, including in a
-  comment;
-- the `filter` step's code (comments, blank lines and `\` continuations aside)
-  to be exactly the `FILTER_CODE` allowlist, ending in
-  `.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`, and its env
-  to set nothing but `EVENT_NAME`, `BASE_SHA` and `HEAD_SHA`; a comment is a
-  physical line whose first character after any leading spaces or tabs is `#`;
-  non-ASCII filter code is refused, and only one backslash as a line's final
-  character is accepted as a continuation; its newline is removed without
-  adding a space, as Bash removes it;
-- job `changes` to have no step but `actions/checkout` and the `filter` step,
-  and no `container:` or `env:`; the workflow to set no `env:`.
+- `checkQualityCallsAwsEmulator`
+  (`worker/deno/lib/aws_emulator_workflow_check.ts`) now also requires the
+  `gate` job to:
+  - have `if: always()` (`[gate-always]`);
+  - have no soft `continue-on-error` (`[gate-soft]`);
+  - have one step that runs `.github/scripts/gate.sh` by its exact path as its
+    only command, with `NEEDS_JSON: ${{ toJSON(needs) }}`, no `if:` or soft
+    `continue-on-error`, and a shell that runs the body (`[gate-script]`);
+  - have no other step but `actions/checkout`.
+- `worker/deno/tests/quality_gate_script_5110_test.ts` runs the real `gate.sh`.
+  It shows that a skipped, cancelled, failed or result-less `aws-emulator` job
+  closes the gate, and that an unset, empty, `{}` or non-JSON `NEEDS_JSON`
+  closes it too. The test is listed in `IN_GATE_SCRIPT_SUITES`, so the local
+  quality gate runs it.
 
-Part of #5110.
+Closes #5110.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The issue's third acceptance criterion says missing required execution must
-  not become a green check. In GitHub, a skipped step or job counts as passing,
-  so any edit that stops `IMAGE_CHANGED` being `true` turns the agent run into a
-  silent pass. The `changes` job is where that can happen.
-- The `filter` step is held to an exact line allowlist rather than parsed: a
-  parse of the last reachable command accepted runtime `||`/`if` guards, empty
-  loops, a trailing `&` and a `GITHUB_OUTPUT` reassignment, each of which exits
-  0 with no `image` output.
+- GitHub reports a skipped required check as passing. If `gate` lost
+  `if: always()`, a skipped `aws-emulator` job would also skip `gate`, and the
+  pull request would go green. The same happens if the gate step stopped
+  feeding `gate.sh` the real `needs` context. The existing validator caught
+  neither.
+- `gate.sh` already treats anything but `success` as a closed gate. Nothing
+  tested that, so the new test pins the script's current behaviour rather than
+  fixing it.
 
 ### Essential Design Decisions
 
-- The check stays a text check. Edits made on the runner (rewriting the
-  checked-out script, replacing docker, an indirect `GITHUB_ENV` write) are
-  still outside what it can see. `docs/EC2-LINUX-VERIFICATION.md` lists them.
-- The fresh-container run is still gated on `IMAGE_CHANGED`. A PR that changes
-  only `infra/cloudformation/**` runs the same script on the runner through
-  `aws-emulator.yml`, which the required `gate` job needs. It does not get a
-  fresh-container run, because that would rebuild the 11-minute image on every
-  template change.
+- The gate step is matched by its exact command: `.github/scripts/gate.sh`,
+  `./.github/scripts/gate.sh`, or `bash` or `sh` followed by one of those
+  paths. The shared `segmentInvokes` match accepts any path that ends in the
+  script name, so the Standards review found that
+  `./evil.github/scripts/gate.sh` passed. The shared helper is unchanged,
+  because the `aws-emulator.yml` checks use it.
+- Every other `gate` step must be a plain `actions/checkout`, so no earlier
+  step can rewrite or replace `gate.sh`. This is the same rule the `changes`
+  job already follows.
+- `if:` accepts only `always()` and `${{ always() }}`. An equivalent condition
+  such as `!cancelled()` is refused, which fails safe.
+- The `gate.sh` tests are ignored, with a stated reason, on a host with no
+  `jq`. `gate.sh` itself exits 1 without `jq`, so CI cannot pass because of
+  this.
 
 ### Undiscoverable Facts
 
-- PR #5288's CI, job 136121503571 (`container-build / container`, step "Run the
-  AWS Emulator reference command as agent in a fresh container"), ran
-  `docker run --rm --user agent … test-aws-emulator.sh "${IMAGE}"` and passed:
-  - aws-emulator 1.0.385 was installed from the sha256-checked package;
-  - `PASS: SSM round trip value = round-trip-ee67b7b250ad`;
-  - `PASS: SSM get-parameter after delete: ParameterNotFound (as expected)`;
-  - 10 resources had their properties checked;
-  - cleanup was asserted (`ValidationError`, `NoSuchEntity`,
-    `InvalidVpcID.NotFound`);
-  - `all 22 assertions passed`;
-  - one named gap was reported as `UNSUPPORTED (not proven)`
-    (`AWS::EC2::Instance` `MetadataOptions`), with its alternative validation
-    and recheck condition;
-  - `[aws-emulator-run] stopped; exit 0`.
-- All 23 of PR #5288's checks succeeded (2 skipped).
+- Both reviewer agents defined for this run (`spec-reviewer`,
+  `standards-reviewer`) failed with `You've reached your Fable limit` (HTTP
+  429). The same briefs were then run as general-purpose sub-agents. Each one
+  got only the diff, plus the issue body or `CODING-STANDARDS.md`.
 
 ## Evidence
 
-Backend and CI validator only; no UI file and no workflow file is touched.
+Backend and CI validator only. No UI file and no workflow file is touched.
 
 ```mermaid
 flowchart LR
-    C["changes job<br/>filter step"] -->|"outputs.image"| E["container job<br/>IMAGE_CHANGED"]
-    E -->|"'true'"| B["docker build"] --> A["agent run<br/>test-aws-emulator.sh"]
-    E -->|"anything else"| S["every image step skips<br/>check reports green"]
-    V["checkContainerBuildRunsAwsEmulator"] -.now validates.-> C
-    V -.validates.-> A
+    A["aws-emulator job<br/>(quality.yml)"] -->|"result"| G["gate job<br/>if: always()"]
+    G --> S["gate.sh on toJSON(needs)"]
+    S -->|"all success"| P["gate green"]
+    S -->|"skipped / cancelled / failure / no result"| R["gate red"]
+    V["checkQualityCallsAwsEmulator"] -.validates.-> G
+    T["quality_gate_script_5110_test.ts"] -.runs.-> S
 ```
 
-- Tests: `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (see Test
-  Plan).
-- Issue numbers cited: #5110 (CI: migrate VibeCoder's AWS tests to AWS Emulator
-  and record real coverage gaps); #5276 and #5288 (the earlier merged PRs for
-  this issue, same title).
+- Validator: `gateJudgesNeeds` and `stepRunsGateScript` in
+  `worker/deno/lib/aws_emulator_workflow_check.ts`.
+- Docs: `docs/EC2-LINUX-VERIFICATION.md`, section "Testing the template against
+  AWS Emulator (Issue #5110)". The paragraph on the `aws-emulator` job now
+  names the `gate` wiring that the validator checks, and the test that runs
+  `gate.sh`.
+- Issue numbers cited:
+  - #5110: CI: migrate VibeCoder's AWS tests to AWS Emulator and record real
+    coverage gaps.
+  - #5276, #5288 and #5297: the earlier merged PRs for this issue, with the
+    same title.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — A fresh worker container runs the reference command as `agent`, and
-  CI runs the same applicable integration checks. — evidence:
-  `.github/workflows/container-build.yml` agent-run step (PR #5288), which ran
-  and passed in job 136121503571; `.github/workflows/aws-emulator.yml` on every
-  PR through `gate` — reviewer: met
-- **met** — Evidence includes the pinned release, actual test commands,
-  successful data assertions, a supported negative API result and cleanup. —
-  evidence: job 136121503571 log (quoted under Undiscoverable Facts);
-  `docs/EC2-LINUX-VERIFICATION.md` — reviewer: met
-- **partial** — Focused tests prove startup/test failures propagate and missing
-  required execution cannot become a green check. — evidence:
-  `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (startup and test
-  failures exit non-zero);
-  `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (the
-  `[container-agent-run]` refusal tables, including the new `changes`-gate
-  cases) — reviewer: partial — reason: the reviewer found a prior step in job
-  `changes` could rewrite the detect script; that is now refused by a test, but
-  the reviewer has not re-run on the fix
-- **met** — Every existing template is accounted for as exercised or as a
-  specific unsupported case with alternative validation; no unsupported/stubbed
-  resource is reported as proven. — evidence:
-  `infra/cloudformation/test-aws-emulator.sh` `KNOWN_GAPS`;
-  `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts::aws-emulator-cloudformation 5110: the expected named-gap run exits 0 and reports the gap as UNSUPPORTED, never a pass`
-  — reviewer: met
-- **met** — Any retained Floci test names the exact gap and removal/recheck
-  condition. — evidence: no Floci test of VibeCoder's AWS templates remains
-  (removed in PR #5276) — reviewer: met
-- **met** — Existing branch/PR coverage, least-privilege permissions and
-  required checks remain intact. CI actually runs the new command rather than
-  merely installing the emulator. — evidence:
-  `.github/workflows/aws-emulator.yml` runs
-  `./infra/cloudformation/test-aws-emulator.sh`; this diff changes no workflow —
-  reviewer: met
-- **partial** — Required local/CI checks pass; no automatic mutation or fuzzing
-  campaign is added. — evidence: `./quality.sh` passed on this branch; no
-  campaign added — reviewer: partial — reason: CI not yet verified — remaining:
-  merge-verification-only
+- **met** — A fresh worker container runs the reference command as `agent`, and CI runs the same applicable integration checks. — evidence: `.github/workflows/container-build.yml` agent-run step (PR #5288); `.github/workflows/aws-emulator.yml` through `quality.yml` — reviewer: met
+- **met** — Evidence includes the pinned release, actual test commands, successful data assertions, a supported negative API result and cleanup. — evidence: `docs/EC2-LINUX-VERIFICATION.md`; `infra/cloudformation/test-aws-emulator.sh` — reviewer: met
+- **met** — Focused tests prove startup/test failures propagate and missing required execution cannot become a green check. — evidence: `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` (startup and test failures exit non-zero); `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` (`[container-agent-run]`, `[gate-always]`, `[gate-soft]` and `[gate-script]` refusals); `worker/deno/tests/quality_gate_script_5110_test.ts` (a skipped, cancelled, failed or result-less `aws-emulator` closes `gate.sh`) — reviewer: met
+- **met** — Every existing template is accounted for as exercised or as a specific unsupported case with alternative validation; no unsupported/stubbed resource is reported as proven. — evidence: `infra/cloudformation/test-aws-emulator.sh` `KNOWN_GAPS`; `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` — reviewer: met
+- **met** — Any retained Floci test names the exact gap and removal/recheck condition. — evidence: no Floci test of VibeCoder's templates remains (removed in PR #5276) — reviewer: met
+- **met** — Existing branch/PR coverage, least-privilege permissions and required checks remain intact. CI actually runs the new command rather than merely installing the emulator. — evidence: `.github/workflows/aws-emulator.yml` runs `./infra/cloudformation/test-aws-emulator.sh`; this diff changes no workflow — reviewer: met
+- **partial** — Required local/CI checks pass; no automatic mutation or fuzzing campaign is added. — evidence: `./quality.sh` passed on c1f548851; no campaign added — reviewer: met — reason: CI not yet verified — remaining: merge-verification-only
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — Writing a gate over text (evasion table): the first version of
-  the `filter`-step check read only the step's last line, so `true || \` above
-  the call, a `GITHUB_OUTPUT=` prefix, swapped SHA arguments and a `bash -n {0}`
-  shell all passed, and the `image=` regex accepted `image=true-x` and fired on
-  `--image=foo` — evidence: `worker/deno/lib/aws_emulator_workflow_check.ts:554`
-  — reason: `filterCodeIsCanonical` compares the joined command lines with
-  `FILTER_CODE`. The validator checks `FILTER_ENV_KEYS`, `WORKFLOW_SHELL_ENV`,
-  the effective shell and each sibling step (`stepIsPlainCheckout`).
-- **violation** — Writing a gate over text (no silent pass on unread input):
-  lines above the last were never read — evidence:
-  `worker/deno/lib/aws_emulator_workflow_check.ts:554` — reason: fixed in this
-  diff (the filter code is an exact allowlist, so any other command before or
-  around the call, including a guarded `exit 0`, an `||`/`if` guard, a loop, a
-  trailing `&` or a `GITHUB_OUTPUT` assignment, `export` or `unset`, is refused)
-- **violation** — Check where you insert: after the new doc sentences, "It" and
-  "those files" pointed at the wrong things — evidence:
-  `docs/EC2-LINUX-VERIFICATION.md:62` — reason: fixed in this diff ("The
-  validator is a text check", "`GITHUB_ENV` or `GITHUB_PATH`")
-- **violation** — Prose about the PR's own change: the code comments said
-  "checked end to end" and "not skippable, soft-failing or constant" — evidence:
-  `worker/deno/lib/aws_emulator_workflow_check.ts:52` — reason: fixed in this
-  diff (replaced by the list of what is checked)
-- **violation** — Summary must match the head: the old summary listed the
-  constant `outputs.image` and missing `needs: changes` cases as accepted —
-  evidence: `docs/archive/pr-summaries/pr-summary-5110.md:141` — reason: fixed
-  in this diff (summary rewritten)
-- **clean** — These rules were checked and comply:
-  - Australian English;
-  - no source-grep tests;
-  - no test-only members;
-  - the code hunks follow "Check where you insert";
-  - `outputs.image` is compared exactly;
-  - YAML is read as structure, and `needs` is tested in both scalar and list
-    form;
-  - each refusal test asserts one finding and its own message;
-  - each anchor is used exactly once;
-  - no `/tmp`, environment, clock or history use in the tests;
-  - the regex is linear.
-
-  A second standards review on the allowlist version found stale comments, a
-  dead `isObject` branch and a three-name env denylist; all were fixed after it
-  (job `changes` env is now refused outright). The first reviewer saw the first
-  version of the diff. The fixes above were made after it, in 503fe65f1.
+- **violation** — Writing a gate over text (equality on normalised forms; evasion table): the `[gate-script]` step match accepted any command ending in `.github/scripts/gate.sh` (`./evil.github/scripts/gate.sh`, `/tmp/x/.github/scripts/gate.sh`), and an earlier step that overwrote the script passed — evidence: `worker/deno/lib/aws_emulator_workflow_check.ts` — reason: fixed in this diff (`stepRunsGateScript` matches the exact path; any other `gate` step must be a plain `actions/checkout`; three refusal tests added)
+- **clean** — Australian English; reuses `stepsOf`, `segmentsOf`, `effectiveShell`, `setsSoftContinueOnError` and `stepIsPlainCheckout`, with no copied helpers; malformed input yields findings, not a throw. Every new branch outcome has a test. Each refusal test asserts one finding, its prefix and its own message against an otherwise valid real `quality.yml`. No dummy, "how" or source-grep tests (review-enforced). Every ignore carries a reason (review-enforced). `runGate` clears the environment and uses no `/tmp` paths. `gate.sh` has no GNU-only forms. Docs were updated with the code. No twinned rule; no secrets or hidden files. The optional doc wording on "soft `continue-on-error`" was aligned in this diff.
 
 ## Test Plan
 
-- Added to `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`:
-  - **`(container-agent-run) refuses …` table, 57 cases, each asserting one
-    finding with that rule's own message:**
-    - a missing or wrong `needs`;
-    - a constant `outputs.image`;
-    - `if:` or `continue-on-error` on job `changes` or on the `filter` step;
-    - a renamed `filter` id;
-    - an `image=false` write, in place of the call or before it;
-    - an `image=$x`, `image=true-x` or `image=true$X` write;
-    - an `image<<` output, both quoted on an `echo` line and in a here-document
-      body;
-    - `true ||` before the call;
-    - an unconditional `exit 0`;
-    - a `GITHUB_OUTPUT=` prefix;
-    - `"$HEAD_SHA"` passed twice;
-    - `BASE_SHA` or `HEAD_SHA` taken from the wrong event field;
-    - `bash -n {0}` on the step, or on job `changes`;
-    - the call behind a runtime `[[ ]] ||` or `&&`, inside an `if` on the event
-      name, an empty `for` or a non-matching `case`, or run with `&`;
-    - a comment inside the continued output write or detect command;
-    - a guarded `exit 0`; `GITHUB_OUTPUT` assigned, exported or unset on its own
-      line; an `echo "--image=foo"` line;
-    - `GITHUB_OUTPUT` in the step env; any env on job `changes`;
-      `GITHUB_OUTPUT` in the workflow env; a workflow env expression;
-    - a step in job `changes` that rewrites the detect script, writes
-      `GITHUB_ENV`, or uses a local action.
-    - a GitHub expression inside a comment, a workflow-level git path variable,
-      and a `container:` on job `changes`;
-    - a non-breaking space before a comment, plus backslash-newline splitting
-      `set -euo`, the image-output `echo`, or the event condition;
-    - an escaped trailing backslash in the image-output or event-condition
-      quote, a line of two backslashes, and two backslashes after the detect
-      call.
-  - **`refuses job changes removed entirely with one finding`:** asserts "job
-    changes must exist".
-  - **Controls that return `[]`:** `needs: [changes]`, an extra comment line, an
-    extra blank line, and the call split by a `\` continuation.
+- **Added to `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`:**
+  - Refusals, each asserting one finding with its prefix and its own message:
+    - `[gate-always]` refuses a removed `if:`, `success()`, and
+      `${{ always() && false }}`.
+    - `[gate-soft]` refuses `continue-on-error: true` on the job.
+    - `[gate-script]` refuses `|| true`, `echo`, `true`, and the
+      `./evil.github/…` and `/tmp/x/.github/…` paths.
+    - `[gate-script]` refuses a constant `NEEDS_JSON`, no `env:`, a soft step,
+      `if: false` on the step, and `shell: bash -n {0}`.
+    - `[gate-script]` refuses an extra step that overwrites `gate.sh`.
+  - Controls that return `[]`: `${{ always() }}`, `bash .github/scripts/gate.sh`,
+    a `set -euo pipefail` block, and `./.github/scripts/gate.sh`.
+- **Added `worker/deno/tests/quality_gate_script_5110_test.ts`, 10 tests:**
+  - The fixture's `gate.needs` includes `aws-emulator`.
+  - All success exits 0 with the PASSED line.
+  - `skipped`, `cancelled` and `failure` each exit 1, with
+    `aws-emulator=<result>` and `QUALITY GATE CLOSED: 1 job(s)`.
+  - A missing result gives `NO_RESULT`.
+  - An unset, empty, `{}` or non-JSON `NEEDS_JSON` exits 1 with its own
+    message.
+  - These pin current behaviour, so they are green on the base too.
 - **Red runs, observed:**
-  - With the first refusal cases written and the validator not yet changed, 12
-    failed.
-  - Before the review fixes, 13 failed: 11 new refusals and the 2 look-alike
-    controls, which the old regex fired on.
-  - The here-document case was added after the fix, so it was never observed
-    red.
-  - After the pre-PR verifier's review, the 14 new filter-code and env cases all
-    failed against the previous validator (`endsWithDetectCall`). The 5 later
-    cases (other `changes` steps, job and expression env) were written with the
-    fix and not observed red.
-  - The two comment-inside-a-continuation cases added after review both failed
-    against 0ac992ab2 with `[]` where one finding was expected.
-  - The comment-backslash cases for `exit 0` and `true ||` both failed against
-    aa8c2e6dc with `[]` where one finding was expected.
-  - The GitHub-expression comment, workflow git variable and job-container
-    cases were observed red by the pre-PR verifier against 782ef8b7: each
-    returned `[]` where one finding was expected.
-  - The non-breaking-space comment and the three backslash-continuation cases
-    were observed red by the fleet reviewer against 782ef8b7: each returned
-    `[]` where one finding was expected.
-  - The four escaped-backslash cases were observed red by the fleet reviewer
-    against 0835318a: each returned `[]` where one finding was expected.
-- **Existing tests:** none edited, and the diff removes no line from the test
-  file. The real `container-build.yml` positive test still returns `[]`. The new
-  check runs after the existing early return, so the malformed-input cases still
-  give one finding.
-- **Focused run:**
-  `cd worker/deno && deno task test:unit tests/issue_5110_aws_emulator_workflow_test.ts tests/aws_emulator_in_ci_check_test.ts tests/aws_emulator_cloudformation_5110_test.ts < /dev/null`
-  gave 312 passed, 0 failed before the last 5 cases; the 5110 workflow test file
-  alone now gives 170 passed, 0 failed.
-- **Corpus:** `checkContainerBuildRunsAwsEmulator` over every
-  `.github/workflows/*.yml` returns `[]` only for `container-build.yml`. Every
-  other workflow gets findings. False positives 0; false negatives 0 against the
-  refusal table.
-- **Full gate:** `./quality.sh < /dev/null` on 503fe65f1 gave
-  `Result: PASSED (with skipped checks)`. The gate itself skipped
-  `config integration` and `checkov`.
-  - The earlier run on cabce9170 failed one test,
-    `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`, on this host's
-    missing DNS ("Failed caching npm package 'entities@3.0.1'").
-  - That test clears the environment, so it uses `~/.cache/deno`. It passed once
-    I copied the four npm packages into that cache from the worker cache. This
-    was not a repository change.
-- **Docs:** I read `docs/EC2-LINUX-VERIFICATION.md`, section "Testing the
-  template against AWS Emulator (Issue #5110)", the paragraph on the required
-  `container` check, and updated it. I grepped `README.md`, `docs/` (not
-  `docs/archive/`) and `*/README.md` for `checkContainerBuildRunsAwsEmulator`
-  and `container-agent-run`. The only hit was that paragraph.
-- **Twinned-rule search:** `worker/deno/lib/aws_emulator_in_ci_check.ts` (the
-  fleet detector) judges whether a workflow runs the emulator. It has no rule on
-  a `changes` job or `needs`, so this check has no twin.
+  - The 12 first refusals, run against the base validator (`git show
+    HEAD:…`), gave `172 passed | 12 failed`. Each returned `[]` where one
+    finding was expected.
+  - The 3 evasion refusals, run against 2695c88bf, gave
+    `185 passed | 3 failed`.
+- **Existing tests:** none edited and no assertion removed. "real quality.yml
+  calls aws-emulator.yml and gate needs it" still expects `[]`, so it now also
+  covers the new rules.
+- **Focused run:** from `worker/deno`,
+  `deno task test:unit tests/issue_5110_aws_emulator_workflow_test.ts tests/quality_gate_script_5110_test.ts < /dev/null`
+  gave 198 passed, 0 failed. `tests/integration_test_manifest_test.ts` passed
+  once the new test was listed in `IN_GATE_SCRIPT_SUITES`.
+- **Full gate:** `./quality.sh < /dev/null` on c1f548851 gave
+  `Result: PASSED (with skipped checks)`.
+  - The gate itself skipped `config integration` (no `.config.json`) and
+    `checkov` (no checkov on PATH).
+  - The run before it, on 40e1d8496, failed only on the manifest test above.
+- **Docs:** read the `aws-emulator` paragraph of `docs/EC2-LINUX-VERIFICATION.md`
+  and updated it. Grepped `README.md`, `docs/` (not `docs/archive/`) and
+  `*/README.md` for `checkQualityCallsAwsEmulator` and `gate-needs`. The only
+  hit is that paragraph.
+- **Twinned-rule search:** no other checker validates the `gate` job's
+  `if:`/`gate.sh` wiring. `draft_ci_by_design.ts` reads `gate` only as a check
+  name.
 
 ## Merge verification
 
@@ -285,12 +167,8 @@ flowchart LR
 
 ## Not done or not checked
 
-- The validator cannot see runner-side edits in job `container`: a step there
-  that rewrites the checked-out script, replaces docker or its context, or
-  writes `GITHUB_ENV` indirectly, and a retag it does not recognise. In job
-  `changes` no such step can exist (only `actions/checkout` is allowed). An edit
-  to `.github/scripts/detect-image-changes.sh` itself is covered by that
-  script's own tests, not by this validator. `docs/EC2-LINUX-VERIFICATION.md`
-  lists them.
-- A PR that changes only `infra/cloudformation/**` gets the runner path, not a
-  fresh-container run (see Essential Design Decisions).
+- The validator is a text check. It cannot see a runner-side change to
+  `gate.sh` made outside the `gate` job, or a change to `gate.sh` itself. The
+  new test covers the script's own behaviour.
+- On a host with no `jq`, the `gate.sh` tests are reported as ignored, not
+  failed.
