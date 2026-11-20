@@ -90,6 +90,11 @@ Documentation and rule text only; no runtime code changed.
   with the proxy set filled the default deno cache. This changed the
   environment, not the repo. The test then passed (12 passed with the drift
   test). It reads neither changed document.
+- Pre-push hook: the run's git guard shim exports `DENO_DIR=/opt/deno-seed`, a
+  read-only seed cache that lacks `commonmark`, `minimist` and `mdurl`. Under
+  it the hook stopped with `deno test could not fetch a module`. Pushing
+  through `/usr/bin/git` still ran the full hook, against the run's own cache,
+  and it printed `pre-push gate passed`.
 
 Not checked: none. Remaining risk: none known.
 
