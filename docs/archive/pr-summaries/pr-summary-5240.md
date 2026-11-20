@@ -81,11 +81,9 @@ Issue numbers the diff cites:
   verdict (closed)
 
 Docs read: the README Documentation table (trial rows) and
-`docs/MODEL-AND-CACHING.md`, Phase-Specific Defaults. No other manual describes
-Code Mode: `git grep -i "code mode\|code-mode"` outside `docs/archive/` hits
-this page, the README row and Codex's code-mode host:
-`container/providers/codex.sh`, `docs/CONTAINER.md`, the run-outcome classifier
-and its tests.
+`docs/MODEL-AND-CACHING.md`, Phase-Specific Defaults.
+`docs/CONTAINER.md` and `docs/audits/security-sweep-4664-babysitter-codex.md`
+describe the Codex code-mode host. The new experiment page covers Claude Code.
 
 ## Acceptance Criteria
 
