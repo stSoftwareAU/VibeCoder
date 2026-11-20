@@ -864,6 +864,14 @@ const IMAGE_FALSE_LINE = '          echo "image=false" >> "$GITHUB_OUTPUT"\n';
 // step, the agent run included, skips and the required check still passes.
 for (
   const [label, pairs, expected] of [
+    ["a comment inside the continued image output command", [[
+      'echo "image=true" >>',
+      'echo "image=true" \\\n            # comment\n            >>',
+    ]], "must be exactly"],
+    ["a comment inside the continued detect script command", [[
+      'detect-image-changes.sh "$BASE_SHA"',
+      'detect-image-changes.sh \\\n            # comment\n            "$BASE_SHA"',
+    ]], "must be exactly"],
     ["job container without needs: changes", [[
       CONTAINER_NEEDS,
       "  container:\n",

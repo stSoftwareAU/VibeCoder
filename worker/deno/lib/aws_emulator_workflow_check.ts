@@ -593,8 +593,10 @@ const FILTER_CODE = [
  * continuations joined, each line trimmed with runs of blanks collapsed.
  */
 function codeLines(step: unknown): string[] {
-  return codeOf(step).replace(/\\\n/g, " ").split("\n")
-    .map((l) => l.trim().replace(/[ \t]+/g, " ")).filter((l) => l !== "");
+  return runOf(step).replace(/\\\n/g, " ").split("\n")
+    .map((l) => l.trim().replace(/[ \t]+/g, " ")).filter((l) =>
+      l !== "" && !l.startsWith("#")
+    );
 }
 
 /** Whether the step's code is exactly {@link FILTER_CODE}. */
@@ -723,8 +725,9 @@ function imageGateProblems(
  * set to the filter step's output; and the `filter` step has no `if:` or soft
  * `continue-on-error`, takes its SHAs from the pull request event, sets no
  * other env, has a shell that runs the body, and has exactly the allowlisted
- * code ending in the detect script call; no workflow or `changes` env sets
- * `BASH_ENV`, `ENV` or `GITHUB_OUTPUT`. Never throws on malformed input.
+ * code ending in the detect script call. The job allows only checkout and the
+ * filter step and no job env. Workflow env cannot set BASH_ENV, ENV,
+ * GITHUB_OUTPUT, SHELLOPTS or BASHOPTS. Never throws on malformed input.
  */
 export function checkContainerBuildRunsAwsEmulator(
   workflow: unknown,

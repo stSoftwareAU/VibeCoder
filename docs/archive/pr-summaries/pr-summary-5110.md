@@ -143,13 +143,9 @@ flowchart LR
   the call, a `GITHUB_OUTPUT=` prefix, swapped SHA arguments and a `bash -n {0}`
   shell all passed, and the `image=` regex accepted `image=true-x` and fired on
   `--image=foo` — evidence: `worker/deno/lib/aws_emulator_workflow_check.ts:554`
-  — reason: fixed in this diff (`endsWithDetectCall` over `reachableSegments`,
-  the `FILTER_ENV` and effective-shell checks, `WRITES_OTHER_IMAGE`, each with a
-  refusal test and two look-alike controls)
-- **violation** — Writing a gate over text (reuse the parser the repo has): a
-  new last-line reader instead of `reachableSegments` — evidence:
-  `worker/deno/lib/aws_emulator_workflow_check.ts:548` — reason: fixed in this
-  diff (`lastLineInvokes` removed)
+  — reason: `filterCodeIsCanonical` compares the joined command lines with
+  `FILTER_CODE`. The validator checks `FILTER_ENV_KEYS`, `WORKFLOW_SHELL_ENV`,
+  the effective shell and each sibling step (`stepIsPlainCheckout`).
 - **violation** — Writing a gate over text (no silent pass on unread input):
   lines above the last were never read — evidence:
   `worker/deno/lib/aws_emulator_workflow_check.ts:554` — reason: fixed in this
@@ -189,7 +185,7 @@ flowchart LR
 ## Test Plan
 
 - Added to `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`:
-  - **`(container-agent-run) refuses …` table, 42 cases, each asserting one
+  - **`(container-agent-run) refuses …` table, 44 cases, each asserting one
     finding with that rule's own message:**
     - a missing or wrong `needs`;
     - a constant `outputs.image`;
@@ -207,9 +203,10 @@ flowchart LR
     - `bash -n {0}` on the step, or on job `changes`;
     - the call behind a runtime `[[ ]] ||` or `&&`, inside an `if` on the event
       name, an empty `for` or a non-matching `case`, or run with `&`;
+    - a comment inside the continued output write or detect command;
     - a guarded `exit 0`; `GITHUB_OUTPUT` assigned, exported or unset on its own
       line; an `echo "--image=foo"` line;
-    - `GITHUB_OUTPUT` in the step env; any env on job `changes`; `BASH_ENV` or
+    - `GITHUB_OUTPUT` in the step env; any env on job `changes`;
       `GITHUB_OUTPUT` in the workflow env; a workflow env expression;
     - a step in job `changes` that rewrites the detect script, writes
       `GITHUB_ENV`, or uses a local action.

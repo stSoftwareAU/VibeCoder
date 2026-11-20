@@ -70,8 +70,9 @@ that appends `image=true` to `"$GITHUB_OUTPUT"` and exits, then
 `.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`. Any other
 command is refused, including a `||`/`&&`/`if`/loop/`case` guard on the call, a
 trailing `&`, another `exit`, another `image=` write, and an assignment,
-`export` or `unset` of `GITHUB_OUTPUT`. The workflow and `changes` job `env:`
-may not set `BASH_ENV`, `ENV` or `GITHUB_OUTPUT`. Otherwise `IMAGE_CHANGED` may
+`export` or `unset` of `GITHUB_OUTPUT`. The `changes` job permits only checkout and the filter step
+and has no job-level env. Workflow env may not set `BASH_ENV`, `ENV`,
+`GITHUB_OUTPUT`, `SHELLOPTS` or `BASHOPTS`. Otherwise `IMAGE_CHANGED` may
 not be `true`, every image step and the agent run skip, and the required check
 passes without running the command. The validator is a text check, so it does
 not catch everything. It misses an indirect write to
