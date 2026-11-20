@@ -80,6 +80,9 @@ Backend change, no UI files. Tests under `worker/deno/tests/`:
   - With no open issue, the file is marked and no comment is posted.
   - A failed comment keeps the file name and warns with the cause; the next pass
     posts it.
+  - A failed issue lookup (the `gh issue list` search rejects) keeps the file
+    name, posts no comment and warns with the gh error's first line; once the
+    lookup succeeds, the next pass posts the comment and renames the file.
   - A malformed archived file is left byte-for-byte as it was, with a warning.
   - A newly reported file is archived as `*.facts.json` and never backfilled.
   - The backfill runs through `reportPendingHardKills` and logs its count line.
@@ -112,20 +115,66 @@ flowchart TD
 
 ## Acceptance Criteria
 
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
 - **missing** — "use a bounded replay or the next applicable recurrence to
-  diagnose and repair the completion failure" — reason: the cause is not
-  established. This PR publishes the archived guest probe and last step, which
-  the next run needs before it can diagnose.
+  diagnose and repair the completion failure" — reviewer: missing — reason: no
+  recurrence has been filed since 4 November (a search for
+  `hard-kill-watchdog-completion` issues created after it returns none), and the
+  evidence is only on GRQ-3, so there is nothing to replay. The diff publishes
+  that evidence for the next run, but does not diagnose or repair the wedge.
 - **missing** — "Complete the issue through an implemented fix and automated
-  regression/recovery evidence" — reason: no fix to the wedge is made, because a
-  speculative fix for an unreproduced fault is not allowed. Only the evidence
-  path is implemented and tested.
+  regression/recovery evidence" — reviewer: missing — reason: no fix to the
+  wedge is made, because a speculative fix for an unreproduced fault is not
+  allowed. The tests cover the backfill, not recovery from the wedge.
+- **partial** — "make the necessary redacted cause/last-step evidence available
+  to the automated diagnostic path" — evidence:
+  `worker/deno/lib/hard_kill_facts_backfill.ts`,
+  `tests/hard_kill_facts_backfill_4815_test.ts::backfill posts one facts comment for an archived pre-change file, then never again`
+  — reviewer: partial — reason: the fixed-shape facts reach the open issue as a
+  comment, but only once GRQ-3's worker restarts, and the reviewer did not check
+  that the diagnostic path reads that comment.
+- **met** — "preserve the existing private diagnostic boundary … Do not publish
+  raw private repository logs here" — evidence:
+  `tests/hard_kill_facts_backfill_4815_test.ts::backfill posts one facts comment for an archived pre-change file, then never again`
+  (asserts that no `gh` argument carries the log tail's token) — reviewer: met
+- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-4815.json`, the
+  `*.facts.json` archive name and the new exports `factsPostedName` and
+  `HARD_KILL_ARCHIVE_SENTENCE` — reviewer: unrequested — reason: support for the
+  backfill (the coverage ledger claims the new module, and the name records that
+  a file's facts were posted).
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — readable comments — evidence:
+  `worker/deno/lib/hard_kill_facts_backfill.ts:7` — reason: not fixed in this
+  diff. The header paragraph repeats itself and one line runs past the wrap
+  width.
+- **violation** — KISS/DRY (low) — evidence:
+  `worker/deno/lib/hard_kill_facts_backfill.ts:36`,
+  `worker/deno/lib/hard_kill_report.ts:70` — reason: not fixed in this diff. The
+  two modules import each other. This works because each import is used only
+  inside functions.
+- **violation** — KISS/DRY (low) — evidence:
+  `worker/deno/lib/hard_kill_facts_backfill.ts:74` — reason: not fixed in this
+  diff. The plain-directory check and the rename repeat the archive handling in
+  `defaultHardKillSeams`.
+- **clean** — Australian English, behaviour tests (8 pass, including the
+  failed-lookup retry), security (facts only, no log text, a symlinked archive
+  is refused), docs (`docs/CALLBACKS.md` and the coverage ledger), and Deno and
+  TypeScript conventions.
 
 ## Test Plan
 
-- **Added** `worker/deno/tests/hard_kill_facts_backfill_4815_test.ts` (7 tests,
+- **Added** `worker/deno/tests/hard_kill_facts_backfill_4815_test.ts` (8 tests,
   listed under Evidence). On the base branch they fail, because the module does
   not exist and the archive name is unchanged.
+- **Red-checked** the failed-lookup test: with the lookup's catch changed to
+  fall through as `issue = null`, it fails (7 passed, 1 failed), because the
+  file is renamed to `*.facts.json` with no comment. With the head's code
+  restored it passes (8 passed, 0 failed).
 - **Unchanged and re-run** `worker/deno/tests/hard_kill_report_test.ts`. Its
   fake filesystem records archived names, so the suffix is visible only through
   the default seam, which the new test covers. No assertion was removed.
@@ -135,9 +184,9 @@ flowchart TD
   `deno test -A tests/hard_kill_facts_backfill_4815_test.ts
   tests/hard_kill_report_test.ts tests/hard_kill_guest_facts_test.ts
   tests/hard_kill_evidence_test.ts tests/run_core_production_deps_hard_kill_test.ts
-  tests/run_core_hard_kill_test.ts`
-  from `worker/deno`: 145 passed, 0 failed. `deno task check:manifests` passed
-  (876 passed, 0 failed).
+  tests/run_core_hard_kill_test.ts tests/lib_sweep_coverage_test.ts`
+  from `worker/deno` after adding the failed-lookup test: 185 passed, 0 failed.
+  `deno task check:manifests` passed (876 passed, 0 failed).
 - **Ran** `./quality.sh < /dev/null`. Every stage passed except `deno tests`,
   where one test failed, `tests/pr_summary_ci_workflow_3768_test.ts`, because
   this host has no DNS (`Failed caching npm package 'minimist@1.2.8'`). After I
@@ -158,6 +207,10 @@ flowchart TD
 ## Not done or not checked
 
 - The wedge's cause and its repair are not done (see Acceptance Criteria).
+- The issue also says a missing evidence file, repeated deferral or exhausted
+  retries must not turn the issue into `needs-human`. The spec reviewer found
+  nothing in the diff that touches that logic, so this PR neither changes nor
+  proves it.
 - `hard_kill_report.ts` and `hard_kill_facts_backfill.ts` import each other.
   This works, because each uses the other's exports only inside functions.
 - When the pending evidence directory cannot be listed, `reportPendingHardKills`

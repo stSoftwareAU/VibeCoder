@@ -72,13 +72,23 @@ function evidence(
 }
 
 /** A fake gh: only the completion class has an open issue. */
-function fakeGh(opts: { failComment?: { value: boolean } } = {}) {
+function fakeGh(
+  opts: {
+    failComment?: { value: boolean };
+    failList?: { value: boolean };
+  } = {},
+) {
   const calls: string[][] = [];
   const comments: string[][] = [];
   const created: string[][] = [];
   const ghFn = (args: string[]): Promise<string> => {
     calls.push(args);
     if (args[0] === "issue" && args[1] === "list") {
+      if (opts.failList?.value) {
+        return Promise.reject(
+          new Error("gh: API rate limit exceeded\nsecond line"),
+        );
+      }
       const search = args[args.indexOf("--search") + 1]!;
       const open = created.length > 0 || search.includes(`:${OPEN_CLASS}"`);
       const rows = open
@@ -217,6 +227,45 @@ Deno.test("backfill keeps the file when the comment fails and posts it next pass
     failing.value = false;
     assertEquals(await run(), { posted: 1, marked: 0, kept: 0 });
     assertEquals(gh.comments.length, 1);
+    assertEquals(await names(archive), [factsPostedName(ARCHIVED)]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("backfill keeps the file when the issue lookup fails and posts it next pass", async () => {
+  const { dir, archive } = await setup();
+  try {
+    await Deno.writeTextFile(
+      `${archive}/${ARCHIVED}`,
+      JSON.stringify(evidence()),
+    );
+    const failing = { value: true };
+    const gh = fakeGh({ failList: failing });
+    const warns: string[] = [];
+    const run = () =>
+      backfillArchivedHardKillFacts({
+        evidenceDir: dir,
+        ghFn: gh.ghFn,
+        fleetAuthors: FLEET,
+        logWarn: (m) => warns.push(m),
+      });
+    assertEquals(await run(), { posted: 0, marked: 0, kept: 1 });
+    assertEquals(await names(archive), [ARCHIVED]);
+    assertEquals(gh.comments, []);
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, ARCHIVED);
+    assertStringIncludes(warns[0]!, "issue lookup failed");
+    assertStringIncludes(warns[0]!, "gh: API rate limit exceeded");
+    assertFalse(warns[0]!.includes("second line"));
+
+    failing.value = false;
+    assertEquals(await run(), { posted: 1, marked: 0, kept: 0 });
+    assertEquals(gh.comments.length, 1);
+    assertStringIncludes(
+      gh.comments[0]![gh.comments[0]!.indexOf("--body") + 1]!,
+      hardKillFactsMarker(RUN_ID),
+    );
     assertEquals(await names(archive), [factsPostedName(ARCHIVED)]);
   } finally {
     await Deno.remove(dir, { recursive: true });
