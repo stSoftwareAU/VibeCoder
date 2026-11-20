@@ -114,15 +114,6 @@ export interface SummaryRuleRunVerdict {
    */
   standingViolations?: readonly StandingViolation[];
   /**
-   * True when one of the gates folded into `comment` can only be satisfied by
-   * changing tests (the coverage carry-over gate, Issue #3795: a line that a
-   * removed test used to reach is fixed by adding a test that reaches it). The
-   * recovery prompt then
-   * allows test changes for that item instead of telling the agent the code is
-   * final. Absent means every item is a documentation shortfall.
-   */
-  allowsTestChanges?: boolean;
-  /**
    * The acceptance criteria the run has not met (Issue #4146). Each becomes an
    * UNMET CRITERION item the turn must finish in code and tests — a summary
    * that re-labels it `met` without the work is the over-claim the reviewers
@@ -153,20 +144,6 @@ const PRE_PR_VERIFIER_HEADING_WORDS = PRE_PR_VERIFIER_COMMENT_HEADING
 /** Step 2 of the recovery prompt when every REQUIRED ITEM is a summary shortfall. */
 const STEP_TWO_DOCS_ONLY =
   "2. Fix every REQUIRED ITEM the notice lists, and nothing else. This is a documentation shortfall in the summary file: the code on the branch has already passed the quality gate, so do not change it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change.";
-
-/**
- * The step-2 rule for a coverage carry-over item among the REQUIRED ITEMS
- * (Issue #3795), shared by the plain and the standing-violation step 2. That
- * item names lines an edited or removed test used to reach and no test reaches
- * now, so it is fixed by changing tests; telling the agent the code is final
- * would leave an exemption as its only way to satisfy the prompt.
- */
-const STEP_TWO_TEST_RULE =
-  "A coverage carry-over item (it lists `file:line` lines that an edited or removed test used to reach and no test reaches now) is not a documentation shortfall: fix it by adding or restoring tests that reach each listed line, or remove a listed line only if it is now dead code. Record `file:line` exempt (untestable): <reason> in the summary only for a line that genuinely cannot be tested, never for a line a test can reach. Every other REQUIRED ITEM is a documentation shortfall in the summary file: the code on the branch has already passed the quality gate, so do not change code for it. ";
-
-/** Step 2 when a coverage carry-over item is among the REQUIRED ITEMS. */
-const STEP_TWO_WITH_TESTS =
-  `2. Fix every REQUIRED ITEM the notice lists, and nothing else. ${STEP_TWO_TEST_RULE}Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change.`;
 
 /**
  * Prompt for the in-run recovery invocation.
@@ -315,17 +292,8 @@ ${blocks.join("\n\n")}
 
 `;
   }
-  const allowsTests = verdict.allowsTestChanges === true;
   const step2Base = standing.length > 0
-    ? `2. Fix every REQUIRED ITEM the notice lists, and every CODE FIX item below, and nothing else. ${
-      allowsTests ? STEP_TWO_TEST_RULE : ""
-    }${
-      allowsTests ? "Every other" : "A"
-    } REQUIRED ITEM is a documentation shortfall in the summary file: do not change the code for it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change. A CODE FIX item is ${
-      allowsTests ? "an additional" : "the one"
-    } exception: change the code it cites, as described under the CODE FIX items.`
-    : allowsTests
-    ? STEP_TWO_WITH_TESTS
+    ? "2. Fix every REQUIRED ITEM the notice lists, and every CODE FIX item below, and nothing else. A REQUIRED ITEM is a documentation shortfall in the summary file: do not change the code for it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change. A CODE FIX item is the one exception: change the code it cites, as described under the CODE FIX items."
     : STEP_TWO_DOCS_ONLY;
   // Unmet criteria are outside the documentation-only rule: say so before
   // that rule is stated.
