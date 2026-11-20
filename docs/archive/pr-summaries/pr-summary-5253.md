@@ -137,9 +137,12 @@ returned the title with `***REDACTED***` in place of `run`. The other 6 passed,
 as expected, because they pin masking the fix keeps.
 
 Red against the first cut of this fix (commit `dcdb8e953`, which read the key's
-last capitalised word and had no continuation check): the last two tests failed,
-because `Userpassword: hunter` and `SecretString: hunter` were published
-verbatim (run before the extra fixtures were added to the other tests).
+last capitalised word and had no continuation check): the two tests "a credential
+word as a lower-case suffix keeps the mask" and "a qualified credential field
+ending its line keeps the mask" failed, because `Userpassword: hunter` and
+`SecretString: hunter` were published verbatim. That run predates the extra
+fixtures and the later decode-then-rescan test, so it says nothing about how
+those fared.
 
 After the fix:
 
