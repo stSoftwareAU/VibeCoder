@@ -900,31 +900,31 @@ for (
     ["the filter step writing image=false instead of the script", [[
       DETECT_CALL_LINE,
       IMAGE_FALSE_LINE,
-    ]], "must end by running"],
+    ]], "must be exactly"],
     ["the filter step writing image=false before the script", [[
       DETECT_CALL_LINE,
       IMAGE_FALSE_LINE + DETECT_CALL_LINE,
-    ]], "must write no image= value"],
+    ]], "must be exactly"],
     ["the filter step writing image=$x before the script", [[
       DETECT_CALL_LINE,
       '          echo "image=$x" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
-    ]], "must write no image= value"],
+    ]], "must be exactly"],
     ["the script call behind true ||", [[
       DETECT_CALL_LINE,
       "          true || \\\n  " + DETECT_CALL_LINE,
-    ]], "must end by running"],
+    ]], "must be exactly"],
     ["an unconditional exit 0 before the script call", [[
       DETECT_CALL_LINE,
       "          exit 0\n" + DETECT_CALL_LINE,
-    ]], "must end by running"],
+    ]], "must be exactly"],
     ["an assignment prefix on the script call", [[
       DETECT_CALL_LINE,
       "          GITHUB_OUTPUT= " + DETECT_CALL_LINE.trimStart(),
-    ]], "must end by running"],
+    ]], "must be exactly"],
     ["the script called with HEAD_SHA twice", [[
       DETECT_CALL_LINE,
       '          .github/scripts/detect-image-changes.sh "$HEAD_SHA" "$HEAD_SHA"\n',
-    ]], "must end by running"],
+    ]], "must be exactly"],
     ["the filter step BASE_SHA taken from the head sha", [[
       FILTER_BASE_LINE,
       "          BASE_SHA: ${{ github.event.pull_request.head.sha }}\n",
@@ -945,13 +945,12 @@ for (
     ["the filter step writing image=true-x", [[
       DETECT_CALL_LINE,
       '          echo "image=true-x" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
-    ]], "must write no image= value"],
+    ]], "must be exactly"],
     ["the filter step writing image=true$X", [[
       DETECT_CALL_LINE,
       '          echo "image=true$X" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
-    ]], "must write no image= value"],
-    // The here-document body is dropped from the reachable commands, so the
-    // call stays last and the image rule is what refuses the output.
+    ]], "must be exactly"],
+    // The here-document lines are not in the FILTER_CODE allowlist.
     ["the filter step writing an image<<X output through a here-document", [[
       DETECT_CALL_LINE,
       [
@@ -961,13 +960,96 @@ for (
         "          X",
         "          OUT",
       ].join("\n") + "\n" + DETECT_CALL_LINE,
-    ]], "must write no image= value"],
-    // The shell parser reads `<<` as a here-document even inside quotes, so
-    // the call is swallowed and the end-of-step rule refuses this first.
+    ]], "must be exactly"],
+    // An extra echo line is not in the FILTER_CODE allowlist.
     ["the filter step writing an image<< heredoc output", [[
       DETECT_CALL_LINE,
       '          echo "image<<" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
-    ]], "must end by running"],
+    ]], "must be exactly"],
+    // Runtime guards, backgrounding and output redirection (verifier review):
+    // each exits 0 in bash with no image output, so the code is allowlisted.
+    ["the script call behind a runtime [[ ]] ||", [[
+      DETECT_CALL_LINE,
+      '          [[ -n "$BASE_SHA" ]] || ' + DETECT_CALL_LINE.trimStart(),
+    ]], "must be exactly"],
+    ["the script call behind a runtime [[ ]] &&", [[
+      DETECT_CALL_LINE,
+      '          [[ -z "$HEAD_SHA" ]] && ' + DETECT_CALL_LINE.trimStart(),
+    ]], "must be exactly"],
+    ["the script call inside an if on the event name", [[
+      DETECT_CALL_LINE,
+      '          if [[ "${EVENT_NAME}" == "push" ]]; then\n  ' +
+      DETECT_CALL_LINE + "          fi\n",
+    ]], "must be exactly"],
+    ["a guarded exit 0 before the script call", [[
+      DETECT_CALL_LINE,
+      '          [[ -n "$HEAD_SHA" ]] && exit 0\n' + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["the script call inside an empty for loop", [[
+      DETECT_CALL_LINE,
+      "          for x in; do\n  " + DETECT_CALL_LINE + "          done\n",
+    ]], "must be exactly"],
+    ["the script call inside a case that never matches", [[
+      DETECT_CALL_LINE,
+      '          case "$HEAD_SHA" in nomatch)\n  ' + DETECT_CALL_LINE +
+      "          ;; esac\n",
+    ]], "must be exactly"],
+    ["the script call run in the background", [[
+      DETECT_CALL_LINE,
+      DETECT_CALL_LINE.trimEnd() + " &\n",
+    ]], "must be exactly"],
+    ["GITHUB_OUTPUT assigned on its own line", [[
+      DETECT_CALL_LINE,
+      "          GITHUB_OUTPUT=/dev/null\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["GITHUB_OUTPUT exported", [[
+      DETECT_CALL_LINE,
+      "          export GITHUB_OUTPUT=/dev/null\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["GITHUB_OUTPUT unset", [[
+      DETECT_CALL_LINE,
+      "          unset GITHUB_OUTPUT\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["the filter step setting GITHUB_OUTPUT in its env", [[
+      FILTER_HEAD_LINE,
+      FILTER_HEAD_LINE + "          GITHUB_OUTPUT: /dev/null\n",
+    ]], "the changes filter step's env must set only"],
+    ["job changes setting BASH_ENV in its env", [[
+      CHANGES_JOB,
+      CHANGES_JOB + "    env:\n      BASH_ENV: /tmp/x\n",
+    ]], "job changes must set no env:"],
+    ["the workflow setting GITHUB_OUTPUT in its env", [[
+      "jobs:\n",
+      "env:\n  GITHUB_OUTPUT: /dev/null\njobs:\n",
+    ]], "job changes must set no env:"],
+    // Another step in job changes could rewrite the script the filter runs.
+    ["a step rewriting the detect script before the filter", [[
+      "      - name: Detect image-affecting changes\n",
+      "      - run: printf 'exit 0\\n' > .github/scripts/detect-image-changes.sh\n" +
+      "      - name: Detect image-affecting changes\n",
+    ]], "job changes may have no step but"],
+    ["a step writing BASH_ENV to GITHUB_ENV before the filter", [[
+      "      - name: Detect image-affecting changes\n",
+      '      - run: echo BASH_ENV=/tmp/e >> "$GITHUB_ENV"\n' +
+      "      - name: Detect image-affecting changes\n",
+    ]], "job changes may have no step but"],
+    ["a local action step before the filter", [[
+      "      - name: Detect image-affecting changes\n",
+      "      - uses: ./.github/actions/x\n" +
+      "      - name: Detect image-affecting changes\n",
+    ]], "job changes may have no step but"],
+    ["job changes setting a harmless-looking env", [[
+      CHANGES_JOB,
+      CHANGES_JOB + "    env:\n      SHELLOPTS: xtrace\n",
+    ]], "job changes must set no env:"],
+    ["the workflow env given as an expression", [[
+      "jobs:\n",
+      "env: ${{ fromJSON(vars.E) }}\njobs:\n",
+    ]], "job changes must set no env:"],
+    ["an echo of --image=foo before the script call", [[
+      DETECT_CALL_LINE,
+      '          echo "--image=foo"\n' + DETECT_CALL_LINE,
+    ]], "must be exactly"],
   ] as [string, [string, string][], string][]
 ) {
   Deno.test(`(container-agent-run) refuses ${label}`, () => {
@@ -997,8 +1079,8 @@ Deno.test("(container-agent-run) refuses job changes removed entirely with one f
 
 for (
   const [label, line] of [
-    ["an echo of --image=foo", '          echo "--image=foo"\n'],
-    ["a base_image=x assignment", "          base_image=x\n"],
+    ["an extra comment line", "          # a note\n"],
+    ["an extra blank line", "\n"],
   ] as const
 ) {
   Deno.test(`(container-agent-run) accepts the filter step with ${label}`, () => {
@@ -1013,6 +1095,18 @@ for (
     );
   });
 }
+
+Deno.test("(container-agent-run) accepts the script call split by a backslash continuation", () => {
+  assertEquals(
+    checkContainerBuildRunsAwsEmulator(parseYaml(
+      mutateText(CONTAINER_BUILD, [
+        DETECT_CALL_LINE,
+        '          .github/scripts/detect-image-changes.sh \\\n            "$BASE_SHA" "$HEAD_SHA"\n',
+      ]),
+    )),
+    [],
+  );
+});
 
 Deno.test("(container-agent-run) accepts job container with needs in list form", () => {
   assertEquals(

@@ -54,10 +54,11 @@
  * no `if:` or soft `continue-on-error`, and its `outputs.image` is exactly
  * `${{ steps.filter.outputs.image }}`; and its `id: filter` step has no `if:`
  * or soft `continue-on-error`, takes `BASE_SHA` and `HEAD_SHA` from the pull
- * request event, has an effective shell that runs the body, has as its last
- * reachable command exactly `.github/scripts/detect-image-changes.sh
- * "$BASE_SHA" "$HEAD_SHA"`, and writes no `image` output other than
- * `image=true`. Without these `IMAGE_CHANGED` may not be `true`, so the image
+ * request event, sets no other env but `EVENT_NAME`, has an effective shell
+ * that runs the body, and has exactly the `FILTER_CODE` allowlist as its code
+ * (ending in `.github/scripts/detect-image-changes.sh "$BASE_SHA"
+ * "$HEAD_SHA"`). Job `changes` has no other step but `actions/checkout` and no
+ * `env:`, and the workflow `env:` sets none of `WORKFLOW_SHELL_ENV`. Without these `IMAGE_CHANGED` may not be `true`, so the image
  * steps and the agent run skip and the required check passes without the run.
  * The check is textual and does not prove that the script itself is sound.
  *
@@ -69,10 +70,8 @@
  */
 
 import {
-  reachableSegments,
   shellSegments,
   statusPreservingCommandIndex,
-  stripQuotes,
 } from "./shell_command_words.ts";
 import { defaultShell } from "./aws_emulator_in_ci_check.ts";
 
@@ -551,34 +550,69 @@ function setsSoftContinueOnError(o: Record<string, unknown>): boolean {
     o["continue-on-error"] !== false;
 }
 
-/** The words the filter step's final reachable command must be, unquoted. */
-const DETECT_CALL_WORDS = [DETECT_SCRIPT_PATH, "$BASE_SHA", "$HEAD_SHA"];
 /** The pull request event values the filter step's env must pass on. */
 const FILTER_ENV = {
   BASE_SHA: "${{ github.event.pull_request.base.sha }}",
   HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
 };
+/**
+ * Workflow env names that change how the filter step's bash starts or where
+ * it writes its output. (Job `changes` may set no env at all; the workflow env
+ * also feeds job `container`, whose own rules apply there.)
+ */
+const WORKFLOW_SHELL_ENV = [
+  "BASH_ENV",
+  "ENV",
+  "SHELLOPTS",
+  "BASHOPTS",
+  "GITHUB_OUTPUT",
+];
+/** The only env keys the filter step may set. */
+const FILTER_ENV_KEYS = ["EVENT_NAME", ...Object.keys(FILTER_ENV)];
 
 /**
- * Whether the last reachable command of the step's code (comments dropped,
- * backslash continuations joined, commands after an unconditional `exit` or
- * behind `true ||` dropped) is exactly the detect script with `"$BASE_SHA"
- * "$HEAD_SHA"` and no assignment prefix. That command's status ends the step.
+ * The filter step's code, one command per line, exactly: an allowlist, not a
+ * parse. Non-pull-request events write `image=true` and exit; every other run
+ * ends in the detect script, unconditional and in the foreground, so its
+ * status ends the step. Any other command (a `||` or `if` guard, a loop, a
+ * trailing `&`, an `exit`, an `image=` write, a `GITHUB_OUTPUT` assignment,
+ * `export` or `unset`) is refused.
  */
-function endsWithDetectCall(step: unknown): boolean {
-  const last = reachableSegments(codeOf(step)).at(-1);
-  if (last === undefined || last.length !== DETECT_CALL_WORDS.length) {
-    return false;
-  }
-  return last.every((w, i) => stripQuotes(w) === DETECT_CALL_WORDS[i]);
+const FILTER_CODE = [
+  "set -euo pipefail",
+  'if [[ "${EVENT_NAME}" != "pull_request" ]]; then',
+  'echo "image=true" >> "$GITHUB_OUTPUT"',
+  'echo "${EVENT_NAME} event: image checks run"',
+  "exit 0",
+  "fi",
+  `${DETECT_SCRIPT_PATH} "$BASE_SHA" "$HEAD_SHA"`,
+];
+
+/**
+ * The step's code lines: comment lines and blank lines dropped, backslash
+ * continuations joined, each line trimmed with runs of blanks collapsed.
+ */
+function codeLines(step: unknown): string[] {
+  return codeOf(step).replace(/\\\n/g, " ").split("\n")
+    .map((l) => l.trim().replace(/[ \t]+/g, " ")).filter((l) => l !== "");
+}
+
+/** Whether the step's code is exactly {@link FILTER_CODE}. */
+function filterCodeIsCanonical(step: unknown): boolean {
+  const lines = codeLines(step);
+  return lines.length === FILTER_CODE.length &&
+    lines.every((l, i) => l === FILTER_CODE[i]);
 }
 
 /**
- * Whether the code writes an `image` output other than exactly `image=true`:
- * `image` as its own word (not `--image=` or `base_image=`) followed by `=` and
- * anything but `true` ending the word, or by a `<<` heredoc delimiter.
+ * Whether a step only runs `actions/checkout` (pinned or tagged), with no
+ * `run:`, `env:` or `shell:` of its own.
  */
-const WRITES_OTHER_IMAGE = /(?<![\w.-])image(?:<<|=(?!true(?![^\s"';|&)])))/;
+function stepIsPlainCheckout(step: unknown): boolean {
+  return isObject(step) && typeof step.uses === "string" &&
+    step.uses.startsWith("actions/checkout@") && step.run === undefined &&
+    step.env === undefined && step.shell === undefined;
+}
 
 /**
  * Findings for the `changes` job and `container`'s `needs`: together they
@@ -623,6 +657,7 @@ function imageGateProblems(
     );
   }
   const filter = stepsOf(changes).find((s) => isObject(s) && s.id === "filter");
+  const others = stepsOf(changes).filter((s) => s !== filter);
   if (!isObject(filter)) {
     problems.push(
       `${tag} job changes must have a step with id: filter: outputs.image reads it, and without it ${skipNote}`,
@@ -648,13 +683,32 @@ function imageGateProblems(
     problems.push(
       `${tag} the changes filter step's shell (step, job changes or workflow defaults.run.shell) must be bash or sh that runs the body: otherwise the filter may not run, ${skipNote}`,
     );
-  } else if (!endsWithDetectCall(filter)) {
+  } else if (!others.every(stepIsPlainCheckout)) {
     problems.push(
-      `${tag} the changes filter step must end by running ${DETECT_SCRIPT_PATH} "$BASE_SHA" "$HEAD_SHA" as its last reachable command, with no assignment prefix: the path filter decides whether the image is built, and a step that skips it or ends elsewhere can leave image unset`,
+      `${tag} job changes may have no step but the filter step and actions/checkout steps (no run:, no env:): another step could rewrite ${DETECT_SCRIPT_PATH} or write GITHUB_ENV before the filter runs, ${skipNote}`,
     );
-  } else if (WRITES_OTHER_IMAGE.test(codeOf(filter))) {
+  } else if (
+    Object.keys(filter.env ?? {}).some((k) => !FILTER_ENV_KEYS.includes(k))
+  ) {
     problems.push(
-      `${tag} the changes filter step must write no image= value other than image=true: image=false or a variable would turn off the image steps, ${skipNote}`,
+      `${tag} the changes filter step's env must set only ${
+        FILTER_ENV_KEYS.join(", ")
+      }: another variable such as GITHUB_OUTPUT or BASH_ENV could redirect the image output or run code before the filter, ${skipNote}`,
+    );
+  } else if (
+    changes.env !== undefined ||
+    (workflow.env !== undefined &&
+      (!isObject(workflow.env) ||
+        WORKFLOW_SHELL_ENV.some((k) => k in (workflow.env as object))))
+  ) {
+    problems.push(
+      `${tag} job changes must set no env: and the workflow env: none of BASH_ENV, ENV, SHELLOPTS, BASHOPTS or GITHUB_OUTPUT: a variable such as BASH_ENV, SHELLOPTS or GITHUB_OUTPUT could run code before the filter or redirect its output, ${skipNote}`,
+    );
+  } else if (!filterCodeIsCanonical(filter)) {
+    problems.push(
+      `${tag} the changes filter step's code (comments and blank lines aside) must be exactly: ${
+        FILTER_CODE.join(" / ")
+      }: any other command can skip the path filter, background it, redirect GITHUB_OUTPUT or write another image value, ${skipNote}`,
     );
   }
   return problems;
@@ -667,9 +721,10 @@ function imageGateProblems(
  * feeding `IMAGE_CHANGED` is intact: `container` needs `changes`; `changes`
  * exists with no `if:` or soft `continue-on-error` and with `outputs.image`
  * set to the filter step's output; and the `filter` step has no `if:` or soft
- * `continue-on-error`, takes its SHAs from the pull request event, has a shell
- * that runs the body, ends with the detect script call and writes no `image`
- * output but `image=true`. Never throws on malformed input.
+ * `continue-on-error`, takes its SHAs from the pull request event, sets no
+ * other env, has a shell that runs the body, and has exactly the allowlisted
+ * code ending in the detect script call; no workflow or `changes` env sets
+ * `BASH_ENV`, `ENV` or `GITHUB_OUTPUT`. Never throws on malformed input.
  */
 export function checkContainerBuildRunsAwsEmulator(
   workflow: unknown,

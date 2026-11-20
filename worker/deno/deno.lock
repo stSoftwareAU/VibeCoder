@@ -4,6 +4,7 @@
     "jsr:@std/assert@^1.0.18": "1.0.18",
     "jsr:@std/crypto@^1.1.0": "1.1.0",
     "jsr:@std/internal@^1.0.12": "1.0.12",
+    "jsr:@std/yaml@1": "1.0.12",
     "jsr:@std/yaml@^1.0.12": "1.0.12",
     "npm:commonmark@0.31.2": "0.31.2"
   },

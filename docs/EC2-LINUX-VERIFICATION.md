@@ -63,13 +63,18 @@ step runs `docker build -t "${IMAGE}"`, and no step names `GITHUB_ENV` or
 `changes` job to have no `if:` or `continue-on-error` and an `outputs.image` of
 exactly `${{ steps.filter.outputs.image }}`, and its step `id: filter` to have
 no `if:` or `continue-on-error`. That step's `BASE_SHA` and `HEAD_SHA` env must
-come from the pull request event, its shell must run the body, its last
-reachable command must be exactly
-`.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`, and it must
-write no `image=` value other than `image=true` (the non-pull-request branch).
-Otherwise `IMAGE_CHANGED` is not `true`, every image step and the agent run
-skip, and the required check passes without running the command. The validator
-is a text check, so it does not catch everything. It misses an indirect write to
+come from the pull request event, it may set no other env but `EVENT_NAME`, and
+its shell must run the body. Its code, comments and blank lines aside, must be
+exactly the current allowlist: `set -euo pipefail`, the non-pull-request branch
+that appends `image=true` to `"$GITHUB_OUTPUT"` and exits, then
+`.github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"`. Any other
+command is refused, including a `||`/`&&`/`if`/loop/`case` guard on the call, a
+trailing `&`, another `exit`, another `image=` write, and an assignment,
+`export` or `unset` of `GITHUB_OUTPUT`. The workflow and `changes` job `env:`
+may not set `BASH_ENV`, `ENV` or `GITHUB_OUTPUT`. Otherwise `IMAGE_CHANGED` may
+not be `true`, every image step and the agent run skip, and the required check
+passes without running the command. The validator is a text check, so it does
+not catch everything. It misses an indirect write to
 `GITHUB_ENV` or `GITHUB_PATH`, a step that rewrites the checked-out script or
 replaces docker or its context, and a retag the check does not recognise.
 
