@@ -15,8 +15,8 @@ block therefore records the failure reason, not a bullet such as
 
 - The issue's first suggested fix was taken: remove the block rather than add
   the bullets to `UNINFORMATIVE_LINE_PATTERNS`. A pattern such as `^- \w+:`
-  would also skip a bullet in agent output or a tool's error list. Removing
-  only the lines under the heading leaves every other bullet alone.
+  would also skip a bullet in agent output or a tool's error list. Removing only
+  the lines under the heading leaves every other bullet alone.
 
 ### Essential Design Decisions
 
@@ -26,9 +26,9 @@ block therefore records the failure reason, not a bullet such as
 - The block is dropped before the window is cut, as git's path list is. If
   nothing is left after dropping it, the existing fallback to all lines still
   records the last line.
-- A line that is not a `- ` bullet ends the block. When a last-output block
-  follows, the snippet's last line is still chosen, as the #2590 and #2598
-  tests require.
+- A line that is not a `-` bullet ends the block. When a last-output block
+  follows, the snippet's last line is still chosen, as the #2590 and #2598 tests
+  require.
 
 ### Undiscoverable Facts
 
@@ -47,10 +47,10 @@ Backend-only change; no UI file is touched.
   `formatDetailedFailureMessage` writes it. The output is unchanged.
 - `docs/CONFIGURATION.md`, Fast-failure repository back-off, "On every fast
   failure, on any host" bullet: one sentence now says the Diagnostics block is
-  dropped. That bullet is reflowed to 80 columns. I read the rest of the
-  section and found nothing else that describes how the detail line is chosen.
-- `recordRepoFastFailure` is the only production caller of
-  `diagnosticErrorLine` (`worker/deno/lib/repo_fast_failure_tracker.ts`).
+  dropped. That bullet is reflowed to 80 columns. I read the rest of the section
+  and found nothing else that describes how the detail line is chosen.
+- `recordRepoFastFailure` is the only production caller of `diagnosticErrorLine`
+  (`worker/deno/lib/repo_fast_failure_tracker.ts`).
 
 Issue numbers the diff cites:
 
@@ -63,24 +63,26 @@ Five tests were added in `worker/deno/tests/repo_fast_failure_tracker_test.ts`.
 No existing test was edited.
 
 - `diagnosticErrorLine - with no last output the detail is the failure reason,
-  not a Diagnostics bullet (Issue #5249)`: the issue's exact repro, built with
-  the real formatter.
+  not a Diagnostics bullet (Issue #5249)`:
+  the issue's exact repro, built with the real formatter.
 - `diagnosticErrorLine - a fuller Diagnostics block still yields the reason,
-  not a bullet (Issue #5249)`: timeout, exit code, clarity and baseline note
-  bullets.
+  not a bullet (Issue #5249)`:
+  timeout, exit code, clarity and baseline note bullets.
 - `recordRepoFastFailure - the stored detail is the reason above the
-  Diagnostics block (Issue #5249)`: goes through the production entry point and
-  asserts `lastDetail`.
+  Diagnostics block (Issue #5249)`:
+  goes through the production entry point and asserts `lastDetail`.
 - `diagnosticErrorLine - a bullet outside a Diagnostics block is still kept
-  (Issue #5249)`: the negative control.
+  (Issue #5249)`:
+  the negative control.
 - `diagnosticErrorLine - a message that is only a Diagnostics block still
-  records its last line (Issue #5249)`: the fallback branch.
+  records its last line (Issue #5249)`:
+  the fallback branch.
 
 Red against the unfixed code: the first three failed, for example
 `-   - Clarity: clear` / `+   Claude timed out without creating changes`, and
 the Note-bullet case returned
-`- Note: quality checks had pre-existing failures before this run`. The last
-two passed, as expected, because they pin behaviour the fix keeps.
+`- Note: quality checks had pre-existing failures before this run`. The last two
+passed, as expected, because they pin behaviour the fix keeps.
 
 After the fix:
 
