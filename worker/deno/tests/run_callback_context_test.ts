@@ -64,10 +64,9 @@ Deno.test("run_callback_context - a clock disagreement never yields a negative d
 });
 
 Deno.test("run_callback_context - blank optional identity fields are omitted", () => {
-  const context = buildIssueRunCallbackContext(run(), {
+  const context = buildIssueRunCallbackContext(run({ provider: "" }), {
     ...IDENTITY,
     workerName: "   ",
-    provider: "",
     sessionId: undefined,
   });
   assert(!("workerName" in context));
@@ -76,10 +75,9 @@ Deno.test("run_callback_context - blank optional identity fields are omitted", (
 });
 
 Deno.test("run_callback_context - known optional identity fields are carried", () => {
-  const context = buildIssueRunCallbackContext(run(), {
+  const context = buildIssueRunCallbackContext(run({ provider: "claude" }), {
     ...IDENTITY,
     workerName: "fleet-a",
-    provider: "claude",
     sessionId: "sess-9",
   });
   assertEquals(context.workerName, "fleet-a");
