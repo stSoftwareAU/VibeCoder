@@ -404,11 +404,26 @@ Deno.test("planChangedFileChecks: a nested root filters against its own scope, r
 
 // ---- runPrePushGate against a real git repo --------------------------------
 
-const GIT_ENV = ["-c", "user.email=t@e", "-c", "user.name=t"];
+const GIT_ENV = [
+  "-c",
+  "user.email=t@e",
+  "-c",
+  "user.name=t",
+  "-c",
+  "core.hooksPath=/dev/null",
+];
+
+/** Shuts out the host's git config and hooks, so a fixture push never runs a host hook (Issue #5254). */
+const NO_HOST_GIT_CONFIG = {
+  GIT_CONFIG_COUNT: "0",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+};
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
     args: [...GIT_ENV, ...args],
+    env: NO_HOST_GIT_CONFIG,
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -893,6 +908,7 @@ Deno.test("listPushedFiles: only files introduced by unpushed commits", async ()
     const files = await listPushedFiles(refs.value, clone, async (a, c) => {
       const out = await new Deno.Command("git", {
         args: a,
+        env: NO_HOST_GIT_CONFIG,
         cwd: c,
         stdout: "piped",
         stderr: "piped",
@@ -923,6 +939,7 @@ Deno.test("listPushedFiles: baseRef lists pushed commits ahead of the base; an o
     const run: PrePushGit = async (a, c) => {
       const out = await new Deno.Command("git", {
         args: a,
+        env: NO_HOST_GIT_CONFIG,
         cwd: c,
         stdout: "piped",
         stderr: "piped",
@@ -965,6 +982,7 @@ Deno.test("listPushedFiles: a committed symlink is not a regular file and is ski
     const files = await listPushedFiles(refs.value, clone, async (a, c) => {
       const out = await new Deno.Command("git", {
         args: a,
+        env: NO_HOST_GIT_CONFIG,
         cwd: c,
         stdout: "piped",
         stderr: "piped",
@@ -1007,6 +1025,7 @@ Deno.test("listPushedFiles: a file behind a directory later replaced by a symlin
     const files = await listPushedFiles(refs.value, clone, async (a, c) => {
       const out = await new Deno.Command("git", {
         args: a,
+        env: NO_HOST_GIT_CONFIG,
         cwd: c,
         stdout: "piped",
         stderr: "piped",
