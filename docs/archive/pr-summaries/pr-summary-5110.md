@@ -194,14 +194,12 @@ flowchart LR
   function that base lacks, so the file cannot load there. The fleet reviewer
   showed by direct call that base `checkAwsEmulatorWorkflow` returns `[]` for a
   `bash -n {0}` test step.
-- `./quality.sh < /dev/null` on 8005e1c03:
-  - every stage passed except `deno tests`, where 35404 passed and 1 failed:
-    `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`;
-  - the failure was this host's offline npm cache: "Failed caching npm package
-    'commonmark@0.31.2' ... dns error";
-  - after the cache was seeded,
-    `deno task test:unit tests/pr_summary_ci_workflow_3768_test.ts < /dev/null`
-    passed 11 of 11.
+- `./quality.sh < /dev/null` on f10167677: `Result: PASSED (with skipped
+  checks)`; `config integration` and `checkov` were skipped by the gate itself.
+  An earlier run on 8005e1c03 failed one test,
+  `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`, on this host's
+  offline npm cache ("Failed caching npm package 'commonmark@0.31.2' ... dns
+  error"); it passed after that cache was seeded, with no code change.
 - Twinned-rule search: `checkAwsEmulatorWorkflow` and the fleet detector
   `workflowRunsAwsEmulator` both judge shells. The detector keeps its own
   `shellIsNoexec` blocklist and is unchanged.
