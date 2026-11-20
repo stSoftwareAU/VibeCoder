@@ -257,6 +257,11 @@ Results:
   doc comment now name the two host figures beside the four guest figures. These
   are comment-only edits. After them, the 10 hard-kill test files above gave 241
   passed and 0 failed.
+- Merge with `main` (Issue #4815 facts backfill): the host disk and host memory
+  lines now sit in the shared `hardKillFactLines`, so the issue body and the
+  backfill comment carry the same fixed-shape facts. The backfill test fixture
+  gained a `hostState` entry; `hard_kill_report_test.ts` and
+  `hard_kill_facts_backfill_4815_test.ts` pass (87 tests).
 
 Not done:
 

@@ -507,19 +507,37 @@ flowchart TD
 | `startedAt`, `finishedAt`   | The evidence's capture time, for both, so `durationSeconds` is `0`; the real duration is unknown |
 
 - **Lifecycle.** The evidence file is moved into `~/logs/hard-kill-archive/`
-  once it is filed and reported. If filing fails, the file is kept for the next
-  launch and the failure is logged as a warning. No callback fires and nothing
-  is counted until filing succeeds, so the retry reports the kill once. Within
-  one pass, a repeat of a signature filed moments earlier goes straight to that
-  issue, without waiting for GitHub search to index it. If the file cannot be
-  archived after the report, it stays, the failure is logged as a warning, and
-  the next start reports the kill again. A malformed or wrong-version file is
-  logged as an error and kept; it is never deleted. On each reporting pass,
-  archived evidence is pruned to the transcript retention window: 30 days and at
-  most 2,000 files, deleting the oldest first. Cleanup also runs after
-  archiving, so the cap applies to newly reported files. Symlink archives are
-  refused; cleanup failures are logged as warnings. Pending malformed evidence
-  is not pruned.
+  once it is filed and reported. A newly filed issue contains every public fact,
+  so its file is immediately named
+  `hard-kill-<container>-<epoch>.facts.json`. A recurrence comment is shorter;
+  its file first keeps the ordinary `.json` name so the facts backfill posts
+  guest memory, pressure and the other full public facts, then becomes
+  `*.facts.json` in the same reporting pass. If filing fails, the file is kept
+  for the next launch and the failure is logged as a warning. No callback
+  fires and nothing is counted until filing succeeds, so the retry reports the
+  kill once. Within one pass, a repeat of a signature filed moments earlier goes
+  straight to that issue, without waiting for GitHub search to index it. If the
+  file cannot be archived after the report, it stays, the failure is logged as a
+  warning, and the next start reports the kill again. A malformed or
+  wrong-version file is logged as an error and kept; it is never deleted. On
+  each reporting pass, archived evidence is pruned to the transcript retention
+  window: 30 days and at most 2,000 files, deleting the oldest first. Cleanup
+  also runs after archiving, so the cap applies to newly reported files. Symlink
+  archives are refused; cleanup failures are logged as warnings. Pending
+  malformed evidence is not pruned.
+- **Facts backfill (Issue #4815).** Issues filed before the public fact fields
+  existed carry none of them. On each reporting pass, for every archived file
+  not named `*.facts.json`, the worker posts one comment on the open issue for
+  its signature with the same fixed-shape facts the issue body uses (never log
+  text), marked `vibe-hard-kill-facts` with the encoded archive filename, and
+  then renames the file to `*.facts.json`. Before posting, the worker checks for
+  that file marker
+  in a fleet-authored comment, so a failed rename cannot duplicate the comment
+  on the next start. A file whose signature has
+  no verified open issue is kept for a later start until retention expires. If the lookup or the comment
+  fails, the marker comments cannot be read, the rename fails, or the file is
+  malformed, the file is kept and retried on the next start. No callback fires
+  and nothing is counted.
 - **Additive contract.** `hard_kill` is a new value of the existing
   `outcome.failureClass` field, and a new key in the fleet summary's failure
   classes. Nothing is removed and no meaning changes, so `schemaVersion` stays

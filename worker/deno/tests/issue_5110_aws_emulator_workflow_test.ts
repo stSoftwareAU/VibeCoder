@@ -848,6 +848,341 @@ for (
   });
 }
 
+const CONTAINER_NEEDS = "  container:\n    needs: changes\n";
+const CHANGES_JOB = "  changes:\n";
+const CHANGES_OUTPUT_LINE = "      image: ${{ steps.filter.outputs.image }}\n";
+const FILTER_BASE_LINE =
+  "          BASE_SHA: ${{ github.event.pull_request.base.sha }}\n";
+const FILTER_HEAD_LINE =
+  "          HEAD_SHA: ${{ github.event.pull_request.head.sha }}\n";
+const FILTER_ID = "        id: filter\n";
+const DETECT_CALL_LINE =
+  '          .github/scripts/detect-image-changes.sh "$BASE_SHA" "$HEAD_SHA"\n';
+const IMAGE_FALSE_LINE = '          echo "image=false" >> "$GITHUB_OUTPUT"\n';
+
+// The `changes` job feeds IMAGE_CHANGED: if it cannot yield 'true' every image
+// step, the agent run included, skips and the required check still passes.
+for (
+  const [label, pairs, expected] of [
+    ["a comment inside the continued image output command", [[
+      'echo "image=true" >>',
+      'echo "image=true" \\\n            # comment\n            >>',
+    ]], "must be exactly"],
+    ["a comment inside the continued detect script command", [[
+      'detect-image-changes.sh "$BASE_SHA"',
+      'detect-image-changes.sh \\\n            # comment\n            "$BASE_SHA"',
+    ]], "must be exactly"],
+    ["job container without needs: changes", [[
+      CONTAINER_NEEDS,
+      "  container:\n",
+    ]], "job container must need changes"],
+    ["job container needing only another job", [[
+      CONTAINER_NEEDS,
+      "  container:\n    needs: [setup]\n",
+    ]], "job container must need changes"],
+    ["a constant changes outputs.image", [[
+      CHANGES_OUTPUT_LINE,
+      "      image: 'false'\n",
+    ]], "must set outputs.image"],
+    ["job changes with if: false", [[
+      CHANGES_JOB,
+      CHANGES_JOB + "    if: false\n",
+    ]], "job changes must have no if:"],
+    ["job changes with continue-on-error: true", [[
+      CHANGES_JOB,
+      CHANGES_JOB + "    continue-on-error: true\n",
+    ]], "job changes must have no if:"],
+    [
+      "the filter step id renamed",
+      [[FILTER_ID, "        id: detect\n"]],
+      "must have a step with id: filter",
+    ],
+    ["the filter step with continue-on-error: true", [[
+      FILTER_ID,
+      FILTER_ID + "        continue-on-error: true\n",
+    ]], "the changes filter step must have no if:"],
+    ["the filter step with if: false", [[
+      FILTER_ID,
+      FILTER_ID + "        if: false\n",
+    ]], "the changes filter step must have no if:"],
+    ["the filter step writing image=false instead of the script", [[
+      DETECT_CALL_LINE,
+      IMAGE_FALSE_LINE,
+    ]], "must be exactly"],
+    ["the filter step writing image=false before the script", [[
+      DETECT_CALL_LINE,
+      IMAGE_FALSE_LINE + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["the filter step writing image=$x before the script", [[
+      DETECT_CALL_LINE,
+      '          echo "image=$x" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["the script call behind true ||", [[
+      DETECT_CALL_LINE,
+      "          true || \\\n  " + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["an unconditional exit 0 before the script call", [[
+      DETECT_CALL_LINE,
+      "          exit 0\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["a comment backslash before exit 0", [[
+      DETECT_CALL_LINE,
+      "          # note \\\n          exit 0\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["a comment backslash before true ||", [[
+      DETECT_CALL_LINE,
+      "          # note \\\n          true ||\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["an assignment prefix on the script call", [[
+      DETECT_CALL_LINE,
+      "          GITHUB_OUTPUT= " + DETECT_CALL_LINE.trimStart(),
+    ]], "must be exactly"],
+    ["the script called with HEAD_SHA twice", [[
+      DETECT_CALL_LINE,
+      '          .github/scripts/detect-image-changes.sh "$HEAD_SHA" "$HEAD_SHA"\n',
+    ]], "must be exactly"],
+    ["the filter step BASE_SHA taken from the head sha", [[
+      FILTER_BASE_LINE,
+      "          BASE_SHA: ${{ github.event.pull_request.head.sha }}\n",
+    ]], "must set env BASE_SHA to exactly"],
+    ["the filter step HEAD_SHA taken from the base sha", [[
+      FILTER_HEAD_LINE,
+      "          HEAD_SHA: ${{ github.event.pull_request.base.sha }}\n",
+    ]], "must set env HEAD_SHA to exactly"],
+    ["the filter step with shell: bash -n {0}", [[
+      FILTER_ID,
+      FILTER_ID + "        shell: bash -n {0}\n",
+    ]], "the changes filter step's shell"],
+    ["job changes with defaults.run.shell: bash -n {0}", [[
+      CHANGES_JOB,
+      CHANGES_JOB +
+      "    defaults:\n      run:\n        shell: bash -n {0}\n",
+    ]], "the changes filter step's shell"],
+    ["the filter step writing image=true-x", [[
+      DETECT_CALL_LINE,
+      '          echo "image=true-x" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["the filter step writing image=true$X", [[
+      DETECT_CALL_LINE,
+      '          echo "image=true$X" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    // The here-document lines are not in the FILTER_CODE allowlist.
+    ["the filter step writing an image<<X output through a here-document", [[
+      DETECT_CALL_LINE,
+      [
+        "          cat >> \"$GITHUB_OUTPUT\" <<'OUT'",
+        "          image<<X",
+        "          false",
+        "          X",
+        "          OUT",
+      ].join("\n") + "\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    // An extra echo line is not in the FILTER_CODE allowlist.
+    ["the filter step writing an image<< heredoc output", [[
+      DETECT_CALL_LINE,
+      '          echo "image<<" >> "$GITHUB_OUTPUT"\n' + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    // Runtime guards, backgrounding and output redirection (verifier review):
+    // each exits 0 in bash with no image output, so the code is allowlisted.
+    ["the script call behind a runtime [[ ]] ||", [[
+      DETECT_CALL_LINE,
+      '          [[ -n "$BASE_SHA" ]] || ' + DETECT_CALL_LINE.trimStart(),
+    ]], "must be exactly"],
+    ["the script call behind a runtime [[ ]] &&", [[
+      DETECT_CALL_LINE,
+      '          [[ -z "$HEAD_SHA" ]] && ' + DETECT_CALL_LINE.trimStart(),
+    ]], "must be exactly"],
+    ["the script call inside an if on the event name", [[
+      DETECT_CALL_LINE,
+      '          if [[ "${EVENT_NAME}" == "push" ]]; then\n  ' +
+      DETECT_CALL_LINE + "          fi\n",
+    ]], "must be exactly"],
+    ["a guarded exit 0 before the script call", [[
+      DETECT_CALL_LINE,
+      '          [[ -n "$HEAD_SHA" ]] && exit 0\n' + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["the script call inside an empty for loop", [[
+      DETECT_CALL_LINE,
+      "          for x in; do\n  " + DETECT_CALL_LINE + "          done\n",
+    ]], "must be exactly"],
+    ["the script call inside a case that never matches", [[
+      DETECT_CALL_LINE,
+      '          case "$HEAD_SHA" in nomatch)\n  ' + DETECT_CALL_LINE +
+      "          ;; esac\n",
+    ]], "must be exactly"],
+    ["the script call run in the background", [[
+      DETECT_CALL_LINE,
+      DETECT_CALL_LINE.trimEnd() + " &\n",
+    ]], "must be exactly"],
+    ["GITHUB_OUTPUT assigned on its own line", [[
+      DETECT_CALL_LINE,
+      "          GITHUB_OUTPUT=/dev/null\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["GITHUB_OUTPUT exported", [[
+      DETECT_CALL_LINE,
+      "          export GITHUB_OUTPUT=/dev/null\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["GITHUB_OUTPUT unset", [[
+      DETECT_CALL_LINE,
+      "          unset GITHUB_OUTPUT\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["the filter step setting GITHUB_OUTPUT in its env", [[
+      FILTER_HEAD_LINE,
+      FILTER_HEAD_LINE + "          GITHUB_OUTPUT: /dev/null\n",
+    ]], "the changes filter step's env must set only"],
+    ["job changes setting BASH_ENV in its env", [[
+      CHANGES_JOB,
+      CHANGES_JOB + "    env:\n      BASH_ENV: /tmp/x\n",
+    ]], "job changes must set no env:"],
+    ["the workflow setting GITHUB_OUTPUT in its env", [[
+      "jobs:\n",
+      "env:\n  GITHUB_OUTPUT: /dev/null\njobs:\n",
+    ]], "workflow must set no env:"],
+    ["a GitHub expression inside a filter comment", [[
+      DETECT_CALL_LINE,
+      "          # ${{ github.event_name }}\n" + DETECT_CALL_LINE,
+    ]], "raw code must contain no GitHub expression"],
+    ["the workflow setting a git path variable", [[
+      "jobs:\n",
+      "env:\n  GIT_LITERAL_PATHSPECS: '1'\njobs:\n",
+    ]], "workflow must set no env:"],
+    ["job changes using a container", [[
+      CHANGES_JOB,
+      CHANGES_JOB + "    container: ubuntu:latest\n",
+    ]], "job changes must set no container:"],
+    ["a non-breaking space before a filter comment", [[
+      DETECT_CALL_LINE,
+      "          \u00a0# x || exit 0\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["set joined without a blank by a backslash continuation", [[
+      FILTER_HEAD_LINE + "        run: |\n          set -euo pipefail\n",
+      FILTER_HEAD_LINE +
+      "        run: |\n          set\\\n          -euo pipefail\n",
+    ]], "must be exactly"],
+    ["the image output joined without a blank by a backslash continuation", [[
+      '          echo "image=true" >> "$GITHUB_OUTPUT"\n',
+      '          echo\\\n          "image=true" >> "$GITHUB_OUTPUT"\n',
+    ]], "must be exactly"],
+    ["the event condition joined without blanks by backslash continuations", [[
+      '          if [[ "${EVENT_NAME}" != "pull_request" ]]; then\n',
+      '          if [[ "${EVENT_NAME}"\\\n          !=\\\n          "pull_request" ]]; then\n',
+    ]], "must be exactly"],
+    ["the image output ending with an escaped backslash", [[
+      '          echo "image=true" >> "$GITHUB_OUTPUT"\n',
+      '          echo "image=true" >> "$GITHUB_OUTPUT' + "\\".repeat(2) +
+      '\n\n          "\n',
+    ]], "must be exactly"],
+    ["the event condition ending with an escaped backslash", [[
+      '          if [[ "${EVENT_NAME}" != "pull_request" ]]; then\n',
+      '          if [[ "${EVENT_NAME}" != "pull_request' + "\\".repeat(2) +
+      '\n\n          " ]]; then\n',
+    ]], "must be exactly"],
+    ["a line of two backslashes before the detect call", [[
+      DETECT_CALL_LINE,
+      "          " + "\\".repeat(2) + "\n\n" + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+    ["the detect call ending with two backslashes", [[
+      DETECT_CALL_LINE,
+      DETECT_CALL_LINE.trimEnd() + "\\".repeat(2) + "\n",
+    ]], "must be exactly"],
+    // Another step in job changes could rewrite the script the filter runs.
+    ["a step rewriting the detect script before the filter", [[
+      "      - name: Detect image-affecting changes\n",
+      "      - run: printf 'exit 0\\n' > .github/scripts/detect-image-changes.sh\n" +
+      "      - name: Detect image-affecting changes\n",
+    ]], "job changes may have no step but"],
+    ["a step writing BASH_ENV to GITHUB_ENV before the filter", [[
+      "      - name: Detect image-affecting changes\n",
+      '      - run: echo BASH_ENV=/tmp/e >> "$GITHUB_ENV"\n' +
+      "      - name: Detect image-affecting changes\n",
+    ]], "job changes may have no step but"],
+    ["a local action step before the filter", [[
+      "      - name: Detect image-affecting changes\n",
+      "      - uses: ./.github/actions/x\n" +
+      "      - name: Detect image-affecting changes\n",
+    ]], "job changes may have no step but"],
+    ["job changes setting a harmless-looking env", [[
+      CHANGES_JOB,
+      CHANGES_JOB + "    env:\n      SHELLOPTS: xtrace\n",
+    ]], "job changes must set no env:"],
+    ["the workflow env given as an expression", [[
+      "jobs:\n",
+      "env: ${{ fromJSON(vars.E) }}\njobs:\n",
+    ]], "workflow must set no env:"],
+    ["an echo of --image=foo before the script call", [[
+      DETECT_CALL_LINE,
+      '          echo "--image=foo"\n' + DETECT_CALL_LINE,
+    ]], "must be exactly"],
+  ] as [string, [string, string][], string][]
+) {
+  Deno.test(`(container-agent-run) refuses ${label}`, () => {
+    const problems = checkContainerBuildRunsAwsEmulator(
+      parseYaml(mutateText(CONTAINER_BUILD, ...pairs)),
+    );
+    assertEquals(problems.length, 1, JSON.stringify(problems));
+    assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+    assert(problems[0]?.includes(expected), problems[0]);
+  });
+}
+
+Deno.test("(container-agent-run) refuses job changes removed entirely with one finding", () => {
+  const start = CONTAINER_BUILD.indexOf(CHANGES_JOB);
+  const end = CONTAINER_BUILD.indexOf(CONTAINER_NEEDS);
+  assert(start > 0 && end > start, "anchors out of order");
+  const problems = checkContainerBuildRunsAwsEmulator(
+    parseYaml(mutateText(CONTAINER_BUILD, [
+      CONTAINER_BUILD.slice(start, end),
+      "",
+    ])),
+  );
+  assertEquals(problems.length, 1, JSON.stringify(problems));
+  assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+  assert(problems[0]?.includes("job changes must exist"), problems[0]);
+});
+
+for (
+  const [label, line] of [
+    ["an extra comment line", "          # a note\n"],
+    ["an extra blank line", "\n"],
+  ] as const
+) {
+  Deno.test(`(container-agent-run) accepts the filter step with ${label}`, () => {
+    assertEquals(
+      checkContainerBuildRunsAwsEmulator(parseYaml(
+        mutateText(CONTAINER_BUILD, [
+          DETECT_CALL_LINE,
+          line + DETECT_CALL_LINE,
+        ]),
+      )),
+      [],
+    );
+  });
+}
+
+Deno.test("(container-agent-run) accepts the script call split by a backslash continuation", () => {
+  assertEquals(
+    checkContainerBuildRunsAwsEmulator(parseYaml(
+      mutateText(CONTAINER_BUILD, [
+        DETECT_CALL_LINE,
+        '          .github/scripts/detect-image-changes.sh \\\n            "$BASE_SHA" "$HEAD_SHA"\n',
+      ]),
+    )),
+    [],
+  );
+});
+
+Deno.test("(container-agent-run) accepts job container with needs in list form", () => {
+  assertEquals(
+    checkContainerBuildRunsAwsEmulator(parseYaml(
+      mutateText(CONTAINER_BUILD, [
+        CONTAINER_NEEDS,
+        "  container:\n    needs: [changes]\n",
+      ]),
+    )),
+    [],
+  );
+});
+
 Deno.test("(container-agent-run) refuses the step removed entirely", () => {
   const start = CONTAINER_BUILD.indexOf(AGENT_STEP_NAME);
   const end = CONTAINER_BUILD.indexOf(AGENT_DOCKER_LINE) +
