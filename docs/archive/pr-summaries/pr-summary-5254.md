@@ -25,9 +25,8 @@ hooks. Closes #5254.
   Deno merges it with the parent env, so `PATH` survives.
 - `GIT_ENV` also carries `-c core.hooksPath=/dev/null`, so the fixtures run no
   hook from any config source. The fixtures are isolated in the helper, not push
-  by push, so a future fixture push cannot miss it. The two pushes that
-  already used `--no-verify` (`pre_push_gate_test.ts:2799` and `:6458`) are
-  unchanged.
+  by push, so a future fixture push cannot miss it. The two pushes that already
+  used `--no-verify` (`pre_push_gate_test.ts:2799` and `:6458`) are unchanged.
 - Production code under test (`runPrePushGate`'s own git and tool runners) is
   unchanged.
 
