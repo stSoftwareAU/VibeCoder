@@ -342,15 +342,45 @@ below rather than the LLM-only checks above.
 `boto3`/`botocore`/`aiobotocore` in `requirements*.txt`, a
 CloudFormation template, or any `.tf` file.
 
-**Pass condition.** Any GitHub Actions workflow runs the `floci/floci`
-image — as a service container, a job container, a `docker://` step,
-or a `docker run` step.
+**Pass condition.** Any GitHub Actions workflow runs an emulator: the
+`floci/floci` image — as a service container, a job container, a
+`docker://` step, or a `docker run` step — or the official AWS Emulator,
+via a `run:` step that invokes `aws-emulator-run` (the command word, once
+shell reserved words, `sudo`/`env`/`exec`, `VAR=value` and the
+`time`/`nice`/`timeout`/`command` wrappers are skipped and quotes are
+stripped, is `aws-emulator-run` or a path ending `/aws-emulator-run`)
+in the helper's test form —
+`aws-emulator-run [--ready-timeout N] [--timeout N] -- COMMAND` with a
+non-empty COMMAND that is not a no-op (`true`, `:`, `/bin/true`,
+`/usr/bin/true`) — or
+that runs a repository script (a relative path, or the first argument of
+`bash`/`sh`) which itself invokes `aws-emulator-run` the same way — one
+level of indirection, with the script read from the checkout and confined
+to it (absolute paths, `..`, `$` expansions and symlinks out of the repo
+do not count). The invocation must also be able to run: a job or step
+whose `if:` is statically false (`false`, `${{ false }}`, `0`) earns no
+credit, nor does a command after an unconditional `exit`, behind
+`false &&` or `true ||`, in an `if`/`elif`/`else` branch or `while`/`until`
+body whose condition is statically false (`false`, `! true`, `:`, `true`),
+in a function body, or in a here-document — in the workflow and in the
+repository script alike (the helpers are in
+[`worker/deno/lib/shell_command_words.ts`](../worker/deno/lib/shell_command_words.ts)).
+A condition decided at run time (`[ -n "$X" ]`, `github.event_name == 'push'`)
+keeps its credit. Merely installing the emulator
+(`container/toolchains/aws-emulator.sh`, or
+`install ... /usr/local/bin/aws-emulator-run`) is not coverage. An
+`echo aws-emulator-run`, `command -v aws-emulator-run`, a comment, or a
+mention in a string does not count. Nor does an invocation that runs no
+repository test: the helper's own `--smoke` self-check, `--smoke-client`,
+`-h`/`--help`, a bare `--`, `-- true`, or a COMMAND without `--` (which the
+helper rejects).
 
 **No finding is filed** when the repo does not use AWS, when no
 workflow loaded (status unknown — the same fail-safe reasoning as the
 [zero-workflows rule](#fail-safe--zero-workflows-loaded) for
-`BP-LINTER-<bucket>`), when Floci already runs in CI, or when a valid
-waiver exists; each skip is logged with its reason.
+`BP-LINTER-<bucket>`), when an emulator (Floci or the official AWS
+Emulator) already runs in CI, or when a valid waiver exists; each skip
+is logged with its reason.
 
 **Otherwise** the template files **one** issue with the fixed id
 `BP-AWS-EMULATOR-MISSING` at `severity:medium`, labelled
@@ -397,7 +427,7 @@ flowchart TD
     B -- no --> Z[No finding]
     B -- yes --> C{Workflows loaded?}
     C -- zero loaded --> Z
-    C -- loaded --> D{Floci runs in CI?}
+    C -- loaded --> D{An emulator runs in CI?}
     D -- yes --> Z
     D -- no --> E{Valid waiver?}
     E -- yes --> Z
@@ -436,7 +466,7 @@ sequenceDiagram
         end
     end
     Template->>Template: checkAwsEmulatorInCI(repo)<br/>(every bucket, before Claude)
-    opt uses AWS AND Floci not in CI AND no waiver
+    opt uses AWS AND no emulator in CI AND no waiver
         Template->>GH: file BP-AWS-EMULATOR-MISSING issue<br/>(`severity:medium`, counts toward 6-cap)
     end
     Template->>Claude: invoke with prompt + bucket guide<br/>(known-open ids include any pre-filed linter<br/>or AWS-emulator id)
@@ -465,7 +495,7 @@ flowchart TD
     Claim --> Before[Snapshot 1 — list open<br/>`best-practices` issues BEFORE]:::phase
     Before --> Lang{bucket is a language?}
     class Pick,Lang,CIGate,AwsCheck gate;
-    Lang -- general / design --> AwsCheck{AWS emulator check:<br/>uses AWS AND Floci<br/>not in CI AND no waiver?<br/>runs every bucket}
+    Lang -- general / design --> AwsCheck{AWS emulator check:<br/>uses AWS AND no emulator<br/>in CI AND no waiver?<br/>runs every bucket}
     Lang -- language --> CIGate{CI-gate check:<br/>linter AND compile gates<br/>both invoked in CI?}
     CIGate -- both present --> AwsCheck
     CIGate -- either missing --> FileLinter[File missing-CI-gate issue<br/>severity:high — names which gate(s)<br/>missing — counts to 6-cap]:::output

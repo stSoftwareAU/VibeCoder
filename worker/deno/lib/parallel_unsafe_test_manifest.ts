@@ -166,6 +166,9 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
  */
 export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   "tests/dummy_test_scan_5016_test.ts",
+  // The dummy-test scan's helper and nested-registration shapes are guarded
+  // by growth measurements through assertLinearGrowth (Issue #5236).
+  "tests/dummy_test_scan_growth_5236_test.ts",
   // The admin-only hand-off strips code fences and inline code spans from an
   // untrusted issue body before matching; only a growth measurement separates
   // that linear strip from a backtracking one on hostile backtick runs

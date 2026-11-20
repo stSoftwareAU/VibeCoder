@@ -4,7 +4,7 @@
  * Usage: pr-summary-ci --base <branch> --head-branch <name>
  *
  * Exit codes: 0 nothing blocked (a not-checked summary is reported, never
- * passed), 1 the summary is stale or missing, or a gate blocked, 2 bad args
+ * passed), 1 the summary is missing, or a gate blocked, 2 bad args
  * or git/IO failure.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).

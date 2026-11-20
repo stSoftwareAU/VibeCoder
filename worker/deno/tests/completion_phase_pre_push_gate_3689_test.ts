@@ -30,6 +30,7 @@ import {
   PRE_PUSH_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
 import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
+import { isHostDiskFaultText } from "../lib/host_fault.ts";
 import {
   commitAndPushPending,
   PrePushGateBlockedError,
@@ -109,7 +110,7 @@ interface Scenario {
    * "ok" a clean exit, "error" a failed invocation, "throw" a thrown one.
    * Defaults to "ok".
    */
-  agent?: "ok" | "error" | "throw" | "finish-deadline";
+  agent?: "ok" | "error" | "throw" | "finish-deadline" | "host-disk";
   /** Whether the PR base resolves to nothing (no local, remote or fetched ref). */
   baseUnresolvable?: boolean;
   /** The host's warn-once latch, shared to model one process (Issue #2689). */
@@ -265,6 +266,12 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           return Promise.resolve({
             ok: false as const,
             error: new Error("agent invocation failed"),
+          });
+        }
+        if (scenario.agent === "host-disk") {
+          return Promise.resolve({
+            ok: false as const,
+            error: new Error(HOST_DISK_REFUSAL),
           });
         }
         if (scenario.agent === "finish-deadline") {
@@ -739,6 +746,48 @@ Deno.test({
     assertEquals(o.pushes, 0);
     assertEquals(o.prCreates, 0);
     assertEquals(o.attempts, 0);
+  },
+});
+
+/** The agent runner's refusal at the host-disk floor (GRQ-23, 2026-11-19). */
+const HOST_DISK_REFUSAL =
+  "host disk below its floor — host 45.8 GB free (10.0%) of 460.4 GB, " +
+  "floor 46.0 GB; a repository build or test would grow host disk further, " +
+  "so it waits until the host recovers (Issue #3178) Parked as " +
+  "infrastructure (Issue #4360).";
+
+Deno.test({
+  name:
+    "completion - a pre-push recovery turn refused at the host-disk floor parks the run as infrastructure, not a gate verdict",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      agent: "host-disk",
+      gateAnswers: [BLOCK, "pass"],
+    });
+    assertEquals(o.status, "failure");
+    assertEquals(o.agentCalls, 1);
+    assertEquals(
+      o.gateCalls,
+      1,
+      "a turn that never ran left nothing to re-gate",
+    );
+    assertEquals(o.pushes, 0, "a blocked gate must never reach the push");
+    assertEquals(o.prCreates, 0);
+    // The host-disk park, not the gate block, decides the run: a verdict
+    // category would charge the issue a ladder attempt for the host's disk.
+    assertEquals(o.category, "internal_error");
+    assert(isHostDiskFaultText(o.reason ?? ""), o.reason);
+    assertStringIncludes(
+      o.reason ?? "",
+      "Parked as infrastructure (Issue #4360)",
+    );
+    assert(
+      !(o.reason ?? "").startsWith(PRE_PUSH_GATE_MARKER),
+      "the gate marker would classify the run as a pre_push_gate verdict",
+    );
   },
 });
 

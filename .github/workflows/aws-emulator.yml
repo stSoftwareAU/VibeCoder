@@ -1,0 +1,84 @@
+# AWS Emulator CloudFormation deployment test (Issue #5110).
+#
+# Deploys every CloudFormation template under infra/cloudformation/ into the
+# official AWS Emulator via infra/cloudformation/test-aws-emulator.sh, so a
+# template that cannot be deployed fails the PR rather than the first real
+# deployment. Each stack must reach CREATE_COMPLETE, unless a template has a
+# named gap in the script's KNOWN_GAPS: that gap must then fail with exactly
+# CREATE_FAILED caused only by the gap, and the run fails if it changes. The
+# script exits non-zero on any other failure.
+#
+# The emulator is installed by container/toolchains/aws-emulator.sh, which
+# reads the pinned version and the per-architecture sha256 from
+# container/tools.json and refuses a package whose checksum does not match.
+# This workflow restates no pin, so CI and the container image cannot drift.
+#
+# Floci is no longer used. The job has no services block and does not mount
+# the docker socket: the emulator runs as a local process, not a service
+# container.
+#
+# Runs on every pull request as a job of quality.yml, whose `gate` job needs
+# it: a failed, cancelled or skipped run turns `gate` red. There is no path
+# filter, so `gate` never waits on a skipped job; a template, the runner or the
+# pin can change in any PR.
+#
+# There is deliberately no push trigger. Test workflows must not run on push
+# to the default branch (fleet rule `workflow-triggers`); the pull request run
+# through quality.yml covers every change that can alter a template, the runner
+# or the pin. `workflow_dispatch` is kept for manual runs.
+#
+# Third-party actions are pinned to 40-character commit SHAs so a hijacked
+# tag cannot inject code into the workflow. The version tag each SHA
+# corresponds to is captured in a leading comment.
+
+name: AWS Emulator CloudFormation
+
+on:
+  # Called by quality.yml, whose `gate` job is the one required check: on a
+  # pull request this workflow runs once, through that call.
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# No concurrency group here: as a called workflow this file inherits its
+# caller's `github.workflow`, so a group of its own would cancel its siblings.
+# quality.yml holds the one group.
+
+jobs:
+  cloudformation:
+    name: Test CloudFormation against AWS Emulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned AWS Emulator
+        run: |
+          set -euo pipefail
+          sudo env CURL_RETRY="--retry 8 --retry-delay 3 --retry-all-errors --connect-timeout 20" \
+            TOOLCHAIN_MANIFEST="${GITHUB_WORKSPACE}/container/tools.json" \
+            bash container/toolchains/aws-emulator.sh
+          sudo install -m 0755 container/aws-emulator-run.sh /usr/local/bin/aws-emulator-run
+
+      - name: Install the pinned AWS CLI
+        # The runner image ships its own aws-cli; replace it with the 2.40.3
+        # the worker container uses, through the same sha256-checked fragment,
+        # so CI and the container run the same CLI (Issue #5110).
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/aws-cli /usr/local/bin/aws /usr/local/bin/aws_completer
+          sudo env CURL_RETRY="--retry 8 --retry-delay 3 --retry-all-errors --connect-timeout 20" \
+            TOOLCHAIN_MANIFEST="${GITHUB_WORKSPACE}/container/tools.json" \
+            bash container/toolchains/aws-cli.sh
+          aws --version
+
+      - name: Test CloudFormation templates against AWS Emulator
+        run: |
+          set -euo pipefail
+          ./infra/cloudformation/test-aws-emulator.sh
