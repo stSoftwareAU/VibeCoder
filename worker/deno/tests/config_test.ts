@@ -1741,21 +1741,47 @@ Deno.test("config - loadConfig tolerates retired mutation-check repo_config keys
   });
 });
 
-Deno.test("config - loadConfig maps the coverage carry-over gate repo_config key (Issue #3795)", async () => {
+Deno.test("config - loadConfig tolerates the retired coverage carry-over repo_config key (Issue #5247)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
     repos: ["org/repo"],
     repo_config: {
       "org/test-repo": {
         skip_coverage_carryover_check: true,
+        skipCoverageCarryOverCheck: true,
+        skip_screenshot_check: true,
       } as unknown as import("../types.ts").RepoConfig,
     },
   };
 
   await withTempConfig(testConfig, async (configPath) => {
-    const config = await loadConfig(configPath);
-    const repoConf = config.repoConfig?.["org/test-repo"];
-    assertEquals(repoConf?.skipCoverageCarryOverCheck, true);
+    let config: Awaited<ReturnType<typeof loadConfig>> | undefined;
+    const errors = await capturingConfigErrors(async () => {
+      config = await loadConfig(configPath);
+    });
+    const repoConf = config?.repoConfig?.["org/test-repo"] as
+      | Record<string, unknown>
+      | undefined;
+
+    // The config still loads and the live key still applies.
+    assertEquals(config?.allowedAuthor, "testuser");
+    assertEquals(repoConf?.skipScreenshotCheck, true);
+    const retiredKeys = [
+      "skip_coverage_carryover_check",
+      "skipCoverageCarryOverCheck",
+    ];
+    for (const retired of retiredKeys) {
+      assertEquals(retired in (repoConf ?? {}), false, retired);
+    }
+    const output = errors.join("\n");
+    for (const retired of retiredKeys) {
+      assertEquals(
+        output.includes(`repo_config.org/test-repo.${retired}`),
+        true,
+        `Expected a warning naming ${retired}`,
+      );
+    }
+    assertEquals(output.includes("Issue #5247"), true);
   });
 });
 

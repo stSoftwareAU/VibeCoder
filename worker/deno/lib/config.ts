@@ -220,8 +220,6 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   skip_reviewer_request: "skipReviewerRequest",
   skip_screenshot_check: "skipScreenshotCheck",
   skip_security_fix_check: "skipSecurityFixCheck",
-  // Coverage carry-over gate (Issue #3795).
-  skip_coverage_carryover_check: "skipCoverageCarryOverCheck",
   // Credentials this repository's checks need (Issues #573, #574).
   quality_credentials: "qualityCredentials",
   docker_image: "dockerImage",
@@ -282,7 +280,7 @@ function normaliseRepoConfig(raw: Record<string, unknown>): RepoConfig {
   const normalised: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(raw)) {
-    // Issue #5095: retired keys still load but are not surfaced on RepoConfig.
+    // Issues #5095 and #5247: retired keys still load but are not surfaced on RepoConfig.
     if (RETIRED_REPO_CONFIG_KEYS.has(key)) continue;
     const mappedKey = REPO_CONFIG_KEY_MAP[key];
     if (mappedKey) {
@@ -378,8 +376,8 @@ async function loadConfigFile(
       const formatted = formatUnknownKeyWarnings(warnings);
       console.error(formatted);
     }
-    // Issue #5095: keys inside repo_config are not checked above; a retired
-    // mutation-check key there is warned about by name, then ignored.
+    // Issues #5095 and #5247: keys inside repo_config are not checked above; a
+    // retired key there is warned about by name, then ignored.
     for (
       const retired of detectRetiredRepoConfigKeys(
         (parsed as Record<string, unknown>).repo_config,

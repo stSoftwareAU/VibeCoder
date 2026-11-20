@@ -460,7 +460,7 @@ flowchart TD
   guest memory and pressure figures. The last step logged is the last one the
   log reported, so the
   wedge is in or after it; it is one of `pre-PR verifier`,
-  `coverage carry-over check`, `quality gate`, `agent turn`, a setup step
+  `quality gate`, `agent turn`, a setup step
   (`setup: issue claim`, `setup: claim churn check`, `setup: repository setup`,
   `setup: heartbeat start`, `setup: default branch sync`,
   `setup: feature branch` or `setup: pre-setup command`, each logged as the

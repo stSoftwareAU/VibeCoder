@@ -1,26 +1,20 @@
 /**
  * Unit tests for the helpers that remain in mutation_runner.ts after the
  * automatic mutation check was retired by Issue #5095 (originally Issue
- * #3393), driven through fake seams where a test needs one: confinePath,
- * importsModule, the temporary-directory and scratch-root helpers, the default
- * child environment and listTestFiles.
+ * #3393), driven through fake seams where a test needs one: confinePath, the
+ * temporary-directory and scratch-root helpers and the default child
+ * environment.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { assertLinearGrowth } from "./support/growth.ts";
 import {
   confinePath,
   defaultMutationRunnerSeams,
-  importsModule,
   makeMutationTempDir,
   resolveMutationScratchRoot,
 } from "../lib/mutation_runner.ts";
-import {
-  EMPTY_PROJECT_CONFIG,
-  parseDenoProjectConfig,
-} from "../lib/deno_test_config.ts";
 import { ALLOWED_ENV_NAMES } from "../lib/untrusted_command_env.ts";
 
 async function realRepo(
@@ -50,172 +44,6 @@ Deno.test("confinePath - rejects a climb out of the repo, accepts one that stays
       `${real}/b/x.ts`,
     );
   });
-});
-
-async function writeRepoFiles(
-  repo: string,
-  files: Record<string, string>,
-): Promise<void> {
-  for (const [rel, text] of Object.entries(files)) {
-    const abs = `${repo}/${rel}`;
-    await Deno.mkdir(abs.slice(0, abs.lastIndexOf("/")), { recursive: true });
-    await Deno.writeTextFile(abs, text);
-  }
-}
-
-Deno.test("listTestFiles - the real seam lists suffix tests and include-matched files under their nearest project, sorted", async () => {
-  await realRepo(async (repo) => {
-    await writeRepoFiles(repo, {
-      "deno.json": JSON.stringify({
-        test: {
-          include: ["test/**/*.ts"],
-          exclude: ["test/fixtures/**"],
-        },
-        imports: { "@neat/": "./src/NEAT/" },
-      }),
-      "test/a.ts": "",
-      "test/ci/b.ts": "",
-      "test/fixtures/c.ts": "",
-      "test/types.d.ts": "",
-      "src/NEAT/Neat.ts": SOURCE,
-      "lib/m_test.ts": "",
-      "node_modules/x_test.ts": "",
-      "worker/deno/deno.json": '{"test":{"include":["tests/**"]}}',
-      "worker/deno/tests/w.ts": "",
-      "worker/deno/lib/v.ts": "",
-      // The root's test/** must not reach this: the nested project is nearest.
-      "worker/deno/test/u.ts": "",
-    });
-    const listed = await defaultMutationRunnerSeams().listTestFiles(repo);
-    assertEquals(listed, [
-      "lib/m_test.ts",
-      "test/a.ts",
-      "test/ci/b.ts",
-      "worker/deno/tests/w.ts",
-    ]);
-  });
-});
-
-Deno.test("listTestFiles - a directory include lists suffix tests, not source files", async () => {
-  await realRepo(async (repo) => {
-    await writeRepoFiles(repo, {
-      "deno.json": '{"test":{"include":["src/"]}}',
-      "src/foo.ts": SOURCE,
-      "src/foo_test.ts": "",
-    });
-    assertEquals(await defaultMutationRunnerSeams().listTestFiles(repo), [
-      "src/foo_test.ts",
-    ]);
-  });
-});
-
-Deno.test("listTestFiles - an invalid deno.json in an unrelated project falls back to the suffix rule", async () => {
-  await realRepo(async (repo) => {
-    await writeRepoFiles(repo, {
-      "deno.json": '{"test":{"include":["test/**/*.ts"]}}',
-      "test/a.ts": "",
-      "lib/m_test.ts": "",
-      "fixtures/bad/deno.json": "{ not json",
-      "fixtures/bad/x_test.ts": "",
-      "fixtures/bad/y.ts": "",
-      "fixtures/neg/deno.json": '{"test":{"include":["!a.ts"]}}',
-      "fixtures/neg/z.test.ts": "",
-    });
-    const listed = await defaultMutationRunnerSeams().listTestFiles(repo);
-    assertEquals(listed, [
-      "fixtures/bad/x_test.ts",
-      "fixtures/neg/z.test.ts",
-      "lib/m_test.ts",
-      "test/a.ts",
-    ]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Hostile input to the specifier scan
-// ---------------------------------------------------------------------------
-
-Deno.test("importsModule - hostile unclosed-specifier text scans in linear time", () => {
-  const shapes: Array<[string, (chars: number) => string]> = [
-    ["repeated './", (n) => "'./".repeat(Math.ceil(n / 3))],
-    ["quote then unclosed ./", (n) => '"' + "./".repeat(Math.ceil(n / 2))],
-  ];
-  for (const [label, build] of shapes) {
-    const found = assertLinearGrowth(
-      label,
-      build,
-      (text) =>
-        importsModule(text, "tests", "lib/m.ts", {
-          dir: "",
-          config: EMPTY_PROJECT_CONFIG,
-        }),
-      { baseChars: 12_500, sizeFactor: 4 },
-    );
-    assertEquals(found, false);
-  }
-  assertEquals(
-    importsModule("import '../lib/m.ts'", "tests", "lib/m.ts", {
-      dir: "",
-      config: EMPTY_PROJECT_CONFIG,
-    }),
-    true,
-  );
-});
-
-Deno.test("importsModule - a bare alias counts only with the project's imports map", () => {
-  const text = 'import { f } from "@neat/Neat.ts";\n';
-  const project = {
-    dir: "",
-    config: parseDenoProjectConfig(
-      '{"imports":{"@neat/":"./src/NEAT/"}}',
-      "deno.json",
-    ),
-  };
-  const empty = { dir: "", config: EMPTY_PROJECT_CONFIG };
-  assertEquals(importsModule(text, "test", "src/NEAT/Neat.ts", empty), false);
-  assertEquals(importsModule(text, "test", "src/NEAT/Neat.ts", project), true);
-  assertEquals(
-    importsModule(text, "test", "src/NEAT/Other.ts", project),
-    false,
-  );
-  // Relative specifiers behave as before, with or without the project.
-  const rel = 'import "../lib/m.ts";';
-  assertEquals(importsModule(rel, "tests", "lib/m.ts", empty), true);
-  assertEquals(importsModule(rel, "tests", "lib/m.ts", project), true);
-});
-
-Deno.test("importsModule - a nested project's alias resolves against that project's directory", () => {
-  const project = {
-    dir: "worker/deno",
-    config: parseDenoProjectConfig(
-      '{"imports":{"@neat/":"./src/NEAT/"}}',
-      "worker/deno/deno.json",
-    ),
-  };
-  assertEquals(
-    importsModule(
-      'import "@neat/Neat.ts";',
-      "worker/deno/tests",
-      "worker/deno/src/NEAT/Neat.ts",
-      project,
-    ),
-    true,
-  );
-});
-
-Deno.test("importsModule - a run of quotes with a project matches nothing and returns", () => {
-  const project = {
-    dir: "",
-    config: parseDenoProjectConfig(
-      '{"imports":{"@neat/":"./src/NEAT/"}}',
-      "deno.json",
-    ),
-  };
-  const hostile = '"'.repeat(200_000) + " ";
-  assertEquals(
-    importsModule(hostile, "test", "src/NEAT/Neat.ts", project),
-    false,
-  );
 });
 
 // ---------------------------------------------------------------------------
@@ -276,9 +104,6 @@ Deno.test("defaultMutationRunnerSeams runProcess - a declared credential reaches
 // ---------------------------------------------------------------------------
 // Budget expiry: SIGTERM first, SIGKILL only after a grace period
 // ---------------------------------------------------------------------------
-
-const SOURCE =
-  "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
 
 const SH_ENV = { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" };
 
