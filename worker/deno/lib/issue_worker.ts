@@ -29,7 +29,6 @@ import {
 } from "./lifecycle_recording.ts";
 
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { trackAgentLaunches } from "./agent_launch_tracking.ts";
 import { stopHeartbeat } from "./heartbeat.ts";
 import { detachLaneWorktreeHead } from "./lane_worktree.ts";
 import { startPhaseProgress } from "./phase_progress.ts";
@@ -39,6 +38,7 @@ import {
   callbackTelemetryAbsenceReason,
   servedRunProvider,
   summariseCallbackTelemetry,
+  trackAgentLaunches,
 } from "./run_callback_telemetry.ts";
 import {
   deriveRunOutcome,

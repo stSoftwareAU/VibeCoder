@@ -14,8 +14,8 @@ import { join } from "node:path";
 import {
   type AgentLaunch,
   servedRunProvider,
+  trackAgentLaunches,
 } from "../lib/run_callback_telemetry.ts";
-import { trackAgentLaunches } from "../lib/agent_launch_tracking.ts";
 import { HostDiskParkError } from "../lib/heavy_build_gate.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import { workOnIssue } from "../lib/issue_worker.ts";

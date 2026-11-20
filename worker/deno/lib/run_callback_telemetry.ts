@@ -15,7 +15,8 @@
  * provider that never reported `num_turns` reports no turn count, not nought
  * turns.
  *
- * It also names the provider that served the run (Issue #5163).
+ * It also names the provider that served the run and wraps the runner seam to
+ * record each agent launch (Issue #5163).
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -34,6 +35,8 @@ import {
   CODEX_PROVIDER_ID,
   GEMINI_PROVIDER_ID,
 } from "./agent_provider.ts";
+import type { WorkerDeps } from "./issue_worker_wiring.ts";
+import { billedResultOfError } from "./failed_invocation_result.ts";
 
 /** The per-invocation stats this summariser reads. */
 export interface TelemetrySource {
@@ -252,4 +255,37 @@ export function servedRunProvider(
     named.add(id);
   }
   return named.size === 1 ? [...named][0] : undefined;
+}
+
+/**
+ * A shallow copy of `deps` whose `claude.runClaudeWithRetry` appends each
+ * launch to `launches` (Issue #5163). That is the one seam the execute phase,
+ * quality-gate fix agent and gate retries launch through, so each call counts
+ * once; a failed or thrown launch is recorded with no provider unless the
+ * error carries a billed result. The pre-PR verifier, clarity assessment and
+ * `/compact` prime do not use the seam and are deliberately not counted.
+ */
+export function trackAgentLaunches(
+  deps: WorkerDeps,
+  launches: AgentLaunch[],
+): WorkerDeps {
+  const run = deps.claude.runClaudeWithRetry;
+  const record = (provider: string | undefined) =>
+    launches.push(provider === undefined ? {} : { provider });
+  const wrapped = (async (...args: Parameters<typeof run>) => {
+    let result;
+    try {
+      result = await run(...args);
+    } catch (error) {
+      record(undefined);
+      throw error;
+    }
+    record(
+      result.ok
+        ? result.value.runStats?.provider
+        : billedResultOfError(result.error)?.runStats?.provider,
+    );
+    return result;
+  }) as typeof run;
+  return { ...deps, claude: { ...deps.claude, runClaudeWithRetry: wrapped } };
 }
