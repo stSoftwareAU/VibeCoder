@@ -21,10 +21,12 @@
  * The issue lands in a public repository, and the killed run may have been
  * working a private one. So the issue carries only the facts the worker and
  * launcher wrote themselves (host, container, run, signature, trigger, reason,
- * times), a last step logged drawn from a fixed label list, and four guest
+ * times), a last step logged drawn from a fixed label list, four guest
  * figures derived from the evidence (the silent time, the probe state, the
- * guest memory and the guest pressure; see `hard_kill_guest_facts.ts`). The
- * derived figures are fixed words and digits only, never guest text. The log,
+ * guest memory and the guest pressure) and two host figures read on the host
+ * at reap time (the host disk and the host memory; Issue #5250). All six are
+ * worded in `hard_kill_guest_facts.ts`. The derived figures are fixed words
+ * and digits only, never guest or host command text. The log,
  * transcript, boot and guest text, the last log line, the last tool call and
  * the source repository stay in the archived file on the host (Issue #4315
  * review; SECURITY.md incident response). Every value that is posted is still
@@ -521,13 +523,15 @@ export function hardKillLastStep(evidence: HardKillEvidence): string {
 }
 
 /**
- * Issue body: marker first, then the facts the worker and launcher wrote and
- * the guest figures derived from the evidence. No evidence text, last log
+ * Issue body: marker first, then the facts the worker and launcher wrote, the
+ * guest figures derived from the evidence and the host disk and host memory
+ * figures read on the host (Issue #5250). No evidence text, last log
  * line, tool call or source repository: the issue is public and the run may
  * have been working a private repository (see the module comment). The last
  * step logged is a fixed label from {@link STEP_PATTERNS} or a setup step, never log text. The
- * guest figures are fixed words and digits from `hard_kill_guest_facts.ts`,
- * never guest text. The evidence stays in the archived file on the host.
+ * guest and host figures are fixed words and digits from
+ * `hard_kill_guest_facts.ts`, never guest text or host command output. The
+ * evidence stays in the archived file on the host.
  */
 export function formatHardKillBody(
   evidence: HardKillEvidence,

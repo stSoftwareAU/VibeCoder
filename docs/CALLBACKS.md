@@ -456,11 +456,14 @@ flowchart TD
   `bug`. Its body carries the marker `<!-- VIBE_RUN_FAILURE:<signature> -->`,
   the host, the container, the run id, the handler, the phase, the last step
   logged, the trigger, the fixed reason for that trigger, the capture and
-  last-log times, the silence before capture, the guest-probe state and the
-  guest memory and pressure figures. The last step logged is the last one the
-  log reported, so the
-  wedge is in or after it; it is one of `pre-PR verifier`,
-  `quality gate`, `agent turn`, a setup step
+  last-log times, the silence before capture, the guest-probe state, the guest
+  memory and pressure figures, and the host disk and host memory figures (Issue
+  #5250). The host figures are read on the host at reap time, so they are
+  present even when the guest did not answer. Each reads `not available` when it
+  could not be read, and for an evidence file written before host facts were
+  captured. A repeat's follow-up line carries the same two host figures. The
+  last step logged is the last one the log reported, so the wedge is in or after
+  it; it is one of `pre-PR verifier`, `quality gate`, `agent turn`, a setup step
   (`setup: issue claim`, `setup: claim churn check`, `setup: repository setup`,
   `setup: heartbeat start`, `setup: default branch sync`,
   `setup: feature branch` or `setup: pre-setup command`, each logged as the step
@@ -470,14 +473,14 @@ flowchart TD
   signature. Posted facts must match the launcher shapes: hostname,
   `vibe-coder-*` container name, `vibe-<base36>-<six-hex>` run id (or
   `unknown`), `watchdog` or `pre_launch` trigger, timestamps, and the silence,
-  guest-probe, guest-memory and guest-pressure figures in their fixed shapes.
-  Free-text reasons or malformed facts are kept and logged as errors without
-  filing, commenting or attesting. That repository is public and the killed run
-  may have been working a private one, so no evidence text, last log line, tool
-  call or source repository is posted. They stay in the archived file on the
-  host (Issue #4315 review). The marker is the dedup key. It is matched only on
-  issues authored by a fleet account, the same rule the run-failure issues
-  follow (`worker/deno/lib/run_failure_issue.ts`).
+  guest-probe, guest-memory, guest-pressure, host-disk and host-memory figures
+  in their fixed shapes. Free-text reasons or malformed facts are kept and
+  logged as errors without filing, commenting or attesting. That repository is
+  public and the killed run may have been working a private one, so no evidence
+  text, last log line, tool call or source repository is posted. They stay in
+  the archived file on the host (Issue #4315 review). The marker is the dedup
+  key. It is matched only on issues authored by a fleet account, the same rule
+  the run-failure issues follow (`worker/deno/lib/run_failure_issue.ts`).
 - **Repeats.** While an issue with the same signature is open, another kill with
   that signature adds a follow-up comment and files no new issue. The first
   repeat in a 24 h window posts one comment; later repeats in that window append

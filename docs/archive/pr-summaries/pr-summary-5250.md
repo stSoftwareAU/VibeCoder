@@ -104,10 +104,57 @@ flowchart LR
 
 ## Acceptance Criteria
 
-- **missing** — Hard kill: container wedged in issue (watchdog) — reason: the
-  wedge's cause is not established. This PR records the host disk and memory
-  evidence the next recurrence needs to confirm or rule out host disk
-  exhaustion, the leading suspect.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — Hard kill: container wedged in issue (watchdog) — evidence:
+  `worker/deno/lib/hard_kill_evidence.ts`,
+  `worker/deno/lib/hard_kill_guest_facts.ts`,
+  `worker/deno/lib/hard_kill_report.ts`,
+  `worker/deno/tests/hard_kill_evidence_test.ts::captureHardKillEvidence - records the host's disk and memory even when the guest does not answer (Issue #5250)`
+  — reviewer: partial — reason: the diff adds host disk and memory evidence to
+  the hard-kill capture, issue body and follow-up line. That evidence is what
+  the next recurrence needs to confirm or rule out host disk exhaustion, the
+  leading suspect. It does not find or remove what stalled the container for 31
+  minutes in the `agent turn` step. The worker log and guest probes that would
+  show that are only on `GRQ-25`.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — every changed call site needs a test that goes red without
+  it — evidence: `worker/deno/lib/hard_kill_evidence.ts:783-784` — reason: open,
+  not fixed in this run. The production defaults `diskReading` and
+  `memoryReading` in `createEvidenceSeams` have no test, because every test
+  stubs both seams.
+- **violation** — every outcome of an added branch needs a test — evidence:
+  `worker/deno/lib/hard_kill_evidence.ts:640`, `:686-688` — reason: open, not
+  fixed in this run. Three paths are unasserted: the disk read that throws or
+  times out (`!disk.ok`), the `markUnfilled` host fill, and a host reading that
+  hangs at the total cap.
+- **violation** — a refusal test must be refused by the rule it names —
+  evidence: `worker/deno/tests/hard_kill_report_test.ts:801-809` — reason: open,
+  not fixed in this run. The test checks only that the message contains
+  `"hostState"`. There is also no refusal test for a `hostState` object whose
+  `disk` or `memory` is missing.
+- **violation** — DRY (in-repo helper re-implemented) — evidence:
+  `worker/deno/lib/hard_kill_guest_facts.ts:58,197-199` — reason: open, not
+  fixed in this run. `GIB` and `gib()` duplicate `formatMemoryBytes`
+  (`lib/memory_pressure.ts`) and the private `GIB` in `lib/host_disk.ts`. The
+  output wording differs (always GiB).
+- **violation** — names that count members kept in step — evidence:
+  `worker/deno/tests/hard_kill_report_test.ts:1315`, `:1388`,
+  `worker/deno/lib/hard_kill_guest_facts.ts:2` — reason: open, not fixed in this
+  run. The test titles still say "four guest figures" and "the silent time and
+  the guest probe". The module summary still says the figures are "derived from
+  the guest evidence".
+- **clean** — Australian English spelling; reading the old persisted shape
+  (`hostState` optional, with an old-shape test); what reaches the public issue
+  (anchored, bounded patterns, hostile inputs give `not available`); failing
+  loud (`unavailable: <cause>`); linear regexes; no dummy or interaction-only
+  tests; Deno/TypeScript conventions; docs kept in step (`docs/CALLBACKS.md`,
+  `docs/TROUBLESHOOTING.md`, `docs/workflows/resilience-and-concurrency.md`);
+  additive callback contract unchanged.
 
 ## Test Plan
 
@@ -157,8 +204,10 @@ Edited existing tests:
 Results:
 
 - Red on base: the two edited test files were copied onto the unfixed base
-  `b3f7d788a` and run with `deno test -A --no-check`. Result: 99 passed and 8
-  failed, covering the five new #5250 tests in those files, the edited body and
+  `aaee20c65` (the merge base after merging `origin/main`) and run with
+  `deno test -A --no-check`. Result: 100 passed and 8 failed. The 8 are the four
+  new #5250 tests in those files, the existing round-trip test
+  (`parseHardKillEvidence round-trips a valid file`), the edited body and
   follow-up-line tests, and the exact-record test.
 - Head: the 10 hard-kill test files (`hard_kill_evidence`, `hard_kill_report`,
   `hard_kill_guest_facts`, `container_reap_command`, `container_watchdog`,
@@ -176,12 +225,20 @@ Results:
 - Docs: `docs/TROUBLESHOOTING.md` (the hard-kill paragraph) and
   `docs/workflows/resilience-and-concurrency.md` (the "Hard-kill evidence" and
   "On the next worker start" paragraphs) were read through and updated.
-  `docs/CALLBACKS.md` mentions the archive only, and needed no change.
+  `docs/CALLBACKS.md` was updated too. In the hard-kill "Filing" bullet, the
+  list of what the public issue body carries and the list of posted facts that
+  must match fixed shapes now both name the host disk and host memory figures.
+  The bullet also says that each figure reads `not available` when unreadable or
+  missing from an older record, and that a repeat's follow-up line carries them.
+- Code comments: the `worker/deno/lib/hard_kill_report.ts` module header (the
+  argument for what reaches the public repository) and the `formatHardKillBody`
+  doc comment now name the two host figures beside the four guest figures.
+  These are comment-only edits. After them, the 10 hard-kill test files above
+  gave 241 passed and 0 failed.
 
 Not done:
 
 - The wedge's cause, as stated above.
 - I did not check whether `GRQ-25` runs the #5266 early reap; merge time alone
   does not prove deployment.
-- No independent spec or standards reviewers ran, because the issue states no
-  acceptance criteria.
+- The five standards findings above are recorded but not fixed in this run.
