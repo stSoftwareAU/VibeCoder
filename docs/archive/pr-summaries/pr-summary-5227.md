@@ -124,4 +124,9 @@ flowchart LR
     which runs with `clearEnv` and so drops `DENO_DIR`. Deno then tried to
     download `mdurl@1.0.1` and failed on DNS. The test is unchanged by this PR.
     Run by hand with `DENO_DIR` kept, the same task exits 0
-    (`[NO SUMMARY] …`).
+    (`[NO SUMMARY] …`). The test fails the same way on an `origin/main` export
+    of `worker/deno` (DNS error fetching `commonmark-0.31.2.tgz`), so it is the
+    sandbox's lack of network, not this change. CI has network.
+  - `./quality.sh`: every stage passed or was skipped except `deno tests`, where
+    35227 passed and 1 failed. The one failure is the same environmental test.
+    `config integration` and `checkov` were skipped.
