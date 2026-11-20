@@ -1,266 +1,159 @@
+# PR Summary — Issue #4815
+
 ## Summary
 
-The hard-kill issue for run `vibe-mw2hlf2s-1125d1` says only "wedged in
-completion", the same words as #4743, so nobody can tell which completion step
-froze. The filed issue and its follow-up lines now also carry a **last step
-logged** taken from a fixed list (`pre-PR verifier`, `mutation check`,
-`coverage carry-over check`, `quality gate`, `agent turn`, `unknown`). The wedge
-itself is not fixed and not diagnosed: this change makes the next recurrence
-narrow it: the label is the last step the log reported, and the wedge is in that
-step or a later one that logs nothing as it starts (the mutation check and the
-coverage check log nothing at their start; the verifier's agent session does log
-its start, which the table labels `agent turn`). Part of #4815.
-
-Version bump: `VERSION` is not touched by this change.
+The completion wedge of run `vibe-mw2hlf2s-1125d1` (GRQ-3, 4 November) cannot be
+diagnosed from any host other than GRQ-3. It was filed before the public
+**Last step logged**, **Silent before capture** and guest-probe lines existed,
+and its evidence is only in `~/logs/hard-kill-archive/` there. This change gets
+those redacted facts to the automated diagnostic path. On every hard-kill
+reporting pass, the worker posts one comment on the open issue for each archived
+evidence file whose facts were never posted. The comment carries the same
+fixed-shape facts the issue body uses, and the file is then renamed to
+`*.facts.json`. Newly reported files are archived under that name, because their
+filing already posted the facts. Once GRQ-3's worker restarts, #4815 gets the
+host's own last step, silence, guest probe, memory and pressure for the kill.
+The cause of the wedge is not diagnosed or repaired here. Part of #4815.
 
 ## Spec
 
 ### Intent and Rationale
 
-- Third recorded hard kill of this class (#4743 and its fix #4760 are the
-  earlier ones). The in-guest evidence (`~/logs/hard-kill-archive/` on GRQ-3) is
-  not readable from the worker that ran this change, so the cause cannot be
-  proven. Changing run behaviour on a guess already failed once: #4760 released
-  the verifier's cargo target directory and the wedge recurred.
-- The only evidence in the logs repository is the agent session for each run.
-  For all three runs (`vibe-mvzlnl5o-40feb4`, `vibe-mw011ned-c6f0d4`,
-  `vibe-mw2hlf2s-1125d1`) it is a GRQ-AutoTrader run whose last agent session
-  ends with a successful pre-PR verifier result. For `vibe-mw2hlf2s-1125d1` the
-  session ended 20:25:29Z, the last worker log line is 21:16:02Z and the
-  watchdog fired 22:17:09Z, which is 3 h 11 m after the run started (19:05:30Z,
-  decoded from the run id), the same offset as the other two. The worker kept
-  logging for 50 minutes after that agent finished. That points at a later
-  completion step, but the archive is needed to confirm it: a later agent turn
-  may have replaced this transcript.
+- The audit of 8 November asks that the redacted cause and last-step evidence
+  reach the automated diagnostic path, with the private boundary kept. The
+  archive outlives the kill by 30 days (the transcript retention), so the
+  facts are still on GRQ-3 for `vibe-mw2hlf2s-1125d1`. Only that host can read
+  them, so the host that filed the kill publishes them.
+- No completion recurrence has been filed since 4 November, so no newer
+  evidence exists. The coding standards forbid a speculative fix for an
+  unreproduced fault, so this change only publishes evidence and changes
+  nothing a run does.
 
 ### Essential Design Decisions
 
-- The step comes from an ordered table of patterns over the last log lines, with
-  one precedence rule ahead of it: an `[agent-progress]` line yields the agent
-  step before the noise skip and the table are read (`AGENT_PROGRESS_LINE` early
-  return, ahead of `STEP_NOISE`). It is published only as a label, never as log
-  text: the issue is public and the run may be on a private repository (module
-  comment of `worker/deno/lib/hard_kill_report.ts`).
-- Phase ticker lines (`[phase] … still running`) are skipped, since the ticker
-  is the last line of a healthy run and names no step. The redundant liveness
-  and status filters were removed: their real log shapes match no step pattern.
-- The table matches the lines each step logs when it ends, built from the gates'
-  own notes: `N of M mutants killed`, `mutation cap reached: …`,
-  `mutation budget exhausted …`, `mutation check not applicable: …`,
-  `N of M carried-over lines still covered`,
-  `coverage carry-over budget
-  exhausted …` and
-  `coverage carry-over check not applicable: …`. Because no start line exists,
-  the body reads `**Last step logged:** \`x\` (the wedge is in or after this
-  step)`and the
-  follow-up line reads`last step logged \`x\``. (PR #4819 review
-  chose naming the field honestly over adding start log lines to the completion
-  phase.)
-- The step is not part of the signature `hard-kill-<handler>-<phase>`, so
-  existing dedup and the marker are unchanged.
+- Only the fixed-shape facts are published, never log text. `hardKillFactLines`
+  is taken out of `formatHardKillBody` and used by both the body and the new
+  comment, so the two cannot drift. The body is byte-identical to before.
+- The "posted" record is the archived file's own name (`*.facts.json`), not
+  GitHub state. That name still matches `HARD_KILL_FILE_PATTERN`, so retention
+  pruning applies to it unchanged, and no comment search runs on later starts.
+- A file whose signature has no open issue is renamed with no comment, because
+  there is nothing to add to. A failed lookup, a failed comment or a malformed
+  file keeps the file as it is, logs a warning with the cause, and is retried on
+  the next start. The backfill never throws out of `reportPendingHardKills`,
+  fires no callback and counts nothing.
+- Files archived by an older worker after the fields were published also get one
+  comment, because nothing on disk tells them apart. The comment's wording says
+  it was "added once … even when it was filed before these fields were
+  published", which is true in both cases.
 
 ### Undiscoverable Facts
 
-- Which step froze in `vibe-mw2hlf2s-1125d1` is unknown: the worker log tail is
-  only in the GRQ-3 archive. After the verifier the completion phase runs the
-  mutation check, which on GRQ-AutoTrader runs `cargo mutants` (300 s budget in
-  the logs seen on other hosts); this is a lead, not a finding.
+- The earlier analysis is in PR #4819's summary and PR #4760. All three
+  completion kills (`vibe-mvzlnl5o-40feb4`, `vibe-mw011ned-c6f0d4`,
+  `vibe-mw2hlf2s-1125d1`) were
+  GRQ-AutoTrader runs on GRQ-3. The worker log stayed silent for 61 minutes
+  (run 3) and 90 minutes (run 1) before capture, while every phase logs a
+  heartbeat every 60 s (`worker/deno/lib/phase_progress.ts`,
+  `lib/issue_worker.ts` `runPhase`). So no timer in the worker was firing.
+  Either the guest froze or the worker's event loop was blocked. The archived
+  guest probe tells these apart, and it is the fact this change publishes.
+- The private logs repository (`stSoftwareAU/GRQ-VibeCoder-logs`) holds only
+  the agent session and callback metadata for these runs. It has no worker log
+  tail or guest probe.
+- Since the kill: #5095 retired the mutation check (the step after the verifier
+  in all three runs), #5105 fixed rootfs growth from agent-owned cargo target
+  directories, and #5266 reaps a silent guest that stops answering after 15
+  minutes. Whether any of these is the cause cannot be checked without the
+  archived probe.
 
 ## Evidence
 
-Backend change, no UI. The shape of the log lines the table matches was taken
-from this host's worker logs (`~/logs/worker-20261103-2*.log.gz`, run for
-GRQ-AutoTrader#4972): `Pre-PR verifier released its disposable checkout`,
-`mutation budget exhausted after 7 of 7 mutants (300 s)`,
-`coverage carry-over check not applicable: …`, `Quality gate passed attempt=1`
-and the `[phase] completion (…): still running · …` ticker.
+Backend change, no UI files. Tests under `worker/deno/tests/`:
+
+- `hard_kill_facts_backfill_4815_test.ts` uses real temporary directories and
+  a fake `gh` that answers the open-issue search by its input. The cases:
+  - An archived completion kill gets one comment with its run-id marker,
+    `**Phase:** \`completion\``, the last step and the guest probe. The file
+    becomes `*.facts.json`. A second pass posts nothing. A private token in the
+    log tail never reaches a `gh` argument.
+  - With no open issue, the file is marked and no comment is posted.
+  - A failed comment keeps the file name and warns with the cause; the next
+    pass posts it.
+  - A malformed archived file is left byte-for-byte as it was, with a warning.
+  - A newly reported file is archived as `*.facts.json` and never backfilled.
+  - The backfill runs through `reportPendingHardKills` and logs its count line.
+  - A symlinked archive directory is refused.
 
 ```mermaid
-flowchart LR
-    T["worker log tail<br/>(archived on the host)"] --> S["hardKillLastStep:<br/>skip ticker, first table match from the end"]
-    S --> L["fixed label"]
-    L --> B["public issue body: Last step logged"]
-    L --> O["follow-up occurrence line"]
-    T -. "never posted" .-> B
+flowchart TD
+    S["Worker start: reportPendingHardKills"] --> P["Pending hard-kill-*.json<br/>filed or followed up (unchanged)"]
+    P --> A["Archived as *.facts.json"]
+    S --> B["Backfill: archived files<br/>not named *.facts.json"]
+    B --> Q{"Open issue for<br/>its signature?"}
+    Q -- yes --> C["One comment: marker + fixed-shape facts"]
+    C --> M["Rename to *.facts.json"]
+    Q -- no --> M
+    Q -- lookup failed --> K["Kept, warned, retried next start"]
+    C -- comment failed --> K
 ```
 
 ## Reproduction
 
-- **symptom** — the container wedges in `completion` and is reaped by the 11400
-  s launcher watchdog; the filed issue cannot say which step.
-- **status** — `not-run` — the wedge was not reproduced and is not claimed
-  fixed.
+- **symptom** — the launcher watchdog reaped a container wedged in the
+  completion phase of a GRQ-AutoTrader run on GRQ-3, after 61 minutes of worker
+  log silence
+- **status** — `not-run` — reason: the wedge's evidence is only in GRQ-3's
+  private archive, and no recurrence has been filed since 4 November, so the
+  freeze could not be replayed. The new test covers the diagnostic gap (no facts
+  reach the open issue), not the wedge itself.
 - **regression test** —
-  `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep takes the mutation check from the tail and skips the ticker (Issue #4815)`
-- reason: the freeze is a guest-wide stall on GRQ-3 (Apple `container`); no
-  in-guest evidence is readable from this host, so only the diagnostic gap (the
-  missing step in the issue) is covered by a test.
+  `worker/deno/tests/hard_kill_facts_backfill_4815_test.ts::backfill posts one facts comment for an archived pre-change file, then never again`
 
 ## Acceptance Criteria
 
-- **missing** — the container no longer wedges in completion (the hard kill
-  recurs) — reason: the cause is undiagnosed; no evidence of which step froze is
-  readable here, and a behaviour change on a guess is what #4760 was
+- **missing** — "use a bounded replay or the next applicable recurrence to
+  diagnose and repair the completion failure" — reason: the cause is not
+  established. This PR publishes the archived guest probe and last step, which
+  the next run needs before it can diagnose.
+- **missing** — "Complete the issue through an implemented fix and automated
+  regression/recovery evidence" — reason: no fix to the wedge is made, because
+  a speculative fix for an unreproduced fault is not allowed. Only the
+  evidence path is implemented and tested.
 
 ## Test Plan
 
-- CI repair (PR #4819): in
-  `worker/deno/tests/loop_supervisor_test.ts::loop.sh #4568 - a registered orphan with a different command survives`
-  the orphan is now a plain `nohup sleep 300` instead of a symlink to
-  `/bin/sleep` under another name. The symlink died at once on the runner
-  (`ps` found no process, command `""`), consistent with `sleep` being a
-  multi-call binary that dispatches on `argv[0]` (uutils coreutils on the
-  migrating `ubuntu-latest`); this is inferred from the log, not reproduced.
-  The wait is a bounded poll for the `sleep 300` command line and re-parenting
-  to init, and it fails with the observed command and parent if it never
-  settles. The `pgrep -f` snapshot (and its helper) is removed. The test still
-  asserts the registered process, whose command is not `loop.sh`, survives the
-  reaper. Local `deno fmt --check`, `deno lint` and the `#4568` tests pass;
-  the integration workflow stays the authoritative check.
-- Added to `worker/deno/tests/hard_kill_report_test.ts`:
-  - `hardKillLastStep takes the mutation check from the tail and skips the ticker (Issue #4815)`
-  - `hardKillLastStep: the later tail line wins over an earlier one (Issue #4815)`
-  - `hardKillLastStep is unknown when no table entry matches or the tail is empty (Issue #4815)`
-  - `hardKillLastStep posts the fixed label, never the private log text (Issue #4815)`
-  - `hardKillLastStep returns promptly on 64 KiB lines (Issue #4815)` (hostile
-    long-line cases; results asserted, no timing)
-  - `a repeat kill's follow-up occurrence line names its last step (Issue #4815)`
-  - `hardKillLastStep names the step for every note the two gates log (Issue #4815 review)`
-    (fixtures are the `note` of `evaluateMutationGate` and
-    `evaluateCoverageCarryOverGate` for the clean, capped, budget and
-    not-applicable results, each after a
-    `Pre-PR verifier released its
-    disposable checkout` line)
-  - `hardKillLastStep after the verifier's checkout line is the verifier: the wedge is in or after it (Issue #4815 review)`
-  - `hardKillLastStep: an agent-progress line is the agent turn whatever its tool detail names (Issue #4815 review)`
-    (must-not-fire table: agent-progress lines whose `(last: Bash grep ...)`
-    detail names `mutation check`, `Pre-PR verifier`, `Quality gate`,
-    `carried-over lines`, the log-like text `Status:` and `[liveness]`, or the
-    phase ticker `[phase] x: still running`, must give `agent turn`; controls:
-    a mutation check outside an agent-progress line matches its own step, and a
-    ticker is still skipped as noise)
-  - `hardKillLastStep: each table operand names its step from the log shapes the worker writes (PR #4819 review)`
-    (one case per operand the other tests did not reach, in the real logger
-    shape and after a `Pre-PR verifier released its disposable checkout` line:
-    `Quality gate passed attempt=1`, `[phase] quality_gate (o/r#N): started`,
-    `Running Claude Code with 3600s timeout ...`, and
-    `Mutation gate reported findings reason=1 mutant of changed lines survived ...`,
-    whose reason names no other entry so only `gate` matches)
-- Per-operand red checks (PR #4819 review; each operand deleted on its own from
-  `STEP_PATTERNS`, `deno test` of `tests/hard_kill_report_test.ts`, then
-  restored): `\bQuality gate\b` → 2 failed (table operand and provider tests);
-  `\[phase\] quality_gate`
-  → 1 failed (new test); `Running <provider> with Ns timeout` (restored to the
-  earlier Claude-only literal) → 1 failed
-  (`hardKillLastStep recognises each provider's session ...`); mutation `gate` →
-  1 failed (new test); mutation `check` → 3 failed; `budget` → 3 failed
-  (`mutation budget` case of the gate-notes test); `cap` → 1 failed
-  (`mutation capped`); `mutants? killed` → 1 failed; `coverage carry-over` → 1
-  failed (`coverage budget`); `carried-over lines` → 1 failed. The dead
-  `/\[agent-progress\]/` operand of the `agent turn` entry is removed:
-  `AGENT_PROGRESS_LINE` in `hardKillLastStep` returns first, so no input reached
-  it; the agent-progress test still covers that label.
-- Red checks (each break made on its own, test run, then restored): ticker
-  filter removed → test 1 red; scan made forward → tests 1 and 2 red; fallback
-  `unknown` changed → tests 3 and 5 red; raw line returned instead of the label
-  → tests 1, 2, 4, 5, 6 red; body line removed → tests 1, 3, 4 red; occurrence
-  suffix removed → test 6 red; per-line cap shrunk → tests 1, 2, 4, 5, 6 red.
-  Review fix 2: with the `AGENT_PROGRESS_LINE` early return removed, the
-  agent-progress test went red at `grep -rn "mutation check" docs`. Review fix
-  3: with the agent-progress check moved back below the `STEP_NOISE` skip, the
-  same test went red at `grep -rn "[phase] x: still running" docs`. Review fix:
-  with the pattern table, body line and occurrence line restored to the earlier commit, the new
-  gate-notes test went red at `mutation clean: 7 of 7 mutants killed`, the
-  verifier-then-ticker test and the follow-up test went red on the old wording.
-- Edited `worker/deno/tests/run_failure_issue_test.ts`: the hard-kill fixture
-  gained `evidence` and `lastLogLine` fields, because `formatHardKillBody` now
-  reads them; no assertion was removed or changed. Production evidence always
-  passes the strict parser, which fills both.
-- Docs: `docs/CALLBACKS.md` (Filing bullet) and `docs/TROUBLESHOOTING.md`
-  (wedged-container paragraph) name the last step logged, say the wedge is in or
-  after it and say it is not in the dedup signature.
-- Twin check: `grep -rn "Last log time\|\*\*Phase:\*\*"` finds only
-  `hard_kill_report.ts` and its tests; `run_failure_issue.ts` only mentions the
-  `**Phase:**` field in a comment.
-- `deno task test:unit`, run from `worker/deno`, one file at a time, 0 failed
-  in each (re-run on the head of PR #4819):
-  - `worker/deno/tests/hard_kill_report_test.ts` (61 tests at head)
-  - `worker/deno/tests/run_failure_issue_test.ts` (26 tests at head)
-- `./quality.sh` (run on an earlier head, before review fix 3; not re-run after
-  it, skipped for budget): every stage passed except `deno tests`. The parallel
-  pass ran 32534 passed, 2 failed; the failures are
-  `completion - an unformatted Rust change is formatted and committed, then passes the gate`
-  and
-  `completion - cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit`
-  in `worker/deno/tests/completion_phase_repo_formatters_test.ts` (lines 480 and
-  567), which this change does not touch; the same two failed in the #4743 work.
-  I did not compare against `main`. The serial pass did not run because the
-  parallel pass failed.
+- **Added** `worker/deno/tests/hard_kill_facts_backfill_4815_test.ts` (7 tests,
+  listed under Evidence). On the base branch they fail, because the module does
+  not exist and the archive name is unchanged.
+- **Unchanged and re-run** `worker/deno/tests/hard_kill_report_test.ts`. Its
+  fake filesystem records archived names, so the suffix is visible only through
+  the default seam, which the new test covers. No assertion was removed.
+- **Added** `docs/audits/lib-sweep-coverage/top-up-4815.json` to claim the new
+  module, which `tests/lib_sweep_coverage_test.ts` requires.
+- **Ran** `deno test -A tests/hard_kill_facts_backfill_4815_test.ts
+  tests/hard_kill_report_test.ts tests/hard_kill_guest_facts_test.ts
+  tests/hard_kill_evidence_test.ts tests/run_core_production_deps_hard_kill_test.ts
+  tests/run_core_hard_kill_test.ts` from `worker/deno`: 145 passed, 0 failed.
+  `deno task check:manifests` passed (876 passed, 0 failed).
+- **Ran** `./quality.sh < /dev/null`. Every stage passed except `deno tests`,
+  where one test failed, `tests/pr_summary_ci_workflow_3768_test.ts`, because
+  this host has no DNS (`Failed caching npm package 'minimist@1.2.8'`). After I
+  seeded the host's Deno npm cache from the worker cache (not a repository
+  change), that test passed (11 passed). The serial pass did not run in that
+  gate attempt; the final gate result is recorded below.
+- **Docs:** `docs/CALLBACKS.md`, section "A hard-killed run". The Lifecycle
+  bullet now names the archived `*.facts.json` file, and a new **Facts backfill
+  (Issue #4815)** bullet describes the backfill. `deno fmt` re-wrapped the
+  nearby prose there without changing its wording. I grepped `docs/` (outside
+  `docs/archive/`) and `README.md` for `hard-kill-archive` and the evidence
+  file name. Every other hit names the pending file or only the directory, and
+  stays true.
 
-Not done: the wedge itself is not diagnosed or fixed; the GRQ-3 archive was not
-read; the serial test pass of the gate did not run.
+## Not done or not checked
 
-- Corpus run (PR #4819 review): `hardKillLastStep` over every line of the 45
-  production worker logs on this host (`~/logs/worker-*.log.gz`, 2026-11-02 to
-  2026-11-05), each line as the last log line, 38140 lines. Base has no matcher,
-  so there is no base count: the base branch cannot label a step. Earlier
-  Claude-only matcher result (not the current head):
-  1875 `agent turn` (1363 `[agent-progress]` tickers, 512
-  `Running Claude Code ...` lines, including health checks), 262 `quality gate`
-  (80 `Quality gate
-  passed`, 82 `Quality gate stage outcomes`, 2
-  `Quality gate failed, running
-  Claude fix attempt`, the rest
-  `[phase] quality_gate` started/continue lines), 252 `pre-PR verifier`, 139
-  `mutation check`, 82 `coverage carry-over check`, 35530 `unknown`. Every
-  `agent turn` line is an agent-progress or claude_runner line, but the old
-  matcher also counted health-check announcements and sessions as turns; the
-  previous claim of zero false positives was incorrect. The old corpus did not
-  record their separate counts, so the exact false-positive count is unknown.
-  Every note the two gates log (`N of M mutants killed`,
-  `mutation budget exhausted ...`, `mutation check not
-  applicable ...`,
-  `N of M carried-over lines still covered`,
-  `coverage
-  carry-over check not applicable ...`) is labelled: 0 false
-  negatives for the step-ending lines. Observed look-alikes, accepted: 4
-  `Drift check reported
-  residual drift ...` lines and the
-  `Completion gates reported findings`, `PR-summary rule block` and
-  `Completion-gate findings remain` lines quote a gate's finding text in
-  `reason=`, so they take that gate's label (these are logged after that gate
-  ran, so the label is never earlier than the real position). A scan of the 207
-  lines with a broad independent pattern
-  (`mutant|mutation|carried-over|carry-over|verifier|quality gate|claude code`)
-  that came out `unknown` found none a step logs on finishing; they are
-  `Claude Code health check passed` (94),
-  `Mutation survivors remain ... raising
-  a draft` (15), drift-check,
-  review-fix and cycle-timing lines and quoted PR text. The multi-line
-  `Quality gate failed after fix attempt output=...` dump does not occur in
-  these logs (two `Quality gate failed, running Claude fix
-  attempt` lines
-  only), so that shape is not covered by the corpus.
-
-- PR #4819 review: session starts now match the runner shape for every
-  registered provider.
-  `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep recognises each provider's session and distinguishes the health announcement`
-  derives names from the registry and covers normal sessions, health
-  announcements and probe sessions after a quality gate. The old Claude-only
-  matcher failed this test. Health announcements no longer match; probe sessions
-  still count as agent turns because the runner logs the same shape for them and
-  ordinary sessions. A current run over the 30 available files from the same
-  date range (23,139 lines, each classified independently) gives 1,848 agent
-  turns (1,546 progress lines and 302 session lines), 206 quality gates, 114
-  pre-PR verifiers, 90 mutation checks, 62 coverage checks and 20,819 unknown.
-  The 23 health announcements are no longer labelled as agent turns. Their 23
-  associated probe sessions still are: at least 23 false positives if probes
-  are excluded from killed-run steps. There are 50 session lines with a
-  30-second timeout; the line alone cannot distinguish all probes from normal
-  sessions, so the total false-positive count is unknown. This sample is not
-  the original 45-file corpus.
-- TDD rule 3: the obsolete behaviour was skipping liveness and status lines and
-  treating any `Running Claude Code` text as a session. Phase tickers are still
-  skipped, and provider session starts remain labelled; coverage is
-  `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep: an agent-progress line is the agent turn whatever its tool detail names (Issue #4815 review)`
-  and the provider session test above. No twin matcher was found.
+- The wedge's cause and its repair are not done (see Acceptance Criteria).
+- `hard_kill_report.ts` and `hard_kill_facts_backfill.ts` import each other.
+  This works, because each uses the other's exports only inside functions.
+- When the pending evidence directory cannot be listed, `reportPendingHardKills`
+  returns early and the backfill does not run on that pass.
