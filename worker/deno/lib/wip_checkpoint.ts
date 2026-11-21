@@ -237,7 +237,7 @@ export interface WipCheckpointOptions {
    * loses at most the last minute. Defaults to one minute; 0 disables.
    */
   pressureProbeIntervalMs?: number;
-  /** Memory probe, injectable for tests. Defaults to /proc/meminfo. */
+  /** Memory probe, injectable for tests. Defaults to probeMemoryPressure (Deno.systemMemoryInfo() on Linux). */
   probeMemory?: () => Promise<MemoryPressureReading>;
   /** Test seams. */
   deps?: WipCheckpointDeps;

@@ -4,57 +4,105 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   classifyPressure,
   describeMemoryPressure,
   memoryPressureLogFields,
-  parseMemInfo,
   probeHostMemoryPressureFromSystem,
   probeMemoryPressure,
 } from "../lib/memory_pressure.ts";
 
-const MEMINFO = `MemTotal:       16384000 kB
-MemFree:          120000 kB
-MemAvailable:     819200 kB
-Buffers:           10000 kB
-`;
+const TOTAL = 16384000 * 1024;
+const AVAILABLE = 819200 * 1024;
 
-Deno.test("memory_pressure - parses MemTotal/MemAvailable and classifies against the threshold", () => {
-  const parsed = parseMemInfo(MEMINFO);
-  assertEquals(parsed, {
-    totalBytes: 16384000 * 1024,
-    availableBytes: 819200 * 1024,
-  });
+Deno.test("memory_pressure - classifies against the threshold", () => {
   // 5% available < 10% threshold → high
-  assertEquals(
-    classifyPressure(parsed!.totalBytes, parsed!.availableBytes),
-    "high",
-  );
+  assertEquals(classifyPressure(TOTAL, AVAILABLE), "high");
   assertEquals(classifyPressure(100, 50), "ok");
   assertEquals(classifyPressure(0, 0), "ok");
-  assertEquals(parseMemInfo("garbage"), null);
 });
 
 Deno.test("memory_pressure - probe reports high/ok/unknown via the injected reader", async () => {
+  const warnings: string[] = [];
+  const warn = (message: string) => warnings.push(message);
+  const systemMemoryInfo = () => ({ total: TOTAL, available: AVAILABLE });
   assertEquals(
-    (await probeMemoryPressure({ readMemInfo: () => Promise.resolve(MEMINFO) }))
-      .level,
+    (await probeMemoryPressure({ os: "linux", systemMemoryInfo, warn })).level,
     "high",
   );
   assertEquals(
     (await probeMemoryPressure({
-      readMemInfo: () => Promise.resolve(MEMINFO),
+      os: "linux",
+      systemMemoryInfo,
       threshold: 0.01,
+      warn,
     })).level,
     "ok",
   );
   assertEquals(
     (await probeMemoryPressure({
-      readMemInfo: () => Promise.reject(new Error("no /proc here")),
+      os: "linux",
+      systemMemoryInfo: () => {
+        throw new Error("no sys here");
+      },
+      warn,
     })).level,
     "unknown",
   );
+});
+
+Deno.test("probeMemoryPressure - a refused read warns once with its cause and reads unknown (Issue #5319)", async () => {
+  const warnings: string[] = [];
+  const warn = (message: string) => warnings.push(message);
+  const refused = () => {
+    throw new Deno.errors.NotCapable(
+      'Requires sys access to "systemMemoryInfo", run again with the --allow-sys flag (5319 once-test)',
+    );
+  };
+  assertEquals(
+    await probeMemoryPressure({ os: "linux", systemMemoryInfo: refused, warn }),
+    { level: "unknown" },
+  );
+  assertEquals(
+    await probeMemoryPressure({ os: "linux", systemMemoryInfo: refused, warn }),
+    { level: "unknown" },
+  );
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(
+    warnings[0],
+    'NotCapable: Requires sys access to "systemMemoryInfo"',
+  );
+  assertStringIncludes(warnings[0], 'reporting "unknown"');
+  // A different cause is a new warning.
+  assertEquals(
+    await probeMemoryPressure({
+      os: "linux",
+      systemMemoryInfo: () => ({ total: 0, available: 0 }),
+      warn,
+    }),
+    { level: "unknown" },
+  );
+  assertEquals(warnings.length, 2);
+  assertStringIncludes(warnings[1], "systemMemoryInfo returned total=0");
+});
+
+Deno.test("probeMemoryPressure - a non-Linux host reads unknown silently without calling the reader (Issue #5319)", async () => {
+  const warnings: string[] = [];
+  let called = false;
+  assertEquals(
+    await probeMemoryPressure({
+      os: "darwin",
+      systemMemoryInfo: () => {
+        called = true;
+        return { total: TOTAL, available: AVAILABLE };
+      },
+      warn: (message) => warnings.push(message),
+    }),
+    { level: "unknown" },
+  );
+  assertEquals(called, false);
+  assertEquals(warnings, []);
 });
 
 // ---------------------------------------------------------------------------
