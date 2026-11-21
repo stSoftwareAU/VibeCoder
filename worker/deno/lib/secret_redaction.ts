@@ -1048,15 +1048,49 @@ function trailingLabel(
 }
 
 /**
- * A separator with whitespace in it, then the closing quote of the value it
- * ends (PR #5322 review round 6): `'API_TOKEN = '`, `'API_TOKEN ='`,
- * `'API_TOKEN: '`. The pattern's separator group, bounded for the Issue #3942
- * linearity rule.
+ * Longest whitespace run either side of the separator that
+ * {@link spacedSuffixStart} walks over (PR #5322 review round 7). The
+ * pattern's separator group takes any `\s*`, line breaks included; this is
+ * the same span bound the walk already puts on an inner assignment
+ * ({@link INNER_ASSIGNMENT_SPAN}), so the extra work per candidate stays
+ * constant (Issue #3942).
  */
-const SPACED_SUFFIX = /["']?[ \t]{0,32}[=:][ \t]{0,32}["']$/;
+const SPACED_SUFFIX_RUN = 256;
 
-/** How far back {@link SPACED_SUFFIX} is looked for. */
-const SPACED_SUFFIX_MAX = 68;
+/**
+ * Where a separator with whitespace in it, then the closing quote of the
+ * value, starts when it ends the value at `end` (PR #5322 review rounds 6 and
+ * 7): `'API_TOKEN = '`, `'API_TOKEN ='`, `'API_TOKEN:\n  '`. Walks back over
+ * the closing quote, at most {@link SPACED_SUFFIX_RUN} whitespace characters,
+ * the `=` or `:`, at most as many again, and an optional quote; -1 when the
+ * value does not end so, or the run holds no whitespace (the unspaced form is
+ * read by {@link labelEndingAt} directly). Linear in the bound, never a
+ * regular-expression scan.
+ */
+function spacedSuffixStart(text: string, start: number, end: number): number {
+  let at = end - 1;
+  if (at < start || (text[at] !== "'" && text[at] !== '"')) return -1;
+  const isSpace = (ch: string | undefined) => ch !== undefined && /\s/.test(ch);
+  let spaces = 0;
+  let run = 0;
+  while (at - 1 >= start && run < SPACED_SUFFIX_RUN && isSpace(text[at - 1])) {
+    at--;
+    run++;
+  }
+  spaces += run;
+  if (at - 1 < start || (text[at - 1] !== "=" && text[at - 1] !== ":")) {
+    return -1;
+  }
+  at--;
+  run = 0;
+  while (at - 1 >= start && run < SPACED_SUFFIX_RUN && isSpace(text[at - 1])) {
+    at--;
+    run++;
+  }
+  spaces += run;
+  if (at - 1 >= start && (text[at - 1] === "'" || text[at - 1] === '"')) at--;
+  return spaces > 0 ? at : -1;
+}
 
 /**
  * The keyword halves the pattern's key group joins with a `-`: `API-KEY`,
@@ -1111,11 +1145,10 @@ function labelEndingAt(
   const label = keyLabel(text, start, keyEnd);
   if (label) return label;
   // A quoted value whose own run ends in a label and a spaced separator:
-  // `'API_TOKEN = '` (PR #5322 review round 6).
-  const tail = text.slice(Math.max(start, end - SPACED_SUFFIX_MAX), end);
-  const spaced = SPACED_SUFFIX.exec(tail);
-  if (!spaced || !/\s/.test(spaced[0])) return null;
-  return keyLabel(text, start, end - spaced[0].length);
+  // `'API_TOKEN = '`, `'API_TOKEN =\n'` (PR #5322 review rounds 6 and 7).
+  const suffix = spacedSuffixStart(text, start, end);
+  if (suffix === -1) return null;
+  return keyLabel(text, start, suffix);
 }
 
 /** The credential key ending at `keyEnd`, or `null`. */
@@ -1178,6 +1211,18 @@ function innerAssignment(
   if (!match || match.index !== label.start) return null;
   const verdict = verdictOf(text, match);
   if (!(verdict.end > end && verdict.masked)) return null;
+  // The inner value ends in a credential flag with its own value after
+  // whitespace (`DEPLOY_TOKEN = --token <value>`, `token =\n=--password
+  // <value>`; PR #5322 review round 7). Masking the flag with the inner value
+  // would hide it from the later `secret-cli-flag` rule, and the value after
+  // it would be published. Read no inner label here, as main does: the outer
+  // value keeps its mask and that rule masks the flag's value.
+  if (
+    CLI_FLAG_AT_END.test(verdict.value.slice(-CLI_FLAG_MAX)) &&
+    FLAG_VALUE_AFTER.test(
+      text.slice(verdict.end, verdict.end + INNER_ASSIGNMENT_SPAN),
+    )
+  ) return null;
   // A single-quoted inner value holding a space, found before one of the
   // value's quotes, that runs straight into more text (`DEPLOY_TOKEN='a b'.`):
   // its mask removes the space, so a second pass reads the label, placeholder
@@ -1211,6 +1256,25 @@ function closesWithinReach(
   // Closed inside the window: the probe already judged it.
   return close !== -1 && open + 1 + close >= labelEnd + afterKey.length;
 }
+
+/**
+ * A value that ends in a credential flag name, as the `secret-cli-flag` rule
+ * matches one (no word boundary before the `--`); the flag-name runs are
+ * bounded as in that rule (Issue #3942).
+ */
+const CLI_FLAG_AT_END =
+  /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}$/i;
+
+/** Longest flag {@link CLI_FLAG_AT_END} can match: `--`, two runs and a keyword. */
+const CLI_FLAG_MAX = 2 + 63 + 16 + 63;
+
+/**
+ * Whitespace, then a value not starting with `-`: what the `secret-cli-flag`
+ * rule masks after a flag. The value may already be the placeholder, so a
+ * second pass over the first's output reads the same shape and changes
+ * nothing.
+ */
+const FLAG_VALUE_AFTER = /^\s+(?!-)\S/;
 
 /** The pattern's separator, then the opening `"` of a double-quoted value. */
 const OPEN_DOUBLE_QUOTE = /^["']?\s*[=:]\s*"/;

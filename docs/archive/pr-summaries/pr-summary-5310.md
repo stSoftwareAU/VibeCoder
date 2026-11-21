@@ -316,6 +316,40 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
+- **Review round 7** — 16 more tests, each with the four checks:
+  - **A flag as the inner label's value:**
+    `Rotate these credentials: DEPLOY_TOKEN = --token <token>` (same line and
+    next line), `secrets:\n  DEPLOY_TOKEN: --token <token>`,
+    `secrets:\n  token: --password hunter2`,
+    `credentials: api_key: --api-key <token>`, the hyphenated
+    `credentials: api-key: --api-key <token>`,
+    `The secret: credentials: --token <token>` and a double-quoted flag value.
+    Each gives main's output, for example
+    `Rotate these credentials: ***REDACTED*** = --token ***REDACTED***`: when
+    the inner value ends in a credential flag followed by whitespace and a
+    value, no inner label is read, so the `secret-cli-flag` rule still sees
+    the flag.
+  - **A line break, CRLF or more than 32 spaces in the separator before the
+    closing quote:** `'API_TOKEN =\n'`, `'API_TOKEN:\n  '` and its
+    double-quoted form, `'API_TOKEN\n= '`, the YAML child, `=\r\n`, and 33
+    spaces before or after `=`. Each gives
+    `DEPLOY_TOKEN = '***REDACTED***'***REDACTED***`. The separator's whitespace
+    is now `\s`, walked back by hand up to 256 characters either side (the
+    walk's own span bound), never by a regular-expression scan.
+  - Red runs on this head's 162-test file: `origin/main` (`0e9de4ad2`)
+    `78 passed | 84 failed`; the previous head (`8b009936`)
+    `146 passed | 16 failed`, the 16 above; this head `162 passed | 0 failed`.
+    Every test file importing `secret_redaction.ts` (47 files):
+    `1203 passed | 0 failed`.
+  - A random sweep of 1,200,000 inputs from 29 fragments, now including
+    `--token `, `--password `, `=\n`, `:\n  `, CRLF and a 33-space run: no
+    output changed on a second pass and none reported a secret. 4 published a
+    value main masked, all a value glued straight onto a credential keyword
+    (`hunter2API_TOKEN…`, `<token>credentials:`), which is read as part of the
+    label as it was at the previous head; `SECURITY.md` states it. Before the
+    flag fix was widened to a value ending in a flag, the same sweep also
+    found `credentials:token =\n=--password <token>`; it now gives main's
+    output.
 - **Red runs for review round 6** — this head's 146-test file against an
   older `worker/deno/lib/secret_redaction.ts`:
   - From `origin/main` (`26af9a4cb`): `70 passed | 76 failed`.

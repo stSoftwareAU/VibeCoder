@@ -550,16 +550,25 @@ and, apart from that check, **only when the separator crossed a line break**:
   `DEPLOY_TOKEN` and publish `<value>`.
   When a value ends in a credential label (a key-shaped run of at most 128
   characters, including the `-` of `api-key`, `access-key` and `private-key`,
-  allowing a closing quote, the swallowed `=`/`:`, or a spaced separator before
-  the value's closing quote as in `'API_TOKEN = '`, or just before one of the
+  allowing a closing quote, the swallowed `=`/`:`, or a separator with
+  whitespace before the value's closing quote as in `'API_TOKEN = '` or
+  `'API_TOKEN =\n'` (up to 256 whitespace characters, line breaks included,
+  either side of it), or just before one of the
   value's last three `'`, as in `DEPLOY_TOKEN='a b'`) whose own
   assignment runs past the value and is masked, the inner value is masked. The
   outer value is given up unmasked only when it is nothing but that label (an
   optional quote, then label characters, with no `--` among them); when other
   text precedes the label, as in `password: hunter2,token: <value>` or the CLI
   flag in `credentials: x--token = <value>`, the outer value stays masked too.
+  When the inner value ends in a credential flag with its own value after
+  whitespace (`credentials: DEPLOY_TOKEN = --token <value>`), no inner label is
+  read: the outer value keeps its mask and the CLI-flag rule masks the flag's
+  value, as before this change.
   Label characters before the label are read as part of it, so in
-  `credentials: abc-DEPLOY_TOKEN = <value>` the `abc-` stays visible.
+  `credentials: abc-DEPLOY_TOKEN = <value>` the `abc-` stays visible. That
+  includes text glued to a credential keyword with no separator at all
+  (`credentials: hunter2API_TOKEN = <value>` keeps `hunter2API_TOKEN`
+  visible), which the base behaviour masked as a value.
   That covers hyphenated, dotted and quoted inner labels. A value with a
   credential word anywhere else in it is masked whole as before, even when an
   already-masked value follows it.

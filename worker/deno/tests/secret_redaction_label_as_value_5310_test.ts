@@ -614,3 +614,105 @@ for (
     assertFinal(input, expected, values);
   });
 }
+
+// An inner label whose value is a credential flag with its own value after
+// whitespace: the outer value keeps its mask and the `secret-cli-flag` rule
+// masks the flag's value, as on main (PR #5322 review round 7). Masking the
+// flag as the inner value hid it from that rule and published the value.
+for (
+  const [input, expected, values] of [
+    [
+      `Rotate these credentials: DEPLOY_TOKEN = --token ${V}`,
+      `Rotate these credentials: ${R} = --token ${R}`,
+      [V],
+    ],
+    [
+      `Rotate these credentials:\nDEPLOY_TOKEN = --token ${V}`,
+      `Rotate these credentials:\n${R} = --token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: --token ${V}`,
+      `secrets:\n  DEPLOY_TOKEN: --token ${R}`,
+      [V],
+    ],
+    [
+      "secrets:\n  token: --password hunter2",
+      `secrets:\n  token: --password ${R}`,
+      ["hunter2"],
+    ],
+    [
+      `credentials: api_key: --api-key ${V}`,
+      `credentials: ${R} --api-key ${R}`,
+      [
+        V,
+      ],
+    ],
+    [
+      `credentials: api-key: --api-key ${V}`,
+      `credentials: ${R} --api-key ${R}`,
+      [
+        V,
+      ],
+    ],
+    [
+      `The secret: credentials: --token ${V}`,
+      `The secret: ${R} --token ${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN: --api-key "${V}"`,
+      `credentials: ${R} --api-key ${R}`,
+      [V],
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 masks a flag's value when the flag is an inner label's value: ${JSON.stringify(input.slice(0, 44))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}
+
+// A quoted inner value ending in a label whose separator holds a line break,
+// a CRLF or more than 32 spaces: the value after the closing quote is masked
+// (PR #5322 review round 7). The separator's whitespace is the pattern's own
+// `\s`, bounded by the walk's span.
+for (
+  const [input, expected] of [
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN =\n'${V}'`,
+      `credentials: DEPLOY_TOKEN = '${R}'${R}`,
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN:\n  '${V}'`,
+      `credentials: DEPLOY_TOKEN = '${R}'${R}`,
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = "API_TOKEN:\n  "${V}"`,
+      `credentials: DEPLOY_TOKEN = "${R}"${R}`,
+    ],
+    [
+      `credentials:\nDEPLOY_TOKEN = 'API_TOKEN\n= '${V}'`,
+      `credentials:\nDEPLOY_TOKEN = '${R}'${R}`,
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'API_TOKEN:\n    '${V}'`,
+      `secrets:\n  DEPLOY_TOKEN: '${R}'${R}`,
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN =\r\n'${V}'`,
+      `credentials: DEPLOY_TOKEN = '${R}'${R}`,
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN${" ".repeat(33)}= '${V}'`,
+      `credentials: DEPLOY_TOKEN = '${R}'${R}`,
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN =${" ".repeat(33)}'${V}'`,
+      `credentials: DEPLOY_TOKEN = '${R}'${R}`,
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 masks past a quoted value ending in a label with a line-break or long separator: ${JSON.stringify(input.slice(0, 44))}`, () => {
+    assertFinal(input, expected, [V]);
+  });
+}
