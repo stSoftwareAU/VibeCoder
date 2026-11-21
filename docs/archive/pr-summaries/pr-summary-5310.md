@@ -18,7 +18,11 @@ judged:
 - When the outer value ends in a credential label, the outer candidate may be
   given up. `trailingLabel` finds it: a key-shaped run of at most 128 characters
   holding a credential keyword, followed by at most a closing quote or the
-  `=`/`:` the value swallowed. A single-quoted inner value holding a space
+  `=`/`:` the value swallowed, or by a separator with whitespace in it and the
+  value's closing quote (`'API_TOKEN = '`). The run may hold the one `-` of the
+  pattern's hyphenated keywords, so `api-key`, `access-key` and `private-key`
+  are labels, and the label starts where the pattern's key would (`api` in
+  `x-api-key`). A single-quoted inner value holding a space
   (`DEPLOY_TOKEN='a b'`) is also covered: the label may sit just before one of
   the value's last three `'`. The label's own assignment must run past the value
   and be masked. The walk then resumes at the inner label, and that label's own
@@ -64,10 +68,11 @@ judged:
     (`credentials: 'DEPLOY_TOKEN='<value>`) keeps its mask (`quotedRunOn`);
     masking only the inner value would join the run and the placeholder into one
     bare outer value. This holds however often the shape repeats.
-  - Text before the inner label that opens with `-` is not label text, so a CLI
-    flag (`credentials: --token = <value>`) keeps the outer mask. Given up, it
-    left `--token = ***REDACTED***` for the later `secret-cli-flag` rule to
-    rewrite, and the next call masked `--token`.
+  - Text before the inner label that opens with `-`, or holds `--` anywhere, is
+    not label text, so a CLI flag (`credentials: --token = <value>`,
+    `credentials: x--token = <value>`) keeps the outer mask. Given up, it left
+    `--token = ***REDACTED***` for the later `secret-cli-flag` rule to rewrite,
+    and the next call masked `--token`.
   - `trailingLabel` tries the label before one of the value's last three `'`,
     not two, so a second pass over `token'='***REDACTED***'` finds the label the
     first pass found in `token'='d9 e8'`.
@@ -213,7 +218,7 @@ flowchart LR
 
 ## Test Plan
 
-- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 128
+- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 146
   tests**, all through `redactSecrets` and `containsSecret`:
   - **Leak cases** must mask the inner value and keep both labels:
     - `DEPLOY_TOKEN = <40-char value>` on the same line and the next line;
@@ -269,6 +274,25 @@ flowchart LR
     `The secret: --client-secret\n  = <token>` and a double-quoted value, each
     masked as `credentials: ***REDACTED*** = ***REDACTED***` and so on, with the
     same four checks.
+  - **Hyphenated keyword labels** (review round 6), each with its exact output
+    (label kept, value masked), an unchanged second pass, `containsSecret`
+    false on the output and no value published:
+    `Rotate these credentials: api-key = <token>` on the same line and the
+    next, `The secret:\napi-key: <token>`, `secrets:\n  access-key: <token>`,
+    `The secret: api-key: pw42`, `credentials: private-key = hunter2` and
+    `credentials: x-api-key: <token>`.
+  - **Quoted inner value ending in a spaced label** (review round 6):
+    `credentials: DEPLOY_TOKEN = 'API_TOKEN = '<token>'`, its double-quoted
+    form, `'API_TOKEN ='<token>`, `'API_TOKEN= '<token>`,
+    `DEPLOY_TOKEN: 'API_TOKEN: '<token>`, and the next-line and YAML-child
+    forms. Each gives `DEPLOY_TOKEN = '***REDACTED***'***REDACTED***` (the value
+    after the closing quote masked), with the same four checks. Main masked
+    `DEPLOY_TOKEN` and then the value; the previous head published the value.
+  - **A flag after label text** (review round 6): `credentials: x--token =
+    <token>`, `password:\n  DEPLOY_TOKEN--token = abc`,
+    `credentials: my-tool--token = "<token>"` and `secret: a.--token = hunter2`
+    keep the outer mask (`credentials: ***REDACTED*** = ***REDACTED***`), with
+    the same four checks.
   - **Idempotence:** for each of the 26 leak inputs,
     `redactSecrets(redactSecrets(x)) === redactSecrets(x)` and
     `containsSecret(redactSecrets(x)) === false`.
@@ -292,8 +316,23 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
-- **Red runs, observed** — each runs this head's 128-test file against an older
-  `worker/deno/lib/secret_redaction.ts`:
+- **Red runs for review round 6** — this head's 146-test file against an
+  older `worker/deno/lib/secret_redaction.ts`:
+  - From `origin/main` (`26af9a4cb`): `70 passed | 76 failed`.
+  - From the previous head (`ef2daa59`): `128 passed | 18 failed`, the 18 new
+    inputs above.
+  - At head: `146 passed | 0 failed`. Every test file that imports
+    `secret_redaction.ts` (47 files): `1187 passed | 0 failed`.
+  - A random sweep of 1,100,000 inputs built from 29 fragments (lead-ins,
+    labels including the hyphenated and `--` forms, separators, quotes and
+    values): no output changed on a second pass, none reported a secret, and
+    4 published `hunter2` where main masked it. All 4 are label characters
+    before a hyphenated inner label, such as
+    `credentials:hunter2private-keyaccess-key= …`: the run before `access-key`
+    is read as part of the label, as `credentials: hunter2-DEPLOY_TOKEN = …`
+    already was at the previous head. `SECURITY.md` now states this.
+- **Red runs, observed** — each runs the 128-test file of the previous head
+  against an older `worker/deno/lib/secret_redaction.ts`:
   - From `origin/main` (`5dde2633c`): `70 passed | 58 failed`.
   - From the first fix (`2396849b7`): `69 passed | 59 failed`, in 5m7s; that
     library is quadratic on the long `TOKEN` runs.

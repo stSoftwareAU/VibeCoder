@@ -932,12 +932,13 @@ function isLabelOnly(
 
 /**
  * What may precede an inner label for the outer value to be just the label. A
- * leading `-` is not label text: `credentials: --token = <value>` is a CLI flag,
- * and given up unmasked it would leave `--token = ***REDACTED***` for the
+ * leading `-`, or `--` anywhere, is not label text: `credentials: --token =
+ * <value>` and `credentials: x--token = <value>` hold a CLI flag, and given up
+ * unmasked they would leave `--token = ***REDACTED***` for the
  * `secret-cli-flag` rule to rewrite, so a second call would mask `--token`
- * (PR #5322 review round 5).
+ * (PR #5322 review rounds 5 and 6).
  */
-const LABEL_PREFIX = /^["']?(?!-)[A-Za-z0-9_.-]*$/;
+const LABEL_PREFIX = /^["']?(?!-)(?![^]*--)[A-Za-z0-9_.-]*$/;
 
 /**
  * Whether the outer value is a closed quoted run that the text runs straight
@@ -1046,6 +1047,56 @@ function trailingLabel(
   return null;
 }
 
+/**
+ * A separator with whitespace in it, then the closing quote of the value it
+ * ends (PR #5322 review round 6): `'API_TOKEN = '`, `'API_TOKEN ='`,
+ * `'API_TOKEN: '`. The pattern's separator group, bounded for the Issue #3942
+ * linearity rule.
+ */
+const SPACED_SUFFIX = /["']?[ \t]{0,32}[=:][ \t]{0,32}["']$/;
+
+/** How far back {@link SPACED_SUFFIX} is looked for. */
+const SPACED_SUFFIX_MAX = 68;
+
+/**
+ * The keyword halves the pattern's key group joins with a `-`: `API-KEY`,
+ * `ACCESS-KEY`, `PRIVATE-KEY` (PR #5322 review round 6). The hyphen is the
+ * only non-key character a key may hold, and only between these halves.
+ */
+const HYPHEN_KEYWORD_HEAD = /(?:API|ACCESS|PRIVATE)$/i;
+const HYPHEN_KEYWORD_TAIL = /^KEY/i;
+
+/**
+ * Where the key ending at `keyEnd` starts, walking back over the key
+ * characters and the one `-` a hyphenated keyword holds, or -1 past
+ * {@link INNER_LABEL_MAX}. In `x-api-key` the key is `api-key`, as the
+ * pattern's `\b` and key group read it.
+ */
+function keyStartBefore(text: string, start: number, keyEnd: number): number {
+  let keyStart = keyEnd;
+  let hyphens = 0;
+  for (;;) {
+    if (keyStart > start && KEY_CHAR.test(text.charAt(keyStart - 1))) {
+      if (keyEnd - keyStart >= INNER_LABEL_MAX) return -1;
+      keyStart--;
+      continue;
+    }
+    if (
+      hyphens === 0 && keyStart - 1 > start &&
+      text.charAt(keyStart - 1) === "-" &&
+      HYPHEN_KEYWORD_TAIL.test(text.slice(keyStart, keyStart + 3)) &&
+      HYPHEN_KEYWORD_HEAD.test(
+        text.slice(Math.max(start, keyStart - 8), keyStart - 1),
+      )
+    ) {
+      hyphens++;
+      keyStart--;
+      continue;
+    }
+    return keyStart;
+  }
+}
+
 /** The label {@link trailingLabel} describes, ending exactly at `end`. */
 function labelEndingAt(
   text: string,
@@ -1057,11 +1108,24 @@ function labelEndingAt(
     keyEnd > start && end - keyEnd < 2 &&
     LABEL_SUFFIX_CHAR.test(text.charAt(keyEnd - 1))
   ) keyEnd--;
-  let keyStart = keyEnd;
-  while (keyStart > start && KEY_CHAR.test(text.charAt(keyStart - 1))) {
-    if (keyEnd - keyStart >= INNER_LABEL_MAX) return null;
-    keyStart--;
-  }
+  const label = keyLabel(text, start, keyEnd);
+  if (label) return label;
+  // A quoted value whose own run ends in a label and a spaced separator:
+  // `'API_TOKEN = '` (PR #5322 review round 6).
+  const tail = text.slice(Math.max(start, end - SPACED_SUFFIX_MAX), end);
+  const spaced = SPACED_SUFFIX.exec(tail);
+  if (!spaced || !/\s/.test(spaced[0])) return null;
+  return keyLabel(text, start, end - spaced[0].length);
+}
+
+/** The credential key ending at `keyEnd`, or `null`. */
+function keyLabel(
+  text: string,
+  start: number,
+  keyEnd: number,
+): { readonly start: number; readonly end: number } | null {
+  const keyStart = keyStartBefore(text, start, keyEnd);
+  if (keyStart === -1 || keyStart === keyEnd) return null;
   if (!CREDENTIAL_KEYWORD.test(text.slice(keyStart, keyEnd))) return null;
   return { start: keyStart, end: keyEnd };
 }

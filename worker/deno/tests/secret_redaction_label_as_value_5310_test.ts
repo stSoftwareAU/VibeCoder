@@ -522,3 +522,95 @@ for (
     assertEquals(containsSecret(input), true);
   });
 }
+
+// The pattern's key group accepts `API-KEY`, `ACCESS-KEY` and `PRIVATE-KEY`, so
+// a lead-in label followed by one of those spellings must still mask the inner
+// value, keeping the label (PR #5322 review round 6). The inner label starts
+// where the pattern's key would: `api` in `x-api-key`.
+for (
+  const [input, expected, values] of [
+    [
+      `Rotate these credentials: api-key = ${V}`,
+      `Rotate these credentials: api-key = ${R}`,
+      [V],
+    ],
+    [
+      `Rotate these credentials:\napi-key = ${V}`,
+      `Rotate these credentials:\napi-key = ${R}`,
+      [V],
+    ],
+    [`The secret:\napi-key: ${V}`, `The secret:\napi-key: ${R}`, [V]],
+    [`secrets:\n  access-key: ${V}`, `secrets:\n  access-key: ${R}`, [V]],
+    ["The secret: api-key: pw42", `The secret: api-key: ${R}`, ["pw42"]],
+    [
+      "credentials: private-key = hunter2",
+      `credentials: private-key = ${R}`,
+      ["hunter2"],
+    ],
+    [`credentials: x-api-key: ${V}`, `credentials: x-api-key: ${R}`, [V]],
+  ] as const
+) {
+  Deno.test(`#5310 masks after a hyphenated keyword label: ${JSON.stringify(input.slice(0, 36))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}
+
+// A quoted inner value that ends in a second label and a spaced separator,
+// with the real value straight after the closing quote: the value after the
+// quote must be masked (PR #5322 review round 6; main masked it).
+for (
+  const [input, expected] of [
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN = '${V}'`,
+      `credentials: DEPLOY_TOKEN = '${R}'${R}`,
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = "API_TOKEN = "${V}"`,
+      `credentials: DEPLOY_TOKEN = "${R}"${R}`,
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN ='${V}`,
+      `credentials: DEPLOY_TOKEN = '${R}'${R}`,
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN= '${V}`,
+      `credentials: DEPLOY_TOKEN = '${R}'${R}`,
+    ],
+    [
+      `credentials: DEPLOY_TOKEN: 'API_TOKEN: '${V}`,
+      `credentials: DEPLOY_TOKEN: '${R}'${R}`,
+    ],
+    [
+      `credentials:\nDEPLOY_TOKEN = 'API_TOKEN = '${V}'`,
+      `credentials:\nDEPLOY_TOKEN = '${R}'${R}`,
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'API_TOKEN: '${V}'`,
+      `secrets:\n  DEPLOY_TOKEN: '${R}'${R}`,
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 masks past a quoted value ending in a spaced label: ${JSON.stringify(input.slice(0, 44))}`, () => {
+    assertFinal(input, expected, [V]);
+  });
+}
+
+// `--` anywhere before the inner label is a CLI flag, not label text, so the
+// outer value keeps its mask and the `secret-cli-flag` rule has nothing left
+// to rewrite on a second pass (PR #5322 review round 6).
+for (
+  const [input, expected, values] of [
+    [`credentials: x--token = ${V}`, `credentials: ${R} = ${R}`, [V]],
+    ["password:\n  DEPLOY_TOKEN--token = abc", `password:\n  ${R} = ${R}`, [
+      "abc",
+    ]],
+    [`credentials: my-tool--token = "${V}"`, `credentials: ${R} = "${R}"`, [
+      V,
+    ]],
+    ["secret: a.--token = hunter2", `secret: ${R} = ${R}`, ["hunter2"]],
+  ] as const
+) {
+  Deno.test(`#5310 idempotent on a flag after label text: ${JSON.stringify(input.slice(0, 36))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}
