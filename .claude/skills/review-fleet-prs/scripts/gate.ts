@@ -491,16 +491,35 @@ function changedLinesByHunk(patch: string): string[][] {
   return hunks;
 }
 
+// Whether two hunks change identical lines, in the same order.
+function sameLines(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((line, j) => line === b[j]);
+}
+
 // Whether two patches change the same lines: the same number of hunks, with
 // identical changed lines hunk by hunk in the same order.
 function sameChangedLines(a: string, b: string): boolean {
   const hunksA = changedLinesByHunk(a);
   const hunksB = changedLinesByHunk(b);
   return hunksA.length === hunksB.length &&
-    hunksA.every((lines, i) =>
-      lines.length === hunksB[i]!.length &&
-      lines.every((line, j) => line === hunksB[i]![j])
-    );
+    hunksA.every((lines, i) => sameLines(lines, hunksB[i]!));
+}
+
+// Whether every hunk of the head patch changes the same lines as a hunk of the
+// sent-back patch, in the same order (Issue #5307). A base merge can absorb a
+// hunk the PR still changes elsewhere, so the head may hold fewer hunks. Equal
+// hunk counts reduce to sameChangedLines. One advancing index keeps it linear.
+function headHunksWithin(since: string, head: string): boolean {
+  const hunksSince = changedLinesByHunk(since);
+  let next = 0;
+  return changedLinesByHunk(head).every((lines) => {
+    while (next < hunksSince.length && !sameLines(hunksSince[next]!, lines)) {
+      next++;
+    }
+    if (next === hunksSince.length) return false;
+    next++;
+    return true;
+  });
 }
 
 // Splits a patch into its hunks, each keeping its own header line. A patch that
@@ -618,9 +637,13 @@ function findingsAreContent(
 // the base) unchanged, apart from a strict version increment in one hunk of a
 // patch while every other hunk matches (Issue #4516), so the review it got at
 // `since` still stands. In a file no earlier finding names, context
-// lines that a base merge moved are ignored, while every added or removed
-// line, the hunk count and the hunk order must still match (Issue #4476). In a
-// file an earlier finding names, or any file when the findings are unknown,
+// lines that a base merge moved are ignored. When the earlier findings are
+// known and there is at least one, hunks of the sent-back patch may be missing
+// from the head (a base merge absorbed them, Issue #5307), but every head hunk
+// must appear in the sent-back patch in the same order with identical changed
+// lines. With empty findings, every added or removed line, the hunk count and
+// the hunk order must still match (Issue #4476). In a file an earlier finding
+// names, or any file when the findings are unknown,
 // the fix may be a move of the PR's own line relative to its context, so the
 // whole patch must match apart from hunk headers (PR #4525 review). Returns
 // false (= give the PR a fresh review) as soon as any check fails to confirm
@@ -731,9 +754,13 @@ export async function ownDiffUnchanged(
       // A re-cut treats every file as named: the whole patch must match, with
       // no version exception (Issue #4723).
       const named = recut || findingNamesFile(findings, fa.filename);
+      // Known, non-empty findings let a base merge absorb hunks of an unnamed
+      // file, so its head hunks need only be an in-order subset (Issue #5307).
       if (
         named
           ? normalisePatch(fa.patch!) === normalisePatch(fb.patch!)
+          : findings !== undefined && findings.length > 0
+          ? headHunksWithin(fa.patch!, fb.patch!)
           : sameChangedLines(fa.patch!, fb.patch!)
       ) continue;
       if (
