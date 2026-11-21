@@ -60,12 +60,24 @@ export const REDACTION_PLACEHOLDER = "***REDACTED***";
  * match. The `replace` callback receives the standard `String.replace`
  * arguments so a rule can preserve a non-secret prefix (e.g. the `Bearer `
  * scheme or a `TOKEN=` key) while masking only the secret portion.
+ *
+ * A rule whose verdict on one match depends on the matches around it supplies
+ * a whole-text `apply` and its matching `detect` instead (Issue #5310): the
+ * `secret-assignment` rule, whose walk gives an outer candidate up for the
+ * credential label inside it. One implementation serves both, so
+ * `redactSecrets` and `containsSecret` cannot disagree.
  */
-interface RedactionRule {
-  readonly name: string;
-  readonly pattern: RegExp;
-  readonly replace: (match: string, ...groups: string[]) => string;
-}
+type RedactionRule =
+  | {
+    readonly name: string;
+    readonly pattern: RegExp;
+    readonly replace: (match: string, ...groups: string[]) => string;
+  }
+  | {
+    readonly name: string;
+    readonly apply: (text: string) => string;
+    readonly detect: (text: string) => boolean;
+  };
 
 /**
  * The complete Markdown a cross-line assignment value can be, and no
@@ -696,26 +708,8 @@ const RULES: readonly RedactionRule[] = [
   //     on its own output.
   {
     name: "secret-assignment",
-    pattern: SECRET_ASSIGNMENT_PATTERN,
-    replace: (
-      match: string,
-      key: string,
-      sep: string,
-      value: string,
-      offset: unknown,
-      text: unknown,
-    ) => {
-      // `String.replace` passes the match offset and the whole string after
-      // the groups; the rule interface types the tail as strings, so narrow.
-      // Without them `following` is empty and the prose-heading exemption is
-      // refused, so the value stays masked (Issue #5253).
-      const following = typeof offset === "number" && typeof text === "string"
-        ? textAfter(text, offset + match.length)
-        : "";
-      if (!assignmentIsMasked(key, sep, value, following)) return match;
-      const quote = QUOTED_VALUE.test(value) ? value.charAt(0) : "";
-      return `${key}${sep}${quote}${REDACTION_PLACEHOLDER}${quote}`;
-    },
+    apply: redactAssignments,
+    detect: detectsSecretAssignment,
   },
   // Space-separated CLI flag carrying a secret (Issue #3648). The
   // `secret-assignment` rule above requires an `=` or `:` separator, so a
@@ -786,9 +780,7 @@ const RULES: readonly RedactionRule[] = [
  */
 function matchesSignatureRule(text: string): boolean {
   return RULES.some((rule) =>
-    rule.pattern === SECRET_ASSIGNMENT_PATTERN
-      ? detectsSecretAssignment(text)
-      : text.search(rule.pattern) !== -1
+    "detect" in rule ? rule.detect(text) : text.search(rule.pattern) !== -1
   );
 }
 
@@ -799,7 +791,7 @@ function matchesSignatureRule(text: string): boolean {
  * pattern-only scan made `containsSecret` disagree with `redactSecrets` — it
  * reported a secret in a PR body whose only "secret" was a Mermaid fence after
  * a `credential:` lead-in. Every candidate is put through
- * `assignmentIsMasked`, the same verdict the rule's `replace` returns.
+ * `assignmentIsMasked`, the same verdict `redactAssignments` applies.
  *
  * Running *every* rule through `replace` and comparing would answer this too,
  * and it was tried — but it silently narrowed the other rules:
@@ -874,27 +866,84 @@ function verdictOf(text: string, match: RegExpExecArray): AssignmentVerdict {
  * <value>`. Masking that run masked the inner label and published the inner
  * value, because the scan resumed after the run. So when the value ends in a
  * credential label (see {@link trailingLabel}) whose assignment runs past the
- * value's end and is itself masked, the outer candidate is given up and the
- * walk resumes at the inner label, whose own match masks its value. Otherwise the outer value is judged and masked
- * exactly as before — an inner label with no value, a switch word or a
- * cross-line value judged as prose never costs the outer mask.
+ * value's end and is itself masked, the walk resumes at the inner label, whose
+ * own match masks its value.
+ *
+ * The outer candidate is given up unmasked only when its whole value is that
+ * label (see {@link isLabelOnly}). When real text sits before the label —
+ * `password: hunter2,token: <value>`, `TOKEN=abc123;SECRET='d9 e8'` — the
+ * outer value is still judged and masked whole, as before; the inner label's
+ * key and separator then sit inside that mask, so only the part of the inner
+ * value past the outer value's end is masked again. Otherwise the outer value
+ * is judged and masked exactly as before — an inner label with no value, a
+ * switch word or a cross-line value judged as prose never costs the outer
+ * mask.
  */
 function walkAssignments(text: string): AssignmentVerdict[] {
   const verdicts: AssignmentVerdict[] = [];
   let from = 0;
+  // Where the last outer mask kept for an inner label ends; a later verdict
+  // starting before it only masks what lies past it.
+  let floor = 0;
   let match: RegExpExecArray | null;
   while ((match = execAssignmentAt(text, from)) !== null) {
     const outer = verdictOf(text, match);
     const valueStart = outer.end - outer.value.length;
     const inner = innerAssignment(text, valueStart, outer.end);
-    if (inner) {
-      from = inner.index;
+    if (inner && isLabelOnly(text, valueStart, inner.labelStart)) {
+      from = inner.resume;
       continue;
     }
-    verdicts.push(outer);
+    const kept = pastFloor(text, outer, floor);
+    if (kept) verdicts.push(kept);
+    if (inner) {
+      floor = outer.end;
+      from = inner.resume;
+      continue;
+    }
     from = outer.end > outer.index ? outer.end : outer.index + 1;
   }
   return verdicts;
+}
+
+/**
+ * Whether the outer value from `valueStart` holds nothing before the inner
+ * label at `labelStart` but an optional opening quote and label characters
+ * (Issue #5310) — `DEPLOY_TOKEN`, `"app.DEPLOY-TOKEN`. Anything else there
+ * (`hunter2,`, `abc123;`, `ab#`) is text the outer value masks.
+ */
+function isLabelOnly(
+  text: string,
+  valueStart: number,
+  labelStart: number,
+): boolean {
+  return LABEL_PREFIX.test(text.slice(valueStart, labelStart));
+}
+
+/** What may precede an inner label for the outer value to be just the label. */
+const LABEL_PREFIX = /^["']?[A-Za-z0-9_.-]*$/;
+
+/**
+ * `verdict` cut to the part past `floor`, the end of an outer mask it starts
+ * inside (Issue #5310), or `null` when nothing is left. Its key and separator
+ * then lie inside that mask, so only the value's remainder is masked again.
+ */
+function pastFloor(
+  text: string,
+  verdict: AssignmentVerdict,
+  floor: number,
+): AssignmentVerdict | null {
+  if (verdict.index >= floor) return verdict;
+  const start = Math.max(verdict.end - verdict.value.length, floor);
+  if (start >= verdict.end) return null;
+  return {
+    index: start,
+    end: verdict.end,
+    key: "",
+    sep: "",
+    value: text.slice(start, verdict.end),
+    masked: verdict.masked,
+  };
 }
 
 /**
@@ -976,7 +1025,7 @@ function labelEndingAt(
 }
 
 /**
- * The masked assignment the label ending the value `[start, end)` opens, when
+ * The inner label ending the value `[start, end)` opens, when
  * it runs past `end`, or `null` (Issue #5310). Only that label is tried (see
  * {@link trailingLabel}); the search past the value is cut to
  * {@link INNER_ASSIGNMENT_SPAN}, so each candidate costs bounded extra work.
@@ -992,13 +1041,13 @@ function innerAssignment(
   text: string,
   start: number,
   end: number,
-): AssignmentVerdict | null {
+): InnerLabel | null {
   const label = trailingLabel(text, start, end);
   if (!label) return null;
   const window = text.slice(label.start, end + INNER_ASSIGNMENT_SPAN);
   const afterKey = window.slice(label.end - label.start);
   if (MASKED_SEPARATOR.test(afterKey)) {
-    return { index: end, end, key: "", sep: "", value: "", masked: true };
+    return { labelStart: label.start, resume: end };
   }
   if (!SEPARATOR_START.test(afterKey)) return null;
   const probe = execAssignmentAt(window, 0);
@@ -1006,7 +1055,20 @@ function innerAssignment(
   const match = execAssignmentAt(text, label.start);
   if (!match || match.index !== label.start) return null;
   const verdict = verdictOf(text, match);
-  return verdict.end > end && verdict.masked ? verdict : null;
+  return verdict.end > end && verdict.masked
+    ? { labelStart: label.start, resume: label.start }
+    : null;
+}
+
+/**
+ * An inner credential label {@link innerAssignment} found (Issue #5310): where
+ * it starts, and where the walk resumes — at the label, whose own match masks
+ * its value, or past the outer value when that value is already the
+ * placeholder.
+ */
+interface InnerLabel {
+  readonly labelStart: number;
+  readonly resume: number;
 }
 
 /** Mask every `secret-assignment` value {@link walkAssignments} judges masked. */
@@ -1039,12 +1101,10 @@ export function redactSecrets(text: string): string {
   let out = text;
   for (const rule of RULES) {
     // Each rule's pattern is global; replace handles every match in the line.
-    out = rule.pattern === SECRET_ASSIGNMENT_PATTERN
-      ? redactAssignments(out)
-      : out.replace(
-        rule.pattern,
-        rule.replace as (substring: string, ...args: unknown[]) => string,
-      );
+    out = "apply" in rule ? rule.apply(out) : out.replace(
+      rule.pattern,
+      rule.replace as (substring: string, ...args: unknown[]) => string,
+    );
   }
   return redactTransformedSecrets(
     out,

@@ -231,6 +231,67 @@ keep(
   true,
 );
 
+// Text before the inner label is part of the outer value, so it stays masked
+// (PR #5322 review): the outer candidate is given up unmasked only when its
+// whole value is the label. Giving it up for any trailing label published
+// `hunter2` in `password: hunter2,token: <value>`, which base masked. Each
+// output below also masks what base published (`abc123` from `token: abc123`,
+// `e8` from `'d9 e8'`).
+for (
+  const [name, input, expected, values] of [
+    [
+      "password then token after a comma",
+      `password: hunter2,token: ${GHP}`,
+      `password: ${R} ${R}`,
+      ["hunter2", GHP],
+    ],
+    [
+      "password then token after a semicolon",
+      `db_password: Winter2026!;gh_token: ${GHP}`,
+      `db_password: ${R} ${R}`,
+      ["Winter2026!", GHP],
+    ],
+    [
+      "inner value already the placeholder",
+      `password: hunter2,token: ${R}`,
+      `password: ${R} ${R}`,
+      ["hunter2"],
+    ],
+    [
+      "non-credential key before the pair",
+      "user: bob,password: hunter2,token: abc123",
+      `user: bob,password: ${R} ${R}`,
+      ["hunter2", "abc123"],
+    ],
+    [
+      "single-quoted inner value with a space",
+      "TOKEN=abc123;SECRET='d9 e8'",
+      `TOKEN=${R}${R}`,
+      ["abc123", "d9", "e8"],
+    ],
+    [
+      "value ending in a keyword run",
+      `password: ab#c1TOKEN = ${GHP}`,
+      `password: ${R} = ${R}`,
+      ["ab#c1", "c1TOKEN", GHP],
+    ],
+    [
+      "chain of three pairs",
+      "a_password: x1,b_token: y2,c_secret: z3",
+      `a_password: ${R} ${R} ${R}`,
+      ["x1", "y2", "z3"],
+    ],
+  ] as const
+) {
+  leak(`text before an inner label stays masked: ${name}`, input, expected);
+  Deno.test(`#5310 publishes no value: ${name}`, () => {
+    const out = redactSecrets(input);
+    for (const value of values) {
+      assertEquals(out.includes(value), false, `${value} published: ${out}`);
+    }
+  });
+}
+
 // Redaction is idempotent on every leak form, and its output reads clean
 // (pre-PR verifier): `api_key: pw42` once lost its label on a second pass.
 for (const input of LEAKS) {
