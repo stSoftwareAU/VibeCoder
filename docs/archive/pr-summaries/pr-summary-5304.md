@@ -64,10 +64,15 @@ flowchart LR
   - `stepMayRetagImage`
   - the `GITHUB_ENV`/`GITHUB_PATH` writer check
 
-  A joined continuation can only add text these see (for example `docker \` +
-  `build` now matches the retag regex), and a kept line can only add `|`, `;` or
-  `&`. Each change therefore refuses more, never less. Both real workflows still
-  pass.
+  A kept line can only add `|`, `;` or `&`, so it refuses more. The no-blank
+  join is not one-way. It joins a word Bash joins, so it can add text these see
+  (`docker \` + `build` now matches the retag regex), and it can also make a
+  caller accept a command `shellCommands` used to split: a script path, or
+  `docker`, split mid-word by a real continuation is now read as the one word
+  Bash runs, and accepted. Only a real continuation joins: an odd run of
+  trailing backslashes. A line ending in an escaped backslash (an even run) ends
+  its command, as in Bash, so `FOO=\\` followed by `true <script>` still runs
+  `true`, and is refused. Both real workflows still pass.
 - Docs: `docs/EC2-LINUX-VERIFICATION.md` names both validators, but nothing in
   it describes comment handling, so it is unchanged. Updated in this diff: the
   module header bullet (a), the `codeOf` doc comment, and the
@@ -97,6 +102,13 @@ flowchart LR
     - a non-breaking space before `# || exit 0` above the docker line
     - the docker line continued onto `# || true`
   - Accepted by the same check: an ASCII comment line above the docker line.
+  - Escaped backslash at the end of a line (review of `c00fe13`), each refused:
+    `FOO=\\` then `true <script>` and `FOO=\\` then `: <script>`
+    (`[test-step] no step runs`); the same shape before `true bash
+    container/toolchains/aws-cli.sh` (`[pinned-cli] no step runs`); and before
+    `true docker build` in `container-build.yml` (one `[container-agent-run]`
+    finding). Accepted, as its look-alike: a real continuation, `FOO=\` then
+    `true <script>`, which Bash runs as `FOO=true <script>`.
 - Red on base: with `lib/aws_emulator_workflow_check.ts` restored from
   `origin/main`, the test file gave `FAILED | 197 passed | 6 failed`. The six
   failures are the six refusal cases above, and the look-alikes passed. With the
@@ -113,9 +125,16 @@ flowchart LR
   checks)` (config integration and checkov
   skipped). The first attempt was killed by my 900-second `timeout` with no
   output. Re-run under a longer bound, it passed.
-- Not done or not checked: a `\\` escaped backslash at the end of a line is
-  still read as a continuation, as `shellCommands` already reads it. For these
-  steps that only fails closed. A non-ASCII character elsewhere on a kept line
-  is not refused on its own.
+- Escaped backslash, after the fix: the test file gives
+  `ok | 208 passed | 0 failed`. With the library from `c00fe13` it gave
+  `FAILED | 204 passed | 4 failed` (the four escaped-backslash refusals), and
+  with the library from `origin/main` `FAILED | 201 passed | 7 failed` (the six
+  comment-line refusals and the real-continuation accept case, which main
+  split into `FOO=` and `true <script>`). Bash itself was checked:
+  `FOO=\\` then `echo $FOO` prints `\`, and `FOO=\` then `echo` runs
+  `FOO=echo`.
+- Not done or not checked: a non-ASCII character elsewhere on a kept line is
+  not refused on its own. A backslash inside quotes is still counted as if
+  unquoted when deciding whether a line continues.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

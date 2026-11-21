@@ -121,10 +121,24 @@ function isCommentLine(pending: string, physical: string): boolean {
 }
 
 /**
+ * Whether a line ends in a backslash continuation: an odd run of trailing
+ * backslashes. An even run is escaped backslashes, so the command ends at the
+ * newline (`FOO=\\` assigns one backslash and the next line is its own
+ * command), as Bash reads it outside quotes.
+ */
+function endsInContinuation(line: string): boolean {
+  let run = 0;
+  for (let i = line.length - 1; i >= 0 && line[i] === "\\"; i--) run++;
+  return run % 2 === 1;
+}
+
+/**
  * The `run:` text of a step as Bash reads it: backslash-newline removed with
  * no blank inserted (the next line's leading whitespace is kept), and comment
  * lines, per {@link isCommentLine}, dropped. Joining without a blank keeps
- * `sh\` + `#` as the word `sh#`, as Bash does.
+ * `sh\` + `#` as the word `sh#`, as Bash does. Only a real continuation, per
+ * {@link endsInContinuation}, joins: a line ending in an escaped backslash
+ * stays its own command.
  */
 function codeOf(step: unknown): string {
   const lines: string[] = [];
@@ -132,7 +146,7 @@ function codeOf(step: unknown): string {
   for (const physical of runOf(step).split("\n")) {
     if (isCommentLine(continued, physical)) continue;
     const line = continued + physical;
-    if (line.endsWith("\\")) {
+    if (endsInContinuation(line)) {
       continued = line.slice(0, -1);
       continue;
     }

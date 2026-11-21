@@ -261,6 +261,55 @@ for (
   });
 }
 
+// Issue #5304 review: only an odd run of trailing backslashes continues a
+// line. An escaped backslash at the end of a line (two backslashes) ends the
+// command there, so `FOO=\\` assigns a backslash and the next line is its own
+// command: `true <script>` runs `true`, not the script.
+for (
+  const [label, replacement] of [
+    [
+      "an escaped backslash ending an assignment before true <script>",
+      "\n          FOO=\\\\\n          true " + SCRIPT_LINE + "\n",
+    ],
+    [
+      "an escaped backslash ending an assignment before : <script>",
+      "\n          FOO=\\\\\n          : " + SCRIPT_LINE + "\n",
+    ],
+  ] as const
+) {
+  Deno.test(`(a) refuses ${label} (Issue #5304)`, () => {
+    expectFindings(mutate([TEST_STEP_ANCHOR, replacement]), [
+      "[test-step] no step runs",
+    ]);
+  });
+}
+
+Deno.test("(a) accepts a real continuation from an assignment into true <script> (Issue #5304)", () => {
+  // `FOO=\` + newline + `true <script>` is `FOO=true <script>`: the script runs.
+  assertEquals(
+    problemsOf(mutate([
+      TEST_STEP_ANCHOR,
+      "\n          FOO=\\\n          true " + SCRIPT_LINE + "\n",
+    ])),
+    [],
+  );
+});
+
+Deno.test("(b) refuses an escaped backslash ending an assignment before true <aws-cli install> (Issue #5304)", () => {
+  // The install line itself runs `true`; the toolchain call then sits behind
+  // `FOO=\\`, which ends its own command, so `true bash …aws-cli.sh` runs `true`.
+  const manifest =
+    'TOOLCHAIN_MANIFEST="${GITHUB_WORKSPACE}/container/tools.json"';
+  expectFindings(
+    mutate([
+      manifest + " \\\n            " + CLI_TOOLCHAIN_ANCHOR + "\n",
+      manifest + " true\n          FOO=\\\\\n          true " +
+      CLI_TOOLCHAIN_ANCHOR + "\n",
+    ]),
+    ["[pinned-cli] no step runs"],
+  );
+});
+
 Deno.test("(a) accepts an explicit continue-on-error: false on the test step", () => {
   expectFindings(
     mutate([
@@ -1101,6 +1150,21 @@ Deno.test("(container-agent-run) accepts an ASCII comment line above the docker 
     )),
     [],
   );
+});
+
+Deno.test("(container-agent-run) refuses an escaped backslash ending an assignment before true docker build (Issue #5304)", () => {
+  const problems = checkContainerBuildRunsAwsEmulator(parseYaml(
+    mutateText(CONTAINER_BUILD, [
+      "          " + BUILD_TAG,
+      "          FOO=\\\\\n          true " + BUILD_TAG,
+    ]),
+  ));
+  assertEquals(
+    problems.length,
+    1,
+    `expected one finding, got: ${JSON.stringify(problems)}`,
+  );
+  assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
 });
 
 const AGENT_ONE_LINE_ARGS = [
