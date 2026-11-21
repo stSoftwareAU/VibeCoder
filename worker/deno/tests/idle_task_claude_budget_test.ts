@@ -28,6 +28,7 @@ import {
   withIdleTaskBudget,
   withIdleTaskRunContext,
 } from "../lib/idle_task_claude_budget.ts";
+import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import { OPERATIONAL_DEFAULTS } from "../lib/config_defaults.ts";
 import { EXECUTE_TIMEOUT_FLOOR_SECONDS } from "../lib/execute_timeout.ts";
 import type { Logger } from "../types.ts";
@@ -454,6 +455,30 @@ Deno.test("collectIdleTaskInvocations records an error result as an invocation",
   );
   assertEquals(value.ok, false);
   assertEquals(invocations, [{}]);
+});
+
+Deno.test("collectIdleTaskInvocations keeps a billed turn-cap failure's runStats", async () => {
+  // runClaudeWithRetry returns a turn-cap stop as ok:false carrying the billed
+  // run, so its usage must still reach the routed outcome's telemetry.
+  const runStats = statsWithTokens(250, 40);
+  const { value, invocations } = await collectIdleTaskInvocations(() =>
+    runIdleTaskClaude(
+      COLLECT_OPTIONS,
+      undefined,
+      () =>
+        Promise.resolve({
+          ok: false,
+          error: new AgentTurnLimitError("turn cap", {
+            exitCode: 1,
+            output: "",
+            timedOut: false,
+            runStats,
+          }),
+        }),
+    )
+  );
+  assertEquals(value.ok, false);
+  assertEquals(invocations, [{ runStats }]);
 });
 
 Deno.test("collectIdleTaskInvocations records {} for a throwing runner and rethrows", async () => {

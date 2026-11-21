@@ -86,6 +86,10 @@ flowchart LR
 - Added to `worker/deno/tests/idle_task_claude_budget_test.ts`:
   - a collected ok result records its run stats
   - an error result records an invocation
+  - a billed turn-cap failure (`ok: false` with an `AgentTurnLimitError`
+    carrying the run, as `runClaudeWithRetry` returns at the turn cap) keeps its
+    run stats. With the `billedResultOfError` branch replaced by `undefined`,
+    this test fails and the other 30 in the file pass
   - a throwing runner records an empty invocation and the error propagates
   - two concurrent collectors each see only their own invocations
   - outside a collector the runner still returns its result
