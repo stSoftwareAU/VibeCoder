@@ -210,7 +210,10 @@ Deno.test("global config: a hostile GIT_CONFIG_GLOBAL runs the hook; the helper 
       `[core]\n\thooksPath = ${hook.hooksDir}\n`,
     );
 
+    // Pin GIT_CONFIG_COUNT so an inherited host injection cannot be the hook
+    // that refuses the push: only the global file injects here.
     const control = await pushHead(fx, "case-d-control", {
+      GIT_CONFIG_COUNT: "0",
       GIT_CONFIG_GLOBAL: globalConfig,
     });
     assert(
