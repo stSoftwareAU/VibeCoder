@@ -1215,11 +1215,26 @@ const TEST_NAME_WORDS = new Set([
   "check",
 ]);
 
-/** Whether a script path, target or script name holds a {@link TEST_NAME_WORDS} word. */
+/**
+ * Whole words that make a name about installing or preparing, not testing
+ * (`make install-test-deps`, `./scripts/check-install.sh`; PR #5332 review).
+ */
+const SETUP_NAME_WORDS = new Set([
+  "install",
+  "setup",
+  "deps",
+  "dependencies",
+  "bootstrap",
+]);
+
+/**
+ * Whether a script path, target or script name names a test: it holds a
+ * {@link TEST_NAME_WORDS} word and no {@link SETUP_NAME_WORDS} word.
+ */
 function namesTest(name: string): boolean {
-  return name.toLowerCase().split(/[^a-z0-9]+/).some((part) =>
-    TEST_NAME_WORDS.has(part)
-  );
+  const parts = name.toLowerCase().split(/[^a-z0-9]+/);
+  return parts.some((part) => TEST_NAME_WORDS.has(part)) &&
+    !parts.some((part) => SETUP_NAME_WORDS.has(part));
 }
 
 /** Commands that are a test run whatever their arguments (`pytest -k aws`, `tox -e aws`). */
@@ -1239,8 +1254,14 @@ const TEST_RUNNERS = new Set([
 ]);
 
 /**
+ * Words that make a command a probe, not a test run (`pytest --version`,
+ * `npx jest --help`).
+ */
+const PROBE_WORDS = new Set(["--version", "-V", "--help", "-h"]);
+
+/**
  * Commands whose first subcommand decides whether they run tests, with the
- * subcommands that do (`cargo test`, `mvn verify`, `go test`).
+ * subcommands that do (`cargo test`, `go test`, `dotnet test`).
  */
 const TEST_SUBCOMMANDS = new Map<string, ReadonlySet<string>>([
   ["cargo", new Set(["test", "nextest"])],
@@ -1248,10 +1269,65 @@ const TEST_SUBCOMMANDS = new Map<string, ReadonlySet<string>>([
   ["deno", new Set(["test"])],
   ["bun", new Set(["test"])],
   ["dotnet", new Set(["test"])],
-  ["mvn", new Set(["test", "verify", "integration-test"])],
-  ["mvnw", new Set(["test", "verify", "integration-test"])],
-  ["gradle", new Set(["test", "check", "integrationTest"])],
-  ["gradlew", new Set(["test", "check", "integrationTest"])],
+]);
+
+/**
+ * Maven and Gradle: any goal or task in the list runs the tests when it is a
+ * phase or task that includes them (`mvn -B clean verify`, `mvn package`,
+ * `./gradlew build`), unless the command skips them (`-DskipTests`,
+ * `-x test`).
+ */
+const MAVEN_TEST_GOALS = new Set([
+  "test",
+  "verify",
+  "integration-test",
+  "package",
+  "install",
+  "deploy",
+]);
+const GRADLE_TEST_TASKS = new Set([
+  "test",
+  "check",
+  "build",
+  "integrationTest",
+]);
+/** Options of these tools that take the next word as their value. */
+const VALUE_OPTIONS = new Map<string, ReadonlySet<string>>([
+  [
+    "mvn",
+    new Set([
+      "-f",
+      "--file",
+      "-pl",
+      "--projects",
+      "-P",
+      "--activate-profiles",
+      "-s",
+      "--settings",
+      "-T",
+      "--threads",
+      "-rf",
+      "--resume-from",
+    ]),
+  ],
+  [
+    "gradle",
+    new Set([
+      "-p",
+      "--project-dir",
+      "-b",
+      "--build-file",
+      "-c",
+      "--settings-file",
+      "-x",
+      "--exclude-task",
+    ]),
+  ],
+  [
+    "npm",
+    new Set(["--prefix", "-C", "--workspace", "-w", "--filter", "-F", "--cwd"]),
+  ],
+  ["make", new Set(["-C", "--directory", "-f", "--file", "--makefile", "-j"])],
 ]);
 
 /** Package managers whose `test`, or `run <script>` naming a test, runs tests. */
@@ -1271,12 +1347,35 @@ const INSTALL_SUBCOMMANDS = new Set([
   "uninstall",
 ]);
 
-/** The words after the command word, skipping leading `-x` options. */
-function argumentsAfter(words: string[], at: number): string[] {
+/** Wrappers that run the command after them (`poetry run pytest`). */
+const RUN_WRAPPERS = new Map<string, string>([
+  ["poetry", "run"],
+  ["uv", "run"],
+  ["pipenv", "run"],
+  ["pdm", "run"],
+  ["hatch", "run"],
+  ["bundle", "exec"],
+]);
+
+/**
+ * The non-option words after the command word: `-x`/`--x` options are
+ * skipped, with the next word too when the tool's {@link VALUE_OPTIONS} says
+ * the option takes one, and a cargo-style `+toolchain` word is skipped.
+ */
+function operandsAfter(words: string[], at: number, tool: string): string[] {
+  const takesValue = VALUE_OPTIONS.get(tool) ?? new Set<string>();
   const rest = words.slice(at + 1).map(stripQuotes);
-  let k = 0;
-  while (k < rest.length && (rest[k] ?? "").startsWith("-")) k++;
-  return rest.slice(k);
+  const out: string[] = [];
+  for (let k = 0; k < rest.length; k++) {
+    const word = rest[k] ?? "";
+    if (word.startsWith("-")) {
+      if (takesValue.has(word)) k++;
+      continue;
+    }
+    if (word.startsWith("+")) continue;
+    out.push(word);
+  }
+  return out;
 }
 
 /**
@@ -1284,35 +1383,80 @@ function argumentsAfter(words: string[], at: number): string[] {
  * subcommands, never on substrings (PR #5332 review):
  *
  * - a test runner, whatever its arguments: `pytest`, `jest`, `tox -e aws`, ...;
- * - a tool's test subcommand: `cargo test`, `go test`, `mvn verify`,
- *   `gradle check`, `python -m pytest` or `-m unittest`, `npx jest`;
- * - `npm test` / `yarn test` / `pnpm test` (`npm t` too), or
- *   `npm run <script>` / `yarn <script>` whose script names a test
+ * - a tool's test subcommand: `cargo test` (a `+toolchain` word skipped),
+ *   `go test`, `deno test`, `dotnet test`, `python -m pytest` or
+ *   `-m unittest`, `npx jest`, `deno task <name>` naming a test;
+ * - a Maven goal list or Gradle task list holding a phase or task that runs
+ *   the tests (`mvn -B clean verify`, `mvn package`, `./gradlew build`), not
+ *   skipping them (`-DskipTests`, `-Dmaven.test.skip=true`, `-x test`);
+ * - `npm test` / `yarn test` / `pnpm test` (`npm t` too, `npm --prefix app
+ *   test`), or `npm run <script>` / `yarn <script>` whose script names a test
  *   (`test:aws`); an install subcommand (`npm install jest`) never counts;
- * - `make <target>` whose target names a test (`make check`, `make test-aws`);
+ * - `make <target>` whose target names a test (`make check`,
+ *   `make -C infra test`), but not an install target (`make install-test-deps`);
  * - a repository script whose file name names a test (`./scripts/run-tests.sh`,
- *   `bash ci/integration.sh`).
+ *   `bash ci/integration.sh`), but not an install script;
+ * - any of these behind `poetry run`, `uv run`, `pipenv run`, `pdm run`,
+ *   `hatch run` or `bundle exec`.
  *
- * An install step (`pip install pytest`, `npm install --save-dev jest`) is
- * none of these.
+ * A probe (`pytest --version`, `npx jest --help`) and an install step
+ * (`pip install pytest`, `npm install --save-dev jest`) are none of these.
  */
 function looksLikeTestCommand(words: string[]): boolean {
   const at = commandIndex(words);
   const raw = stripQuotes(words[at] ?? "");
   const head = raw.replace(/^.*\//, "");
   if (head.length === 0) return false;
-  const args = argumentsAfter(words, at);
-  const first = args[0] ?? "";
+  if (words.slice(at + 1).some((w) => PROBE_WORDS.has(stripQuotes(w)))) {
+    return false;
+  }
+  const wrapperVerb = RUN_WRAPPERS.get(head);
+  if (wrapperVerb !== undefined) {
+    const next = operandsAfter(words, at, head);
+    if (next[0] !== wrapperVerb) return false;
+    const k = words.indexOf(wrapperVerb, at + 1);
+    return k !== -1 && looksLikeTestCommand(words.slice(k + 1));
+  }
   if (TEST_RUNNERS.has(head)) return true;
   const subcommands = TEST_SUBCOMMANDS.get(head);
-  if (subcommands) return subcommands.has(first);
+  if (subcommands) {
+    const first = operandsAfter(words, at, head)[0] ?? "";
+    if (subcommands.has(first)) return true;
+    return head === "deno" && first === "task" &&
+      namesTest(operandsAfter(words, at, head)[1] ?? "");
+  }
+  if (head === "mvn" || head === "mvnw") {
+    const args = words.slice(at + 1).map(stripQuotes);
+    if (
+      args.some((w) => /^-D(?:skipTests|maven\.test\.skip)(?:=true)?$/.test(w))
+    ) return false;
+    return operandsAfter(words, at, "mvn").some((goal) =>
+      MAVEN_TEST_GOALS.has(goal)
+    );
+  }
+  if (head === "gradle" || head === "gradlew") {
+    const args = words.slice(at + 1).map(stripQuotes);
+    for (let k = 0; k < args.length; k++) {
+      if (
+        (args[k] === "-x" || args[k] === "--exclude-task") &&
+        /^:?test$/.test(args[k + 1] ?? "")
+      ) return false;
+    }
+    return operandsAfter(words, at, "gradle").some((task) =>
+      GRADLE_TEST_TASKS.has(task.replace(/^.*:/, ""))
+    );
+  }
   if (head === "python" || head === "python3") {
     const m = words.slice(at + 1).map(stripQuotes);
     const k = m.indexOf("-m");
     return k !== -1 && ["pytest", "unittest"].includes(m[k + 1] ?? "");
   }
-  if (head === "npx") return TEST_RUNNERS.has(first);
+  if (head === "npx") {
+    return TEST_RUNNERS.has(operandsAfter(words, at, head)[0] ?? "");
+  }
   if (PACKAGE_MANAGERS.has(head)) {
+    const args = operandsAfter(words, at, "npm");
+    const first = args[0] ?? "";
     if (INSTALL_SUBCOMMANDS.has(first)) return false;
     if (first === "test" || first === "t") return true;
     if (first === "run" || first === "run-script") {
@@ -1321,8 +1465,13 @@ function looksLikeTestCommand(words: string[]): boolean {
     // `yarn test:aws` runs a package script directly.
     return head === "yarn" && namesTest(first);
   }
-  if (head === "make") return namesTest(first);
+  if (head === "make") {
+    return operandsAfter(words, at, "make").some((target) =>
+      !target.includes("=") && namesTest(target)
+    );
+  }
   if (head === "bash" || head === "sh") {
+    const first = operandsAfter(words, at, head)[0] ?? "";
     return first.includes("/") && namesTest(first.replace(/^.*\//, ""));
   }
   return raw.includes("/") && namesTest(head);

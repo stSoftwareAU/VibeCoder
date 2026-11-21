@@ -66,6 +66,7 @@ import {
   hasAwsEmulatorWaiver,
   isLanguageBucket,
   parseBucketFromBody,
+  reconcileAwsEmulatorIssue,
   renderBestPracticesSummary,
 } from "../lib/idle_task_templates/best_practices_template.ts";
 import { getTemplate, listTemplates } from "../lib/idle_task_template.ts";
@@ -164,6 +165,8 @@ function makeGhStub(scenario: {
   };
   /** Comments on the reused AWS Emulator issue (`issue view --json comments`). */
   awsEmulatorComments?: Array<{ body: string }>;
+  /** A simulated failure on the reused issue: the comments read, its payload, or the comment post. */
+  awsEmulatorCommentFault?: "read" | "no-list" | "post";
 }): { gh: (args: string[]) => Promise<string>; calls: GhCall[] } {
   const calls: GhCall[] = [];
   let snapshotCount = 0;
@@ -207,11 +210,20 @@ function makeGhStub(scenario: {
       args[0] === "issue" && args[1] === "view" &&
       args[args.indexOf("--json") + 1] === "comments"
     ) {
+      if (scenario.awsEmulatorCommentFault === "read") {
+        return Promise.reject(new Error("gh: simulated comments read failure"));
+      }
+      if (scenario.awsEmulatorCommentFault === "no-list") {
+        return Promise.resolve(JSON.stringify({ body: "no comments field" }));
+      }
       return Promise.resolve(
         JSON.stringify({ comments: scenario.awsEmulatorComments ?? [] }),
       );
     }
     if (args[0] === "issue" && args[1] === "comment") {
+      if (scenario.awsEmulatorCommentFault === "post") {
+        return Promise.reject(new Error("gh: simulated comment post failure"));
+      }
       return Promise.resolve("");
     }
     // Wrapper body lookup: `issue view <n> --json body`
@@ -2566,6 +2578,7 @@ async function runAwsPreFiler(
     fail?: boolean;
   },
   awsEmulatorComments?: Array<{ body: string }>,
+  awsEmulatorCommentFault?: "read" | "no-list" | "post",
 ): Promise<{ ok: boolean; calls: GhCall[]; infoMessages: string[] }> {
   const workDir = await Deno.makeTempDir();
   try {
@@ -2578,6 +2591,7 @@ async function runAwsPreFiler(
       fileMissingLinterReturnsNumber: 900,
       awsEmulatorTitleLookup: titleLookup,
       awsEmulatorComments,
+      awsEmulatorCommentFault,
     });
     const { logger, infoMessages } = spyLogger();
     const tpl = createBestPracticesTemplate({
@@ -2838,6 +2852,87 @@ Deno.test(
     assertEquals(editCalls(older.calls).length, 0);
     assertEquals(commentCalls(older.calls).length, 1);
     assertEquals(createCount(older.calls), 0);
+  },
+);
+
+Deno.test(
+  "runTask - a failed comments read, a comments payload with no list, or a failed comment post on a reused AWS finding fails the run and files nothing",
+  async () => {
+    const check = awsCheck("floci-only");
+    for (const fault of ["read", "no-list", "post"] as const) {
+      const run = await runAwsPreFiler(
+        check,
+        {
+          rows: [{
+            number: 81,
+            title: "🟡 No AWS emulator (Floci) in CI",
+            login: FLEET_DEDUP_AUTHOR,
+            body: OLD_FLOCI_FINDING_BODY,
+          }],
+        },
+        [],
+        fault,
+      );
+      assertEquals(run.ok, false, fault);
+      assertEquals(createCount(run.calls), 0, fault);
+      assertEquals(editCalls(run.calls).length, 0, fault);
+      // The post was attempted only in the "post" case, and it failed.
+      assertEquals(
+        commentCalls(run.calls).length,
+        fault === "post" ? 1 : 0,
+        fault,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "reconcileAwsEmulatorIssue - each gh fault throws an error naming the issue and the cause",
+  async () => {
+    const check = awsCheck("floci-only");
+    const finding = buildAwsEmulatorFinding(check);
+    const issue = {
+      number: 81,
+      title: "🟡 No AWS emulator (Floci) in CI",
+      body: OLD_FLOCI_FINDING_BODY,
+    };
+    const cases: Array<
+      [string, (args: string[]) => Promise<string>, string[]]
+    > = [
+      [
+        "comments read rejects",
+        (args) =>
+          args[1] === "view"
+            ? Promise.reject(new Error("gh: HTTP 502"))
+            : Promise.resolve(""),
+        ["cannot read the comments", "#81", "org/repo", "HTTP 502"],
+      ],
+      [
+        "comments payload has no list",
+        (args) =>
+          args[1] === "view"
+            ? Promise.resolve(JSON.stringify({ body: "x" }))
+            : Promise.resolve(""),
+        ["cannot read the comments", "#81", "org/repo", "no comments list"],
+      ],
+      [
+        "comment post rejects",
+        (args) =>
+          args[1] === "view"
+            ? Promise.resolve(JSON.stringify({ comments: [] }))
+            : Promise.reject(new Error("gh: HTTP 403")),
+        ["cannot comment the current finding", "#81", "org/repo", "HTTP 403"],
+      ],
+    ];
+    for (const [label, gh, fragments] of cases) {
+      const err = await assertRejects(
+        () => reconcileAwsEmulatorIssue("org/repo", issue, finding, gh),
+        Error,
+      );
+      for (const fragment of fragments) {
+        assert(err.message.includes(fragment), `${label}: ${err.message}`);
+      }
+    }
   },
 );
 

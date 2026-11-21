@@ -2679,6 +2679,38 @@ Deno.test("checkAwsEmulatorInCI - a runner whose group or compound is swallowed 
       `{\n  ${RUNNER_STEP}\n} || true`,
     ],
     ["! runner || exit 1, then more", `! ${RUNNER_STEP} || exit 1\necho after`],
+    // A subshell holding more than one command closes on its last `)` too.
+    [
+      "a multi-command subshell || true",
+      `( cd infra; ${RUNNER_STEP}; cd .. ) || true`,
+    ],
+    [
+      "a multi-command subshell with attached parens || true",
+      `(cd infra; ${RUNNER_STEP}; echo done) || true`,
+    ],
+    [
+      "a multi-command subshell piped to tee",
+      `( ${RUNNER_STEP}; echo done ) | tee log`,
+    ],
+    [
+      "a multi-command subshell backgrounded",
+      `( ${RUNNER_STEP}; echo done ) &\nwait`,
+    ],
+    // errexit is ignored inside a compound on the left of `&&`.
+    [
+      "a brace group && echo ok, then more",
+      `{ ${RUNNER_STEP}; } && echo ok\necho more`,
+    ],
+    [
+      "an if/fi && echo ok, then more",
+      `if true; then ${RUNNER_STEP}; fi && echo ok\necho more`,
+    ],
+    // A subshell that closes before an unconditional exit leaves the runner
+    // after it unreachable.
+    [
+      "a runner after ( cd infra; make build ) then exit 0",
+      `( cd infra; make build )\nexit 0\n${RUNNER_STEP}`,
+    ],
   ];
   for (const [label, body] of refusedBodies) {
     const inWorkflow = await checkRepoWith({
@@ -2696,6 +2728,14 @@ Deno.test("checkAwsEmulatorInCI - a runner whose group or compound is swallowed 
     ["a brace group", `{ ${RUNNER_STEP}; }`],
     ["an if/fi", `if true; then ${RUNNER_STEP}; fi`],
     ["a brace group && echo ok", `{ ${RUNNER_STEP}; } && echo ok`],
+    [
+      "a multi-command subshell",
+      `( cd infra; ${RUNNER_STEP}; cd .. )\necho after`,
+    ],
+    [
+      "a multi-command subshell with attached parens",
+      `(cd infra; ${RUNNER_STEP})`,
+    ],
     ["runner || exit 1, then more", `${RUNNER_STEP} || exit 1\necho after`],
     [
       "if ! runner; then exit 1; fi, then more",
@@ -2728,6 +2768,14 @@ Deno.test("checkAwsEmulatorInCI - a gap record whose Floci job only installs a t
       "yarn add mocha",
       "echo test",
       "./scripts/attestation.sh",
+      // Probes and install-named targets or scripts (PR #5332 review round 3).
+      "pytest --version",
+      "npx jest --version",
+      "make install-test-deps",
+      "./scripts/check-install.sh",
+      "mvn -B package -DskipTests",
+      "./gradlew build -x test",
+      "mvn -P test compile",
     ]
   ) {
     const result = await checkRepoWith({
@@ -2754,6 +2802,19 @@ Deno.test("checkAwsEmulatorInCI - a gap record whose Floci job only installs a t
       "npx jest",
       "./scripts/run-tests.sh",
       "bash ci/integration.sh",
+      // Goal lists, lifecycle phases, wrappers and options with values (PR
+      // #5332 review round 3).
+      "mvn -B clean verify",
+      "mvn clean test",
+      "mvn -B package --file pom.xml",
+      "./gradlew build",
+      "cargo +stable test --workspace",
+      "deno task test",
+      "poetry run pytest",
+      "uv run pytest",
+      "bundle exec rspec",
+      "npm --prefix app test",
+      "make -C infra test",
     ]
   ) {
     const result = await checkRepoWith({

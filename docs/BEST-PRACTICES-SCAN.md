@@ -383,7 +383,11 @@ Official server mode needs all of the following:
   preserved when it is not in a condition, not behind `!`, not followed by
   `||`, `|` or `&`, not inside a `{ }` group, `( )` subshell or compound
   (`if`/`fi`, a loop, `case`) whose closing word is followed by `||`, `|` or
-  `&` (`{ runner; } || true`, `if x; then runner; fi || true`), and one of: it runs via `exec`; it is the last command
+  `&` (`{ runner; } || true`, `if x; then runner; fi || true`,
+  `( cd infra; runner; cd .. ) | tee log`), nor by `&&` with more of the body
+  after that chain (errexit is ignored inside a compound on the left of
+  `&&`, so `{ runner; } && echo ok` then another line passes when the runner
+  fails), and one of: it runs via `exec`; it is the last command
   (or the rest of the body is an `&&` chain to the end); or errexit is on
   at that point and it is not followed by `&&`. Two explicit-exit idioms
   are also preserved, whatever errexit is: `runner || exit N` (N not 0, or
@@ -443,14 +447,21 @@ requests, and runs a test step: an enabled `run:` step without
 `continue-on-error` whose reachable, failure-preserving commands include a
 test run, read on whole command words and subcommands, never substrings: a
 test runner (`pytest`, `jest`, `mocha`, `vitest`, `tox`, `nox`, `ctest`,
-`phpunit`, `rspec`, `bats`), a tool's test subcommand (`cargo test`,
-`go test`, `deno test`, `mvn verify`, `gradle check`, `python -m pytest`,
-`npx jest`), `npm test` / `yarn test` / `pnpm test`, `npm run <script>`
-whose script names a test (`test:aws`), `make <target>` naming a test
-(`make check`), or a repository script whose file name names a test
-(`./scripts/run-tests.sh`). An install step (`pip install pytest`,
-`npm install --save-dev jest`, `npm install typescript@latest`) is not a
-test run. An unused Floci image beside a gap record earns nothing. Floci without a valid record
+`phpunit`, `rspec`, `bats`); a tool's test subcommand (`cargo test`, a
+`+toolchain` word skipped, `go test`, `deno test`, `deno task <name>` naming
+a test, `python -m pytest`, `npx jest`); a Maven goal list or Gradle task list
+holding a phase or task that runs the tests (`mvn -B clean verify`,
+`mvn package`, `./gradlew build`), unless it skips them (`-DskipTests`,
+`-x test`); `npm test` / `yarn test` / `pnpm test` (options with values such
+as `--prefix app` skipped), or `npm run <script>` whose script names a test
+(`test:aws`); `make <target>` naming a test (`make check`,
+`make -C infra test`); a repository script whose file name names a test
+(`./scripts/run-tests.sh`); or any of these behind `poetry run`, `uv run`,
+`pipenv run`, `pdm run`, `hatch run` or `bundle exec`. A name that also says
+install, setup, deps or bootstrap (`make install-test-deps`,
+`./scripts/check-install.sh`), a version or help probe (`pytest --version`),
+and an install step (`pip install pytest`, `npm install --save-dev jest`,
+`npm install typescript@latest`) are not test runs. An unused Floci image beside a gap record earns nothing. Floci without a valid record
 ("Floci-only") gets the migration finding.
 
 **What the scan establishes.** This scan records *static wiring

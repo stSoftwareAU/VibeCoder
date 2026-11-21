@@ -386,9 +386,11 @@ export interface ReachableCommand {
   /**
    * True when the command sits inside a `{ }` group, `( )` subshell or other
    * compound (`if`/`fi`, a loop, `case`) whose closing word is followed by
-   * `||`, `|` or `&`: the compound's status, and with it this command's
-   * failure, can then be swallowed one level out (`{ cmd; } || true`,
-   * `if x; then cmd; fi || true`), whatever separator follows the command
+   * `||`, `|` or `&`, or by `&&` with more of the body after that chain: the
+   * compound's status, and with it this command's failure, can then be
+   * swallowed one level out (`{ cmd; } || true`, `if x; then cmd; fi || true`,
+   * `( cd x; cmd; cd .. ) | tee log`), and errexit is ignored inside a
+   * compound on the left of `&&`, whatever separator follows the command
    * itself.
    */
   groupSwallowed: boolean;
@@ -530,7 +532,12 @@ export function reachableCommands(script: string): ReachableCommand[] {
       const frame = stack.pop();
       const after = listed[index + 1]?.sep ??
         (trailing === "\n" ? "" : trailing);
-      if (frame && GROUP_SWALLOWING_SEPARATORS.has(after)) {
+      // `&&` after the closing word: errexit is ignored inside a compound on
+      // the left of `&&`, so a failure in it reaches the body's status only
+      // when the rest of the body is that `&&` chain to the end.
+      const andWithMore = after === "&&" &&
+        !listed.slice(index + 1).every((c) => c.sep === "&&");
+      if (frame && (GROUP_SWALLOWING_SEPARATORS.has(after) || andWithMore)) {
         swallowedFrames.add(frame.id);
       }
       return frame;
@@ -551,6 +558,12 @@ export function reachableCommands(script: string): ReachableCommand[] {
     let closedStatus: boolean | null = null;
     // Structural keywords first; what is left is a plain command.
     while (words.length > 0) {
+      // `(cd infra` opens a subshell exactly as `( cd infra` does; `((` is
+      // arithmetic and `$(` a substitution, neither a subshell.
+      const lead = words[0] ?? "";
+      if (lead.length > 1 && lead.startsWith("(") && !lead.startsWith("((")) {
+        words = ["(", lead.slice(1), ...words.slice(1)];
+      }
       const w = words[0] ?? "";
       const top = stack.at(-1);
       if (top && (w === "fi" || w === "elif" || w === "else")) {
@@ -623,6 +636,24 @@ export function reachableCommands(script: string): ReachableCommand[] {
         break;
       }
       words = words.slice(1);
+    }
+    // A `)` that ends a later command of an open subshell closes it too:
+    // `( cd infra; runner; cd .. )` and `(cd infra; runner; echo done)`. Only
+    // an unbalanced `)` counts, so `$(date)` or a quoted `)` does not.
+    if (!closeAfter && stack.at(-1)?.sub && words.length > 0) {
+      const last = words.at(-1) ?? "";
+      const opens = (last.match(/\(/g) ?? []).length;
+      const closes = (last.match(/\)/g) ?? []).length;
+      if (
+        last.endsWith(")") && closes > opens && !/^["']/.test(last)
+      ) {
+        closeAfter = true;
+        const trimmed = last.slice(0, -1);
+        words = trimmed === "" ? words.slice(0, -1) : [
+          ...words.slice(0, -1),
+          trimmed,
+        ];
+      }
     }
     if (words.length === 0) {
       prev = closeAfter ? pop()?.skippedStatus ?? null : closedStatus;

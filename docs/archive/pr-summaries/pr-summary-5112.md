@@ -97,7 +97,7 @@ flowchart TD
     U -- no --> V{valid waiver?}
     V -- yes --> N3[not filed: waived]
     V -- no --> E{open fleet-authored<br/>AWS Emulator issue<br/>or same finding id?}
-    E -- yes --> N4[reuse existing issue;<br/>update an older finding body]
+    E -- yes --> N4[reuse existing issue;<br/>comment the current finding once,<br/>never edit the issue]
     E -- no --> F[file BP-AWS-EMULATOR-MISSING<br/>missing or Floci migration title]
 ```
 
@@ -187,7 +187,9 @@ emulator test.
   `( runner ) || true`, a group piped to `tee`, a loop `|| true`) and
   `! runner || exit 1` are refused too, in the workflow and in a repository
   script, each with a credited control:
-  `…::a runner whose group or compound is swallowed one level out, or a negated runner before || exit 1, earns no credit`.
+  `…::a runner whose group or compound is swallowed one level out, or a negated runner before || exit 1, earns no credit`
+  (after the third review it also covers multi-command subshells, attached
+  parentheses and a compound followed by `&&` with more after it).
   The Floci test-step matcher reads whole command words, so an install-only
   step beside a gap record earns nothing:
   `…::a gap record whose Floci job only installs a test tool is floci-only; common test runners are floci-gap`.
@@ -337,8 +339,8 @@ emulator test.
     workflows.
   - New tests cover the floci-only and missing titles, fleet versus non-fleet
     equivalent issues, gh-failure handling, the finding body, and reconciling an
-    old-body finding (edited) versus an up-to-date or hand-written one (not
-    edited). `findEquivalentAwsEmulatorIssue` now returns the row, so its test
+    old-body finding (commented, not edited) versus an up-to-date or
+    hand-written one (neither commented nor edited). `findEquivalentAwsEmulatorIssue` now returns the row, so its test
     reads `found?.number`.
   - The dedup and waiver tests are unchanged and pass.
 - `worker/deno/tests/capability_coverage_scan_4367_test.ts` and
@@ -358,6 +360,29 @@ emulator test.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
+- After the third review (of `e0d44a4c`):
+  - The swallow test now also refuses a subshell holding more than one command
+    (`( cd infra; runner; cd .. ) || true`, `(cd infra; runner; echo done) ||
+    true`, the same piped to `tee` or backgrounded) and a compound followed by
+    `&&` with more after it (`{ runner; } && echo ok` then a line, the `if`/`fi`
+    form), and a runner after `( cd infra; make build )` then `exit 0`, which
+    is unreachable. A `)` that ends a later command of an open subshell, or a
+    `(` attached to its first word, now opens and closes it. Credited controls
+    add the multi-command subshell with and without attached parens. Each new
+    refusal fails at `e0d44a4c`.
+  - The Floci matcher test adds 11 credited commands (`mvn -B clean verify`,
+    `mvn clean test`, `mvn -B package --file pom.xml`, `./gradlew build`,
+    `cargo +stable test --workspace`, `deno task test`, `poetry run pytest`,
+    `uv run pytest`, `bundle exec rspec`, `npm --prefix app test`,
+    `make -C infra test`) and 7 refused ones (`pytest --version`,
+    `npx jest --version`, `make install-test-deps`,
+    `./scripts/check-install.sh`, `mvn -B package -DskipTests`,
+    `./gradlew build -x test`, `mvn -P test compile`).
+  - `best_practices_template_test.ts` adds a runTask test where the comments
+    read rejects, the payload has no `comments` list, or the comment post
+    rejects: the run is not ok, nothing is filed or edited, and a comment is
+    attempted only in the post case. A direct `reconcileAwsEmulatorIssue` test
+    asserts each error names the issue, the repository and the cause.
 - After the second review (of `c1f12f06`):
   - `aws_emulator_in_ci_check_test.ts` gained three tests: groups and
     compounds swallowed one level out and `! runner || exit 1` refused in the
