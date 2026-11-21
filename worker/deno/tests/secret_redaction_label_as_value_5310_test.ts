@@ -66,7 +66,7 @@ leak(
 );
 leak(
   "YAML child holding a credential",
-  "secrets:\n  API_TOKEN: abcdefgh12345",
+  `secrets:\n  API_TOKEN: ${V}`,
   `secrets:\n  API_TOKEN: ${R}`,
 );
 leak(
