@@ -49,8 +49,8 @@ Closes #5310.
 
 - The inner search reads the outer value plus 256 characters
   (`INNER_ASSIGNMENT_SPAN`), so each candidate costs bounded extra work (Issue
-  #3942 linearity rule). An inner separator or value further out than that
-  falls back to the base behaviour.
+  #3942 linearity rule). An inner separator or value further out than that falls
+  back to the base behaviour.
 - `CREDENTIAL_KEYWORD` copies the key group's keyword list and is used only by
   the already-masked check. A keyword added to one must be added to the other.
 
@@ -75,8 +75,8 @@ flowchart LR
 ```
 
 - Fix: in `worker/deno/lib/secret_redaction.ts`, `walkAssignments`,
-  `innerAssignment`, `innerValueAlreadyMasked` and `redactAssignments`, plus
-  the comment above the `secret-assignment` entry in `RULES`. The
+  `innerAssignment`, `innerValueAlreadyMasked` and `redactAssignments`, plus the
+  comment above the `secret-assignment` entry in `RULES`. The
   `MAPPING_KEY_VALUE` doc comment notes that a credential-labelled child key
   whose value is masked no longer reaches that test.
 - Docs: `SECURITY.md`, section "An assignment's value is judged, not only its
@@ -106,8 +106,8 @@ flowchart LR
   tests**, all through `redactSecrets` and `containsSecret`:
   - **Leak cases** must mask the inner value and keep both labels:
     - `DEPLOY_TOKEN = <40-char value>` on the same line and the next line;
-    - `api_key: <value>` on the same line and the next line, each with the
-      short value `pw42` and a 40-char value;
+    - `api_key: <value>` on the same line and the next line, each with the short
+      value `pw42` and a 40-char value;
     - a YAML child `API_TOKEN: <value>` under `secrets:`;
     - a double-quoted inner value, and a chain of three labels;
     - a label 60 characters long;
