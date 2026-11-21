@@ -683,10 +683,11 @@ const RULES: readonly RedactionRule[] = [
   // unchanged; `walkAssignments` makes the decision where the value is judged
   // — see there. That holds within the limits `trailingLabel` and
   // `innerAssignment` apply: the inner separator and value start within
-  // `INNER_ASSIGNMENT_SPAN` (256) characters of the outer value's end, the
-  // label is at most `INNER_LABEL_MAX` (128) characters, and the
-  // embedded-quote case (`DEPLOY_TOKEN='a'b'c <value>'`) is not covered. Past
-  // them the base behaviour applies.
+  // `INNER_ASSIGNMENT_SPAN` (256) characters of the outer value's end, a
+  // double-quoted inner value closes within `INNER_QUOTED_MAX` (4,096)
+  // characters, the label is at most `INNER_LABEL_MAX` (128) characters, and
+  // the embedded-quote case (`DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
+  // Past them the base behaviour applies.
   //
   // JSON structure survives the mask (Issue #4169's transcript tee is the
   // sink that showed it). Every stream-json line the agent emits carries a
@@ -1081,7 +1082,10 @@ function innerAssignment(
   }
   if (!SEPARATOR_START.test(afterKey)) return null;
   const probe = execAssignmentAt(window, 0);
-  if (!probe || probe.index !== 0) return null;
+  if (
+    (!probe || probe.index !== 0) &&
+    !closesWithinReach(text, label.end, afterKey)
+  ) return null;
   const match = execAssignmentAt(text, label.start);
   if (!match || match.index !== label.start) return null;
   const verdict = verdictOf(text, match);
@@ -1098,6 +1102,40 @@ function innerAssignment(
 }
 
 /**
+ * Whether the inner value after the label ending at `labelEnd` opens with `"`
+ * inside the window but closes past it, within {@link INNER_QUOTED_MAX}
+ * (Issue #5310). The pattern matches a double-quoted value only with its
+ * closing quote, so the window probe fails on a long one
+ * (`DEPLOY_TOKEN = "<300 characters>"`) and the value would be published; the
+ * full-text match then decides. The search for the closing quote is capped,
+ * so each candidate costs bounded extra work (the Issue #3942 linearity rule).
+ */
+function closesWithinReach(
+  text: string,
+  labelEnd: number,
+  afterKey: string,
+): boolean {
+  const sep = OPEN_DOUBLE_QUOTE.exec(afterKey);
+  if (!sep) return false;
+  const open = labelEnd + sep[0].length - 1;
+  // A value of INNER_QUOTED_MAX characters closes at that offset.
+  const close = text.slice(open + 1, open + 2 + INNER_QUOTED_MAX).indexOf('"');
+  // Closed inside the window: the probe already judged it.
+  return close !== -1 && open + 1 + close >= labelEnd + afterKey.length;
+}
+
+/** The pattern's separator, then the opening `"` of a double-quoted value. */
+const OPEN_DOUBLE_QUOTE = /^["']?\s*[=:]\s*"/;
+
+/**
+ * Longest double-quoted inner value, past the window, that
+ * {@link closesWithinReach} looks for the end of (Issue #5310). A ReDoS
+ * ceiling (Issue #3942), not a syntax rule: a longer value keeps the base
+ * behaviour.
+ */
+const INNER_QUOTED_MAX = 4096;
+
+/**
  * An inner credential label {@link innerAssignment} found (Issue #5310): where
  * it starts, and where the walk resumes — at the label, whose own match masks
  * its value, or past the outer value when that value is already the
@@ -1110,8 +1148,34 @@ interface InnerLabel {
   readonly keepsOuter: boolean;
 }
 
-/** Mask every `secret-assignment` value {@link walkAssignments} judges masked. */
+/**
+ * Mask every `secret-assignment` value {@link walkAssignments} judges masked,
+ * then walk the output again until a walk changes nothing (Issue #5310), so
+ * `redactSecrets` is idempotent on this rule and `containsSecret` is false on
+ * its output. A mask can change how the next walk reads the text around it —
+ * `credentials: 'DEPLOY_TOKEN='<value>` masks the inner value, after which
+ * `'DEPLOY_TOKEN=***REDACTED***` reads as one outer value — so the first
+ * call gives the output a second call would.
+ */
 function redactAssignments(text: string): string {
+  let out = text;
+  for (let pass = 0; pass < MAX_ASSIGNMENT_PASSES; pass++) {
+    const next = redactAssignmentsOnce(out);
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+/**
+ * How many walks {@link redactAssignments} runs at most (Issue #5310). Text
+ * with nothing to mask costs one walk and text with a secret usually two; the
+ * cap only bounds the work on hostile input.
+ */
+const MAX_ASSIGNMENT_PASSES = 4;
+
+/** One walk of {@link walkAssignments}, masking what it judges masked. */
+function redactAssignmentsOnce(text: string): string {
   let out = "";
   let last = 0;
   for (const a of walkAssignments(text)) {

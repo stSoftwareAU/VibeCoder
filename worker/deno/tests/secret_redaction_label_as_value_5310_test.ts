@@ -368,6 +368,83 @@ Deno.test("#5310 control: an inner = 254 spaces away keeps the base behaviour", 
   );
 });
 
+// A double-quoted inner value matches only with its closing quote, which a
+// long value puts past the 256-character window (PR #5322 review round 4):
+// the value was published. It now counts when it opens inside the window and
+// closes within 4,096 characters.
+const longValue = (n: number) => "Ab3".repeat(Math.ceil(n / 3)).slice(0, n);
+for (
+  const [name, at, expected] of [
+    [
+      "same line",
+      (v: string) => `Rotate these credentials: DEPLOY_TOKEN = "${v}"`,
+      `Rotate these credentials: DEPLOY_TOKEN = "${R}"`,
+    ],
+    [
+      "next line",
+      (v: string) => `Rotate these credentials:\nDEPLOY_TOKEN = "${v}"`,
+      `Rotate these credentials:\nDEPLOY_TOKEN = "${R}"`,
+    ],
+    [
+      "next-line api_key",
+      (v: string) => `The secret: api_key: "${v}"`,
+      `The secret: api_key: "${R}"`,
+    ],
+    [
+      "YAML child",
+      (v: string) => `secrets:\n  API_TOKEN: "${v}"`,
+      `secrets:\n  API_TOKEN: "${R}"`,
+    ],
+  ] as const
+) {
+  for (const length of [252, 300, 4096]) {
+    Deno.test(`#5310 masks a ${length}-character double-quoted inner value: ${name}`, () => {
+      const once = redactSecrets(at(longValue(length)));
+      assertEquals(once, expected);
+      assertEquals(redactSecrets(once), once);
+      assertEquals(containsSecret(once), false);
+    });
+  }
+}
+
+Deno.test("#5310 control: a double-quoted inner value over 4,096 characters keeps the base behaviour", () => {
+  // The documented limit (SECURITY.md): the label is masked as the earlier
+  // label's value and the inner value is published, as on base.
+  const value = longValue(4097);
+  assertEquals(
+    redactSecrets(`credentials: DEPLOY_TOKEN = "${value}"`),
+    `credentials: ${R} = "${value}"`,
+  );
+});
+
+// A quoted outer value that ends in the inner label's separator, with the
+// inner value straight after it (PR #5322 review round 4). Masking the inner
+// value joins the quoted run and the placeholder into one outer value, which
+// a second walk masks whole; `redactAssignments` walks until nothing changes,
+// so the first call already gives that output.
+for (
+  const [input, expected, values] of [
+    [`credentials: 'DEPLOY_TOKEN='${V}`, `credentials: ${R}`, [V]],
+    ["export CREDENTIALS='password='hunter2", `export CREDENTIALS=${R}`, [
+      "hunter2",
+    ]],
+    [`DB_SECRET_ARGS='--token='${V}`, `DB_SECRET_ARGS=${R}`, [V]],
+    ["secrets: 'Password:'hunter2", `secrets: ${R}`, ["hunter2"]],
+    ["secrets: TOKEN'='d9 e8'", `secrets: ${R}`, ["d9", "e8"]],
+  ] as const
+) {
+  Deno.test(`#5310 idempotent on a quoted outer value ending in a separator: ${JSON.stringify(input.slice(0, 32))}`, () => {
+    const once = redactSecrets(input);
+    assertEquals(once, expected);
+    assertEquals(redactSecrets(once), once);
+    assertEquals(containsSecret(once), false);
+    assertEquals(containsSecret(input), true);
+    for (const value of values) {
+      assertEquals(once.includes(value), false, `${value} published: ${once}`);
+    }
+  });
+}
+
 // Redaction is idempotent on every leak form, and its output reads clean
 // (pre-PR verifier): `api_key: pw42` once lost its label on a second pass.
 for (const input of LEAKS) {

@@ -561,8 +561,9 @@ and, apart from that check, **only when the separator crossed a line break**:
 - That handling has limits, past which the base behaviour applies (the label
   is masked as the earlier label's value and the inner value is published):
   the inner label's separator and value must start within 256 characters of
-  the outer value's end, the label must be at most 128 characters, and a
-  single-quoted inner value whose first word itself holds two `'` (as in
+  the outer value's end, a double-quoted inner value must close within 4,096
+  characters of its opening quote, the label must be at most 128 characters,
+  and a single-quoted inner value whose first word itself holds two `'` (as in
   `DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
 
 `containsSecret()` asks the value predicate the same question the replacement

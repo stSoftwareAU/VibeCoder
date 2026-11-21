@@ -52,6 +52,20 @@ judged:
   removes its space, so a second pass would read the label, placeholder and tail
   as one outer value and mask it whole; masking it on the first pass keeps
   redaction idempotent.
+- A double-quoted inner value matches only with its closing quote, which a long
+  value puts past the 256-character window. When the value opens inside the
+  window and closes within 4,096 characters (`closesWithinReach`), the full-text
+  match decides, so `DEPLOY_TOKEN = "<300 characters>"` after a lead-in label is
+  masked with its label kept. The search for the closing quote is capped, so
+  each candidate's extra work stays bounded.
+- `redactAssignments` walks its own output again until a walk changes nothing,
+  at most four walks (`MAX_ASSIGNMENT_PASSES`). A mask can change how the next
+  walk reads the text around it: in `credentials: 'DEPLOY_TOKEN='<value>` the
+  quoted run `'DEPLOY_TOKEN='` ends in the inner separator, the inner value is
+  masked, and `'DEPLOY_TOKEN=***REDACTED***` then reads as one outer value. The
+  first call now gives the output a second call would
+  (`credentials: ***REDACTED***`), so the rule is idempotent by construction
+  rather than case by case.
 
 The rule interface gained a whole-text form: a rule supplies either a `pattern`
 and `replace`, or an `apply` and `detect` pair. The `secret-assignment` rule
@@ -60,9 +74,10 @@ old per-match `replace` callback, which nothing could reach any more, is gone,
 along with both checks on the rule's pattern identity.
 
 `SECURITY.md` has two new bullets: the rule, and the limits past which the base
-behaviour applies (a 256-character search span, a 128-character label, and the
-embedded-quote case). `.github/gitleaks.toml` exempts two exact historical
-mentions of the new test's synthetic fixture (see Test Plan).
+behaviour applies (a 256-character search span, a 4,096-character double-quoted
+inner value, a 128-character label, and the embedded-quote case).
+`.github/gitleaks.toml` exempts two exact historical mentions of the new test's
+synthetic fixture (see Test Plan).
 
 Closes #5310.
 
@@ -125,22 +140,22 @@ flowchart LR
 ```
 
 - Fix: in `worker/deno/lib/secret_redaction.ts`, `walkAssignments`,
-  `isLabelOnly`, `pastFloor`, `trailingLabel`, `innerAssignment` and
-  `redactAssignments`, plus the comment above the `secret-assignment` entry in
-  `RULES`. `RedactionRule` is a union of the per-match and whole-text forms;
-  `redactSecrets` and `matchesSignatureRule` call `apply` and `detect` where a
-  rule has them. The `MAPPING_KEY_VALUE` doc comment notes that a
-  credential-labelled child key whose value is masked no longer reaches that
-  test.
+  `isLabelOnly`, `pastFloor`, `trailingLabel`, `innerAssignment`,
+  `closesWithinReach`, `redactAssignments` and `redactAssignmentsOnce`, plus the
+  comment above the `secret-assignment` entry in `RULES`. `RedactionRule` is a
+  union of the per-match and whole-text forms; `redactSecrets` and
+  `matchesSignatureRule` call `apply` and `detect` where a rule has them. The
+  `MAPPING_KEY_VALUE` doc comment notes that a credential-labelled child key
+  whose value is masked no longer reaches that test.
 - Docs: `SECURITY.md`, section "An assignment's value is judged, not only its
   label", has two new bullets. The first describes the label shape, when the
   outer value stays masked, and that a credential word elsewhere in a value
   keeps the mask; it no longer says a label is "never" taken as a value. The
   second states the limits past which base behaviour applies, each checked at
-  head: an inner `=` 260 spaces away, a 140-character label and
-  `DEPLOY_TOKEN='a'b'c <value>'` each still publish the value. The rest of the
-  file is unchanged from `main`. I read the whole section.
-  `docs/THREAT-MODEL.md` and `README.md` do not describe this rule.
+  head: an inner `=` 260 spaces away, a 4,097-character double-quoted value, a
+  140-character label and `DEPLOY_TOKEN='a'b'c <value>'` each still publish the
+  value. The rest of the file is unchanged from `main`. I read the whole
+  section. `docs/THREAT-MODEL.md` and `README.md` do not describe this rule.
 - Corpus run on the final commit: base (`origin/main` at `5dde2633c`), the
   previous head (`d6c9a377`) and this head's `redactSecrets` over 4,627 tracked
   files (`*.md`, `docs/`, `prompts/`, `.github/workflows/*.yml`,
@@ -162,6 +177,15 @@ flowchart LR
     base masked except such a label.
   - The corpus holds none of the review's text-before-label shapes, so the new
     tests carry that evidence (see Test Plan).
+- Exhaustive idempotence and leak check: every input built from up to two label
+  segments (an optional `'` or `"`, an optional `x,` prefix, one of
+  `credentials`, `token`, `app.DEPLOY-TOKEN`, one of `=`, `:`, `'=`, `:\n`, an
+  optional quote), then one of four values (`hunter2`, `d9 e8`, the placeholder,
+  a 40-character token) and one of five tails — 937,440 inputs. `redactSecrets`
+  changed on a second pass, or `containsSecret` was true on its output, for
+  5,364 inputs on the previous head (`3338d345`), none at this head and none on
+  base. No input published a value that base masked; this head showed a value in
+  348,894 inputs and base in 466,830.
 - Timing, on the verifier's fixture (`credentials:` + `TOKEN`×N + `!`): 100, 200
   and 400 KB took 67, 133 and 267 ms at this head. The previous head took 1,070,
   4,127 and 16,463 ms. The verifier measured 68, 136 and 270 ms on base.
@@ -173,7 +197,7 @@ flowchart LR
 
 ## Test Plan
 
-- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 90
+- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 108
   tests**, all through `redactSecrets` and `containsSecret`:
   - **Leak cases** must mask the inner value and keep both labels:
     - `DEPLOY_TOKEN = <40-char value>` on the same line and the next line;
@@ -207,6 +231,17 @@ flowchart LR
     is false on the output. An inner `=` 253 spaces away is masked with the
     label kept; one 254 spaces away keeps the base behaviour (label masked,
     value published), pinning the documented limit.
+  - **Long double-quoted inner values:** 252, 300 and 4,096 characters in four
+    forms (same line, next line, next-line `api_key:`, YAML child), each with
+    its exact output (label kept, value masked), an unchanged second pass and
+    `containsSecret` false on the output. A 4,097-character value pins the
+    documented base behaviour.
+  - **Quoted outer value ending in a separator:**
+    `credentials: 'DEPLOY_TOKEN='<token>`,
+    `export CREDENTIALS='password='hunter2`, `DB_SECRET_ARGS='--token='<token>`,
+    `secrets: 'Password:'hunter2` and `secrets: TOKEN'='d9 e8'`, each masked
+    whole, with an unchanged second pass, `containsSecret` false on the output
+    and no value published.
   - **Idempotence:** for each of the 26 leak inputs,
     `redactSecrets(redactSecrets(x)) === redactSecrets(x)` and
     `containsSecret(redactSecrets(x)) === false`.
@@ -230,24 +265,25 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
-- **Red runs, observed** — each runs this head's 90-test file against an older
+- **Red runs, observed** — each runs this head's 108-test file against an older
   `worker/deno/lib/secret_redaction.ts`:
-  - From `origin/main` (`5dde2633c`): `63 passed | 27 failed`.
-  - From the first fix (`2396849b7`): `61 passed | 29 failed`, in 5m12s; that
+  - From `origin/main` (`5dde2633c`): `64 passed | 44 failed`.
+  - From the first fix (`2396849b7`): `63 passed | 45 failed`, in 4m27s; that
     library is quadratic on the long `TOKEN` runs.
   - From the head before the first review fix (`d6c9a377`):
-    `66 passed | 24 failed`. The nine text-before-label inputs each failed their
-    output and no-value checks.
-  - From `bc9dbbc6`, before the run-on fix: `82 passed | 8 failed`, among them
-    the two run-on inputs' output and idempotence checks. That library turned
-    `credentials: DEPLOY_TOKEN='a b'.` into
+    `69 passed | 39 failed`.
+  - From `bc9dbbc6`, before the run-on fix: `85 passed | 23 failed`. That
+    library turned `credentials: DEPLOY_TOKEN='a b'.` into
     `credentials: DEPLOY_TOKEN='***REDACTED***'.`, which a second pass turned
     into `credentials: ***REDACTED***`.
-  - From `75e171d4`, before the span-edge fix: `86 passed | 4 failed`, the three
-    span-edge sweeps and the 253-space control. Swept by hand, that library was
-    not idempotent for 241-253 spaces before or after `=` and 243-255 newlines
-    after `api_key:` (39 inputs); this head and base are idempotent on all 903.
-  - At head: `90 passed | 0 failed`.
+  - From `75e171d4`, before the span-edge fix: `89 passed | 19 failed`. Swept by
+    hand, that library was not idempotent for 241-253 spaces before or after `=`
+    and 243-255 newlines after `api_key:` (39 inputs); this head and base are
+    idempotent on all 903.
+  - From `3338d345`, before the long-quote and repeated-walk fixes:
+    `93 passed | 15 failed` — the ten long double-quoted cases that are past its
+    window and the five quoted-outer-value cases.
+  - At head: `108 passed | 0 failed`.
   - On an earlier, 54-test version of the file, this PR's library with
     `detectsSecretAssignment` restored to the base loop failed only the two
     base64 cases (`52 passed | 2 failed`); that mutation was not re-run on the
@@ -255,7 +291,7 @@ flowchart LR
 - **Existing tests:** none edited. In the new file, the control titled for a
   64-character bound is renamed for what it checks, a 66-character label within
   the 128-character bound. Every test file that mentions `redactSecrets`,
-  `containsSecret` or `secret_redaction` passes at head: 54 files, 1,257 passed,
+  `containsSecret` or `secret_redaction` passes at head: 54 files, 1,275 passed,
   0 failed. This run used a scratch import map in place of the `jsr:@std/*`
   imports, since jsr.io was unreachable from the host; CI runs the suites as
   written. That includes `secret_redaction_test.ts`, its `_markdown_1727_`,
@@ -290,11 +326,13 @@ flowchart LR
 
 ## Not done or not checked
 
-- Base behaviour applies, and the inner value is published as on base, in three
+- Base behaviour applies, and the inner value is published as on base, in four
   cases:
   - The inner label's separator or value sits more than 256 characters past the
     outer value. For example, `credentials: DEPLOY_TOKEN` + 300 spaces +
     `= <value>` still leaks.
+  - A double-quoted inner value closes more than 4,096 characters after its
+    opening quote. A test pins a 4,097-character value.
   - The inner label is longer than 128 characters. The `= x` hostile test pins
     `credentials: <500 KB of TOKEN> = x` as `credentials: ***REDACTED*** = x`.
   - The inner label sits neither at the end of the outer value nor just before
