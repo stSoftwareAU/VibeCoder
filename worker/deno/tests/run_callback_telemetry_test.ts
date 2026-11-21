@@ -150,6 +150,60 @@ Deno.test("run_callback_telemetry - reported usage has no absence reason (Issue 
   );
 });
 
+/** An invocation with no usage, served by `provider` (Issue #5295). */
+const noUsage = (provider?: string) => ({
+  runStats: {
+    servedModels: ["m"],
+    requestedModel: "m",
+    ...(provider !== undefined ? { provider } : {}),
+  },
+});
+
+Deno.test("run_callback_telemetry - the invocation's own provider beats the fallback: deepseek served on a claude host (Issue #5295)", () => {
+  assertEquals(
+    callbackTelemetryAbsenceReason([noUsage("deepseek")], "claude"),
+    "provider_unsupported",
+  );
+});
+
+Deno.test("run_callback_telemetry - the invocation's own provider beats the fallback: claude served on a deepseek host (Issue #5295)", () => {
+  assertEquals(
+    callbackTelemetryAbsenceReason([noUsage("claude")], "deepseek"),
+    "usage_not_reported",
+  );
+});
+
+Deno.test("run_callback_telemetry - an unnamed or blank provider uses the fallback (Issue #5295)", () => {
+  assertEquals(
+    callbackTelemetryAbsenceReason([noUsage()], "deepseek"),
+    "provider_unsupported",
+  );
+  assertEquals(
+    callbackTelemetryAbsenceReason([noUsage("  ")], "deepseek"),
+    "provider_unsupported",
+  );
+});
+
+Deno.test("run_callback_telemetry - any named provider with an adapter is usage_not_reported (Issue #5295)", () => {
+  assertEquals(
+    callbackTelemetryAbsenceReason(
+      [noUsage("claude"), noUsage("deepseek")],
+      "deepseek",
+    ),
+    "usage_not_reported",
+  );
+});
+
+Deno.test("run_callback_telemetry - unnamed invocations do not drag in the fallback (Issue #5295)", () => {
+  assertEquals(
+    callbackTelemetryAbsenceReason(
+      [noUsage("deepseek"), noUsage()],
+      "claude",
+    ),
+    "provider_unsupported",
+  );
+});
+
 // -- Turns and model attribution (Issue #2100, part of #2060) --
 
 Deno.test("run_callback_telemetry - turns are summed across invocations", () => {
