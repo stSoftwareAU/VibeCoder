@@ -218,7 +218,7 @@ flowchart LR
 
 ## Test Plan
 
-- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 146
+- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 203
   tests**, all through `redactSecrets` and `containsSecret`:
   - **Leak cases** must mask the inner value and keep both labels:
     - `DEPLOY_TOKEN = <40-char value>` on the same line and the next line;
@@ -316,6 +316,36 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
+- **Review round 9** — the round-8 check is made bounded and closes three
+  more shapes:
+  - **Linear again.** Round 8's flag search ran to the end of the text and
+    its assignment search re-ran from every match, so two inputs were
+    quadratic. Now keys are found by their credential keyword inside the
+    inner value and matched from where they start (at most 8, past which
+    main's result stands), flags by their `--` inside the inner value, and
+    the wrapped-run test reads only the run that ends the inner value. Two
+    hostile-size tests assert exact output: 64,000 lines of
+    `credentials: DEPLOY_TOKEN = abcdefgh12345678` (2.8 MB, about 1.2 s here)
+    and `credentials: DEPLOY_TOKEN = ` + 65,536 `TOKEN=x,` (512 KB, about
+    20 ms).
+  - **Chains.** The label ending the inner value is exempt only when the
+    walk's next step reads it as an inner label (looked ahead up to 16
+    links), so `credentials: DEPLOY_TOKEN = API_TOKEN: hunter2,--token x`
+    gives main's `credentials: ***REDACTED*** = API_TOKEN: ***REDACTED*** x`.
+  - **A `"` inside a quoted inner value.** When the outer bare value stopped
+    at a `"` inside the inner quoted value, the outer mask is kept, so
+    `credentials: DEPLOY_TOKEN='"abc"'--token <token>` gives
+    `credentials: ***REDACTED******REDACTED***--token ***REDACTED***`.
+  - **Second pass.** An inner value already holding the placeholder after
+    other text (`,***REDACTED***`) keeps main's result, so
+    `secrets:\n  DEPLOY_TOKEN: ,API_TOKEN=\nhunter2` is final.
+  - **Several flags.** Every `--` inside the inner value is tested, so
+    `'--token a --password '<token>` masks the value.
+  - 21 more tests (182 → 203 in the file); every test file importing
+    `secret_redaction.ts`: `1244 passed | 0 failed`. A random sweep of
+    900,000 inputs from 29 fragments, compared with main, found no output
+    that changed on a second pass, reported a secret, or published a value
+    where main's did not, other than a value glued onto key characters.
 - **Review round 8** — one general check replaces the round-7 flag test:
   before an inner label is read, `mainReadsPastInnerValue` asks whether
   main's own scan, resuming after the inner label as main did, would mask

@@ -830,3 +830,128 @@ for (
     assertFinal(input, expected, values);
   });
 }
+
+// PR #5322 review round 9. A chain whose last value main reads past gets
+// main's result; a quoted inner value that stopped the outer bare value at a
+// `"` keeps the outer mask, so a flag after it stays masked; an inner value
+// that already holds the placeholder after other text keeps main's result on
+// a second pass; and every flag inside a quoted inner value counts.
+for (
+  const [input, expected, values] of [
+    [
+      "credentials: DEPLOY_TOKEN = API_TOKEN: hunter2,--token x",
+      `credentials: ${R} = API_TOKEN: ${R} x`,
+      ["hunter2"],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: API_TOKEN: ${V},--token x`,
+      `secrets:\n  DEPLOY_TOKEN: API_TOKEN: ${R} x`,
+      [V],
+    ],
+    [
+      `Rotate these credentials:\nDEPLOY_TOKEN = API_TOKEN: ${V};--password x`,
+      `Rotate these credentials:\n${R} = API_TOKEN: ${R} x`,
+      [V],
+    ],
+    [
+      `The secret: credentials: api_key: ${V},--token x`,
+      `The secret: ${R} api_key: ${R} x`,
+      [V],
+    ],
+    [
+      "credentials: DEPLOY_TOKEN = API_TOKEN: 'hunter2 --token 'x",
+      `credentials: ${R} = API_TOKEN: '${R}'x`,
+      ["hunter2"],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = API_TOKEN: '${V} token:x'y`,
+      `credentials: ${R} = API_TOKEN: '${R}'y`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN='"abc"'--token ${V}`,
+      `credentials: ${R}${R}--token ${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN='"abc"'--password hunter2`,
+      `credentials: ${R}${R}--password ${R}`,
+      ["hunter2"],
+    ],
+    [
+      `Rotate these credentials:\nDEPLOY_TOKEN='"abc"'--token ${V}`,
+      `Rotate these credentials:\n${R}${R}--token ${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN:'"abc"'--api-key ${V}`,
+      `credentials: ${R}${R}--api-key ${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN='"'--token ${V}`,
+      `credentials: ${R}${R}--token ${R}`,
+      [V],
+    ],
+    [
+      "secrets:\n  DEPLOY_TOKEN: ,API_TOKEN=\nhunter2",
+      `secrets:\n  DEPLOY_TOKEN: ,${R}`,
+      ["hunter2"],
+    ],
+    [
+      "secrets:\n  DEPLOY_TOKEN: x.API_TOKEN=\nhunter2",
+      `secrets:\n  DEPLOY_TOKEN: x.${R}`,
+      ["hunter2"],
+    ],
+    [
+      "Rotate these credentials:\napi-key: ,tokenhunter2=\nsecret = token",
+      `Rotate these credentials:\napi-key: ,${R} = ${R}`,
+      ["hunter2"],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = '--token a --password '${V}'`,
+      `credentials: ${R} = '--token ${R} --password ${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = '--token a --password '${V}`,
+      `credentials: ${R} = '--token ${R} --password ${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = "--token a --password "${V}"`,
+      `credentials: ${R} = "--token ${R} --password ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: '--token a --password '${V}`,
+      `secrets:\n  DEPLOY_TOKEN: '--token ${R} --password ${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = '--api-key k1 --secret s2 --token '${V}`,
+      `credentials: ${R} = '--api-key ${R} --secret ${R} --token ${R}`,
+      [V],
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 round 9: ${JSON.stringify(input.slice(0, 52))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}
+
+// Hostile sizes for the inner-value check (PR #5322 review round 9). No
+// stopwatch, as in secret_redaction_redos_test.ts: a quadratic check does not
+// overrun a budget on these, it does not return in a test run's lifetime.
+Deno.test("#5310 a 2.8 MB run of label-as-value lines is masked line by line", () => {
+  const line = "credentials: DEPLOY_TOKEN = abcdefgh12345678\n";
+  assertEquals(
+    redactSecrets(line.repeat(64_000)),
+    `credentials: DEPLOY_TOKEN = ${R}\n`.repeat(64_000),
+  );
+});
+
+Deno.test("#5310 a 512 KB inner value of TOKEN=x, pairs keeps main's result", () => {
+  const input = "credentials: DEPLOY_TOKEN = " + "TOKEN=x,".repeat(65_536);
+  assertEquals(redactSecrets(input), `credentials: ${R} = TOKEN=${R}`);
+});

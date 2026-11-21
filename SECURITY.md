@@ -567,9 +567,15 @@ and, apart from that check, **only when the separator crossed a line break**:
   `credentials: DEPLOY_TOKEN = 'token:x'<value>`), other than the label that
   ends the inner value, or a run from the inner value wrapped onto the next
   line that the decode-then-rescan pass masks
-  (`credentials: DEPLOY_TOKEN = API_TOKEN=` then `hunter2`). That check has no
-  bound of its own, so past the whitespace bound below the base result stands
-  too.
+  (`credentials: DEPLOY_TOKEN = API_TOKEN=` then `hunter2`). A label that ends
+  the inner value is exempt only when the next link of the chain is itself
+  read as an inner label (looked ahead at most 16 links), so a chain whose last
+  value the base scan reads past gets the base result. An inner value that
+  already holds the placeholder after other text, or holds more than 8
+  credential keys, gets the base result too. Every search reads only the inner
+  value and then each match from where it starts, so the check stays linear.
+  It has no whitespace bound of its own, so past the whitespace bound below
+  the base result stands too.
   Label characters before the label are read as part of it, so in
   `credentials: abc-DEPLOY_TOKEN = <value>` the `abc-` stays visible. That
   includes text glued to a credential keyword with no separator at all
