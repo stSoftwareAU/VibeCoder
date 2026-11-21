@@ -15,9 +15,11 @@ account pushed. The run's triggering actor must be a fleet author or the
 babysitter, matched case-insensitively. Observations are still recorded as
 before, so entries already in a host's ledger are filtered too.
 
-One fleet path the issue describes is still open: the fleet's own GitHub
-update-branch base refresh. It leaves the merged tree's checks to CI (see the
-`missing` entry below). Part of #5320.
+One fleet path the issue describes is still only partly covered: the fleet's own
+GitHub update-branch base refresh. On a strict base it waits for the required
+checks on GitHub's test merge, but never runs `deno check` or `deno test`
+itself, and on a non-strict base it checks nothing (see the `partial` entry
+below). Part of #5320.
 
 ## Spec
 
@@ -36,7 +38,9 @@ update-branch base refresh. It leaves the merged tree's checks to CI (see the
   babysitter routing. An empty `pushedBy` is not a fleet push.
 - `repeatedFailures` and `observeRepo` are unchanged. Only the production entry
   point, `runShiftLeftScan`, applies the filter.
-- The issue has no acceptance-criteria heading, so no reviewer sub-agents ran.
+- The issue has no acceptance-criteria heading. The completion checks named one
+  criterion, for the update-branch refresh. A Spec reviewer sub-agent judged it
+  over this diff and the refresh code. Its verdict is recorded below.
 
 ### Undiscoverable Facts
 
@@ -100,13 +104,19 @@ flowchart LR
 
 ## Acceptance Criteria
 
-- **missing** — "Make the fleet run `deno check, deno test` the way CI does, and
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — "Make the fleet run `deno check, deno test` the way CI does, and
   require it to pass, before a PR is raised or a fix is pushed" for the fleet's
-  GitHub update-branch base refresh — reason: GitHub builds that merge on the
-  server, so no local tree exists to gate. Closing this means replacing the
-  update-branch call with a local merge, gate and push in every base-refresh
+  GitHub update-branch base refresh — evidence:
+  `worker/deno/lib/required_branch_checks_4613.ts` — reviewer: partial — reason:
+  on a strict base the PUT goes out only after the base's required checks pass
+  on GitHub's test merge, but the fleet never runs `deno check`/`deno test`
+  itself, and on a non-strict base `requestBranchUpdate` (in
+  `merge_block_escalation.ts`) sends the PUT with no check, which this diff does
+  not change. Closing it means a local merge, gate and push in each base-refresh
   caller (`required_branch_checks_4613.ts`, `auto_merge_sweep.ts`,
-  `merge_block_escalation.ts`, review-fleet-prs); this run did not start that.
+  `merge_block_escalation.ts`, review-fleet-prs), which this run did not start.
 
 ## Test Plan
 
