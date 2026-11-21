@@ -7,7 +7,8 @@ second credential label as the first label's value. For
 `Rotate these credentials: DEPLOY_TOKEN = <value>`, on one line or across two,
 it masked `DEPLOY_TOKEN`, resumed the scan after it, and published `<value>`
 unchanged. The same leak hit `The secret: api_key: <value>`, a YAML child such
-as `secrets:` then `  API_TOKEN: <value>`, and `credentials: DEPLOY_TOKEN="<value>"`.
+as `secrets:` then `API_TOKEN: <value>`, and
+`credentials: DEPLOY_TOKEN="<value>"`.
 
 `SECRET_ASSIGNMENT_PATTERN` now has one bounded negative lookahead directly
 after its separator. It refuses a value that is itself a credential label whose
@@ -48,7 +49,7 @@ Closes #5310.
 ### Undiscoverable Facts
 
 - The base code also leaked a credential under a credential-labelled YAML child
-  key (`secrets:` then `  API_TOKEN: <value>`): the outer match swallowed
+  key (`secrets:` then `API_TOKEN: <value>`): the outer match swallowed
   `API_TOKEN:` as a mapping key and never scanned its value. This change fixes
   that too. I observed it with a scratch script before writing the test.
 
@@ -65,19 +66,19 @@ flowchart LR
     B -->|"no (e.g. KEY=v)"| F["value masked whole, as before"]
 ```
 
-- Fix: `SECRET_ASSIGNMENT_PATTERN` and the comment above the
-  `secret-assignment` entry in `RULES`, in `worker/deno/lib/secret_redaction.ts`.
-  The `MAPPING_KEY_VALUE` doc comment notes that a credential-labelled child key
-  no longer reaches that test.
+- Fix: `SECRET_ASSIGNMENT_PATTERN` and the comment above the `secret-assignment`
+  entry in `RULES`, in `worker/deno/lib/secret_redaction.ts`. The
+  `MAPPING_KEY_VALUE` doc comment notes that a credential-labelled child key no
+  longer reaches that test.
 - Docs: `SECURITY.md`, section "An assignment's value is judged, not only its
   label", has a new bullet. I read the whole section. `docs/THREAT-MODEL.md` and
   `README.md` do not describe this rule.
-- Corpus run: base and head `redactSecrets` over 4,335 tracked files
-  (`*.md`, `docs/`, `docs/archive/pr-summaries/`, `prompts/`,
-  `.github/workflows/*.yml`, `worker/deno/tests/*.ts`). The output differs in 2
-  files, both this PR's own new text (`SECURITY.md`'s new bullet and the new
-  test), where the head masks the inner value instead of the label. No other
-  file's redaction output changed: 0 false positives, 0 new misses.
+- Corpus run: base and head `redactSecrets` over 4,335 tracked files (`*.md`,
+  `docs/`, `docs/archive/pr-summaries/`, `prompts/`, `.github/workflows/*.yml`,
+  `worker/deno/tests/*.ts`). The output differs in 2 files, both this PR's own
+  new text (`SECURITY.md`'s new bullet and the new test), where the head masks
+  the inner value instead of the label. No other file's redaction output
+  changed: 0 false positives, 0 new misses.
 - Issue numbers cited:
   - #5310: secret-assignment rule publishes a credential when its label is
     consumed as the value of an earlier credential label.
@@ -114,20 +115,19 @@ flowchart LR
 - **Full gate:** `./quality.sh < /dev/null` on the final commit gave
   `Result: PASSED (with skipped checks)`. The gate itself skipped
   `config integration` (no `.config.json`) and `checkov` (no checkov on PATH).
-  The run before it failed only on gitleaks (`generic-api-key`), for the
-  literal YAML fixture `abcdefgh12345` in the new test. That fixture now uses
-  the file's interpolated synthetic value. The first commit carrying the
-  literal was already pushed, and CI scans every commit in the PR range, so
+  The run before it failed only on gitleaks (`generic-api-key`), for the literal
+  YAML fixture `abcdefgh12345` in the new test. That fixture now uses the file's
+  interpolated synthetic value. The first commit carrying the literal was
+  already pushed, and CI scans every commit in the PR range, so
   `.github/gitleaks.toml` exempts that exact line. It also exempts the
   backtick-quoted mention of the value that an earlier commit of this summary
-  carried, also already pushed. This follows the
-  file's existing exact-line entries (Issues #4705, #5083) rather than
-  rewriting the pushed branch.
+  carried, also already pushed. This follows the file's existing exact-line
+  entries (Issues #4705, #5083) rather than rewriting the pushed branch.
 - **Gitleaks exemption:**
   - `gitleaks git --config .github/gitleaks.toml --log-opts="origin/main..770765920"`
     reported 1 leak before the edit and none after it.
-  - In a temp directory, a higher-entropy value on the same line shape is
-    still reported under the edited config, so the exemption is exact.
+  - In a temp directory, a higher-entropy value on the same line shape is still
+    reported under the edited config, so the exemption is exact.
   - `gitleaks_template_conformance_test.ts` and `gitleaks_check_test.ts`: 42
     passed.
 
