@@ -38,7 +38,12 @@
  * - (f) every `actions/checkout` step sets `persist-credentials: false`.
  *
  * `checkQualityCallsAwsEmulator` checks the parsed quality.yml: a job calls
- * this workflow (`[gate-call]`) and the `gate` job needs it (`[gate-needs]`).
+ * this workflow (`[gate-call]`) and the `gate` job needs it (`[gate-needs]`),
+ * has `if: always()` (`[gate-always]`) and no soft `continue-on-error`
+ * (`[gate-soft]`), and has a step that runs `.github/scripts/gate.sh` by its
+ * exact path as its only command with `NEEDS_JSON: ${{ toJSON(needs) }}`, no
+ * `if:` or soft `continue-on-error`, and a shell that runs the body, with no
+ * other step but `actions/checkout` (`[gate-script]`).
  *
  * `checkContainerBuildRunsAwsEmulator` checks the parsed container-build.yml:
  * job `container` has a step that runs the reference command as `agent` in a
@@ -884,8 +889,13 @@ export function checkContainerBuildRunsAwsEmulator(
 }
 
 /**
- * Check a parsed quality.yml: some job calls the AWS Emulator workflow and the
- * `gate` job needs that job. Never throws on malformed input.
+ * Check a parsed quality.yml: some job calls the AWS Emulator workflow, the
+ * `gate` job needs that job, and `gate` is wired to judge the result: `if:`
+ * is `always()`, no soft `continue-on-error` (unset or `false`), and a step
+ * runs `.github/scripts/gate.sh` by its exact path as its only command with
+ * `NEEDS_JSON` set to `${{ toJSON(needs) }}`, no `if:` or soft
+ * `continue-on-error`, and a shell that runs the body; no other step but
+ * `actions/checkout`. Never throws on malformed input.
  */
 export function checkQualityCallsAwsEmulator(quality: unknown): string[] {
   if (!isObject(quality)) return ["quality workflow is not an object"];
@@ -910,6 +920,102 @@ export function checkQualityCallsAwsEmulator(quality: unknown): string[] {
       `[gate-needs] the gate job must need ${
         caller[0]
       }, so a failed or skipped AWS Emulator run turns gate red`,
+    );
+  }
+  if (gate) problems.push(...gateJudgesNeeds(quality, gate));
+  return problems;
+}
+
+const GATE_SCRIPT_PATH = ".github/scripts/gate.sh";
+const ALWAYS_CONDITIONS = ["always()", "${{ always() }}"];
+const GATE_SCRIPT_PATHS = [GATE_SCRIPT_PATH, `./${GATE_SCRIPT_PATH}`];
+
+/** Every exact command line that runs the gate script with its status intact. */
+const GATE_COMMANDS = GATE_SCRIPT_PATHS.flatMap((
+  path,
+) => [path, `bash ${path}`, `sh ${path}`]);
+
+/**
+ * Whether a step's code is, after an optional leading `set -euo pipefail`,
+ * exactly one command: the gate script by its exact path, bare or after
+ * `bash`/`sh`. A path that merely ends with the script name could be another
+ * file.
+ *
+ * The lines come from {@link codeLines}, which joins backslash continuations
+ * before it treats a `#` line as a comment, as Bash does. Reading the step
+ * with {@link segmentsOf} instead would drop a `# || true` line that follows
+ * `.github/scripts/gate.sh\`, although Bash runs it as part of that command
+ * (`.github/scripts/gate.sh# || true`), so the script never runs and the step
+ * is always green (Issue #5110).
+ */
+function stepRunsGateScript(step: unknown): boolean {
+  const lines = codeLines(step);
+  if (lines[0] === "set -euo pipefail") lines.shift();
+  return lines.length === 1 && GATE_COMMANDS.includes(lines[0] ?? "");
+}
+
+/**
+ * The findings for the rest of the chain that turns a skipped, cancelled or
+ * failed needed job into a red `gate`: the job runs always, is not soft, and
+ * has a step that runs the gate script on `toJSON(needs)`.
+ */
+function gateJudgesNeeds(
+  quality: Record<string, unknown>,
+  gate: Record<string, unknown>,
+): string[] {
+  const problems: string[] = [];
+  const condition = gate.if;
+  if (
+    typeof condition !== "string" ||
+    !ALWAYS_CONDITIONS.includes(condition.trim())
+  ) {
+    problems.push(
+      `[gate-always] the gate job must have if: always(), so a skipped aws-emulator run is judged by gate.sh instead of skipping gate, which GitHub reports as passing; got ${
+        JSON.stringify(condition)
+      }`,
+    );
+  }
+  if (setsSoftContinueOnError(gate)) {
+    problems.push(
+      "[gate-soft] continue-on-error must not be set on the gate job: a failed gate would still report success",
+    );
+  }
+  const gateSteps = stepsOf(gate);
+  const step = gateSteps.find(stepRunsGateScript);
+  if (!isObject(step)) {
+    problems.push(
+      `[gate-script] no gate step runs ${GATE_SCRIPT_PATH} as its only command with its exit status intact`,
+    );
+    return problems;
+  }
+  if (!gateSteps.every((s) => s === step || stepIsPlainCheckout(s))) {
+    problems.push(
+      `[gate-script] the gate job may have no step but actions/checkout and the gate script step, since another step could replace or skip the script`,
+    );
+  }
+  const env = step.env;
+  const needsJson = isObject(env) ? env.NEEDS_JSON : undefined;
+  if (
+    typeof needsJson !== "string" ||
+    needsJson.trim() !== "${{ toJSON(needs) }}"
+  ) {
+    problems.push(
+      `[gate-script] the gate script step must set env.NEEDS_JSON to exactly \${{ toJSON(needs) }}, so the script judges the real results; got ${
+        JSON.stringify(needsJson)
+      }`,
+    );
+  }
+  if (step.if !== undefined || setsSoftContinueOnError(step)) {
+    problems.push(
+      `[gate-script] the gate script step must have no if: and no continue-on-error, since a skipped or soft step judges nothing`,
+    );
+  }
+  const shell = effectiveShell(quality, gate, step);
+  if (!shell.runsBody) {
+    problems.push(
+      `[gate-script] the gate script step's shell must be bash or sh that runs the body; got ${
+        JSON.stringify(shell.value)
+      }`,
     );
   }
   return problems;
