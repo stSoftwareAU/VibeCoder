@@ -37,9 +37,9 @@ Floci now gets one migration finding through the ordinary scan. Closes #5112.
     and not followed by `||`, `|` or `&`. It also runs via `exec`, or is last
     (or the rest of the body is an `&&` chain), or runs with errexit on. Errexit
     is on for GitHub's default `bash` and `sh`, and off at the start of a
-    repository script. `set -e` and `set +e` toggle it. The explicit-exit
-    idioms `runner || exit N` and `if ! runner; then …; exit N; fi` (N not 0)
-    are preserved too.
+    repository script. `set -e` and `set +e` toggle it. The explicit-exit idioms
+    `runner || exit N` and `if ! runner; then …; exit N; fi` (N not 0) are
+    preserved too.
 - **Two comment markers were defined, because the issue gave no format** (an
   assumption):
   - `# aws-emulator-gap: version=…; behaviour=…; evidence=…; alternative=…; recheck=…`
@@ -60,11 +60,10 @@ Floci now gets one migration finding through the ordinary scan. Closes #5112.
 - **An open older finding is reconciled, not left stale.** When the reused
   fleet-authored issue carries this finding's `finding-id` marker (such as the
   old "🟡 No AWS emulator (Floci) in CI" body that says to run Floci) and its
-  title or body differs from the current finding, `gh issue edit` replaces
-  both. A hand-written issue is never edited.
+  title or body differs from the current finding, `gh issue edit` replaces both.
+  A hand-written issue is never edited.
 - **`.tf` reads are capped.** A `.tf` file is stat'ed first and skipped when it
-  is over 1 MiB (the script reader's cap), so an oversized file is never
-  loaded.
+  is over 1 MiB (the script reader's cap), so an oversized file is never loaded.
 
 ### Undiscoverable Facts
 
@@ -99,8 +98,8 @@ Docs updated, after reading each section through:
 
 - `docs/BEST-PRACTICES-SCAN.md`: the "AWS emulator in CI" section and its three
   diagrams (including the event `if:`, explicit-exit, Floci test-step and
-  reconcile rules), plus a new "What the scan establishes" paragraph that separates
-  static wiring evidence from CI results and reviewed coverage.
+  reconcile rules), plus a new "What the scan establishes" paragraph that
+  separates static wiring evidence from CI results and reviewed coverage.
 - `DESIGN-PRINCIPLES.md`: the AWS emulator principle.
 - `docs/IDLE-TASK-FRAMEWORK.md`: the `best-practices` row.
 - `CODING-STANDARDS.md`: the rollout paragraph of AWS integration testing, which
@@ -203,11 +202,11 @@ emulator test.
   `reconcileAwsEmulatorIssue`),
   `worker/deno/tests/best_practices_template_test.ts::runTask - an open old-body AWS finding ('No AWS emulator (Floci) in CI') is updated to the current title and body, not left stale or re-filed`,
   `…::runTask - an open AWS finding already matching the current finding, or a hand-written AWS Emulator issue, is not edited`
-  — reviewer: partial — reason: the reviewer found no live run. Scope 9
-  says to use the normal scan path, and that path is the scheduled
-  best-practices scan, which files these findings per repository once this
-  merges. No separate campaign exists to run, and private repository names stay
-  out of this public PR.
+  — reviewer: partial — reason: the reviewer found no live run. Scope 9 says to
+  use the normal scan path, and that path is the scheduled best-practices scan,
+  which files these findings per repository once this merges. No separate
+  campaign exists to run, and private repository names stay out of this public
+  PR.
 - **met** — Relevant detector, pre-filer, workflow and documentation checks
   pass. — evidence: `./quality.sh` on the final code commit (see Test Plan) —
   reviewer: partial — reason: the reviewer saw only the diff. The gate was run
@@ -221,8 +220,9 @@ emulator test.
   documented gap and a justified, pinned embedded setup, and a static check
   needs a fixed format to read them
 - **unrequested** — A gh failure in the equivalent-issue lookup (or in the
-  reconcile edit) fails the scan run — reviewer: unrequested — reason: fail loud. An unknown lookup must not
-  file a possible duplicate, and the scan already retries a failed run.
+  reconcile edit) fails the scan run — reviewer: unrequested — reason: fail
+  loud. An unknown lookup must not file a possible duplicate, and the scan
+  already retries a failed run.
 - **unrequested** — Only `pull_request` (not `pull_request_target` or
   `merge_group`) makes a workflow applicable — reviewer: unrequested — reason:
   `pull_request_target` runs base-branch code, so it does not test the PR's
@@ -302,8 +302,8 @@ emulator test.
     step; the disabled-job diagnostic text changed to match. The
     `workflowRunsAwsEmulator - credits a step if decided at run time` case now
     uses `github.actor != 'dependabot[bot]'`, because its old
-    `github.event_name == 'push'` excludes pull requests and is now refused
-    (the push-only test covers that).
+    `github.event_name == 'push'` excludes pull requests and is now refused (the
+    push-only test covers that).
 - `worker/deno/tests/best_practices_template_test.ts`:
   - Four removed assertions pinned the old Floci instructions
     (`CREATE_COMPLETE`, `::warning::`, `SKIPPED (needs Docker):`,
@@ -315,8 +315,8 @@ emulator test.
     scenarios added for official-server, official-embedded and unreadable
     workflows.
   - New tests cover the floci-only and missing titles, fleet versus non-fleet
-    equivalent issues, gh-failure handling, the finding body, and reconciling
-    an old-body finding (edited) versus an up-to-date or hand-written one (not
+    equivalent issues, gh-failure handling, the finding body, and reconciling an
+    old-body finding (edited) versus an up-to-date or hand-written one (not
     edited). `findEquivalentAwsEmulatorIssue` now returns the row, so its test
     reads `found?.number`.
   - The dedup and waiver tests are unchanged and pass.
@@ -332,11 +332,10 @@ emulator test.
   `issue_5110_aws_emulator_workflow_test.ts` (the other importer of
   `shell_command_words.ts`): 193 passed. `deno lint`, `deno check` and
   `deno fmt --check` on the changed files are clean.
-- `./quality.sh < /dev/null` on commit 17f35b3c7 (before the verifier fixes;
-  the worker re-runs the gate on this head):
-  `Result: PASSED (with skipped checks)`. Config integration and checkov were
-  skipped by the gate itself. Deno tests, lint, type check, fmt, markdownlint,
-  mermaid, semgrep and gitleaks passed.
+- `./quality.sh < /dev/null` on commit 17f35b3c7 (before the verifier fixes; the
+  worker re-runs the gate on this head): `Result: PASSED (with skipped checks)`.
+  Config integration and checkov were skipped by the gate itself. Deno tests,
+  lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
 Not done or not checked: no live best-practices scan was run against fleet
 repositories from this run, so the first real findings appear on the next
