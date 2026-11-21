@@ -121,10 +121,10 @@ escalation.
    to a PR that was sent back, the re-review checks the earlier findings were
    fixed, and approves once they are. When a PR was sent back and the only
    commits since leave its own diff unchanged apart from the file drop
-   and the absorbed hunk described below, the gate skips it as `awaiting-fix`
-   until the fleet
-   pushes its fix. Any other force-push gets a fresh review, since it can itself
-   be the fix. The one exception is a Dependabot re-cut, where Dependabot
+   and the absorbed hunks described below, the gate skips it as
+   `awaiting-fix` until the fleet pushes its fix. Any other force-push gets a
+   fresh review, since it can itself be the fix. The one exception is a
+   Dependabot re-cut, where Dependabot
    force-pushes the same change again: it keeps the skip only when every commit
    since is by `dependabot[bot]` and the own diff matches strictly (see
    [Version-only re-bumps](references/edge-cases.md#version-only-re-bumps)).
@@ -142,10 +142,10 @@ escalation.
    the old and current own diffs, including a separate workflow bump after a
    base merge. In a file no earlier finding names, context lines a base merge
    moved are ignored, and every added and removed line (same hunks, same
-   order) must still match, except for an absorbed hunk described below. In a
-   file an earlier finding names, or any file
-   when the findings for the exact sent-back head are missing, the context
-   must match too (hunk headers aside), since moving the PR's own line is a
+   order) must still match, except for absorbed hunks described below. In a
+   file an earlier finding names, or any file when the findings for the exact
+   sent-back head are missing, the context must match too (hunk headers
+   aside), since moving the PR's own line is a
    possible fix. An earlier finding on a version file, or missing findings
    for the exact sent-back head, requires a fresh review (see
    [Version-only re-bumps](references/edge-cases.md#version-only-re-bumps)).
@@ -157,15 +157,15 @@ escalation.
    file present only at the new head, and a sent-back own-diff listing reaching
    the 300-file cap. A new-head listing at the cap needs no rule of its own: it
    necessarily has a file the sent-back listing lacks, which gets a fresh
-   review. A base merge may also absorb one hunk of a file present at both heads,
-   because the base gained the same edit. That hunk may then be missing from
-   the new head's patch, but only when the findings for the exact sent-back
-   head are known, number at least one, and none names the file (a qualified
-   path counts, as does a structured earlier-review gap that names it). Then
-   every hunk still present at the new head must appear in the sent-back patch,
-   in the same order, with identical added and removed lines. A hunk present
-   only at the new head, or a remaining hunk whose changed lines differ, gets a
-   fresh review.
+   review. A base merge may also absorb one or more hunks of a file present at
+   both heads, because the base gained the same edit. Those hunks may then be
+   missing from the new head's patch, but only when the findings for the exact
+   sent-back head are known, number at least one, and none names the file (a
+   qualified path counts, as does a structured earlier-review gap that names
+   it). Then every hunk still present at the new head must appear in the
+   sent-back patch, in the same order, with identical added and removed lines.
+   A hunk present only at the new head, or a remaining hunk whose changed lines
+   differ, gets a fresh review.
    The version hunk may sit beside other hunks that are unchanged between the
    two own diffs. The skill runs on more than one host
    (a laptop as the `gh` user, an always-on host as the reviewer App), so a
