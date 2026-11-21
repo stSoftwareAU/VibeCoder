@@ -10,8 +10,9 @@
  *
  * - (a) a step invokes `infra/cloudformation/test-aws-emulator.sh` in command
  *   position (an `echo` or a comment does not count), and a failure of the
- *   script fails the job: the step's code (comment lines dropped) has no `|`,
- *   `;` or `&`, so nothing follows, pipes or backgrounds the call; the step
+ *   script fails the job: the step's code (comment lines, as Bash reads them,
+ *   dropped) has no `|`, `;` or `&`, so nothing follows, pipes or backgrounds
+ *   the call; the step
  *   consists only of `set -euo pipefail` (optional) and that one call, so no
  *   `if`, `exit` or second command can skip or replace it; no `!` or
  *   `if`/`while`/`until` word precedes the call, because `! ./script` turns
@@ -109,12 +110,37 @@ function stepsOf(job: Record<string, unknown>): unknown[] {
 }
 
 /**
- * The `run:` text of a step with comment lines (trimmed line starting with
- * `#`) dropped.
+ * Whether a physical `run:` line is a Bash comment line: no backslash
+ * continuation is pending into it, and its first character after spaces and
+ * tabs (Bash's only blanks, unlike JavaScript's `trim()`) is `#`. A `#` line
+ * that a trailing backslash continues into is part of that command (Issue
+ * #5304).
+ */
+function isCommentLine(pending: string, physical: string): boolean {
+  return pending === "" && physical.replace(/^[ \t]+/, "").startsWith("#");
+}
+
+/**
+ * The `run:` text of a step as Bash reads it: backslash-newline removed with
+ * no blank inserted (the next line's leading whitespace is kept), and comment
+ * lines, per {@link isCommentLine}, dropped. Joining without a blank keeps
+ * `sh\` + `#` as the word `sh#`, as Bash does.
  */
 function codeOf(step: unknown): string {
-  return runOf(step).split("\n").filter((l) => !l.trim().startsWith("#"))
-    .join("\n");
+  const lines: string[] = [];
+  let continued = "";
+  for (const physical of runOf(step).split("\n")) {
+    if (isCommentLine(continued, physical)) continue;
+    const line = continued + physical;
+    if (line.endsWith("\\")) {
+      continued = line.slice(0, -1);
+      continue;
+    }
+    continued = "";
+    lines.push(line);
+  }
+  if (continued !== "") lines.push(continued);
+  return lines.join("\n");
 }
 
 /**
@@ -591,8 +617,7 @@ function codeLines(step: unknown): string[] {
   const logical: string[] = [];
   let continued = "";
   for (const physical of code.split("\n")) {
-    const leftTrimmed = physical.replace(/^[ \t]+/, "");
-    if (continued === "" && leftTrimmed.startsWith("#")) {
+    if (isCommentLine(continued, physical)) {
       // In Bash a comment ends at its physical newline. A trailing backslash
       // is part of the comment, not a continuation (ShellCheck SC1143).
       // Refuse it explicitly so it cannot hide the command on the next line.
@@ -942,11 +967,12 @@ const GATE_COMMANDS = GATE_SCRIPT_PATHS.flatMap((
  * file.
  *
  * The lines come from {@link codeLines}, which joins backslash continuations
- * before it treats a `#` line as a comment, as Bash does. Reading the step
- * with {@link segmentsOf} instead would drop a `# || true` line that follows
- * `.github/scripts/gate.sh\`, although Bash runs it as part of that command
- * (`.github/scripts/gate.sh# || true`), so the script never runs and the step
- * is always green (Issue #5110).
+ * before it treats a `#` line as a comment, as Bash does. `codeLines` and
+ * {@link codeOf} share {@link isCommentLine}, so neither drops a `#` line that
+ * a continuation reaches (`.github/scripts/gate.sh\` then `# || true` is
+ * `.github/scripts/gate.sh# || true`, so the script never runs and the step is
+ * always green). The gate step uses `codeLines` because it compares exact
+ * lines against an allowlist (Issue #5110).
  */
 function stepRunsGateScript(step: unknown): boolean {
   const lines = codeLines(step);
