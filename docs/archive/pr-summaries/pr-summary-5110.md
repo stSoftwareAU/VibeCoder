@@ -164,6 +164,8 @@ flowchart LR
       `./evil.github/…` and `/tmp/x/.github/…` paths.
     - `[gate-script]` refuses a constant `NEEDS_JSON`, no `env:`, a soft step,
       `if: false` on the step, and `shell: bash -n {0}`.
+    - A trailing `set -euo pipefail` under `bash {0}` is refused so a failed
+      gate remains the final exit status. A leading preamble is accepted.
     - `[gate-script]` refuses an extra step that overwrites `gate.sh`.
   - Controls that return `[]`: `${{ always() }}`,
     `bash .github/scripts/gate.sh`, a `set -euo pipefail` block, and

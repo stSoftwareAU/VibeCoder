@@ -931,16 +931,15 @@ const ALWAYS_CONDITIONS = ["always()", "${{ always() }}"];
 const GATE_SCRIPT_PATHS = [GATE_SCRIPT_PATH, `./${GATE_SCRIPT_PATH}`];
 
 /**
- * Whether a step's code is, apart from `set -euo pipefail`, exactly one
+ * Whether a step's code is, after an optional leading `set -euo pipefail`, exactly one
  * command: the gate script by its exact path, bare or after `bash`/`sh`. A
  * path that merely ends with the script name could be another file.
  */
 function stepRunsGateScript(step: unknown): boolean {
-  const rest = segmentsOf(step).filter((w) =>
-    w.join(" ") !== "set -euo pipefail"
-  );
-  if (rest.length !== 1) return false;
-  const words = rest[0] ?? [];
+  const commands = segmentsOf(step);
+  if (commands[0]?.join(" ") === "set -euo pipefail") commands.shift();
+  if (commands.length !== 1) return false;
+  const words = commands[0] ?? [];
   if (words.length === 1) return GATE_SCRIPT_PATHS.includes(words[0] ?? "");
   return words.length === 2 && (words[0] === "bash" || words[0] === "sh") &&
     GATE_SCRIPT_PATHS.includes(words[1] ?? "");

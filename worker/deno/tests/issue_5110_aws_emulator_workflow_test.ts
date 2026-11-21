@@ -603,6 +603,17 @@ Deno.test("(gate-script) refuses a shell that does not run the body", () => {
   );
 });
 
+Deno.test("(gate-script) refuses a trailing set that masks the gate result under bash {0}", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(qualityMutated(
+      GATE_RUN,
+      "shell: bash {0}\n        run: |\n          bash .github/scripts/gate.sh\n          set -euo pipefail",
+    )),
+    "[gate-script]",
+    "no gate step runs",
+  );
+});
+
 Deno.test("(gate-script) accepts bash <path> and a set -euo pipefail block", () => {
   assertEquals(
     checkQualityCallsAwsEmulator(
