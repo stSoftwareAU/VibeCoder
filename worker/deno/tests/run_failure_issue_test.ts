@@ -1058,6 +1058,7 @@ Deno.test("runFailureNamesReadableSource - a hard-kill body stays schedulable (I
         pressureMemory: "",
         pressureIo: "",
       },
+      hostState: { disk: "", memory: "" },
     },
   } as HardKillEvidence;
   const sig: HardKillSignature = {

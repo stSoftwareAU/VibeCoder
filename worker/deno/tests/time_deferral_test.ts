@@ -7,7 +7,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertFalse,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   buildDeferralExhaustedComment,
   buildTimeDeferralLine,
@@ -362,6 +367,8 @@ Deno.test("deferIssueUntil - posts a comment and records the body line", async (
     `<!-- ${TIME_DEFERRAL_RECORD_MARKER} until="2026-10-07T00:00:00Z" -->`,
   );
   assertStringIncludes(calls.postComment[0]!, "Deferral 1 of");
+  assertStringIncludes(calls.postComment[0]!, "retried as not finished");
+  assertFalse(calls.postComment[0]!.includes("handed to a human"));
 
   assertEquals(calls.editIssue.length, 1);
   assertStringIncludes(
@@ -435,10 +442,13 @@ Deno.test("buildDeferralExhaustedComment - lists prior deferrals and the latest 
     REQUEST,
   );
   assertStringIncludes(comment, "## Deferral limit reached");
+  assertFalse(/#[0-9]+/.test(comment));
   assertStringIncludes(comment, "2026-10-07T00:00:00Z");
   assertStringIncludes(comment, "2026-11-01T00:00:00Z");
   assertStringIncludes(comment, "2026-12-01T00:00:00Z");
   assertStringIncludes(comment, "Upstream export has not run yet");
+  assertStringIncludes(comment, "retried as not finished");
+  assertFalse(comment.includes("handed to a human"));
 });
 
 Deno.test("MAX_TIME_DEFERRALS and MAX_DEFERRAL_HORIZON_MS are sane bounds", () => {

@@ -170,6 +170,8 @@ function silenceDeps(guestAnswers: boolean, container: string): {
         writes.set(path, text);
         return Promise.resolve();
       },
+      diskReading: () => Promise.resolve(null),
+      memoryReading: () => Promise.resolve({ level: "unknown" }),
       hostname: () => "test-host",
       timeout: () => ({
         promise: new Promise<void>(() => {}),

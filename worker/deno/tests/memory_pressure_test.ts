@@ -4,12 +4,13 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   classifyPressure,
   describeMemoryPressure,
   memoryPressureLogFields,
   parseMemInfo,
+  probeHostMemoryPressureFromSystem,
   probeMemoryPressure,
 } from "../lib/memory_pressure.ts";
 
@@ -94,5 +95,59 @@ Deno.test("memoryPressureLogFields - key=value fields for the AGENT_KILLED line 
   assertEquals(
     memoryPressureLogFields({ level: "unknown" }),
     "memory_pressure=unknown",
+  );
+});
+
+Deno.test("probeHostMemoryPressureFromSystem - Linux classifies Deno.systemMemoryInfo with the bytes (Issue #5250)", async () => {
+  const GIB = 1024 ** 3;
+  assertEquals(
+    await probeHostMemoryPressureFromSystem({
+      os: "linux",
+      systemMemoryInfo: () => ({ total: 16 * GIB, available: 8 * GIB }),
+    }),
+    { level: "ok", totalBytes: 16 * GIB, availableBytes: 8 * GIB },
+  );
+  assertEquals(
+    await probeHostMemoryPressureFromSystem({
+      os: "linux",
+      systemMemoryInfo: () => ({ total: 16 * GIB, available: GIB / 2 }),
+    }),
+    { level: "high", totalBytes: 16 * GIB, availableBytes: GIB / 2 },
+  );
+});
+
+Deno.test("probeHostMemoryPressureFromSystem - a refused read throws its cause rather than reporting unknown (Issue #5250)", async () => {
+  const error = await assertRejects(
+    () =>
+      probeHostMemoryPressureFromSystem({
+        os: "linux",
+        systemMemoryInfo: () => {
+          throw new Deno.errors.PermissionDenied(
+            'Requires sys access to "systemMemoryInfo"',
+          );
+        },
+      }),
+    Deno.errors.PermissionDenied,
+  );
+  assertEquals(
+    error.message,
+    'Requires sys access to "systemMemoryInfo"',
+  );
+});
+
+Deno.test("probeHostMemoryPressureFromSystem - an implausible reading is refused, and other platforms keep their own probe (Issue #5250)", async () => {
+  await assertRejects(
+    () =>
+      probeHostMemoryPressureFromSystem({
+        os: "linux",
+        systemMemoryInfo: () => ({ total: 0, available: 0 }),
+      }),
+    Error,
+    "systemMemoryInfo returned total=0",
+  );
+  // A non-Linux, non-macOS host has no signal: "unknown", no byte counts.
+  assertEquals(
+    await probeHostMemoryPressureFromSystem({ os: "windows" }),
+    { level: "unknown" },
   );
 });

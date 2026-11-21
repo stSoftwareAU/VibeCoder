@@ -21,10 +21,12 @@
  * The issue lands in a public repository, and the killed run may have been
  * working a private one. So the issue carries only the facts the worker and
  * launcher wrote themselves (host, container, run, signature, trigger, reason,
- * times), a last step logged drawn from a fixed label list, and four guest
+ * times), a last step logged drawn from a fixed label list, four guest
  * figures derived from the evidence (the silent time, the probe state, the
- * guest memory and the guest pressure; see `hard_kill_guest_facts.ts`). The
- * derived figures are fixed words and digits only, never guest text. The log,
+ * guest memory and the guest pressure) and two host figures read on the host
+ * at reap time (the host disk and the host memory; Issue #5250). All six are
+ * worded in `hard_kill_guest_facts.ts`. The derived figures are fixed words
+ * and digits only, never guest or host command text. The log,
  * transcript, boot and guest text, the last log line, the last tool call and
  * the source repository stay in the archived file on the host (Issue #4315
  * review; SECURITY.md incident response). Every value that is posted is still
@@ -46,6 +48,8 @@ import {
   hardKillGuestMemory,
   hardKillGuestPressure,
   hardKillGuestProbe,
+  hardKillHostDisk,
+  hardKillHostMemory,
   hardKillSilentFor,
 } from "./hard_kill_guest_facts.ts";
 import {
@@ -369,6 +373,24 @@ export function parseHardKillEvidence(text: string): HardKillEvidence {
   };
   const evidence = obj(raw, "evidence");
   const guest = obj(evidence, "guest");
+  // Optional: a file written by the launcher before host facts were captured
+  // lacks it, and is read on the next start (persisted data).
+  const rawHostState = evidence["hostState"];
+  let hostState: { disk: string; memory: string };
+  if (rawHostState === undefined) {
+    const cause =
+      "unavailable: not recorded (evidence written before host facts were captured)";
+    hostState = { disk: cause, memory: cause };
+  } else if (isRecord(rawHostState)) {
+    hostState = {
+      disk: str(rawHostState, "disk"),
+      memory: str(rawHostState, "memory"),
+    };
+  } else {
+    throw new Error(
+      'hard-kill evidence field "hostState" is not an object',
+    );
+  }
   const capturedAt = str(raw, "capturedAt");
   if (
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(capturedAt) ||
@@ -435,6 +457,7 @@ export function parseHardKillEvidence(text: string): HardKillEvidence {
         pressureMemory: str(guest, "pressureMemory"),
         pressureIo: str(guest, "pressureIo"),
       },
+      hostState,
     },
   };
 }
@@ -554,17 +577,21 @@ export function hardKillFactLines(
     `**Guest probe:** \`${hardKillGuestProbe(evidence)}\``,
     `**Guest memory:** ${hardKillGuestMemory(evidence)}`,
     `**Guest pressure:** ${hardKillGuestPressure(evidence)}`,
+    `**Host disk:** ${hardKillHostDisk(evidence)}`,
+    `**Host memory:** ${hardKillHostMemory(evidence)}`,
   ];
 }
 
 /**
- * Issue body: marker first, then the facts the worker and launcher wrote and
- * the guest figures derived from the evidence. No evidence text, last log
+ * Issue body: marker first, then the facts the worker and launcher wrote, the
+ * guest figures derived from the evidence and the host disk and host memory
+ * figures read on the host (Issue #5250). No evidence text, last log
  * line, tool call or source repository: the issue is public and the run may
  * have been working a private repository (see the module comment). The last
  * step logged is a fixed label from {@link STEP_PATTERNS} or a setup step, never log text. The
- * guest figures are fixed words and digits from `hard_kill_guest_facts.ts`,
- * never guest text. The evidence stays in the archived file on the host.
+ * guest and host figures are fixed words and digits from
+ * `hard_kill_guest_facts.ts`, never guest text or host command output. The
+ * evidence stays in the archived file on the host.
  */
 export function formatHardKillBody(
   evidence: HardKillEvidence,
@@ -612,7 +639,12 @@ export function hardKillTerminalRun(
   };
 }
 
-/** The follow-up line one hard kill adds to the open issue. */
+/**
+ * The follow-up line one hard kill adds to the open issue: when and where, the
+ * container and run, the last step logged, the silent time, the guest probe
+ * and the host's own disk and memory (read on the host, so present even when
+ * the guest did not answer).
+ */
 function formatHardKillOccurrenceLine(
   evidence: HardKillEvidence,
 ): string {
@@ -622,7 +654,9 @@ function formatHardKillOccurrenceLine(
     inlineText(evidence.runId, 200)
   }\`, last step logged \`${hardKillLastStep(evidence)}\`, silent ${
     hardKillSilentFor(evidence)
-  }, guest probe \`${hardKillGuestProbe(evidence)}\``;
+  }, guest probe \`${hardKillGuestProbe(evidence)}\`, host disk ${
+    hardKillHostDisk(evidence)
+  }, host memory ${hardKillHostMemory(evidence)}`;
 }
 
 /** The first line of an error, redacted, for the decision's cause. */
