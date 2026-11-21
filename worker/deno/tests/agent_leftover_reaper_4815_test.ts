@@ -129,7 +129,8 @@ function fakeReaper(options: FakeOptions) {
 }
 
 Deno.test({
-  name: "reaper - terminates tagged processes, spares self, names them in the warning",
+  name:
+    "reaper - terminates tagged processes, spares self, names them in the warning",
   permissions: { read: true, env: true },
   async fn() {
     const fake = fakeReaper({
@@ -188,7 +189,10 @@ Deno.test({
     assertEquals(result.collected, [201]);
     assertEquals(result.survivors, []);
     assertStringIncludes(firstOf(recorded.warn), "201(stubborn)");
-    assert(!firstOf(recorded.warn).includes("still running"), firstOf(recorded.warn));
+    assert(
+      !firstOf(recorded.warn).includes("still running"),
+      firstOf(recorded.warn),
+    );
   },
 });
 
@@ -212,7 +216,10 @@ Deno.test({
 
     assertEquals(result.survivors, [301]);
     assertStringIncludes(firstOf(recorded.warn), "; still running: 301");
-    assertEquals(firstOf(recorded.security).details, "collected=301 survivors=301");
+    assertEquals(
+      firstOf(recorded.security).details,
+      "collected=301 survivors=301",
+    );
   },
 });
 
@@ -236,7 +243,10 @@ Deno.test({
     assertEquals(result.error, "pgrep failed with status 2");
     assertEquals(recorded.error.length, 1);
     assertStringIncludes(firstOf(recorded.error), "pgrep failed with status 2");
-    assertStringIncludes(firstOf(recorded.error), "any leftover is still running");
+    assertStringIncludes(
+      firstOf(recorded.error),
+      "any leftover is still running",
+    );
     assertEquals(recorded.security.length, 1);
     assertEquals(firstOf(recorded.security).event, "AGENT_LEFTOVERS_UNCHECKED");
     assertStringIncludes(
@@ -376,6 +386,17 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * A `sleep` duration unique to this run, such as `300.482913`. GNU sleep
+ * takes the fraction. The Linux tests match and kill by this exact string,
+ * so they never touch another lane's `sleep` on a shared host.
+ */
+function uniqueSleepDuration(base: number): string {
+  const digits = Math.floor(Math.random() * 1_000_000).toString()
+    .padStart(6, "0");
+  return `${base}.${digits}`;
+}
+
 Deno.test({
   name:
     "reaper - terminates a detached tagged job and spares an untagged one (Linux)",
@@ -383,9 +404,13 @@ Deno.test({
   ignore: Deno.build.os !== "linux",
   async fn() {
     const tag = newAgentSpawnTag();
+    const taggedDuration = uniqueSleepDuration(300);
+    const controlDuration = uniqueSleepDuration(301);
+    const taggedPattern = `sleep ${taggedDuration}`;
+    const controlPattern = `sleep ${controlDuration}`;
     // A control with a different tag: it must survive the reap.
     const control = new Deno.Command("sleep", {
-      args: ["301"],
+      args: [controlDuration],
       stdin: "null",
       stdout: "null",
       stderr: "null",
@@ -394,7 +419,10 @@ Deno.test({
     try {
       // A detached job, as an agent's `( … & )` leaves it: re-parented at once.
       const launch = await new Deno.Command("sh", {
-        args: ["-c", "(sleep 300 >/dev/null 2>&1 &)"],
+        args: [
+          "-c",
+          `(${taggedPattern} >/dev/null 2>&1 &)`,
+        ],
         stdin: "null",
         stdout: "null",
         stderr: "null",
@@ -402,23 +430,26 @@ Deno.test({
       }).output();
       assert(launch.success, "the detached job must launch");
       for (let i = 0; i < 50; i++) {
-        if ((await pgrepPids("sleep 300")).length > 0) break;
+        if ((await pgrepPids(taggedPattern)).length > 0) break;
         await delay(100);
       }
-      assert((await pgrepPids("sleep 300")).length > 0, "the job never ran");
+      assert(
+        (await pgrepPids(taggedPattern)).length > 0,
+        "the job never ran",
+      );
 
       const result = await reapAgentLeftovers({ tag, maxWaitSeconds: 2 });
 
       assertEquals(result.supported, true);
       assertEquals(result.error, undefined);
       assert(result.collected.length >= 1, "the tagged job must be collected");
-      assertEquals(await pgrepPids("sleep 300"), []);
+      assertEquals(await pgrepPids(taggedPattern), []);
       assert(
-        (await pgrepPids("sleep 301")).length > 0,
+        (await pgrepPids(controlPattern)).length > 0,
         "the untagged control must still run",
       );
     } finally {
-      await killMatching("sleep 300");
+      await killMatching(taggedPattern);
       try {
         control.kill("SIGKILL");
       } catch {
@@ -435,9 +466,11 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os !== "linux",
   async fn() {
+    const duration = uniqueSleepDuration(303);
+    const pattern = `sleep ${duration}`;
     const body = [
       "#!/usr/bin/env bash",
-      "(sleep 303 >/dev/null 2>&1 &)",
+      `(sleep ${duration} >/dev/null 2>&1 &)`,
       `printf '%s\\n' '${JSON.stringify({ type: "result", result: "done" })}'`,
       "exit 0",
       "",
@@ -462,7 +495,7 @@ Deno.test({
       );
 
       assert(result.ok, "the stub run must succeed");
-      assertEquals(await pgrepPids("sleep 303"), []);
+      assertEquals(await pgrepPids(pattern), []);
       const warning = recorded.warn.find((m) => m.includes("(sleep)"));
       assert(
         warning,
@@ -472,7 +505,7 @@ Deno.test({
       );
       assertStringIncludes(warning, "Issue #4815");
     } finally {
-      await killMatching("sleep 303");
+      await killMatching(pattern);
     }
   },
 });

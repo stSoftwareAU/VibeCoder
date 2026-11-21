@@ -40,7 +40,7 @@ const POST_KILL_SETTLE_MS = 500;
 const FIND_TAGGED_SCRIPT = [
   "entry=$1",
   'command -v pgrep >/dev/null 2>&1 || { echo "pgrep is not installed" >&2; exit 1; }',
-  'uid=$(id -u) || exit 1',
+  "uid=$(id -u) || exit 1",
   'pids=$(pgrep -U "$uid"); rc=$?',
   '[ "$rc" -le 1 ] || { echo "pgrep failed with status $rc" >&2; exit 1; }',
   'for p in $pids; do f=/proc/$p/environ; [ -r "$f" ] || continue; if grep -q -z -x -F -e "$entry" "$f" 2>/dev/null; then echo "$p"; fi; done',
@@ -268,7 +268,12 @@ export async function reapAgentLeftovers(
         `${cause}; signalled: ${done}; any other leftover is still ` +
         "running (Issue #4815)",
     );
-    return { supported: true, collected: signalled, survivors: [], error: cause };
+    return {
+      supported: true,
+      collected: signalled,
+      survivors: [],
+      error: cause,
+    };
   }
 
   const described = pids
