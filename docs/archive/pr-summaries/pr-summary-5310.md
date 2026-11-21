@@ -20,7 +20,7 @@ judged:
   holding a credential keyword, followed by at most a closing quote or the
   `=`/`:` the value swallowed. A single-quoted inner value holding a space
   (`DEPLOY_TOKEN='a b'`) is also covered: the label may sit just before one of
-  the value's last two `'`. The label's own assignment must run past the value
+  the value's last three `'`. The label's own assignment must run past the value
   and be masked. The walk then resumes at the inner label, and that label's own
   match masks its value. This covers hyphenated, dotted and quoted inner labels
   (`DEPLOY-TOKEN`, `app.DEPLOY_TOKEN`, `"DEPLOY_TOKEN"`).
@@ -58,14 +58,23 @@ judged:
   match decides, so `DEPLOY_TOKEN = "<300 characters>"` after a lead-in label is
   masked with its label kept. The search for the closing quote is capped, so
   each candidate's extra work stays bounded.
-- `redactAssignments` walks its own output again until a walk changes nothing,
-  at most four walks (`MAX_ASSIGNMENT_PASSES`). A mask can change how the next
-  walk reads the text around it: in `credentials: 'DEPLOY_TOKEN='<value>` the
-  quoted run `'DEPLOY_TOKEN='` ends in the inner separator, the inner value is
-  masked, and `'DEPLOY_TOKEN=***REDACTED***` then reads as one outer value. The
-  first call now gives the output a second call would
-  (`credentials: ***REDACTED***`), so the rule is idempotent by construction
-  rather than case by case.
+- The walk decides every shape where a mask would change how the next walk reads
+  the text around it, so its output is final:
+  - A closed quoted outer value that the text runs straight on from
+    (`credentials: 'DEPLOY_TOKEN='<value>`) keeps its mask (`quotedRunOn`);
+    masking only the inner value would join the run and the placeholder into one
+    bare outer value. This holds however often the shape repeats.
+  - Text before the inner label that opens with `-` is not label text, so a CLI
+    flag (`credentials: --token = <value>`) keeps the outer mask. Given up, it
+    left `--token = ***REDACTED***` for the later `secret-cli-flag` rule to
+    rewrite, and the next call masked `--token`.
+  - `trailingLabel` tries the label before one of the value's last three `'`,
+    not two, so a second pass over `token'='***REDACTED***'` finds the label the
+    first pass found in `token'='d9 e8'`.
+- `redactAssignments` then walks its own output again, at most four walks in all
+  (`MAX_ASSIGNMENT_PASSES`), until a walk changes nothing. That is a bounded
+  backstop, not the guarantee: with it capped at one walk, the exhaustive check
+  below still finds no input whose output changes on a second call.
 
 The rule interface gained a whole-text form: a rule supplies either a `pattern`
 and `replace`, or an `apply` and `detect` pair. The `secret-assignment` rule
@@ -98,7 +107,7 @@ Closes #5310.
 ### Essential Design Decisions
 
 - Only the label that ends the value is tried, or the one just before one of the
-  value's last two `'`. An inner assignment can only start there and run past
+  value's last three `'`. An inner assignment can only start there and run past
   the value, because the value's run stops where the inner separator's
   whitespace or quote begins. A single-quoted inner value holding a space is the
   one shape where the value takes the inner `='a` with it. The label is found by
@@ -177,15 +186,22 @@ flowchart LR
     base masked except such a label.
   - The corpus holds none of the review's text-before-label shapes, so the new
     tests carry that evidence (see Test Plan).
-- Exhaustive idempotence and leak check: every input built from up to two label
-  segments (an optional `'` or `"`, an optional `x,` prefix, one of
-  `credentials`, `token`, `app.DEPLOY-TOKEN`, one of `=`, `:`, `'=`, `:\n`, an
-  optional quote), then one of four values (`hunter2`, `d9 e8`, the placeholder,
-  a 40-character token) and one of five tails — 937,440 inputs. `redactSecrets`
-  changed on a second pass, or `containsSecret` was true on its output, for
-  5,364 inputs on the previous head (`3338d345`), none at this head and none on
-  base. No input published a value that base masked; this head showed a value in
-  348,894 inputs and base in 466,830.
+- Exhaustive idempotence and leak check, on this head's library:
+  - Every input built from up to two label segments (an optional `'` or `"`; an
+    optional `x,` or `--` prefix; one of `credentials`, `token`,
+    `app.DEPLOY-TOKEN`, `--api-token`; one of `=`, `:`, `'=`, `:\n`, `=`; an
+    optional quote), then one of four values (`hunter2`, `d9 e8`, the
+    placeholder, a 40-character token) and one of five tails: 5,842,800 inputs.
+  - Plus 21,504 repeated-unit inputs: four lead-ins, 56 units (an optional `'`,
+    one of four labels including `--token`, one of seven separators) repeated 1
+    to 8 times, then a value and a tail.
+  - On none did a second `redactSecrets` change the output or `containsSecret`
+    report a secret in it, and none published a value that base masked. That
+    holds with `MAX_ASSIGNMENT_PASSES` set to 1, so the walk itself decides
+    every one; before `trailingLabel` tried a third quote, the one-walk run
+    found 417 (all `<label>'='d9 e8'`).
+  - On an earlier, two-label version of the grammar (937,440 inputs), the
+    previous head `3338d345` changed on a second pass for 5,364 inputs.
 - Timing, on the verifier's fixture (`credentials:` + `TOKEN`×N + `!`): 100, 200
   and 400 KB took 67, 133 and 267 ms at this head. The previous head took 1,070,
   4,127 and 16,463 ms. The verifier measured 68, 136 and 270 ms on base.
@@ -197,7 +213,7 @@ flowchart LR
 
 ## Test Plan
 
-- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 108
+- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 128
   tests**, all through `redactSecrets` and `containsSecret`:
   - **Leak cases** must mask the inner value and keep both labels:
     - `DEPLOY_TOKEN = <40-char value>` on the same line and the next line;
@@ -238,10 +254,21 @@ flowchart LR
     documented base behaviour.
   - **Quoted outer value ending in a separator:**
     `credentials: 'DEPLOY_TOKEN='<token>`,
-    `export CREDENTIALS='password='hunter2`, `DB_SECRET_ARGS='--token='<token>`,
-    `secrets: 'Password:'hunter2` and `secrets: TOKEN'='d9 e8'`, each masked
-    whole, with an unchanged second pass, `containsSecret` false on the output
-    and no value published.
+    `export CREDENTIALS='password='hunter2`, `DB_SECRET_ARGS='--token='<token>`
+    and `secrets: 'Password:'hunter2` keep the outer mask with its quotes
+    (`credentials: '***REDACTED***'***REDACTED***`); `secrets: TOKEN'='d9 e8'`
+    keeps its label (`secrets: TOKEN'='***REDACTED***'`). Each has its exact
+    output, an unchanged second pass, `containsSecret` false on the output and
+    no value published.
+  - **Repeats past the backstop cap:** 4, 5 and 8 repeats of `'DEPLOY_TOKEN=`,
+    `'T_TOKEN=`, `'T_TOKEN:`, `T_TOKEN='` and `T_TOKEN:'` before a token, each
+    with the same four checks.
+  - **CLI-flag outer value:** `credentials: --token = <token>`,
+    `Rotate these credentials: --api-token = <token>`,
+    `Use this password: --password : <token>`,
+    `The secret: --client-secret\n  = <token>` and a double-quoted value, each
+    masked as `credentials: ***REDACTED*** = ***REDACTED***` and so on, with the
+    same four checks.
   - **Idempotence:** for each of the 26 leak inputs,
     `redactSecrets(redactSecrets(x)) === redactSecrets(x)` and
     `containsSecret(redactSecrets(x)) === false`.
@@ -265,25 +292,28 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
-- **Red runs, observed** — each runs this head's 108-test file against an older
+- **Red runs, observed** — each runs this head's 128-test file against an older
   `worker/deno/lib/secret_redaction.ts`:
-  - From `origin/main` (`5dde2633c`): `64 passed | 44 failed`.
-  - From the first fix (`2396849b7`): `63 passed | 45 failed`, in 4m27s; that
+  - From `origin/main` (`5dde2633c`): `70 passed | 58 failed`.
+  - From the first fix (`2396849b7`): `69 passed | 59 failed`, in 5m7s; that
     library is quadratic on the long `TOKEN` runs.
   - From the head before the first review fix (`d6c9a377`):
-    `69 passed | 39 failed`.
-  - From `bc9dbbc6`, before the run-on fix: `85 passed | 23 failed`. That
+    `75 passed | 53 failed`.
+  - From `bc9dbbc6`, before the run-on fix: `91 passed | 37 failed`. That
     library turned `credentials: DEPLOY_TOKEN='a b'.` into
     `credentials: DEPLOY_TOKEN='***REDACTED***'.`, which a second pass turned
     into `credentials: ***REDACTED***`.
-  - From `75e171d4`, before the span-edge fix: `89 passed | 19 failed`. Swept by
+  - From `75e171d4`, before the span-edge fix: `95 passed | 33 failed`. Swept by
     hand, that library was not idempotent for 241-253 spaces before or after `=`
     and 243-255 newlines after `api_key:` (39 inputs); this head and base are
     idempotent on all 903.
-  - From `3338d345`, before the long-quote and repeated-walk fixes:
-    `93 passed | 15 failed` — the ten long double-quoted cases that are past its
-    window and the five quoted-outer-value cases.
-  - At head: `108 passed | 0 failed`.
+  - From `3338d345`, before the long-quote fix: `99 passed | 29 failed`.
+  - From `4d002e04`, before the walk-level decisions: `109 passed | 19 failed`.
+    The five flag-shaped inputs and the nine repeats of a `'`-led unit failed
+    because a second call changed the output. The five quoted-outer inputs
+    failed on exact output only: that library's walk loop already reached a
+    final `credentials: ***REDACTED***`, where this head keeps the quotes.
+  - At head: `128 passed | 0 failed`.
   - On an earlier, 54-test version of the file, this PR's library with
     `detectsSecretAssignment` restored to the base loop failed only the two
     base64 cases (`52 passed | 2 failed`); that mutation was not re-run on the
@@ -291,7 +321,7 @@ flowchart LR
 - **Existing tests:** none edited. In the new file, the control titled for a
   64-character bound is renamed for what it checks, a 66-character label within
   the 128-character bound. Every test file that mentions `redactSecrets`,
-  `containsSecret` or `secret_redaction` passes at head: 54 files, 1,275 passed,
+  `containsSecret` or `secret_redaction` passes at head: 54 files, 1,295 passed,
   0 failed. This run used a scratch import map in place of the `jsr:@std/*`
   imports, since jsr.io was unreachable from the host; CI runs the suites as
   written. That includes `secret_redaction_test.ts`, its `_markdown_1727_`,
@@ -336,8 +366,8 @@ flowchart LR
   - The inner label is longer than 128 characters. The `= x` hostile test pins
     `credentials: <500 KB of TOKEN> = x` as `credentials: ***REDACTED*** = x`.
   - The inner label sits neither at the end of the outer value nor just before
-    one of its last two `'`. That happens when the first word of a single-quoted
-    inner value itself holds two `'`:
+    one of its last three `'`. That happens when the first word of a
+    single-quoted inner value itself holds two `'`:
     `credentials: DEPLOY_TOKEN='a'b'c <value>'` publishes `<value>'`, as on base
     (run at head). The earlier head tried any label inside the value. No test
     covers this shape.

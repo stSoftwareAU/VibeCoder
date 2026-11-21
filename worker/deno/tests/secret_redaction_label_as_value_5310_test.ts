@@ -418,30 +418,81 @@ Deno.test("#5310 control: a double-quoted inner value over 4,096 characters keep
 });
 
 // A quoted outer value that ends in the inner label's separator, with the
-// inner value straight after it (PR #5322 review round 4). Masking the inner
-// value joins the quoted run and the placeholder into one outer value, which
-// a second walk masks whole; `redactAssignments` walks until nothing changes,
-// so the first call already gives that output.
+// inner value straight after it (PR #5322 review rounds 4 and 5). Masking only
+// the inner value would join the quoted run and the placeholder into one outer
+// value, which the next call masks whole, so the walk keeps the outer mask.
+// `secrets: TOKEN'='d9 e8'` keeps its label: a second pass finds it before the
+// third-last quote of `TOKEN'='***REDACTED***'`.
+function assertFinal(
+  input: string,
+  expected: string,
+  values: readonly string[],
+) {
+  const once = redactSecrets(input);
+  assertEquals(once, expected);
+  assertEquals(redactSecrets(once), once);
+  assertEquals(containsSecret(once), false);
+  assertEquals(containsSecret(input), true);
+  for (const value of values) {
+    assertEquals(once.includes(value), false, `${value} published: ${once}`);
+  }
+}
+
 for (
   const [input, expected, values] of [
-    [`credentials: 'DEPLOY_TOKEN='${V}`, `credentials: ${R}`, [V]],
-    ["export CREDENTIALS='password='hunter2", `export CREDENTIALS=${R}`, [
+    [`credentials: 'DEPLOY_TOKEN='${V}`, `credentials: '${R}'${R}`, [V]],
+    ["export CREDENTIALS='password='hunter2", `export CREDENTIALS='${R}'${R}`, [
       "hunter2",
     ]],
-    [`DB_SECRET_ARGS='--token='${V}`, `DB_SECRET_ARGS=${R}`, [V]],
-    ["secrets: 'Password:'hunter2", `secrets: ${R}`, ["hunter2"]],
-    ["secrets: TOKEN'='d9 e8'", `secrets: ${R}`, ["d9", "e8"]],
+    [`DB_SECRET_ARGS='--token='${V}`, `DB_SECRET_ARGS='${R}'${R}`, [V]],
+    ["secrets: 'Password:'hunter2", `secrets: '${R}'${R}`, ["hunter2"]],
+    ["secrets: TOKEN'='d9 e8'", `secrets: TOKEN'='${R}'`, ["d9", "e8"]],
   ] as const
 ) {
   Deno.test(`#5310 idempotent on a quoted outer value ending in a separator: ${JSON.stringify(input.slice(0, 32))}`, () => {
-    const once = redactSecrets(input);
-    assertEquals(once, expected);
-    assertEquals(redactSecrets(once), once);
-    assertEquals(containsSecret(once), false);
-    assertEquals(containsSecret(input), true);
-    for (const value of values) {
-      assertEquals(once.includes(value), false, `${value} published: ${once}`);
-    }
+    assertFinal(input, expected, values);
+  });
+}
+
+// The walk decides the shape, not the bounded re-walk in redactAssignments, so
+// repeating it past that cap changes nothing (PR #5322 review round 5).
+for (
+  const unit of [
+    "'DEPLOY_TOKEN=",
+    "'T_TOKEN=",
+    "'T_TOKEN:",
+    "T_TOKEN='",
+    "T_TOKEN:'",
+  ]
+) {
+  for (const repeats of [4, 5, 8]) {
+    Deno.test(`#5310 idempotent on ${repeats} repeats of ${JSON.stringify(unit)}`, () => {
+      const expected = unit.startsWith("'")
+        ? `credentials: '${R}'${R.repeat(repeats - 1)}`
+        : `credentials: ${R}`;
+      assertFinal(`credentials: ${unit.repeat(repeats)}${V}`, expected, [V]);
+    });
+  }
+}
+
+// A CLI flag before the inner separator is text before the label, not the
+// label, so the outer value keeps its mask (PR #5322 review round 5). Given up,
+// it left `--token = ***REDACTED***` for the `secret-cli-flag` rule, which read
+// `=` as the flag's value, and the next call masked `--token`.
+for (
+  const [input, expected] of [
+    [`credentials: --token = ${V}`, `credentials: ${R} = ${R}`],
+    [
+      `Rotate these credentials: --api-token = ${V}`,
+      `Rotate these credentials: ${R} = ${R}`,
+    ],
+    [`Use this password: --password : ${V}`, `Use this password: ${R} : ${R}`],
+    [`The secret: --client-secret\n  = ${V}`, `The secret: ${R}\n  = ${R}`],
+    [`credentials: --token = "${V}"`, `credentials: ${R} = "${R}"`],
+  ] as const
+) {
+  Deno.test(`#5310 idempotent on a flag-shaped outer value: ${JSON.stringify(input.slice(0, 36))}`, () => {
+    assertFinal(input, expected, [V]);
   });
 }
 

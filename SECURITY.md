@@ -550,7 +550,7 @@ and, apart from that check, **only when the separator crossed a line break**:
   `DEPLOY_TOKEN` and publish `<value>`.
   When a value ends in a credential label (a key-shaped run of at most 128
   characters, allowing a closing quote or the swallowed `=`/`:`, or just before
-  one of the value's last two `'`, as in `DEPLOY_TOKEN='a b'`) whose own
+  one of the value's last three `'`, as in `DEPLOY_TOKEN='a b'`) whose own
   assignment runs past the value and is masked, the inner value is masked. The
   outer value is given up unmasked only when it is nothing but that label (an
   optional quote, then label characters); when other text precedes the label,

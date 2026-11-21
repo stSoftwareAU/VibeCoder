@@ -898,7 +898,7 @@ function walkAssignments(text: string): AssignmentVerdict[] {
     const valueStart = outer.end - outer.value.length;
     const inner = innerAssignment(text, valueStart, outer.end);
     if (
-      inner && !inner.keepsOuter &&
+      inner && !inner.keepsOuter && !quotedRunOn(text, outer) &&
       isLabelOnly(text, valueStart, inner.labelStart)
     ) {
       from = inner.resume;
@@ -930,8 +930,28 @@ function isLabelOnly(
   return LABEL_PREFIX.test(text.slice(valueStart, labelStart));
 }
 
-/** What may precede an inner label for the outer value to be just the label. */
-const LABEL_PREFIX = /^["']?[A-Za-z0-9_.-]*$/;
+/**
+ * What may precede an inner label for the outer value to be just the label. A
+ * leading `-` is not label text: `credentials: --token = <value>` is a CLI flag,
+ * and given up unmasked it would leave `--token = ***REDACTED***` for the
+ * `secret-cli-flag` rule to rewrite, so a second call would mask `--token`
+ * (PR #5322 review round 5).
+ */
+const LABEL_PREFIX = /^["']?(?!-)[A-Za-z0-9_.-]*$/;
+
+/**
+ * Whether the outer value is a closed quoted run that the text runs straight
+ * on from (Issue #5310, PR #5322 review round 5): `credentials:
+ * 'DEPLOY_TOKEN='<value>`. Masking the inner value would join the run and the
+ * placeholder into one bare outer value, which the next call masks whole, so
+ * the outer value keeps its mask now. The quoted run is matched with its
+ * quotes, so the decision needs no further walk however often the shape
+ * repeats.
+ */
+function quotedRunOn(text: string, outer: AssignmentVerdict): boolean {
+  return QUOTED_VALUE.test(outer.value) && outer.end < text.length &&
+    !/\s/.test(text.charAt(outer.end));
+}
 
 /**
  * `verdict` cut to the part past `floor`, the end of an outer mask it starts
@@ -995,8 +1015,11 @@ const MASKED_SEPARATOR = /^["']?\s*[=:]\s*["']?\*\*\*REDACTED\*\*\*/;
  * the value's own run stops where the inner separator's whitespace or quote
  * begins. The one exception is a single-quoted inner value holding a space,
  * `DEPLOY_TOKEN='a b'`: the bare value takes `'a` with it, so the label is
- * also looked for just before one of the value's last two `'`, within
- * {@link INNER_ASSIGNMENT_SPAN}. A keyword elsewhere in the value is not a
+ * also looked for just before one of the value's last three `'`, within
+ * {@link INNER_ASSIGNMENT_SPAN}. Three, not two: on a second pass the label of
+ * `token'='d9 e8'` sits before the third-last quote of
+ * `token'='***REDACTED***'`, and that pass must find the label the first found
+ * (PR #5322 review round 5). A keyword elsewhere in the value is not a
  * label, and a run longer than {@link INNER_LABEL_MAX} is not looked at.
  * Constant work per candidate.
  */
@@ -1011,10 +1034,11 @@ function trailingLabel(
   if (atEnd) return { ...atEnd, viaQuote: false };
   const from = Math.max(start, end - INNER_ASSIGNMENT_SPAN);
   const tail = text.slice(from, end);
-  // The last quote, or the one before it when the value closed its own quote
+  // The last quote, or one of the two before it when the value closed its own
+  // quote or its label carries one (`token'='***REDACTED***'`).
   // (`DEPLOY_TOKEN='***REDACTED***'`, a second pass over the first's output).
   let quote = tail.lastIndexOf("'");
-  for (let tries = 0; tries < 2 && quote > 0; tries++) {
+  for (let tries = 0; tries < 3 && quote > 0; tries++) {
     const label = labelEndingAt(text, start, from + quote + 1);
     if (label) return { ...label, viaQuote: true };
     quote = tail.lastIndexOf("'", quote - 1);
@@ -1149,13 +1173,18 @@ interface InnerLabel {
 }
 
 /**
- * Mask every `secret-assignment` value {@link walkAssignments} judges masked,
- * then walk the output again until a walk changes nothing (Issue #5310), so
- * `redactSecrets` is idempotent on this rule and `containsSecret` is false on
- * its output. A mask can change how the next walk reads the text around it —
- * `credentials: 'DEPLOY_TOKEN='<value>` masks the inner value, after which
- * `'DEPLOY_TOKEN=***REDACTED***` reads as one outer value — so the first
- * call gives the output a second call would.
+ * Mask every `secret-assignment` value {@link walkAssignments} judges masked
+ * (Issue #5310). The walk itself decides each shape so that its output is
+ * final: a second walk over it masks nothing, `redactSecrets` is idempotent on
+ * this rule and `containsSecret` is false on its output. The shapes where a
+ * mask changes how the next walk reads the text around it are decided in the
+ * walk — {@link quotedRunOn}, `keepsOuter`, the leading-`-` rule in
+ * {@link LABEL_PREFIX} and the placeholder reach of {@link innerAssignment}.
+ *
+ * The output is then walked again, up to {@link MAX_ASSIGNMENT_PASSES} times
+ * in all, until a walk changes nothing. That is a bounded backstop for a shape
+ * the walk does not yet decide, not the guarantee: a backstop can be outrun by
+ * repeating such a shape more often than the cap.
  */
 function redactAssignments(text: string): string {
   let out = text;
@@ -1168,9 +1197,9 @@ function redactAssignments(text: string): string {
 }
 
 /**
- * How many walks {@link redactAssignments} runs at most (Issue #5310). Text
- * with nothing to mask costs one walk and text with a secret usually two; the
- * cap only bounds the work on hostile input.
+ * How many walks {@link redactAssignments} runs at most (Issue #5310): the
+ * first, and up to three backstop walks. Text with nothing to mask costs one
+ * walk and text with a secret two; the cap bounds the work on hostile input.
  */
 const MAX_ASSIGNMENT_PASSES = 4;
 
