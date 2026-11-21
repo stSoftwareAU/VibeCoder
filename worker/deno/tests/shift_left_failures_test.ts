@@ -257,14 +257,16 @@ function fakeGh(opts: {
   missingLogs?: number[];
   /** Each run also fails a second locally runnable job (`cargo fmt`). */
   twoTools?: boolean;
+  /** Triggering actor of each run, index-aligned with PRs 7, 8, 9. */
+  pushers?: string[];
 }): FakeGh {
   const calls: string[][] = [];
-  const runs = [7, 8, 9].map((pr) => ({
+  const runs = [7, 8, 9].map((pr, i) => ({
     id: pr * 10,
     created_at: new Date(NOW - DAY).toISOString(),
     head_sha: String(pr).repeat(40).slice(0, 40),
     head_branch: `issue-${pr}`,
-    triggering_actor: { login: "fleet-bot" },
+    triggering_actor: { login: opts.pushers?.[i] ?? "fleet-bot" },
     pull_requests: opts.unlinkedRuns ? [] : [{ number: pr }],
   }));
   const gh = (args: string[]): Promise<string> => {
@@ -385,6 +387,73 @@ Deno.test("scan: a clippy failure on three fleet PRs that the local gate runs fi
     ).length,
     0,
   );
+});
+
+const issueWrites = (fake: FakeGh) =>
+  fake.calls.filter((c) =>
+    c[0] === "issue" && (c[1] === "create" || c[1] === "comment")
+  );
+
+Deno.test("scan: failures whose heads the owner pushed file nothing (Issue #5320)", async () => {
+  const fake = fakeGh({
+    pushers: ["owner-human", "owner-human", "owner-human"],
+  });
+  await scan(fake);
+  assertEquals(issueWrites(fake).length, 0);
+});
+
+Deno.test("scan: one owner-pushed head leaves two fleet-pushed PRs below the threshold (Issue #5320)", async () => {
+  const fake = fakeGh({ pushers: ["fleet-bot", "fleet-bot", "owner-human"] });
+  await scan(fake);
+  assertEquals(
+    fake.calls.filter((c) => c[0] === "issue" && c[1] === "create").length,
+    0,
+  );
+});
+
+Deno.test("scan: heads the babysitter pushed still count (Issue #5320)", async () => {
+  const fake = fakeGh({
+    pushers: ["babysitter[bot]", "babysitter[bot]", "babysitter[bot]"],
+  });
+  await scan(fake);
+  const creates = fake.calls.filter((c) =>
+    c[0] === "issue" && c[1] === "create"
+  );
+  assertEquals(creates.length, 1);
+  assertEquals(
+    creates[0]![creates[0]!.indexOf("--repo") + 1],
+    "owner/VibeCoder",
+  );
+});
+
+Deno.test("scan: pusher matching is case-insensitive (Issue #5320)", async () => {
+  const fake = fakeGh({ pushers: ["Fleet-Bot", "FLEET-BOT", "fleet-bot"] });
+  await scan(fake);
+  assertEquals(
+    fake.calls.filter((c) => c[0] === "issue" && c[1] === "create").length,
+    1,
+  );
+});
+
+Deno.test("scan: owner-pushed observations already in the ledger do not count (Issue #5320)", async () => {
+  const ledger = emptyShiftLeftLedger();
+  recordObservations(
+    ledger,
+    [7, 8, 9].map((pr) =>
+      obs({
+        jobId: 1000 + pr,
+        runId: 1000 + pr,
+        prNumber: pr,
+        pushedBy: "owner-human",
+      })
+    ),
+    NOW,
+  );
+  const fake = fakeGh({
+    pushers: ["owner-human", "owner-human", "owner-human"],
+  });
+  await scan(fake, ledger);
+  assertEquals(issueWrites(fake).length, 0);
 });
 
 Deno.test("scan: a tool the local gate lacks files the issue in the product repository", async () => {

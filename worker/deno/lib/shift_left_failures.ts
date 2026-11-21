@@ -19,7 +19,11 @@
  * - Observations are grouped by repository, check and failed step, with
  *   matrix shard numbers folded. A group that has failed on
  *   {@link SHIFT_LEFT_THRESHOLD} distinct fleet PRs within
- *   {@link SHIFT_LEFT_WINDOW_DAYS} days is a repeated failure.
+ *   {@link SHIFT_LEFT_WINDOW_DAYS} days is a repeated failure. The count
+ *   covers only failing heads a fleet account pushed (the run's triggering
+ *   actor is a fleet author or the babysitter). A head the owner or another
+ *   human pushed, including a GitHub "Update branch" merge they triggered,
+ *   does not count, because the fleet's local gate never saw it (Issue #5320).
  * - It is routed to the repository that owns the fix:
  *   - VibeCoder, when most failing heads were pushed by the babysitter, or the
  *     repository's local gate (`quality.sh`) already runs the tool. Either way
@@ -42,7 +46,10 @@ import { redactedLogTail } from "./redacted_text.ts";
 import { getRepoVisibility } from "./repo_visibility.ts";
 import { selectFleetAuthoredMatches } from "./alert_dedup_authors.ts";
 
-/** Distinct fleet PRs a step must fail on before it is a repeated failure. */
+/**
+ * Distinct fleet PRs, at heads a fleet account pushed, a step must fail on
+ * before it is a repeated failure.
+ */
 export const SHIFT_LEFT_THRESHOLD = 3;
 /** The window the threshold is counted over. */
 export const SHIFT_LEFT_WINDOW_DAYS = 7;
@@ -922,7 +929,19 @@ export async function runShiftLeftScan(deps: ShiftLeftScanDeps): Promise<void> {
   }
   const gates = new Map<string, string | null>();
   const routed: { group: RepeatedFailure; route: ShiftLeftRoute }[] = [];
-  for (const group of await repeatedFailures(deps.ledger, deps.nowMs)) {
+  // Only heads a fleet account pushed count; the fleet's gate never saw others.
+  const fleetPushers = new Set(
+    [...deps.fleetAuthors, ...deps.babysitterLogins].map((l) =>
+      l.toLowerCase()
+    ),
+  );
+  const fleetPushed = {
+    ...deps.ledger,
+    observations: deps.ledger.observations.filter((o) =>
+      fleetPushers.has(o.pushedBy.toLowerCase())
+    ),
+  };
+  for (const group of await repeatedFailures(fleetPushed, deps.nowMs)) {
     if (!deps.repos.includes(group.repo)) continue;
     try {
       if (!gates.has(group.repo)) {
