@@ -44,6 +44,11 @@ export interface TelemetrySource {
     servedModels: string[];
     requestedModel: string;
     /**
+     * Provider that served this invocation, stamped by `buildRunStats`
+     * (Issue #4109); absent on stats built without one.
+     */
+    provider?: string;
+    /**
      * Effort the invocation was started with, verbatim from the argv the
      * runner built (Issue #2573). Absent when the provider takes none.
      */
@@ -146,6 +151,8 @@ export function summariseCallbackTelemetry(
  * A missing count from one of these is "the run did not report usage"
  * (killed before the terminal result line), not "this adapter never fills
  * the field". Any other provider id is `provider_unsupported` (Issue #1948).
+ * The provider is the one each invocation reported, not the host's configured
+ * one (Issue #5295).
  */
 const PROVIDERS_WITH_USAGE_ADAPTER: ReadonlySet<string> = new Set([
   CLAUDE_PROVIDER_ID,
@@ -158,14 +165,34 @@ const PROVIDERS_WITH_USAGE_ADAPTER: ReadonlySet<string> = new Set([
  *
  * Returns `undefined` when {@link summariseCallbackTelemetry} produced a
  * value — the caller publishes `telemetry` in that case, never a reason.
+ *
+ * Issue #5295: the provider is the one the invocations themselves report
+ * (`runStats.provider`), because a repo can pin a provider other than the
+ * host's. When at least one invocation names a provider, the reason is
+ * `usage_not_reported` if any named provider has a usage adapter (it failed to
+ * report), else `provider_unsupported`. `fallbackProvider` is the configured
+ * provider, used only when no invocation names one.
  */
 export function callbackTelemetryAbsenceReason(
   invocations: readonly TelemetrySource[],
-  provider?: string,
+  fallbackProvider?: string,
 ): TelemetryAbsentReason | undefined {
   if (summariseCallbackTelemetry(invocations) !== undefined) return undefined;
   if (invocations.length === 0) return "agent_not_invoked";
-  if (provider !== undefined && !PROVIDERS_WITH_USAGE_ADAPTER.has(provider)) {
+  const named: string[] = [];
+  for (const invocation of invocations) {
+    const id = invocation.runStats?.provider?.trim();
+    if (id) named.push(id);
+  }
+  if (named.length > 0) {
+    return named.some((id) => PROVIDERS_WITH_USAGE_ADAPTER.has(id))
+      ? "usage_not_reported"
+      : "provider_unsupported";
+  }
+  if (
+    fallbackProvider !== undefined &&
+    !PROVIDERS_WITH_USAGE_ADAPTER.has(fallbackProvider)
+  ) {
     return "provider_unsupported";
   }
   return "usage_not_reported";

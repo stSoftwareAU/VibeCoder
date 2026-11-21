@@ -27,6 +27,11 @@
  * stated on one surface and not the other is drift, so both surfaces are read
  * and compared rung by rung, in order — an unordered ladder is not a ladder.
  *
+ * Issue #5111 added the AWS integration-testing policy: the guidelines, the
+ * review brief and the AWS-relevant bucket guides summarise it and link the one
+ * canonical standards section, so a renamed heading that strands those links
+ * fails here.
+ *
  * Modelled on `hidden_allowlist_drift_test.ts` (Issue #784).
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
@@ -430,4 +435,71 @@ Deno.test("twin pair - the guidelines name no timeout knob for a suite this repo
       "fully migrated to Deno — the knob names no runner this repository has, " +
       "and the prompt is filed verbatim into other repositories",
   );
+});
+
+Deno.test("AWS integration testing - every surface links the one canonical standards section (Issue #5111)", async () => {
+  const standards = await readStandards();
+  const headingLine = standards
+    .split("\n")
+    .find((line) => line === "## AWS integration testing");
+  assert(
+    headingLine,
+    "CODING-STANDARDS.md no longer has a `## AWS integration testing` heading",
+  );
+  // GitHub's anchor rule: lower-case, drop what is not a letter, digit, space
+  // or hyphen, then spaces become hyphens. Derived from the heading, not
+  // hard-coded, so a renamed heading changes the expected anchor.
+  const slug = headingLine
+    .slice("## ".length)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N} -]/gu, "")
+    .replace(/ /g, "-");
+
+  const guidelines = await latestPromptText("coding_guidelines");
+  const review = await readRepoDoc("prompts/pr_review_brief/prompt.md");
+  // Each surface is narrowed to its own section (CODING-STANDARDS.md
+  // "Documentation-drift tests", condition 1). The review brief's section also
+  // links the non-AWS `#dummy-tests-and-how-tests-are-refused` anchor, so only
+  // its `aws` anchors are filtered; the guidelines and bucket sections hold no
+  // other standards link, so any wrong anchor in them fails.
+  const anyAnchor = /CODING-STANDARDS\.md#([a-z0-9-]+)/g;
+  const awsAnchor = /CODING-STANDARDS\.md#(aws[a-z0-9-]*)/g;
+  const surfaces: [string, string, RegExp][] = [
+    [
+      "the coding_guidelines AWS Integration Testing section",
+      section(guidelines, "AWS Integration Testing"),
+      anyAnchor,
+    ],
+    [
+      "the prompts/pr_review_brief/prompt.md Review Mode section",
+      section(review, "Review Mode — one change against its linked issue"),
+      awsAnchor,
+    ],
+  ];
+  const buckets: [string, string][] = [
+    ["aws-cloudformation", "AWS integration-test guidance"],
+    ["terraform", "AWS integration-test guidance"],
+    ["typescript", "AWS SDK integration tests"],
+    ["rust", "AWS SDK integration tests"],
+    ["java", "AWS SDK integration tests"],
+  ];
+  for (const [bucket, title] of buckets) {
+    const path = `prompts/best_practices/buckets/${bucket}.md`;
+    surfaces.push([
+      path,
+      section(await readRepoDoc(path), title),
+      anyAnchor,
+    ]);
+  }
+
+  for (const [surface, text, anchorPattern] of surfaces) {
+    const anchors = [
+      ...text.matchAll(anchorPattern),
+    ].map((m) => m[1]!);
+    assertEquals(
+      [...new Set(anchors)],
+      [slug],
+      `${surface} must link the AWS standards section`,
+    );
+  }
 });

@@ -20,12 +20,41 @@ meaningful positive and negative assertions. Keep fast unit tests for pure
 business logic; an installation, health probe or mocked response alone does
 not establish integration coverage.
 
+**Scope follows the change.** A new or materially changed AWS CLI script, SDK
+call, persistence path, queue or event, AWS-backed handler or supported
+infrastructure behaviour needs deterministic integration tests against AWS
+Emulator. They drive the changed production script, client, adapter or
+handler and assert its observable outcome, including meaningful error cases.
+A generic bucket or table smoke test, or one token test per service, does not
+show that the changed component works. Mocks alone, or an integration suite
+nothing runs, are missing coverage for a supported AWS change. A non-AWS
+change needs no emulator test, and unrelated features stay covered by their
+existing regression gates.
+
+| Change | What its PR needs |
+| --- | --- |
+| A changed DynamoDB adapter, or the handler that calls it | Emulator tests that drive that adapter or handler against a per-run table: the written item reads back, and a meaningful failure (a conditional-write conflict or a missing item) returns its error. Unit tests for its pure logic stay. |
+| A pure calculation or UI change in an AWS-backed application | Its usual unit or UI tests. No emulator test, and no retest of unchanged AWS paths beyond the existing regression gates. |
+| A changed call the emulator does not support (HTTP 501 or `NotImplemented`) | A recorded coverage gap, as described below, naming the alternative validation actually run. A skipped or stubbed test is not a pass. |
+| An IAM-only change (a role, policy or permissions boundary) | Least-privilege review and the authorised real-AWS verification path. An emulator run neither proves it nor is required for it. |
+
 Pin the emulator version, isolate state and generated credentials per run,
 verify TLS, bound startup/polling, and propagate startup and test failures.
 Install tools without starting services. Container entrypoints, worker boot
 and shell initialisation must not launch emulators. Start one only when an
 explicitly invoked test command requests it, and clean up its owned processes
-and state on success, failure or termination.
+and state on success, failure or termination. By default use the installed
+server through the pinned `aws-emulator-run` helper; a Rust repository may use
+the embedded mode only where its build/resource cost and isolation are
+justified for that repository. Use fixed fixtures, controlled clocks and
+randomness where they affect the result, and unique resource names per run.
+Never use production data, real credentials, an insecure TLS bypass, or live
+AWS authority in an ordinary coding-agent test run.
+
+The repository's local quality command and its applicable required CI job
+invoke the integration tests and preserve their failures. Report unrun,
+skipped, unsupported and failed separately from passed. A diagnosed bug keeps
+the focused failing-test, fix, passing-test sequence.
 
 For applications using AWS Blocks, test the typed Block APIs through their
 local implementations. Those implementations do not exercise the underlying
@@ -35,18 +64,25 @@ Blocks to test existing AWS calls.
 Record unsupported operations (including HTTP 501), fidelity limitations,
 skips and stubbed resources as coverage gaps, never passes. Name the version,
 affected behaviour, evidence, alternative validation and recheck condition.
-Retain Floci only for documented gaps where it supplies useful coverage.
-Keep relevant IAM, resource-policy, KMS-policy and deployment/runtime checks
+Retain Floci only for documented gaps where it supplies useful coverage. A
+routine gap recorded this way needs no human approval round, but a failing
+test is never downgraded to a gap without that evidence. No template has to
+deploy in full when one of its resources is a recorded gap. Keep relevant IAM,
+permissions-boundary, resource-policy, KMS-policy, cross-account,
+cross-Region and deployment/runtime checks (real Lambda behaviour included)
 in the authorised real-AWS verification path; emulator success does not prove
 those properties. Emulator tests must not fall back to real AWS.
 
 Apply this policy to new or materially changed AWS behaviour, with existing
 regression tests retained. Do not add unrelated test-discovery campaigns.
-Issue #5109 delivered the runtime and #5110 delivers VibeCoder's own
-reference CI path (`infra/cloudformation/test-aws-emulator.sh`); #5111 owns
-effective implementation/reviewer prompt wiring and #5112 owns detector
-migration. Enforce the new runtime requirement after its availability and
-reference CI path are verified, not merely because this policy is documented.
+Issue #5109 delivered the runtime (`aws-emulator-run`) and #5110 VibeCoder's
+own reference CI path (`infra/cloudformation/test-aws-emulator.sh`).
+Issue #5111 carries this policy into the agent guidelines
+(`prompts/coding_guidelines/prompt.md`) and the review brief
+(`prompts/pr_review_brief/prompt.md`), so review applies it. The
+best-practices scan's existing `BP-AWS-EMULATOR-MISSING` pre-filer checks only
+that CI runs an emulator at all; not yet: #5112 will add the test-wiring
+detector and the migration findings.
 
 References: [AWS Emulator](https://docs.aws.amazon.com/emulator/latest/userguide/what-is-service.html)
 and [AWS Blocks local development](https://docs.aws.amazon.com/blocks/latest/devguide/local-development.html).

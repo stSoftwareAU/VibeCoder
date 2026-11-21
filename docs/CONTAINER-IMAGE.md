@@ -230,8 +230,9 @@ switches existing Floci users. VibeCoder's own CloudFormation CI now runs on
 the AWS Emulator (`infra/cloudformation/test-aws-emulator.sh` via
 `.github/workflows/aws-emulator.yml`, Issue #5110), and `container-build.yml`
 runs the same script as `agent` in a fresh container of the built image. The
-coding-standard and best-practices changes are planned (#5111, #5112) and are
-not part of this change.
+coding standard and the agent and reviewer prompts carry the AWS
+integration-testing policy (#5111); the best-practices detector and migration
+findings are planned (#5112).
 
 ### What is installed
 
