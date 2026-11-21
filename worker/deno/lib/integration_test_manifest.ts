@@ -208,6 +208,13 @@ export const IN_GATE_SCRIPT_SUITES: ReadonlyMap<string, string> = new Map([
     "toolchain self-check (Issue #1956) — the rebuild a Windows host must " +
     "not skip; 17s",
   ],
+  [
+    "tests/quality_gate_script_5110_test.ts",
+    "runs the real .github/scripts/gate.sh (bash and jq, about a tenth of a " +
+    "second) to prove a skipped, cancelled or failed aws-emulator job closes " +
+    "the required gate; retained in the gate because that is the AWS " +
+    "Emulator check's last link to a red check (Issue #5110)",
+  ],
 ]);
 
 /**
