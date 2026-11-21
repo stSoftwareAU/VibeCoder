@@ -544,6 +544,27 @@ and, apart from that check, **only when the separator crossed a line break**:
   that is not a single word without a digit, symbol or internal capital. That
   word test is **length-bounded**: an unbounded one read a lower-case
   passphrase such as `correcthorsebatterystaple` as prose.
+- A credential label in an earlier label's value is judged as a label, not
+  masked as that value (Issue #5310). In `credentials: DEPLOY_TOKEN = <value>`,
+  on one line or across two, the earlier match used to mask only
+  `DEPLOY_TOKEN` and publish `<value>`.
+  When a value ends in a credential label (a key-shaped run of at most 128
+  characters, allowing a closing quote or the swallowed `=`/`:`, or just before
+  one of the value's last three `'`, as in `DEPLOY_TOKEN='a b'`) whose own
+  assignment runs past the value and is masked, the inner value is masked. The
+  outer value is given up unmasked only when it is nothing but that label (an
+  optional quote, then label characters); when other text precedes the label,
+  as in `password: hunter2,token: <value>`, the outer value stays masked too.
+  That covers hyphenated, dotted and quoted inner labels. A value with a
+  credential word anywhere else in it is masked whole as before, even when an
+  already-masked value follows it.
+- That handling has limits, past which the base behaviour applies (the label
+  is masked as the earlier label's value and the inner value is published):
+  the inner label's separator and value must start within 256 characters of
+  the outer value's end, a double-quoted inner value must close within 4,096
+  characters of its opening quote, the label must be at most 128 characters,
+  and a single-quoted inner value whose first word itself holds two `'` (as in
+  `DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
 
 `containsSecret()` asks the value predicate the same question the replacement
 does, so detection and redaction cannot drift apart — a body that redacts to
