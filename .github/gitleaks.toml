@@ -111,6 +111,8 @@ regexes = [
   # synthetic YAML child value as a literal and now interpolates its fixture.
   # Range scans still see that commit. Exempt only the exact line.
   '''^\s*"secrets:\\n  API_TOKEN: abcdefgh12345",\s*$''',
+  # The PR summary quoted the same value in one commit; match only that backtick-quoted mention.
+  '''`  API_TOKEN: abcdefgh12345`''',
 ]
 paths = [
   '''worker/deno/tests/secret_redaction_test\.ts''',

@@ -15,8 +15,8 @@ own separator has whitespace or a double quote around it. Those are the only
 shapes where the bare-value run (`[^\s"]+`) stops before the inner value. The
 scan then reaches the inner label, and that label's own match masks its value.
 `redactSecrets` and `containsSecret` share the pattern, so both change together.
-`SECURITY.md` records the rule. `.github/gitleaks.toml` exempts one exact
-historical line of the new test's synthetic fixture (see Test Plan).
+`SECURITY.md` records the rule. `.github/gitleaks.toml` exempts two exact
+historical mentions of the new test's synthetic fixture (see Test Plan).
 
 Closes #5310.
 
@@ -48,7 +48,7 @@ Closes #5310.
 ### Undiscoverable Facts
 
 - The base code also leaked a credential under a credential-labelled YAML child
-  key (`secrets:` then `  API_TOKEN: abcdefgh12345`): the outer match swallowed
+  key (`secrets:` then `  API_TOKEN: <value>`): the outer match swallowed
   `API_TOKEN:` as a mapping key and never scanned its value. This change fixes
   that too. I observed it with a scratch script before writing the test.
 
@@ -118,7 +118,9 @@ flowchart LR
   literal YAML fixture `abcdefgh12345` in the new test. That fixture now uses
   the file's interpolated synthetic value. The first commit carrying the
   literal was already pushed, and CI scans every commit in the PR range, so
-  `.github/gitleaks.toml` exempts that one exact line. This follows the
+  `.github/gitleaks.toml` exempts that exact line. It also exempts the
+  backtick-quoted mention of the value that an earlier commit of this summary
+  carried, also already pushed. This follows the
   file's existing exact-line entries (Issues #4705, #5083) rather than
   rewriting the pushed branch.
 - **Gitleaks exemption:**
