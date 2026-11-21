@@ -76,8 +76,8 @@ those properties. Emulator tests must not fall back to real AWS.
 Apply this policy to new or materially changed AWS behaviour, with existing
 regression tests retained. Do not add unrelated test-discovery campaigns.
 Issue #5109 delivered the runtime (`aws-emulator-run`) and #5110 VibeCoder's
-own reference CI path (`infra/cloudformation/test-aws-emulator.sh`). Issue
-#5111 carries this policy into the agent guidelines
+own reference CI path (`infra/cloudformation/test-aws-emulator.sh`).
+Issue #5111 carries this policy into the agent guidelines
 (`prompts/coding_guidelines/prompt.md`) and the review brief
 (`prompts/pr_review_brief/prompt.md`), so review applies it. The
 best-practices scan's existing `BP-AWS-EMULATOR-MISSING` pre-filer checks only
