@@ -1211,18 +1211,17 @@ function innerAssignment(
   if (!match || match.index !== label.start) return null;
   const verdict = verdictOf(text, match);
   if (!(verdict.end > end && verdict.masked)) return null;
-  // The inner value ends in a credential flag with its own value after
-  // whitespace (`DEPLOY_TOKEN = --token <value>`, `token =\n=--password
-  // <value>`; PR #5322 review round 7). Masking the flag with the inner value
-  // would hide it from the later `secret-cli-flag` rule, and the value after
-  // it would be published. Read no inner label here, as main does: the outer
-  // value keeps its mask and that rule masks the flag's value.
-  if (
-    CLI_FLAG_AT_END.test(verdict.value.slice(-CLI_FLAG_MAX)) &&
-    FLAG_VALUE_AFTER.test(
-      text.slice(verdict.end, verdict.end + INNER_ASSIGNMENT_SPAN),
-    )
-  ) return null;
+  // Keep main's result whenever main's own scan would read past the inner
+  // value (PR #5322 review round 8). Main masked the inner label as the outer
+  // value and resumed right after it, so a `secret-assignment` match or a
+  // credential flag that starts inside what is now the inner value, and runs
+  // past its end, was main's to mask: `DEPLOY_TOKEN = 'token:x'<value>`,
+  // `DEPLOY_TOKEN = '--token '<value>`, `DEPLOY_TOKEN = --token <value>`,
+  // `DEPLOY_TOKEN: API_TOKEN=\nhunter2`. Reading the inner label there would
+  // mask the inner value whole and publish that text, so no inner label is
+  // read. One check, with no whitespace or length bound of its own: wherever
+  // main's scan reaches past the inner value, main's result stands.
+  if (mainReadsPastInnerValue(text, verdict)) return null;
   // A single-quoted inner value holding a space, found before one of the
   // value's quotes, that runs straight into more text (`DEPLOY_TOKEN='a b'.`):
   // its mask removes the space, so a second pass reads the label, placeholder
@@ -1258,23 +1257,87 @@ function closesWithinReach(
 }
 
 /**
- * A value that ends in a credential flag name, as the `secret-cli-flag` rule
- * matches one (no word boundary before the `--`); the flag-name runs are
- * bounded as in that rule (Issue #3942).
+ * A credential flag and its value, as the `secret-cli-flag` rule reads them,
+ * without that rule's refusal of an already-masked value: on a second pass the
+ * placeholder after a flag must read the same as the value did on the first
+ * (PR #5322 review round 8). The flag-name runs are bounded as in that rule
+ * (Issue #3942).
  */
-const CLI_FLAG_AT_END =
-  /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}$/i;
-
-/** Longest flag {@link CLI_FLAG_AT_END} can match: `--`, two runs and a keyword. */
-const CLI_FLAG_MAX = 2 + 63 + 16 + 63;
+const CLI_FLAG_PROBE =
+  /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+(?!-)(?:"[^"]+"|'[^']+'|\S+)/gi;
 
 /**
- * Whitespace, then a value not starting with `-`: what the `secret-cli-flag`
- * rule masks after a flag. The value may already be the placeholder, so a
- * second pass over the first's output reads the same shape and changes
- * nothing.
+ * Whether main's scan, resuming right after the inner label it masked as the
+ * outer value, would mask text past the end of `inner`'s value (PR #5322
+ * review round 8): a masked `secret-assignment` match, or a credential flag
+ * and its value, that starts inside the inner value and ends past it, other
+ * than the label that ends the inner value, which the walk reads next; or a
+ * run from the inner value wrapped onto the next line that the
+ * decode-then-rescan pass would mask. Each
+ * search starts inside the inner value and stops at the first match that
+ * starts past it, so the work is the inner value's own length.
  */
-const FLAG_VALUE_AFTER = /^\s+(?!-)\S/;
+function mainReadsPastInnerValue(
+  text: string,
+  inner: AssignmentVerdict,
+): boolean {
+  const start = inner.end - inner.value.length;
+  // A label that ends the inner value is the walk's own next step: it resumes
+  // at the inner label, and that label's match finds this one as its trailing
+  // label (a chain, `credentials: secret: DEPLOY_TOKEN = <value>`), so main's
+  // reading of it is not lost.
+  const chained = trailingLabel(text, start, inner.end)?.start ?? -1;
+  let from = start;
+  while (from < inner.end) {
+    const match = execAssignmentAt(text, from);
+    if (!match || match.index >= inner.end) break;
+    if (match.index !== chained) {
+      const verdict = verdictOf(text, match);
+      if (verdict.end > inner.end && verdict.masked) return true;
+    }
+    from = match.index + 1;
+  }
+  CLI_FLAG_PROBE.lastIndex = start;
+  try {
+    const flag = CLI_FLAG_PROBE.exec(text);
+    if (
+      flag !== null && flag.index < inner.end &&
+      flag.index + flag[0].length > inner.end
+    ) return true;
+  } finally {
+    CLI_FLAG_PROBE.lastIndex = 0;
+  }
+  // The decode-then-rescan pass joins a run that wraps onto the next line
+  // (`API_TOKEN=` then `hunter2`) and masks it when the joined text is a
+  // secret. Masking the inner value would break that run, so when the run
+  // from the inner value wraps past it and the pass would mask it, main's
+  // result stands.
+  WRAPPED_RUN.lastIndex = start;
+  try {
+    let run: RegExpExecArray | null;
+    while ((run = WRAPPED_RUN.exec(text)) !== null && run.index < inner.end) {
+      const end = run.index + run[0].length;
+      if (
+        end > inner.end && /\n/.test(run[0]) &&
+        redactTransformedSecrets(
+            run[0],
+            matchesSignatureRule,
+            REDACTION_PLACEHOLDER,
+          ) !== run[0]
+      ) return true;
+    }
+  } finally {
+    WRAPPED_RUN.lastIndex = 0;
+  }
+  return false;
+}
+
+/**
+ * A run the decode-then-rescan pass reads as one candidate, optionally
+ * wrapped onto following lines (`secret_transform_redaction.ts`'s candidate
+ * pattern). Linear: the classes cannot match a line break.
+ */
+const WRAPPED_RUN = /[A-Za-z0-9+/=_-]{4,}(?:\r?\n[A-Za-z0-9+/=_-]{4,})*/g;
 
 /** The pattern's separator, then the opening `"` of a double-quoted value. */
 const OPEN_DOUBLE_QUOTE = /^["']?\s*[=:]\s*"/;

@@ -560,10 +560,16 @@ and, apart from that check, **only when the separator crossed a line break**:
   optional quote, then label characters, with no `--` among them); when other
   text precedes the label, as in `password: hunter2,token: <value>` or the CLI
   flag in `credentials: x--token = <value>`, the outer value stays masked too.
-  When the inner value ends in a credential flag with its own value after
-  whitespace (`credentials: DEPLOY_TOKEN = --token <value>`), no inner label is
-  read: the outer value keeps its mask and the CLI-flag rule masks the flag's
-  value, as before this change.
+  No inner label is read, and the result is the base behaviour's, wherever
+  the base scan would have read past the inner value: a `secret-assignment`
+  match or a credential flag that starts inside the inner value and ends past
+  it (`credentials: DEPLOY_TOKEN = --token <value>`,
+  `credentials: DEPLOY_TOKEN = 'token:x'<value>`), other than the label that
+  ends the inner value, or a run from the inner value wrapped onto the next
+  line that the decode-then-rescan pass masks
+  (`credentials: DEPLOY_TOKEN = API_TOKEN=` then `hunter2`). That check has no
+  bound of its own, so past the whitespace bound below the base result stands
+  too.
   Label characters before the label are read as part of it, so in
   `credentials: abc-DEPLOY_TOKEN = <value>` the `abc-` stays visible. That
   includes text glued to a credential keyword with no separator at all

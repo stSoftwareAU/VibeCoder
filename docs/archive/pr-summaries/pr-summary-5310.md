@@ -316,6 +316,33 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
+- **Review round 8** — one general check replaces the round-7 flag test:
+  before an inner label is read, `mainReadsPastInnerValue` asks whether
+  main's own scan, resuming after the inner label as main did, would mask
+  text past the inner value: a masked `secret-assignment` match or a
+  credential flag (the `secret-cli-flag` shape, placeholder allowed so a
+  second pass reads the same) that starts inside the inner value and ends
+  past it, other than the label that ends the inner value (the walk's next
+  step in a chain), or a run the decode-then-rescan pass would join across a
+  line break and mask. If so, no inner label is read and main's result
+  stands. It has no whitespace or length bound, so the flag shape with 256
+  spaces or a line break, and the spaced separator past 256 spaces, now give
+  main's result. 20 more tests, each with the four checks: the reviewer's ten
+  label-or-flag-inside-a-quoted-value inputs, the two `API_TOKEN=` then
+  `hunter2` forms, the flag at 255 and 256 spaces and across a line break,
+  and the spaced separator at 256 and 257 spaces (both sides, double quotes,
+  300 spaces, YAML child).
+  - Red runs on this head's 182-test file: `origin/main` (`e1d1190c1`)
+    `96 passed | 86 failed`; the previous head (`adc68366`)
+    `164 passed | 18 failed`; this head `182 passed | 0 failed`. Every test
+    file importing `secret_redaction.ts` (47 files): `1223 passed |
+    0 failed`; `secret_redaction_redos_test.ts`: `14 passed`.
+  - A random sweep of 900,000 inputs from 27 fragments (lead-ins, labels,
+    `--token `, `--password `, `=\n`, quotes, `'token:x'`, values, a 40-space
+    run), compared with main: no output changed on a second pass where main's
+    did not, none reported a secret where main's did not, and none published
+    a value main masked other than a value glued onto key characters, which
+    is read as part of a label as `SECURITY.md` states.
 - **Review round 7** — 16 more tests, each with the four checks:
   - **A flag as the inner label's value:**
     `Rotate these credentials: DEPLOY_TOKEN = --token <token>` (same line and

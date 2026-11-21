@@ -716,3 +716,117 @@ for (
     assertFinal(input, expected, [V]);
   });
 }
+
+// Wherever main's own scan would read past the inner value, main's result
+// stands (PR #5322 review round 8): a label or a credential flag inside a
+// quoted inner value followed by more text, a bare inner value that the
+// decode-then-rescan pass joins to the next line, and the earlier flag and
+// spaced-separator shapes past their whitespace bounds.
+for (
+  const [input, expected, values] of [
+    [
+      `credentials: DEPLOY_TOKEN = 'token:x'${V}`,
+      `credentials: ${R} = 'token:${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN = abc'${V}'`,
+      `credentials: ${R} = 'API_TOKEN = ${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN: abc'${V}`,
+      `credentials: ${R} = 'API_TOKEN: ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'api-key =x'${V}`,
+      `secrets:\n  DEPLOY_TOKEN: 'api-key =${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = '--token '${V}'`,
+      `credentials: ${R} = '--token ${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = "--token "${V}"`,
+      `credentials: ${R} = "--token ${R}`,
+      [V],
+    ],
+    [
+      `Rotate these credentials: DB_SECRET_ARGS = '--token '${V}`,
+      `Rotate these credentials: ${R} = '--token ${R}`,
+      [V],
+    ],
+    [
+      `Rotate these credentials:\nDB_SECRET_ARGS = '--token '${V}`,
+      `Rotate these credentials:\n${R} = '--token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: "--token " ${V}"`,
+      `secrets:\n  DEPLOY_TOKEN: "--token ${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = "--token abc"${V}`,
+      `credentials: ${R} = "--token ${R}`,
+      [V],
+    ],
+    [
+      "secrets:\n  DEPLOY_TOKEN: API_TOKEN=\nhunter2",
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
+      ["hunter2"],
+    ],
+    [
+      "credentials: DEPLOY_TOKEN = API_TOKEN=\nhunter2",
+      `credentials: ${R} = ${R}`,
+      ["hunter2"],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = --token${" ".repeat(255)}${V}`,
+      `credentials: ${R} = --token${" ".repeat(255)}${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = --token${" ".repeat(256)}${V}`,
+      `credentials: ${R} = --token${" ".repeat(256)}${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = --token${" ".repeat(255)}\n${V}`,
+      `credentials: ${R} = --token${" ".repeat(255)}\n${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN =${" ".repeat(256)}'${V}'`,
+      `credentials: DEPLOY_TOKEN = '${R}'${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN =${" ".repeat(257)}'${V}'`,
+      `credentials: ${R} = 'API_TOKEN =${" ".repeat(257)}'${R}'`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = 'API_TOKEN${" ".repeat(257)}= '${V}'`,
+      `credentials: ${R} = 'API_TOKEN${" ".repeat(257)}= '${R}'`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = "API_TOKEN =${" ".repeat(300)}"${V}"`,
+      `credentials: ${R} = "API_TOKEN =${" ".repeat(300)}"${R}"`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'API_TOKEN:${" ".repeat(300)}'${V}'`,
+      `secrets:\n  DEPLOY_TOKEN: '${R}'${R}'`,
+      [V],
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 keeps main's result where main reads past the inner value: ${JSON.stringify(input.slice(0, 48))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}
