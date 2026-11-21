@@ -442,6 +442,7 @@ Deno.test("buildDeferralExhaustedComment - lists prior deferrals and the latest 
     REQUEST,
   );
   assertStringIncludes(comment, "## Deferral limit reached");
+  assertFalse(/#[0-9]+/.test(comment));
   assertStringIncludes(comment, "2026-10-07T00:00:00Z");
   assertStringIncludes(comment, "2026-11-01T00:00:00Z");
   assertStringIncludes(comment, "2026-12-01T00:00:00Z");

@@ -75,14 +75,14 @@ still proves the behaviour: no label is added, and the issue is retried.
 kills (`vibe-coder-46887`, `vibe-coder-53371`, `vibe-coder-9753`). It uses only
 the public timestamps from the issue:
 
-- `replay #4815 <container> (<step>) - the early reap fires before the recorded
+- `replay #4815 <container> (<step>) - the guest is judged wedged before the recorded
   silence`:
   `checkGuestSilence` is sampled every 300 simulated seconds from three
   check-clock offsets. For each, the guest is judged wedged after 900s and
   before 1200s of silence. Even with both exec probes taking their full bound,
   that is before the silence each kill actually ran to.
 - `replay #4815 <container> (<step>) - a guest that still answers is never
-  reaped`:
+  judged wedged`:
   the same silence with a guest that answers gives a healthy verdict.
 
 Issue numbers the diff cites: #4227 (An approved issue is never handed back: a

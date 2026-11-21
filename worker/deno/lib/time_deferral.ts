@@ -433,6 +433,6 @@ export function buildDeferralExhaustedComment(
     `**Latest reason given by the run:**\n\n` +
     `${reason.split("\n").map((l) => `> ${l}`).join("\n")}\n\n` +
     `Rather than deferring again, the approved issue is retried as not ` +
-    `finished on the normal failure ladder (Issue #4227); no ` +
+    `finished on the normal failure ladder; no ` +
     `\`needs-human\` is added.`;
 }
