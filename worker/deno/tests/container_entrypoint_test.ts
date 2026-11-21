@@ -160,7 +160,7 @@ Deno.test("entrypoint - execs the Deno driver with the worker permission set", a
         "--allow-write",
         "--allow-run",
         "--allow-net",
-        "--allow-sys=hostname",
+        "--allow-sys=hostname,systemMemoryInfo",
       ]
     ) {
       assert(argv.includes(flag), `missing ${flag} in ${argv.join(" ")}`);
@@ -173,6 +173,86 @@ Deno.test("entrypoint - execs the Deno driver with the worker permission set", a
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// The memory-pressure probe is Linux-only by design and reads unknown elsewhere.
+Deno.test({
+  name:
+    "entrypoint - the driver's permission set lets the memory-pressure probe read memory (Issue #5319)",
+  ignore: Deno.build.os !== "linux",
+  fn: async () => {
+    const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+    try {
+      const argvFile = await stubDeno(dir);
+      await fakeRepo(dir);
+      const { code } = await runEntrypoint({
+        dir,
+        path: `${dir}/bin`,
+        env: { VIBE_BASE_DIR: `${dir}/repo` },
+      });
+      assertEquals(code, 0);
+
+      const argv = (await Deno.readTextFile(argvFile)).trim().split("\n");
+      const allowFlags = argv.filter((a) => a.startsWith("--allow-"));
+      assert(allowFlags.length > 0, "no --allow-* flags recorded");
+
+      const probeUrl = new URL(
+        `file://${REPO_ROOT}/worker/deno/lib/memory_pressure.ts`,
+      ).href;
+      const script = `${dir}/probe.ts`;
+      await Deno.writeTextFile(
+        script,
+        `import { probeMemoryPressure } from "${probeUrl}"; const warnings: string[] = []; const reading = await probeMemoryPressure({ warn: (m) => warnings.push(m) }); console.log(JSON.stringify({ reading, warnings }));\n`,
+      );
+
+      const runProbe = async (flags: string[]) => {
+        const out = await new Deno.Command(Deno.execPath(), {
+          args: [
+            "run",
+            `--config=${REPO_ROOT}/worker/deno/deno.json`,
+            "--frozen",
+            `--lock=${REPO_ROOT}/worker/deno/deno.lock`,
+            ...flags,
+            script,
+          ],
+          stdin: "null",
+          stdout: "piped",
+          stderr: "piped",
+        }).output();
+        const stdout = new TextDecoder().decode(out.stdout);
+        const stderr = new TextDecoder().decode(out.stderr);
+        assert(out.success, `probe run failed: ${stderr}`);
+        const last = stdout.trim().split("\n").pop() ?? "";
+        return JSON.parse(last) as {
+          reading: { level: string; totalBytes?: number };
+          warnings: string[];
+        };
+      };
+
+      const granted = await runProbe(allowFlags);
+      assert(
+        ["ok", "high"].includes(granted.reading.level),
+        `unexpected level ${granted.reading.level}`,
+      );
+      assert((granted.reading.totalBytes ?? 0) > 0);
+      assertEquals(granted.warnings, []);
+
+      // Negative control: the pre-fix grant must read unknown with the cause.
+      const preFix = await runProbe(
+        allowFlags.map((a) =>
+          a.startsWith("--allow-sys=") ? "--allow-sys=hostname" : a
+        ),
+      );
+      assertEquals(preFix.reading.level, "unknown");
+      assertEquals(preFix.warnings.length, 1);
+      assertStringIncludes(
+        preFix.warnings[0]!,
+        'NotCapable: Requires sys access to "systemMemoryInfo"',
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
 });
 
 Deno.test("entrypoint - forwards extra arguments to the driver", async () => {

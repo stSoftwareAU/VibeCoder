@@ -2171,11 +2171,14 @@ The guest has no swap: a swapfile needs `CAP_SYS_ADMIN`, which the launch
 plan forbids (see below), so a memory peak inside the VM is an exit-137
 SIGKILL of the agent, not a slowdown. What *can* be done from inside the
 boundary is bounding the blast radius: the WIP-checkpoint loop
-probes `/proc/meminfo` every minute and, when available memory drops under
+reads guest memory with `Deno.systemMemoryInfo()` every minute (the driver is
+granted `--allow-sys=hostname,systemMemoryInfo`; Deno refuses `/proc/meminfo`
+itself short of `--allow-all`) and, when available memory drops under
 10 %, takes an early checkpoint with a loud warning — so a kill loses at
 most the last minute, and the warning tells you the VM needs more memory
 (or the host needs its batch jobs deprioritised: `taskpolicy -c background`
-/ `nice` for anything sharing the machine).
+/ `nice` for anything sharing the machine). A refused read is logged once at
+WARNING with its cause and the probe reads `unknown`.
 
 ### Least privilege and lifecycle
 
