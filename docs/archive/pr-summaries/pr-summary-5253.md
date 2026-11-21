@@ -103,8 +103,8 @@ tests). No existing test was edited.
   variant with a further word after the value on the line
   (`… run the agreed
   trial`, `… for the service`), so the continuation check
-  cannot be what masks it and only the separator, key-shape and key-ending
-  checks can.
+  cannot mask it on its own. The equals-assignment assertion checks the entire
+  output, including the preserved product key and equals sign.
 - `a lower-case password keeps the word after it masked`: exact output
   `password: ***REDACTED*** the job now`.
 - `a quoted product-name value stays masked`.

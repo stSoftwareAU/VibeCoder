@@ -131,10 +131,13 @@ Deno.test("Issue #5253 - credential fields with short dictionary-word values sta
     ["SecretValue: hunter for the service", "hunter"],
     ["Passwd: hunter for the service", "hunter"],
     [`"${PRODUCT}": run the agreed trial`, "run"],
-    [`${PRODUCT}=run the agreed trial`, "run"],
     [`${PRODUCT_SNAKE}: run the agreed trial`, "run"],
     [`${PRODUCT_LOWER}: run the agreed trial`, "run"],
   ];
+  assertEquals(
+    redactSecrets(`${PRODUCT}=run the agreed trial`),
+    `${PRODUCT}=${REDACTION_PLACEHOLDER} the agreed trial`,
+  );
   for (const [body, secret] of cases) {
     assertMasked(body, secret, body);
   }
