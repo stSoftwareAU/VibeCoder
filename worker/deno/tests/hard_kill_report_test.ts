@@ -278,6 +278,12 @@ async function report(
     evidenceDir: DIR,
     ghFn: gh.ghFn,
     seams: fs.seams,
+    factsSeams: {
+      listArchivedFiles: () => Promise.resolve([]),
+      readTextFile: fs.seams.readTextFile,
+      markFactsPosted: () =>
+        Promise.reject(new Error("unexpected archive write")),
+    },
     runFailureCallback: (run) => {
       runs.push(run);
       return Promise.resolve();
@@ -536,6 +542,12 @@ Deno.test("AC3: the real recordOutcome counts the hard kill as one failure", asy
       evidenceDir: DIR,
       ghFn: gh.ghFn,
       seams: fs.seams,
+      factsSeams: {
+        listArchivedFiles: () => Promise.resolve([]),
+        readTextFile: fs.seams.readTextFile,
+        markFactsPosted: () =>
+          Promise.reject(new Error("unexpected archive write")),
+      },
       runFailureCallback: () => Promise.resolve(),
       countFailure: () => recordOutcome("failure", HARD_KILL_FAILURE_CLASS),
       nowSeconds: NOW,
@@ -732,7 +744,6 @@ Deno.test("AC5: a hard-kill callback document keeps every ordinary key with an i
   const identity: CallbackIdentity = {
     runId: ev.runId,
     host: ev.host,
-    provider: "claude",
     sessionId: "sess-1",
   };
   const seams: CallbackContextSeams = {

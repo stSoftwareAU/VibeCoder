@@ -684,6 +684,8 @@ export interface ProductionDepsOptions {
   /** Coding-run seams: real phases remain injectable without live GitHub writes (#3977). */
   workerDeps?: WorkerDeps;
   workOnIssue?: typeof workOnIssue;
+  /** Test seam for pinning provider propagation through the add-repo route. */
+  routeAddRepoInProcessIssueFn?: typeof routeAddRepoInProcessIssue;
   /**
    * Override the derived-author resolver (Issue #256). Production leaves
    * this unset and gets {@link resolveDerivedAuthors}, which shells out to
@@ -935,6 +937,8 @@ export async function createProductionRunCoreDeps(
   const setupRepoFn = options.setupRepoFn ?? setupRepo;
   const runGitCommandFn = options.runGitCommandFn ?? runGitCommand;
   const processPrFeedbackFn = options.processPrFeedbackFn ?? processPrFeedback;
+  const routeAddRepoFn = options.routeAddRepoInProcessIssueFn ??
+    routeAddRepoInProcessIssue;
   const dispatchCustomLabelPrPromptsFn =
     options.dispatchCustomLabelPrPromptsFn ?? dispatchCustomLabelPrPrompts;
   const buildCustomPrPromptFn = options.buildCustomPrPromptFn ??
@@ -5196,6 +5200,7 @@ export async function createProductionRunCoreDeps(
           // Issue #5096: opt-in templates (test-audit) need an owner request.
           // Checked against fleet-only logins, so an owner in allowed_authors
           // counts as a request.
+          configuredProvider: config.agentProvider?.trim(),
           ...idleRouteOptInInput({
             githubUser,
             issueAuthor: issueData.author,
@@ -5223,7 +5228,15 @@ export async function createProductionRunCoreDeps(
         // is reported as the failure it is. Neither is an ordinary success.
         return {
           ok: true,
-          value: { ...routeRunResult(idleRoute), ...(mode ? { mode } : {}) },
+          value: {
+            ...routeRunResult(
+              idleRoute,
+              "claimLost" in idleRoute
+                ? config.agentProvider
+                : idleRoute.provider,
+            ),
+            ...(mode ? { mode } : {}),
+          },
         };
       }
 
@@ -5233,7 +5246,7 @@ export async function createProductionRunCoreDeps(
       // request). The route claims the request itself (Issue #1193); the
       // allowed-author gate on the claim path already applies, and the slug
       // is re-validated downstream by `process-add-repo` (defence in depth).
-      const addRepoRoute = await routeAddRepoInProcessIssue(
+      const addRepoRoute = await routeAddRepoFn(
         {
           repo: issue.repo,
           issueNumber: issue.issueNumber,
@@ -5255,7 +5268,10 @@ export async function createProductionRunCoreDeps(
         // is reported as the failure it is.
         return {
           ok: true,
-          value: { ...routeRunResult(addRepoRoute), ...(mode ? { mode } : {}) },
+          value: {
+            ...routeRunResult(addRepoRoute, config.agentProvider),
+            ...(mode ? { mode } : {}),
+          },
         };
       }
 
@@ -5284,7 +5300,10 @@ export async function createProductionRunCoreDeps(
       if (seedRoute.routed) {
         return {
           ok: true,
-          value: { ...routeRunResult(seedRoute), ...(mode ? { mode } : {}) },
+          value: {
+            ...routeRunResult(seedRoute, config.agentProvider),
+            ...(mode ? { mode } : {}),
+          },
         };
       }
 
@@ -5520,6 +5539,9 @@ export async function createProductionRunCoreDeps(
           ...(result.tokenEconomizer && !isExpectedSkip
             ? { tokenEconomizer: result.tokenEconomizer }
             : {}),
+          // The provider that served the run (Issue #5163); a skip spawned no
+          // agent and the issue worker already reports the configured one.
+          ...(result.provider ? { provider: result.provider } : {}),
         },
       };
     },
@@ -5975,7 +5997,6 @@ export async function createProductionRunCoreDeps(
           runId: run.runId ?? getRunId(),
           host: Deno.hostname(),
           ...(config.workerName ? { workerName: config.workerName } : {}),
-          ...(config.agentProvider ? { provider: config.agentProvider } : {}),
           ...(sessionId ? { sessionId } : {}),
           // Same fallback order the transcript writer itself uses.
           ...(homeDirectory(env) ? { home: homeDirectory(env)! } : {}),

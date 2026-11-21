@@ -49,7 +49,19 @@
  * `|`, `;` or `&`, no `!`), no `continue-on-error`, an `if:` of only
  * `env.IMAGE_CHANGED == 'true'`, and an effective shell that runs the body. Job
  * `container` itself has no `continue-on-error` and no `if:`, since a skipped
- * or soft-failing job hides the run.
+ * or soft-failing job hides the run. It also checks the job that sets
+ * `IMAGE_CHANGED`: job `container` needs `changes`; job `changes` exists, has
+ * no `if:` or soft `continue-on-error`, and its `outputs.image` is exactly
+ * `${{ steps.filter.outputs.image }}`; and its `id: filter` step has no `if:`
+ * or soft `continue-on-error`, takes `BASE_SHA` and `HEAD_SHA` from the pull
+ * request event, sets no other env but `EVENT_NAME`, has an effective shell
+ * that runs the body, and has exactly the `FILTER_CODE` allowlist as its code
+ * (ending in `.github/scripts/detect-image-changes.sh "$BASE_SHA"
+ * "$HEAD_SHA"`). Job `changes` has no other step but `actions/checkout` and no
+ * `env:`, and the workflow sets no `env:`. Without these `IMAGE_CHANGED` may
+ * not be `true`, so the image
+ * steps and the agent run skip and the required check passes without the run.
+ * The check is textual and does not prove that the script itself is sound.
  *
  * Each finding names its invariant in square brackets, e.g. `[test-step]`.
  *
@@ -387,7 +399,7 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
  */
 const DOCKER_VALUE_FLAGS = ["--user", "-u", "--volume", "-v", "--entrypoint"];
 const DOCKER_BOOLEAN_FLAGS = ["--rm"];
-/** Job or workflow env keys that would reach the agent-run step's shell or docker. */
+/** Container-job env keys that would reach the agent-run step's shell or docker. */
 const INHERITED_ENV_REFUSED = [
   "BASH_ENV",
   "ENV",
@@ -530,11 +542,229 @@ function stepIsAgentRun(step: unknown): boolean {
   return rest.length === 1 && segmentRunsAwsEmulatorAsAgent(rest[0] ?? []);
 }
 
+/** The path filter script the `changes` job's `filter` step must run. */
+const DETECT_SCRIPT_PATH = ".github/scripts/detect-image-changes.sh";
+
+/** Whether `o` sets `continue-on-error` to anything but `false`. */
+function setsSoftContinueOnError(o: Record<string, unknown>): boolean {
+  return o["continue-on-error"] !== undefined &&
+    o["continue-on-error"] !== false;
+}
+
+/** The pull request event values the filter step's env must pass on. */
+const FILTER_ENV = {
+  BASE_SHA: "${{ github.event.pull_request.base.sha }}",
+  HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+};
+/** The only env keys the filter step may set. */
+const FILTER_ENV_KEYS = ["EVENT_NAME", ...Object.keys(FILTER_ENV)];
+
+/**
+ * The filter step's code, one command per line, exactly: an allowlist, not a
+ * parse. Non-pull-request events write `image=true` and exit; every other run
+ * ends in the detect script, unconditional and in the foreground, so its
+ * status ends the step. Any other command (a `||` or `if` guard, a loop, a
+ * trailing `&`, an `exit`, an `image=` write, a `GITHUB_OUTPUT` assignment,
+ * `export` or `unset`) is refused.
+ */
+const FILTER_CODE = [
+  "set -euo pipefail",
+  'if [[ "${EVENT_NAME}" != "pull_request" ]]; then',
+  'echo "image=true" >> "$GITHUB_OUTPUT"',
+  'echo "${EVENT_NAME} event: image checks run"',
+  "exit 0",
+  "fi",
+  `${DETECT_SCRIPT_PATH} "$BASE_SHA" "$HEAD_SHA"`,
+];
+
+/**
+ * The step's code lines: comment lines and blank lines dropped, backslash
+ * continuations joined as Bash joins them, and runs of ASCII blanks collapsed.
+ */
+function codeLines(step: unknown): string[] {
+  const code = runOf(step);
+  const logical: string[] = [];
+  let continued = "";
+  for (const physical of code.split("\n")) {
+    const leftTrimmed = physical.replace(/^[ \t]+/, "");
+    if (continued === "" && leftTrimmed.startsWith("#")) {
+      // In Bash a comment ends at its physical newline. A trailing backslash
+      // is part of the comment, not a continuation (ShellCheck SC1143).
+      // Refuse it explicitly so it cannot hide the command on the next line.
+      if (physical.endsWith("\\")) return ["invalid comment continuation"];
+      continue;
+    }
+    // Keep executable text closed over the shell syntax we model. Valid Bash
+    // comments may contain prose Unicode, but a Unicode space before `#` is
+    // executable text rather than a comment and must be refused.
+    if (
+      [...physical].some((character) => {
+        const point = character.codePointAt(0) ?? 0;
+        return point !== 0x09 && (point < 0x20 || point > 0x7e);
+      })
+    ) return ["invalid non-ASCII code"];
+    const firstBackslash = physical.indexOf("\\");
+    if (firstBackslash !== -1 && firstBackslash !== physical.length - 1) {
+      return ["invalid backslash"];
+    }
+    const line = `${continued}${physical}`;
+    if (firstBackslash !== -1 && firstBackslash === physical.length - 1) {
+      // Bash removes backslash-newline without inserting a blank. Preserve
+      // indentation already present on the following physical line.
+      continued = line.slice(0, -1);
+      continue;
+    }
+    continued = "";
+    const normalised = line.replace(/^[ \t]+|[ \t]+$/g, "").replace(
+      /[ \t]+/g,
+      " ",
+    );
+    if (normalised !== "") logical.push(normalised);
+  }
+  if (continued !== "") {
+    logical.push(continued.replace(/[ \t]+$/g, ""));
+  }
+  return logical;
+}
+
+/** Whether the step's code is exactly {@link FILTER_CODE}. */
+function filterCodeIsCanonical(step: unknown): boolean {
+  const lines = codeLines(step);
+  return lines.length === FILTER_CODE.length &&
+    lines.every((l, i) => l === FILTER_CODE[i]);
+}
+
+/**
+ * Whether a step only runs `actions/checkout` (pinned or tagged), with no
+ * `run:`, `env:` or `shell:` of its own.
+ */
+function stepIsPlainCheckout(step: unknown): boolean {
+  return isObject(step) && typeof step.uses === "string" &&
+    step.uses.startsWith("actions/checkout@") && step.run === undefined &&
+    step.env === undefined && step.shell === undefined;
+}
+
+/**
+ * Findings for the `changes` job and `container`'s `needs`: together they
+ * decide `IMAGE_CHANGED`, which gates the agent run.
+ */
+function imageGateProblems(
+  workflow: Record<string, unknown>,
+  tag: string,
+  jobs: [string, Record<string, unknown>][],
+  container: Record<string, unknown>,
+): string[] {
+  const problems: string[] = [];
+  const skipNote =
+    "so needs.changes.outputs.image is not 'true', every image step and the agent run skip and the required check passes";
+  const needs = Array.isArray(container.needs)
+    ? container.needs
+    : [container.needs];
+  if (!needs.includes("changes")) {
+    problems.push(
+      `${tag} job container must need changes: without it needs.changes.outputs.image is empty, ${skipNote}`,
+    );
+  }
+  const changes = jobs.find(([id]) => id === "changes")?.[1];
+  if (changes === undefined) {
+    problems.push(
+      `${tag} job changes must exist: it computes IMAGE_CHANGED, and without it ${skipNote}`,
+    );
+    return problems;
+  }
+  if (changes.if !== undefined || setsSoftContinueOnError(changes)) {
+    problems.push(
+      `${tag} job changes must have no if: and no continue-on-error: a skipped or soft-failing job leaves its output empty, ${skipNote}`,
+    );
+  }
+  if (changes.container !== undefined) {
+    problems.push(
+      `${tag} job changes must set no container: a container can replace the checked-out filter script or change git path handling, ${skipNote}`,
+    );
+  }
+  const outputs = changes.outputs;
+  if (
+    !isObject(outputs) ||
+    outputs.image !== "${{ steps.filter.outputs.image }}"
+  ) {
+    problems.push(
+      `${tag} job changes must set outputs.image to exactly \${{ steps.filter.outputs.image }}: any other value can be a constant, ${skipNote}`,
+    );
+  }
+  const filter = stepsOf(changes).find((s) => isObject(s) && s.id === "filter");
+  const others = stepsOf(changes).filter((s) => s !== filter);
+  if (!isObject(filter)) {
+    problems.push(
+      `${tag} job changes must have a step with id: filter: outputs.image reads it, and without it ${skipNote}`,
+    );
+  } else if (filter.if !== undefined || setsSoftContinueOnError(filter)) {
+    problems.push(
+      `${tag} the changes filter step must have no if: and no continue-on-error: a skipped or soft-failing step leaves image unset, ${skipNote}`,
+    );
+  } else if (
+    Object.entries(FILTER_ENV).some(([k, v]) =>
+      !isObject(filter.env) || filter.env[k] !== v
+    )
+  ) {
+    const wrong = Object.entries(FILTER_ENV).filter(([k, v]) =>
+      !isObject(filter.env) || filter.env[k] !== v
+    ).map(([k, v]) => `env ${k} to exactly ${v}`);
+    problems.push(
+      `${tag} the changes filter step must set ${
+        wrong.join(" and ")
+      }: other values make the path filter diff the wrong commit range`,
+    );
+  } else if (!effectiveShell(workflow, changes, filter).runsBody) {
+    problems.push(
+      `${tag} the changes filter step's shell (step, job changes or workflow defaults.run.shell) must be bash or sh that runs the body: otherwise the filter may not run, ${skipNote}`,
+    );
+  } else if (!others.every(stepIsPlainCheckout)) {
+    problems.push(
+      `${tag} job changes may have no step but the filter step and actions/checkout steps (no run:, no env:): another step could rewrite ${DETECT_SCRIPT_PATH} or write GITHUB_ENV before the filter runs, ${skipNote}`,
+    );
+  } else if (
+    Object.keys(filter.env ?? {}).some((k) => !FILTER_ENV_KEYS.includes(k))
+  ) {
+    problems.push(
+      `${tag} the changes filter step's env must set only ${
+        FILTER_ENV_KEYS.join(", ")
+      }: another variable such as GITHUB_OUTPUT or BASH_ENV could redirect the image output or run code before the filter, ${skipNote}`,
+    );
+  } else if (changes.env !== undefined) {
+    problems.push(
+      `${tag} job changes must set no env: a variable can alter bash, git or the output path before the filter runs, ${skipNote}`,
+    );
+  } else if (workflow.env !== undefined) {
+    problems.push(
+      `${tag} workflow must set no env: workflow variables reach the filter and its git script and can change their result or redirect output, ${skipNote}`,
+    );
+  } else if (runOf(filter).includes("${{")) {
+    problems.push(
+      `${tag} the changes filter step's raw code must contain no GitHub expression: expressions are expanded before bash, including inside comments, ${skipNote}`,
+    );
+  } else if (!filterCodeIsCanonical(filter)) {
+    problems.push(
+      `${tag} the changes filter step's code (comments and blank lines aside) must be exactly: ${
+        FILTER_CODE.join(" / ")
+      }: any other command can skip the path filter, background it, redirect GITHUB_OUTPUT or write another image value, ${skipNote}`,
+    );
+  }
+  return problems;
+}
+
 /**
  * Check a parsed container-build.yml: job `container` has a step that runs the
  * AWS Emulator reference command as `agent` in a fresh container, with its
- * exit status intact (`[container-agent-run]`). Never throws on malformed
- * input.
+ * exit status intact (`[container-agent-run]`). It also checks that the gate
+ * feeding `IMAGE_CHANGED` is intact: `container` needs `changes`; `changes`
+ * exists with no `if:` or soft `continue-on-error` and with `outputs.image`
+ * set to the filter step's output; and the `filter` step has no `if:` or soft
+ * `continue-on-error`, takes its SHAs from the pull request event, sets no
+ * other env, has a shell that runs the body, and has exactly the allowlisted
+ * code ending in the detect script call. The job allows only checkout and the
+ * filter step, no job container and no job env. The workflow may set no env,
+ * and the raw filter body may contain no GitHub expression. Never throws on
+ * malformed input.
  */
 export function checkContainerBuildRunsAwsEmulator(
   workflow: unknown,
@@ -550,7 +780,12 @@ export function checkContainerBuildRunsAwsEmulator(
       `${tag} no step in job container runs the AWS Emulator reference command as agent (docker run --rm --user agent, exactly one read-only infra/cloudformation volume at D, --entrypoint D/test-aws-emulator.sh, image \${IMAGE}) with its exit status intact`,
     ];
   }
-  const problems: string[] = [];
+  const problems: string[] = imageGateProblems(
+    workflow,
+    tag,
+    jobEntries(workflow),
+    job,
+  );
   if (
     job["continue-on-error"] !== undefined &&
     job["continue-on-error"] !== false
@@ -584,12 +819,15 @@ export function checkContainerBuildRunsAwsEmulator(
       `${tag} the agent-run step must not set env: IMAGE, BASH_ENV or DOCKER_HOST there would change what runs`,
     );
   }
-  const inherited = [workflow.env, job.env].flatMap((env) =>
-    isObject(env) ? Object.keys(env) : []
-  ).filter((key) => INHERITED_ENV_REFUSED.includes(key));
+  // Workflow env is rejected categorically by imageGateProblems because it
+  // also reaches the changes filter. Check only the container job here so one
+  // unsafe workflow variable produces one actionable finding.
+  const inherited = isObject(job.env)
+    ? Object.keys(job.env).filter((key) => INHERITED_ENV_REFUSED.includes(key))
+    : [];
   if (inherited.length > 0) {
     problems.push(
-      `${tag} the job and workflow env must not set ${
+      `${tag} job container env must not set ${
         inherited.join(", ")
       }: each reaches the agent-run step and could replace its shell start-up, docker or daemon`,
     );
