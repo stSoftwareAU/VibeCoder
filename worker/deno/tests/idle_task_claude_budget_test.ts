@@ -17,6 +17,7 @@ import type {
   RunClaudeOptions,
 } from "../lib/claude_runner.ts";
 import {
+  collectIdleTaskInvocations,
   getIdleTaskRunContext,
   IDLE_TASK_CLAIM_RUNWAY_FLOOR_SECONDS,
   IDLE_TASK_NO_OUTPUT_TIMEOUT_SECONDS,
@@ -404,4 +405,128 @@ Deno.test("claim runway - a deadline already passed is below the floor, not nega
   const runway = resolveIdleTaskClaimRunway(now - 5 * 60_000, now);
   assertEquals(runway.budgetSeconds, EXECUTE_TIMEOUT_FLOOR_SECONDS);
   assertEquals(runway.belowFloor, true);
+});
+
+// ---------------------------------------------------------------------------
+// Invocation collector (Issue #5296)
+// ---------------------------------------------------------------------------
+
+const COLLECT_OPTIONS = { prompt: "scan", cwd: "/tmp/x" } as RunClaudeOptions;
+
+function statsWithTokens(input: number, output: number) {
+  return {
+    servedModels: ["claude-sonnet-4"],
+    requestedModel: "sonnet",
+    tokenUsage: {
+      inputTokens: input,
+      outputTokens: output,
+      cacheCreationTokens: 3,
+      cacheReadTokens: 4,
+    },
+    wallClockMs: 1000,
+  };
+}
+
+Deno.test("collectIdleTaskInvocations records an ok result's runStats", async () => {
+  const runStats = statsWithTokens(100, 20);
+  const { value, invocations } = await collectIdleTaskInvocations(() =>
+    runIdleTaskClaude(
+      COLLECT_OPTIONS,
+      undefined,
+      () =>
+        Promise.resolve({
+          ok: true,
+          value: { exitCode: 0, output: "", timedOut: false, runStats },
+        }),
+    )
+  );
+  assertEquals(value.ok, true);
+  assertEquals(invocations, [{ runStats }]);
+});
+
+Deno.test("collectIdleTaskInvocations records an error result as an invocation", async () => {
+  const { value, invocations } = await collectIdleTaskInvocations(() =>
+    runIdleTaskClaude(
+      COLLECT_OPTIONS,
+      undefined,
+      () => Promise.resolve({ ok: false, error: new Error("boom") }),
+    )
+  );
+  assertEquals(value.ok, false);
+  assertEquals(invocations, [{}]);
+});
+
+Deno.test("collectIdleTaskInvocations records {} for a throwing runner and rethrows", async () => {
+  let seen: unknown;
+  try {
+    await collectIdleTaskInvocations(async () => {
+      try {
+        await runIdleTaskClaude(COLLECT_OPTIONS, undefined, () => {
+          throw new Error("kaboom");
+        });
+      } catch (e) {
+        seen = e;
+        throw e;
+      }
+    });
+  } catch (e) {
+    assertEquals((e as Error).message, "kaboom");
+  }
+  assertEquals((seen as Error).message, "kaboom");
+
+  // The throw loses the invocations list with it, so prove the record via a
+  // collector that outlives the throw.
+  const result = await collectIdleTaskInvocations(async () => {
+    try {
+      await runIdleTaskClaude(COLLECT_OPTIONS, undefined, () => {
+        throw new Error("kaboom");
+      });
+    } catch {
+      // swallowed here so the collector can report what it saw
+    }
+  });
+  assertEquals(result.invocations, [{}]);
+});
+
+Deno.test("collectIdleTaskInvocations keeps concurrent collectors apart", async () => {
+  const run = (input: number, count: number) =>
+    collectIdleTaskInvocations(async () => {
+      for (let i = 0; i < count; i++) {
+        await runIdleTaskClaude(COLLECT_OPTIONS, undefined, async () => {
+          await Promise.resolve();
+          await new Promise((r) => setTimeout(r, 1));
+          return {
+            ok: true as const,
+            value: {
+              exitCode: 0,
+              output: "",
+              timedOut: false,
+              runStats: statsWithTokens(input, 1),
+            },
+          };
+        });
+      }
+    });
+  const [a, b] = await Promise.all([run(111, 1), run(222, 2)]);
+  assertEquals(
+    a.invocations.map((i) => i.runStats?.tokenUsage?.inputTokens),
+    [111],
+  );
+  assertEquals(
+    b.invocations.map((i) => i.runStats?.tokenUsage?.inputTokens),
+    [222, 222],
+  );
+});
+
+Deno.test("runIdleTaskClaude outside a collector still runs the runner", async () => {
+  const result = await runIdleTaskClaude(
+    COLLECT_OPTIONS,
+    undefined,
+    () =>
+      Promise.resolve({
+        ok: true,
+        value: { exitCode: 7, output: "x", timedOut: false },
+      }),
+  );
+  assertEquals(result.ok && result.value.exitCode, 7);
 });
