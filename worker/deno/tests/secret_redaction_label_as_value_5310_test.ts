@@ -319,6 +319,55 @@ leak(
   `credentials: ${R}${R};x=1`,
 );
 
+// The inner label's separator and value must start within 256 characters of
+// the outer value's end (PR #5322 review round 3). The first pass masks a
+// value starting inside that span, so its placeholder can run past the span's
+// end; a second pass must still see the whole placeholder. Before the fix a
+// 13-gap band at the edge of each shape was masked again on a second pass,
+// and `containsSecret` reported a secret in the redacted text.
+for (
+  const [name, at] of [
+    [
+      "spaces before =",
+      (n: number) => `credentials: DEPLOY_TOKEN${" ".repeat(n)}= ${V}`,
+    ],
+    [
+      "spaces after =",
+      (n: number) => `credentials: DEPLOY_TOKEN =${" ".repeat(n)}${V}`,
+    ],
+    [
+      "newlines after api_key:",
+      (n: number) => `The secret: api_key:${"\n".repeat(n)}${V}`,
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 idempotent across the 256-character span edge: ${name}`, () => {
+    for (let n = 0; n <= 300; n++) {
+      const once = redactSecrets(at(n));
+      assertEquals(redactSecrets(once), once, `gap ${n}`);
+      assertEquals(containsSecret(once), false, `gap ${n}`);
+    }
+  });
+}
+
+Deno.test("#5310 control: an inner = 253 spaces away is still judged as a label", () => {
+  const gap = " ".repeat(253);
+  const once = redactSecrets(`credentials: DEPLOY_TOKEN${gap}= ${V}`);
+  assertEquals(once, `credentials: DEPLOY_TOKEN${gap}= ${R}`);
+  assertEquals(redactSecrets(once), once);
+  assertEquals(containsSecret(once), false);
+});
+
+Deno.test("#5310 control: an inner = 254 spaces away keeps the base behaviour", () => {
+  // The documented limit (SECURITY.md): past the span the label is masked as
+  // the earlier label's value and the inner value is published, as on base.
+  const gap = " ".repeat(254);
+  assertEquals(
+    redactSecrets(`credentials: DEPLOY_TOKEN${gap}= ${V}`),
+    `credentials: ${R}${gap}= ${V}`,
+  );
+});
+
 // Redaction is idempotent on every leak form, and its output reads clean
 // (pre-PR verifier): `api_key: pw42` once lost its label on a second pass.
 for (const input of LEAKS) {

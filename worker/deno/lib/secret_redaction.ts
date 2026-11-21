@@ -675,12 +675,18 @@ const RULES: readonly RedactionRule[] = [
   // still masked. Both lookaheads are fixed-width alternations — constant
   // work per candidate (the Issue #3942 linearity rule).
   //
-  // A credential label is never taken as the value of the label before it
-  // (Issue #5310). In `credentials: DEPLOY_TOKEN = <value>` the bare-value
-  // branch stops at whitespace, so the outer match masked only `DEPLOY_TOKEN`,
-  // the scan resumed after it, and the real value was published. The pattern
-  // itself is unchanged; `walkAssignments` makes the decision where the value
-  // is judged — see there.
+  // A credential label in the value of the label before it is judged as a
+  // label, not masked as that value (Issue #5310). In
+  // `credentials: DEPLOY_TOKEN = <value>` the bare-value branch stops at
+  // whitespace, so the outer match masked only `DEPLOY_TOKEN`, the scan
+  // resumed after it, and the real value was published. The pattern itself is
+  // unchanged; `walkAssignments` makes the decision where the value is judged
+  // — see there. That holds within the limits `trailingLabel` and
+  // `innerAssignment` apply: the inner separator and value start within
+  // `INNER_ASSIGNMENT_SPAN` (256) characters of the outer value's end, the
+  // label is at most `INNER_LABEL_MAX` (128) characters, and the
+  // embedded-quote case (`DEPLOY_TOKEN='a'b'c <value>'`) is not covered. Past
+  // them the base behaviour applies.
   //
   // JSON structure survives the mask (Issue #4169's transcript tee is the
   // sink that showed it). Every stream-json line the agent emits carries a
@@ -970,6 +976,12 @@ const CREDENTIAL_KEYWORD =
 /** The start of the pattern's separator group, right after a key. */
 const SEPARATOR_START = /^["']?\s*[=:]/;
 
+/**
+ * How far past {@link INNER_ASSIGNMENT_SPAN} the already-masked check reads:
+ * an opening quote and the whole placeholder (Issue #5310).
+ */
+const MASKED_REACH = REDACTION_PLACEHOLDER.length + 1;
+
 /** The pattern's separator then the placeholder: a value already masked. */
 const MASKED_SEPARATOR = /^["']?\s*[=:]\s*["']?\*\*\*REDACTED\*\*\*/;
 
@@ -1052,7 +1064,13 @@ function innerAssignment(
   if (!label) return null;
   const window = text.slice(label.start, end + INNER_ASSIGNMENT_SPAN);
   const afterKey = window.slice(label.end - label.start);
-  const masked = MASKED_SEPARATOR.exec(afterKey);
+  // The first pass masks an inner value whose first character lies inside the
+  // window, so its placeholder (after an optional opening quote) can run past
+  // the window's end. The already-masked check reads that far, so a second
+  // pass sees the whole placeholder wherever the first could write one.
+  const masked = MASKED_SEPARATOR.exec(
+    text.slice(label.end, end + INNER_ASSIGNMENT_SPAN + MASKED_REACH),
+  );
   if (masked) {
     // The placeholder must reach the value's end (bar a closing quote); text
     // after it belongs to the outer value, which stays masked whole.
