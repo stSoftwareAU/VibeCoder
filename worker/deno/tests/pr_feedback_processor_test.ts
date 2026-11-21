@@ -28,6 +28,10 @@ import {
 } from "../lib/pr_body_sync.ts";
 import { WORKER_PR_MARKER_PREFIX } from "../lib/pr_body.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { verifyPushLanded } from "../lib/push_claim_verification.ts";
 import type { Logger } from "../types.ts";
 import type {
@@ -529,8 +533,9 @@ for (
 
     const git = async (cwd: string, args: string[]) => {
       const result = await new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd,
+        env: NO_HOST_GIT_CONFIG,
         stdout: "piped",
         stderr: "piped",
       }).output();

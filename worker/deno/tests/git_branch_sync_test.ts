@@ -29,13 +29,23 @@ import {
   recordedRebase,
   startGitTrace,
 } from "./support/git_trace.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const DEFAULT_BRANCH = "Develop";
 const FEATURE_BRANCH = "issue-556-sync";
 
-/** Run a git command in a repo, failing loudly on a non-zero exit. */
+/**
+ * Run a git command in a repo, failing loudly on a non-zero exit. Fixture
+ * git ignores the host's config and hooks (Issue #5309).
+ */
 async function git(args: string[], cwd: string): Promise<string> {
-  const result = await runGitCommand(args, { cwd });
+  const result = await runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
+    cwd,
+    env: NO_HOST_GIT_CONFIG,
+  });
   if (!result.ok) throw result.error;
   if (result.value.code !== 0) {
     throw new Error(
