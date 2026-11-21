@@ -25,12 +25,6 @@ export const GUEST_SILENCE_SECONDS_ENV = "VIBE_GUEST_SILENCE_SECONDS";
 /** Default silence threshold, in seconds. Zero disables the early reap. */
 export const DEFAULT_GUEST_SILENCE_SECONDS = 900;
 
-/**
- * How often the launcher's watchdog runs the early check, in seconds. Kept in
- * step with the `VIBE_GUEST_SILENCE_CHECK_SECONDS` default in run.sh.
- */
-export const DEFAULT_GUEST_SILENCE_CHECK_SECONDS = 300;
-
 /** Consecutive exec probes that must fail before the guest counts as wedged. */
 export const GUEST_SILENCE_PROBES = 2;
 

@@ -581,11 +581,6 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     note:
       "the early silent-guest reap threshold, default 900s; 0 turns the early reap off and launcher tests shorten it (Issue #5161)",
   },
-  VIBE_GUEST_SILENCE_CHECK_SECONDS: {
-    role: "switch",
-    note:
-      "how often run.sh's watchdog runs the early silent-guest check, default 300s; 0 turns the early check off and launcher tests shorten it (Issue #5161)",
-  },
   VIBE_EXTENSION_PREFIX: {
     role: "switch",
     note: "test-only override of the fixed in-container extension prefix " +

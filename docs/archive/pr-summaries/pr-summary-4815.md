@@ -18,8 +18,8 @@ last step logged differs: `agent turn` twice and `pre-PR verifier` once. The
 guest VM itself hung, so no single completion step is at fault. The launcher's
 early silent-guest reap (#5161, already on `main`) bounds a hung guest: it is a
 mitigation, not a cure. A new bounded replay test runs each kill's recorded
-timestamps through that reap's decision at the launcher's real check cadence.
-Why the guest hangs is still unknown, so the reap shortens a hang but does not
+timestamps through that reap's decision on a synthetic five-minute cadence. Why
+the guest hangs is still unknown, so the reap shortens a hang but does not
 prevent it. This is Part of #4815.
 
 ## Spec
@@ -44,9 +44,7 @@ prevent it. This is Part of #4815.
   not-finished retry and the absence of `needs-human`
   (`worker/deno/lib/phases/declared_handoff.ts`, the branch after
   `history.length < MAX_TIME_DEFERRALS`) stay as they are.
-- The replay adds no production behaviour. The only code addition is the
-  `DEFAULT_GUEST_SILENCE_CHECK_SECONDS` constant, which mirrors `run.sh`'s
-  default so the test does not read shell text.
+- The replay samples the production silence decision at a synthetic interval.
 - No time-deferral marker is emitted. A deferral after a commit raises no PR,
   and the next diagnostic step waits on a recurrence, not on a date this run can
   know.
@@ -79,15 +77,13 @@ the public timestamps from the issue:
 
 - `replay #4815 <container> (<step>) - the early reap fires before the recorded
   silence`:
-  the real `checkGuestSilence` is run at `run.sh`'s
-  `VIBE_GUEST_SILENCE_CHECK_SECONDS` default cadence (300s, now exported as
-  `DEFAULT_GUEST_SILENCE_CHECK_SECONDS` beside the threshold), from three
+  `checkGuestSilence` is sampled every 300 simulated seconds from three
   check-clock offsets. For each, the guest is judged wedged after 900s and
   before 1200s of silence. Even with both exec probes taking their full bound,
   that is before the silence each kill actually ran to.
 - `replay #4815 <container> (<step>) - a guest that still answers is never
   reaped`:
-  the same silence with a guest that answers reaps nothing.
+  the same silence with a guest that answers gives a healthy verdict.
 
 Issue numbers the diff cites: #4227 (An approved issue is never handed back: a
 run that delivers nothing is retried, not labelled needs-human as
@@ -105,7 +101,7 @@ run that delivers nothing is retried, not labelled needs-human as
   within 3667.22s` / `1817.232s`). With the shipped 900s
   default it passes.
 - **regression test** —
-  `worker/deno/tests/guest_silence_replay_4815_test.ts::replay #4815 vibe-coder-53371 (agent turn) - the early reap fires before the recorded silence`
+  `worker/deno/tests/guest_silence_replay_4815_test.ts::replay #4815 vibe-coder-53371 (agent turn) - the guest is judged wedged before the recorded silence`
 
 ## Acceptance Criteria
 
@@ -113,7 +109,7 @@ run that delivers nothing is retried, not labelled needs-human as
 
 - **partial** — "use a bounded replay or the next applicable recurrence to
   diagnose and repair the completion failure" — evidence:
-  `worker/deno/tests/guest_silence_replay_4815_test.ts::replay #4815 vibe-coder-46887 (pre-PR verifier) - the early reap fires before the recorded silence`
+  `worker/deno/tests/guest_silence_replay_4815_test.ts::replay #4815 vibe-coder-46887 (pre-PR verifier) - the guest is judged wedged before the recorded silence`
   (and the same test for `vibe-coder-53371` and `vibe-coder-9753`) — reviewer:
   partial — reason: the replay narrows the wedge to a guest-VM hang that the
   #5161 early reap ends after about 20 minutes instead of 30–90. Why the guest
@@ -145,9 +141,7 @@ run that delivers nothing is retried, not labelled needs-human as
 
 - **violation** — no source-text gate — evidence:
   `worker/deno/tests/guest_silence_replay_4815_test.ts` (scraped `run.sh` for
-  the check cadence) — reason: fixed in this diff; the cadence is now
-  `DEFAULT_GUEST_SILENCE_CHECK_SECONDS` in
-  `worker/deno/lib/guest_silence_watch.ts`, and the `run.sh` comment names it.
+  the check cadence) — fixed by keeping the simulated cadence in the fixture.
 - **violation** — retyped constant — evidence:
   `worker/deno/tests/time_deferral_test.ts:370` — reason: not changed, and
   disputed. The assertions check the public comment text a reader sees.
