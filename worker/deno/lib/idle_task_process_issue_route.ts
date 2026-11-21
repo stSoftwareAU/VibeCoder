@@ -44,7 +44,18 @@ import {
   type HandleIdleTaskIssueResult,
 } from "./idle_task_claim_handler.ts";
 import { runGhCommand as defaultRunGhCommand } from "./github.ts";
-import { resolveIdleTaskClaimRunway } from "./idle_task_claude_budget.ts";
+import {
+  collectIdleTaskInvocations,
+  resolveIdleTaskClaimRunway,
+} from "./idle_task_claude_budget.ts";
+import {
+  callbackTelemetryAbsenceReason,
+  summariseCallbackTelemetry,
+} from "./run_callback_telemetry.ts";
+import type {
+  CallbackRunTelemetry,
+  TelemetryAbsentReason,
+} from "./run_callbacks.ts";
 import { ensureRepoClone as defaultEnsureRepoClone } from "./ensure_repo_clone.ts";
 import { finaliseIdleTaskWrapper } from "./idle_task_wrapper_closure.ts";
 import { decideOptInClaim } from "./idle_task_opt_in.ts";
@@ -119,10 +130,21 @@ export const IDLE_TASK_RUNWAY_DECLINED_MESSAGE =
  *   written to the wrapper. `claimReason: "insufficient_runway"` is the
  *   route's own refusal (Issue #1757): the claim was never attempted because
  *   the cycle deadline would have bounded the scan below the floor.
+ *
+ * A routed outcome whose scan ran carries the agent's own telemetry
+ * (Issue #5296): `telemetry` when an invocation reported usage, otherwise
+ * `telemetryAbsentReason` (`agent_not_invoked` when the template ran no agent).
+ * The refusal and clone-failure outcomes ran no agent and carry neither.
  */
 export type RouteIdleTaskOutcome =
   | { routed: false }
-  | { routed: true; success: boolean; provider?: string }
+  | {
+    routed: true;
+    success: boolean;
+    provider?: string;
+    telemetry?: CallbackRunTelemetry;
+    telemetryAbsentReason?: TelemetryAbsentReason;
+  }
   | ({ routed: true; success: false } & RouteClaimLost);
 
 /**
@@ -309,19 +331,23 @@ async function runRoutedScan(
     }
   }
 
-  const idleResult: HandleIdleTaskIssueResult = await handleIdleTask(
-    {
-      repo: input.repo,
-      issueNumber: input.issueNumber,
-      issueTitle: input.issueTitle,
-      issueLabels: input.issueLabels,
-      issueBody: input.issueBody,
-      workDir: input.workDir,
-      ...(input.cycleDeadlineEpochMs !== undefined
-        ? { cycleDeadlineEpochMs: input.cycleDeadlineEpochMs }
-        : {}),
-    },
-    { logger: deps.logger },
+  const { value: idleResult, invocations } = await collectIdleTaskInvocations<
+    HandleIdleTaskIssueResult
+  >(() =>
+    handleIdleTask(
+      {
+        repo: input.repo,
+        issueNumber: input.issueNumber,
+        issueTitle: input.issueTitle,
+        issueLabels: input.issueLabels,
+        issueBody: input.issueBody,
+        workDir: input.workDir,
+        ...(input.cycleDeadlineEpochMs !== undefined
+          ? { cycleDeadlineEpochMs: input.cycleDeadlineEpochMs }
+          : {}),
+      },
+      { logger: deps.logger },
+    )
   );
 
   if (!idleResult.handled) {
@@ -339,5 +365,18 @@ async function runRoutedScan(
     { logger: deps.logger, ghCommandFn: ghCommand },
   );
 
-  return { routed: true, success: ok };
+  // Issue #5296: publish the usage of the agent the template ran. Zero
+  // invocations is the true "agent_not_invoked": the template ran none.
+  const telemetry = summariseCallbackTelemetry(invocations);
+  const absentReason = telemetry === undefined
+    ? callbackTelemetryAbsenceReason(invocations, input.configuredProvider)
+    : undefined;
+  return {
+    routed: true,
+    success: ok,
+    ...(telemetry !== undefined ? { telemetry } : {}),
+    ...(absentReason !== undefined
+      ? { telemetryAbsentReason: absentReason }
+      : {}),
+  };
 }

@@ -314,7 +314,12 @@ Deno.test(
       assertEquals(hub.comments.length, 0);
 
       const first = await runHost(hub, "GRQ-3", scans, logA, workDir, beats);
-      assertEquals(first, { routed: true, success: true });
+      // Issue #5296: the fake scan launches no agent.
+      assertEquals(first, {
+        routed: true,
+        success: true,
+        telemetryAbsentReason: "agent_not_invoked",
+      });
       assertEquals(scans, ["GRQ-3"]);
       // The winner beat for the life of its scan and stopped afterwards.
       assertEquals(beats, ["start:GRQ-3", "stop:GRQ-3"]);

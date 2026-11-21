@@ -35,6 +35,10 @@
  */
 
 import type { Logger } from "../types.ts";
+import type {
+  CallbackRunTelemetry,
+  TelemetryAbsentReason,
+} from "./run_callbacks.ts";
 import {
   type ClaimFailureReason,
   claimIssue as defaultClaimIssue,
@@ -478,6 +482,10 @@ export interface RouteRunResult {
    * describes.
    */
   claimNotHeld?: true;
+  /** The routed run's own agent telemetry (Issue #5296). */
+  telemetry?: CallbackRunTelemetry;
+  /** Why the routed run has no telemetry (Issue #5296). */
+  telemetryAbsentReason?: TelemetryAbsentReason;
 }
 
 /**
@@ -492,15 +500,35 @@ export interface RouteRunResult {
  * not a collaborator, a verification read that failed) is a **failure**: the
  * same verdict the standard pipeline gives it, so a broken GitHub reaches
  * the failure counters instead of being filed away as a benign conflict.
+ *
+ * A routed run's own agent telemetry (or the reason it has none) is forwarded
+ * when the outcome carries it, never invented; a lost claim ran no agent and
+ * carries neither (Issue #5296).
  */
 export function routeRunResult(
-  outcome: { success: boolean } | ({ success: false } & RouteClaimLost),
+  outcome:
+    | {
+      success: boolean;
+      telemetry?: CallbackRunTelemetry;
+      telemetryAbsentReason?: TelemetryAbsentReason;
+    }
+    | ({ success: false } & RouteClaimLost),
   configuredProvider?: string,
 ): RouteRunResult {
   const provider = configuredProvider?.trim();
   const identity = provider ? { provider } : {};
   if (!("claimLost" in outcome)) {
-    return { success: outcome.success, skipped: false, ...identity };
+    return {
+      success: outcome.success,
+      skipped: false,
+      ...identity,
+      ...(outcome.telemetry !== undefined
+        ? { telemetry: outcome.telemetry }
+        : {}),
+      ...(outcome.telemetryAbsentReason !== undefined
+        ? { telemetryAbsentReason: outcome.telemetryAbsentReason }
+        : {}),
+    };
   }
   return {
     success: false,
