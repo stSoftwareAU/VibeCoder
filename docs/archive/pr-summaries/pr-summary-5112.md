@@ -10,8 +10,8 @@ Floci now gets one migration finding through the ordinary scan. Closes #5112.
 
 ### Intent and Rationale
 
-- An installed tool or a service image only shows the emulator is available.
-  The check now asks whether a `pull_request` job runs a test through
+- An installed tool or a service image only shows the emulator is available. The
+  check now asks whether a `pull_request` job runs a test through
   `aws-emulator-run -- <test>` and whether a failure of that test fails the job.
 - The existing detector (`aws_emulator_in_ci_check.ts`), shell helpers
   (`shell_command_words.ts`), workflow loader (`loadWorkflows`) and title-dedup
@@ -22,29 +22,28 @@ Floci now gets one migration finding through the ordinary scan. Closes #5112.
 
 - **Wiring classes, in precedence order:** `official-server`,
   `official-embedded`, `floci-gap`, `floci-only`, `missing`. Only `floci-only`
-  and `missing` are filed, under the same id, with a migration title or a
-  "no test wiring" title.
+  and `missing` are filed, under the same id, with a migration title or a "no
+  test wiring" title.
 - **Official credit** needs all of the following:
   - The workflow runs on `pull_request`, or a `pull_request` workflow calls it
     through `workflow_call` (followed transitively).
   - Neither the job nor the step sets `continue-on-error`, and neither has a
     static-false `if:`.
   - The shell actually runs the body.
-  - The runner's failure is preserved. It is not in a condition, not behind
-    `!`, and not followed by `||`, `|` or `&`. It also runs via `exec`, or
-    is last (or the rest of the body is an `&&` chain), or runs with errexit
-    on. Errexit is on for GitHub's default `bash` and `sh`, and off at the
-    start of a repository script. `set -e` and `set +e` toggle it.
+  - The runner's failure is preserved. It is not in a condition, not behind `!`,
+    and not followed by `||`, `|` or `&`. It also runs via `exec`, or is last
+    (or the rest of the body is an `&&` chain), or runs with errexit on. Errexit
+    is on for GitHub's default `bash` and `sh`, and off at the start of a
+    repository script. `set -e` and `set +e` toggle it.
 - **Two comment markers were defined, because the issue gave no format** (an
   assumption):
   - `# aws-emulator-gap: version=…; behaviour=…; evidence=…; alternative=…; recheck=…`
     (the five fields `CODING-STANDARDS.md` requires for a gap). It counts only
     in a `pull_request`-applicable workflow whose Floci job is enabled and not
     soft-failing.
-  - `# aws-emulator-embedded: version=X.Y.Z; justification=…` on a
-    `cargo test` or `cargo nextest` step. It counts only in a repo with a
-    `Cargo.toml` in its AWS evidence, since the standard allows embedded mode
-    for Rust only.
+  - `# aws-emulator-embedded: version=X.Y.Z; justification=…` on a `cargo test`
+    or `cargo nextest` step. It counts only in a repo with a `Cargo.toml` in its
+    AWS evidence, since the standard allows embedded mode for Rust only.
 - **A Floci-only repository with a valid gap record is not filed.** I read the
   acceptance line "a Floci-only setup with no documented gap produces one
   migration finding" as exempting a documented gap. An unparseable workflow
@@ -88,17 +87,17 @@ Docs updated, after reading each section through:
   static wiring evidence from CI results and reviewed coverage.
 - `DESIGN-PRINCIPLES.md`: the AWS emulator principle.
 - `docs/IDLE-TASK-FRAMEWORK.md`: the `best-practices` row.
-- `CODING-STANDARDS.md`: the rollout paragraph of AWS integration testing,
-  which is now present tense and names both markers.
+- `CODING-STANDARDS.md`: the rollout paragraph of AWS integration testing, which
+  is now present tense and names both markers.
 - `docs/CONTAINER-IMAGE.md`: the #5112 status sentence.
 - The AWS sections of the `aws-cloudformation`, `terraform`, `typescript`,
   `rust` and `java` bucket guides, which no longer say "not yet: #5112" or
   "policy wins until".
 
-I grepped for `Floci or the official`, `any .tf file`, `emulatorConfigured`
-and `reachableSegments` outside `docs/archive` and `docs/audits`. None remain.
-The remaining `floci` and `docker.sock` hits describe the Floci runtime and
-pre-push gate, which this PR does not change.
+I grepped for `Floci or the official`, `any .tf file`, `emulatorConfigured` and
+`reachableSegments` outside `docs/archive` and `docs/audits`. None remain. The
+remaining `floci` and `docker.sock` hits describe the Floci runtime and pre-push
+gate, which this PR does not change.
 
 Issue numbers the diff adds as provenance (each looked up with `gh issue view`):
 
@@ -140,19 +139,19 @@ emulator test.
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts` (the embedded-marker,
   service-image, `continue-on-error`/`|| true`/`!`/pipe/`if`, Floci gap-record
   and Terraform tests, plus the existing install-only and comment tests) —
-  reviewer: partial — reason: the reviewer wanted an unsupported (HTTP 501)
-  case on the official path, but a static scan cannot observe a 501. The
-  policy records an unsupported operation as an `aws-emulator-gap` record,
-  and the valid, incomplete, disabled-job and push-only gap fixtures cover it.
+  reviewer: partial — reason: the reviewer wanted an unsupported (HTTP 501) case
+  on the official path, but a static scan cannot observe a 501. The policy
+  records an unsupported operation as an `aws-emulator-gap` record, and the
+  valid, incomplete, disabled-job and push-only gap fixtures cover it.
 - **met** — A required test command failure cannot satisfy the workflow
   contract. — evidence:
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts::checkAwsEmulatorInCI - a runner followed by && and another line is refused; as the last && link it is credited`,
   `…::a repository script without set -e that runs the runner then more lines is refused; with set -euo pipefail it is credited`,
   `…::set +e before the runner refuses it when another command follows; set -e or the default shell keeps it`,
   `…::a step shell of bash {0} with a later command refuses the runner; exactly bash keeps errexit and credits it`
-  — reviewer: partial — reason: the reviewer's `&&`, `set +e`, script-without-`set -e`
-  and custom-shell gaps were fixed after the review by the errexit-aware rule
-  and the tests named here
+  — reviewer: partial — reason: the reviewer's `&&`, `set +e`,
+  script-without-`set -e` and custom-shell gaps were fixed after the review by
+  the errexit-aware rule and the tests named here
 - **met** — Existing open findings are reused; valid suppressions still work,
   expired/malformed ones do not. — evidence:
   `worker/deno/tests/best_practices_template_test.ts::runTask - AWS finding already open under its finding-id is not re-filed`,
@@ -178,8 +177,8 @@ emulator test.
   body) — reviewer: partial — reason: the reviewer found no live run. Scope 9
   says to use the normal scan path, and that path is the scheduled
   best-practices scan, which files these findings per repository once this
-  merges. No separate campaign exists to run, and private repository names
-  stay out of this public PR.
+  merges. No separate campaign exists to run, and private repository names stay
+  out of this public PR.
 - **met** — Relevant detector, pre-filer, workflow and documentation checks
   pass. — evidence: `./quality.sh` on the final code commit (see Test Plan) —
   reviewer: partial — reason: the reviewer saw only the diff. The gate was run
@@ -222,59 +221,60 @@ emulator test.
 - **violation** — A code change owes a docs change: `DESIGN-PRINCIPLES.md` still
   described the old Floci and any-`.tf` rules — evidence:
   `DESIGN-PRINCIPLES.md:1877` — reason: fixed in this diff
-- **violation** — Remove unreachable dead code: `reachableSegments` was left with
-  no caller — evidence: `worker/deno/lib/shell_command_words.ts:555` — reason:
-  fixed in this diff (removed)
-- **violation** — A doc comment the change made false ("computed independently of
-  `usesAws`") — evidence: `worker/deno/lib/aws_emulator_in_ci_check.ts:60` —
+- **violation** — Remove unreachable dead code: `reachableSegments` was left
+  with no caller — evidence: `worker/deno/lib/shell_command_words.ts:555` —
+  reason: fixed in this diff (removed)
+- **violation** — A doc comment the change made false ("computed independently
+  of `usesAws`") — evidence: `worker/deno/lib/aws_emulator_in_ci_check.ts:60` —
   reason: fixed in this diff
 - **clean** — Checked and found compliant:
   - Australian English.
   - Dummy and "how" tests, rules 1 to 4.
-  - A refusal test must be refused by the rule it names: fixtures are
-    otherwise valid and have controls.
+  - A refusal test must be refused by the rule it names: fixtures are otherwise
+    valid and have controls.
   - A new precondition must not stop existing tests short: `on: pull_request`
     was added to every fixture.
   - A test must be able to fail on the wrong input.
   - Check where you insert.
   - Change only what the issue changes.
-  - Named tests exist, no stubs of another repository's binary, and no
-    workflow file changes.
+  - Named tests exist, no stubs of another repository's binary, and no workflow
+    file changes.
   - Each edited existing expectation still fails without its code.
   - Hostile-input tests for each new Terraform regex.
   - Fleet-authored title dedup (#1243).
   - Fail loud on gh errors.
-  - Optional note, not chased: the guidelines' AWS summary does not repeat
-    the marker syntax that `CODING-STANDARDS.md` now names.
+  - Optional note, not chased: the guidelines' AWS summary does not repeat the
+    marker syntax that `CODING-STANDARDS.md` now names.
 
 ## Test Plan
 
-- `worker/deno/tests/aws_emulator_in_ci_check_test.ts` covers every fixture
-  the issue names, the errexit/`&&`/`exec`/`set +e`/custom-shell propagation
-  cases, the Floci gap rules (valid, lacking `recheck`, disabled job,
-  push-only) and the real VibeCoder checkout as `official-server`. It also
-  covers AWS and non-AWS Terraform, the `.terraform` skip and one hostile
-  long-line case per Terraform regex. The new rules are tested; existing
-  tests were edited as follows:
+- `worker/deno/tests/aws_emulator_in_ci_check_test.ts` covers every fixture the
+  issue names, the errexit/`&&`/`exec`/`set +e`/custom-shell propagation cases,
+  the Floci gap rules (valid, lacking `recheck`, disabled job, push-only) and
+  the real VibeCoder checkout as `official-server`. It also covers AWS and
+  non-AWS Terraform, the `.terraform` skip and one hostile long-line case per
+  Terraform regex. The new rules are tested; existing tests were edited as
+  follows:
   - Each workflow fixture gained `on: pull_request`, so it still reaches the
     rule it names.
   - `emulatorConfigured: true/false` became the specific wiring value. Floci
-    fixtures now expect `floci-only` and refused fixtures expect `missing`.
-    Each fixture still contains the thing it probes.
+    fixtures now expect `floci-only` and refused fixtures expect `missing`. Each
+    fixture still contains the thing it probes.
   - The `aws-emulator.yml` test gives that file a `pull_request` trigger in
-    memory, and the CloudFormation round-trip copies the real `quality.yml`
-    as its caller.
+    memory, and the CloudFormation round-trip copies the real `quality.yml` as
+    its caller.
 - `worker/deno/tests/best_practices_template_test.ts`:
   - Four removed assertions pinned the old Floci instructions
     (`CREATE_COMPLETE`, `::warning::`, `SKIPPED (needs Docker):`,
     `floci/floci@sha256:`). They are now absence checks, because the issue's
-    scope item 8 says to "Remove obsolete unconditional Floci/image-only/stub-pass
-    instructions". The new-wording assertions cover the replacement.
+    scope item 8 says to "Remove obsolete unconditional
+    Floci/image-only/stub-pass instructions". The new-wording assertions cover
+    the replacement.
   - The skip scenario "floci configured" became "floci gap recorded", with
     scenarios added for official-server, official-embedded and unreadable
     workflows.
-  - New tests cover the floci-only and missing titles, fleet versus
-    non-fleet equivalent issues, gh-failure handling and the finding body.
+  - New tests cover the floci-only and missing titles, fleet versus non-fleet
+    equivalent issues, gh-failure handling and the finding body.
   - The dedup and waiver tests are unchanged and pass.
 - `worker/deno/tests/capability_coverage_scan_4367_test.ts` and
   `worker/deno/tests/idle_task_scan_dedup_conformance_test.ts`: the fake results
