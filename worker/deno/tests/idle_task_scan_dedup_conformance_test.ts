@@ -273,7 +273,10 @@ const noAws = (): Promise<AwsEmulatorCheckResult> =>
   Promise.resolve({
     usesAws: false,
     awsEvidence: [],
-    wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
+    wiring: "missing",
+    wiringEvidence: [],
+    wiringDiagnostics: [],
+    unreadableWorkflows: [],
     workflowsLoaded: true,
   });
 const publicRepo = (): Promise<Result<RepoVisibility, string>> =>

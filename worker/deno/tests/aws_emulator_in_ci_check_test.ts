@@ -12,6 +12,7 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 
 import {
+  type AwsEmulatorCheckResult,
   cargoTomlUsesAws,
   checkAwsEmulatorInCI,
   isCfnTemplate,
@@ -20,10 +21,12 @@ import {
   packageJsonUsesAws,
   pomXmlUsesAws,
   requirementsUsesAws,
+  terraformUsesAws,
   workflowRunsAwsEmulator,
   workflowRunsFloci,
 } from "../lib/aws_emulator_in_ci_check.ts";
 import { parse as parseYaml } from "@std/yaml/parse";
+import { reachableCommands } from "../lib/shell_command_words.ts";
 
 async function makeTempRepo(): Promise<string> {
   return await Deno.makeTempDir({ prefix: "aws_emulator_in_ci_check_test_" });
@@ -237,7 +240,8 @@ Deno.test("checkAwsEmulatorInCI - no AWS evidence, but workflow runs floci servi
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     runs-on: ubuntu-latest
     services:
@@ -250,7 +254,7 @@ Deno.test("checkAwsEmulatorInCI - no AWS evidence, but workflow runs floci servi
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.usesAws, false);
     assertEquals(result.awsEvidence, []);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "floci-only");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -392,7 +396,8 @@ Deno.test("checkAwsEmulatorInCI - services.floci.image with a sha256 digest", as
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     services:
       floci:
@@ -402,7 +407,7 @@ Deno.test("checkAwsEmulatorInCI - services.floci.image with a sha256 digest", as
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "floci-only");
     assertEquals(result.workflowsLoaded, true);
   } finally {
     await Deno.remove(root, { recursive: true });
@@ -415,7 +420,8 @@ Deno.test("checkAwsEmulatorInCI - container as a plain string", async () => {
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     container: floci/floci:latest
     steps:
@@ -423,7 +429,7 @@ Deno.test("checkAwsEmulatorInCI - container as a plain string", async () => {
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "floci-only");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -435,7 +441,8 @@ Deno.test("checkAwsEmulatorInCI - container as a record with image", async () =>
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     container:
       image: floci/floci:latest
@@ -444,7 +451,7 @@ Deno.test("checkAwsEmulatorInCI - container as a record with image", async () =>
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "floci-only");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -456,14 +463,15 @@ Deno.test("checkAwsEmulatorInCI - step uses docker://floci/floci", async () => {
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     steps:
       - uses: docker://floci/floci:1.0
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "floci-only");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -475,14 +483,15 @@ Deno.test("checkAwsEmulatorInCI - step run with docker run floci/floci", async (
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     steps:
       - run: docker run -d -p 4566:4566 floci/floci:latest
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "floci-only");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -499,6 +508,7 @@ Deno.test("checkAwsEmulatorInCI - comment mentioning floci/floci does not count"
       root,
       ".github/workflows/ci.yml",
       `# runs floci/floci later
+on: pull_request
 jobs:
   test:
     steps:
@@ -506,7 +516,7 @@ jobs:
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -518,14 +528,15 @@ Deno.test("checkAwsEmulatorInCI - run echoing floci/floci without docker run doe
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     steps:
       - run: echo floci/floci
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -537,7 +548,8 @@ Deno.test("checkAwsEmulatorInCI - floci/floci-proxy image does not count", async
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     container:
       image: floci/floci-proxy
@@ -546,7 +558,7 @@ Deno.test("checkAwsEmulatorInCI - floci/floci-proxy image does not count", async
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -561,7 +573,7 @@ Deno.test("checkAwsEmulatorInCI - no workflows directory yields workflowsLoaded 
   try {
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.workflowsLoaded, false);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -573,7 +585,8 @@ Deno.test("checkAwsEmulatorInCI - a workflow present yields workflowsLoaded true
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     steps:
       - run: echo hi
@@ -723,7 +736,8 @@ Deno.test("isFlociImage - exact, tag and digest forms match; near-miss does not"
 
 Deno.test("workflowRunsFloci - run with docker run and floci/floci matches", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: docker run -d floci/floci:latest
@@ -744,7 +758,8 @@ Deno.test("workflowRunsFloci - no jobs does not throw and returns false", () => 
 
 Deno.test("workflowRunsAwsEmulator - pinned install fragment alone does not count", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: sudo env X=1 bash container/toolchains/aws-emulator.sh
@@ -766,7 +781,8 @@ Deno.test("workflowRunsAwsEmulator - pinned install fragment alone does not coun
 
 Deno.test("workflowRunsAwsEmulator - exec and env prefixes before aws-emulator-run count", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: exec aws-emulator-run --timeout 900 -- ./t.sh
@@ -777,7 +793,8 @@ Deno.test("workflowRunsAwsEmulator - exec and env prefixes before aws-emulator-r
 
 Deno.test("workflowRunsAwsEmulator - step runs aws-emulator-run wrapper", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: aws-emulator-run -- ./t.sh
@@ -788,7 +805,8 @@ Deno.test("workflowRunsAwsEmulator - step runs aws-emulator-run wrapper", () => 
 
 Deno.test("workflowRunsAwsEmulator - path ending in aws-emulator-run in command position counts", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: /usr/local/bin/aws-emulator-run -- ./t.sh
@@ -802,11 +820,37 @@ Deno.test("workflowRunsAwsEmulator - real .github/workflows/aws-emulator.yml cou
     new URL("../../../.github/workflows/aws-emulator.yml", import.meta.url),
   );
   const repoRoot = new URL("../../../", import.meta.url).pathname;
+  // aws-emulator.yml is `workflow_call` only: its credit depends on the
+  // pull_request caller (quality.yml, see the real-checkout test below). Here
+  // the file is given a pull_request trigger in memory, so only the step rules
+  // (status preservation, the repo script) are under test.
+  const doc = parseYaml(text) as Record<string, unknown>;
+  const asPullRequest = { ...doc, on: "pull_request" };
   assert(
-    workflowRunsAwsEmulator(parseYaml(text), makeRepoScriptReader(repoRoot)),
+    workflowRunsAwsEmulator(asPullRequest, makeRepoScriptReader(repoRoot)),
   );
   // Without the script the install steps alone are not coverage.
-  assertEquals(workflowRunsAwsEmulator(parseYaml(text)), false);
+  assertEquals(workflowRunsAwsEmulator(asPullRequest), false);
+  // Without a pull_request caller, the same steps earn nothing.
+  assertEquals(
+    workflowRunsAwsEmulator(doc, makeRepoScriptReader(repoRoot)),
+    false,
+  );
+});
+
+Deno.test("checkAwsEmulatorInCI - VibeCoder's own checkout is official-server (quality.yml calls aws-emulator.yml, which runs the repo script)", async () => {
+  const repoRoot = new URL("../../../", import.meta.url).pathname;
+  const result = await checkAwsEmulatorInCI(repoRoot);
+  assertEquals(result.usesAws, true);
+  assertEquals(result.wiring, "official-server");
+  assert(
+    result.wiringEvidence.some((e) => e.includes("`aws-emulator.yml` job")),
+    `expected aws-emulator.yml evidence, got: ${
+      result.wiringEvidence.join(" | ")
+    }`,
+  );
+  assertEquals(result.unreadableWorkflows, []);
+  assertEquals(result.workflowsLoaded, true);
 });
 
 // Issue #5110 (pre-PR verifier): only `aws-emulator-run [options] -- COMMAND`
@@ -879,7 +923,8 @@ Deno.test("checkAwsEmulatorInCI - script that only runs aws-emulator-run --smoke
 
 Deno.test("workflowRunsAwsEmulator - echo aws-emulator-run does not count", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: echo aws-emulator-run
@@ -890,7 +935,8 @@ Deno.test("workflowRunsAwsEmulator - echo aws-emulator-run does not count", () =
 
 Deno.test("workflowRunsAwsEmulator - comment line naming aws-emulator-run does not count", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: |
@@ -903,7 +949,8 @@ Deno.test("workflowRunsAwsEmulator - comment line naming aws-emulator-run does n
 
 Deno.test("workflowRunsAwsEmulator - step name only does not count", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - name: aws-emulator-run
@@ -925,7 +972,7 @@ function workflowRunBlock(body: string): unknown {
     "\n",
   );
   return parseYaml(
-    `jobs:\n  test:\n    steps:\n      - run: |\n${indented}\n`,
+    `on: pull_request\njobs:\n  test:\n    steps:\n      - run: |\n${indented}\n`,
   );
 }
 
@@ -1049,6 +1096,15 @@ Resources:
     Type: AWS::S3::Bucket
 `,
     );
+    // quality.yml (pull_request) calls aws-emulator.yml (workflow_call only).
+    const callerPath = ".github/workflows/quality.yml";
+    await writeFile(
+      root,
+      callerPath,
+      await Deno.readTextFile(
+        new URL("../../../" + callerPath, import.meta.url),
+      ),
+    );
     const workflowPath = ".github/workflows/aws-emulator.yml";
     const workflowText = await Deno.readTextFile(
       new URL("../../../" + workflowPath, import.meta.url),
@@ -1065,12 +1121,12 @@ Resources:
 
     const withWorkflow = await checkAwsEmulatorInCI(root);
     assertEquals(withWorkflow.usesAws, true);
-    assertEquals(withWorkflow.emulatorConfigured, true);
+    assertEquals(withWorkflow.wiring, "official-server");
 
     await Deno.remove(`${root}/${workflowPath}`);
     const withoutWorkflow = await checkAwsEmulatorInCI(root);
     assertEquals(withoutWorkflow.usesAws, true);
-    assertEquals(withoutWorkflow.emulatorConfigured, false);
+    assertEquals(withoutWorkflow.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1094,7 +1150,8 @@ fi
 `;
 
 function workflowWithRun(run: string): string {
-  return `jobs:
+  return `on: pull_request
+jobs:
   test:
     steps:
       - run: ${run}
@@ -1116,7 +1173,8 @@ Deno.test("checkAwsEmulatorInCI - install-only workflow is not emulator coverage
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     steps:
       - run: |
@@ -1127,7 +1185,7 @@ Deno.test("checkAwsEmulatorInCI - install-only workflow is not emulator coverage
     );
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.usesAws, true);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1143,7 +1201,7 @@ Deno.test("checkAwsEmulatorInCI - ./script that execs aws-emulator-run counts", 
       RUNNER_SCRIPT,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "official-server");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1159,7 +1217,7 @@ Deno.test("checkAwsEmulatorInCI - bash script that execs aws-emulator-run counts
       RUNNER_SCRIPT,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "official-server");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1180,7 +1238,7 @@ fi
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1195,7 +1253,7 @@ Deno.test("checkAwsEmulatorInCI - script path with .. does not count", async () 
     await writeFile(parent, "outside/run.sh", RUNNER_SCRIPT);
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.usesAws, true);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(parent, { recursive: true });
   }
@@ -1217,7 +1275,7 @@ Deno.test("checkAwsEmulatorInCI - absolute and expanded script paths do not coun
         await setupAwsRepo(root, JSON.stringify(run));
         await writeFile(root, "x.sh", RUNNER_SCRIPT);
         const result = await checkAwsEmulatorInCI(root);
-        assertEquals(result.emulatorConfigured, false, run);
+        assertEquals(result.wiring, "missing", run);
       } finally {
         await Deno.remove(root, { recursive: true });
       }
@@ -1236,7 +1294,7 @@ Deno.test("checkAwsEmulatorInCI - in-repo symlink to an outside script does not 
     await Deno.mkdir(`${root}/ci`);
     await Deno.symlink(`${outside}/run.sh`, `${root}/ci/run.sh`);
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
     await Deno.remove(outside, { recursive: true });
@@ -1248,7 +1306,7 @@ Deno.test("checkAwsEmulatorInCI - nonexistent script does not count and does not
   try {
     await setupAwsRepo(root, "./infra/missing.sh");
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1264,7 +1322,7 @@ Deno.test("checkAwsEmulatorInCI - script over 1 MiB is not read", async () => {
       "#" + "x".repeat(1024 * 1024) + "\n" + RUNNER_SCRIPT,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1276,7 +1334,7 @@ Deno.test("checkAwsEmulatorInCI - timeout 900 ./ci/t.sh resolves the script and 
     await setupAwsRepo(root, "timeout 900 ./ci/t.sh");
     await writeFile(root, "ci/t.sh", RUNNER_SCRIPT);
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "official-server");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1311,7 +1369,7 @@ Deno.test({
       // Positive control: the same repo counts once the script is readable.
       await Deno.chmod(script, 0o644);
       const result = await checkAwsEmulatorInCI(root);
-      assertEquals(result.emulatorConfigured, true);
+      assertEquals(result.wiring, "official-server");
     } finally {
       await Deno.remove(root, { recursive: true });
     }
@@ -1330,7 +1388,10 @@ function docWithStep(
   step: Record<string, unknown> = {},
   job: Record<string, unknown> = {},
 ): unknown {
-  return { jobs: { test: { ...job, steps: [{ run, ...step }] } } };
+  return {
+    on: "pull_request",
+    jobs: { test: { ...job, steps: [{ run, ...step }] } },
+  };
 }
 
 const NOT_EXECUTED: [
@@ -1677,18 +1738,21 @@ Deno.test("checkAwsEmulatorInCI - a disabled or unreachable runner does not coun
       await writeFile(
         root,
         ".github/workflows/ci.yml",
-        `jobs:\n  test:\n    steps:\n      - run: |\n          ${run}\n`,
+        `on: pull_request\njobs:\n  test:\n    steps:\n      - run: |\n          ${run}\n`,
       );
       const result = await checkAwsEmulatorInCI(root);
       assertEquals(result.usesAws, true);
-      assertEquals(result.emulatorConfigured, false, run);
+      assertEquals(result.wiring, "missing", run);
       // Positive control: the same repo, running the script for real.
       await writeFile(
         root,
         ".github/workflows/ci.yml",
-        "jobs:\n  test:\n    steps:\n      - run: bash ./test.sh\n",
+        "on: pull_request\njobs:\n  test:\n    steps:\n      - run: bash ./test.sh\n",
       );
-      assertEquals((await checkAwsEmulatorInCI(root)).emulatorConfigured, true);
+      assertEquals(
+        (await checkAwsEmulatorInCI(root)).wiring,
+        "official-server",
+      );
     } finally {
       await Deno.remove(root, { recursive: true });
     }
@@ -1699,16 +1763,16 @@ Deno.test("checkAwsEmulatorInCI - a disabled or unreachable runner does not coun
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:\n  test:\n    steps:\n      - if: false\n        run: aws-emulator-run -- ./t.sh\n`,
+      `on: pull_request\njobs:\n  test:\n    steps:\n      - if: false\n        run: aws-emulator-run -- ./t.sh\n`,
     );
-    assertEquals((await checkAwsEmulatorInCI(root)).emulatorConfigured, false);
+    assertEquals((await checkAwsEmulatorInCI(root)).wiring, "missing");
     // Positive control: the same step without the `if: false`.
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:\n  test:\n    steps:\n      - run: aws-emulator-run -- ./t.sh\n`,
+      `on: pull_request\njobs:\n  test:\n    steps:\n      - run: aws-emulator-run -- ./t.sh\n`,
     );
-    assertEquals((await checkAwsEmulatorInCI(root)).emulatorConfigured, true);
+    assertEquals((await checkAwsEmulatorInCI(root)).wiring, "official-server");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1750,14 +1814,14 @@ Deno.test("checkAwsEmulatorInCI - a skipped brace group does not count as emulat
         await writeFile(
           root,
           ".github/workflows/ci.yml",
-          `jobs:\n  test:\n    steps:\n      - run: |\n${
+          `on: pull_request\njobs:\n  test:\n    steps:\n      - run: |\n${
             run.split("\n").map((l) => `          ${l}`).join("\n")
           }\n`,
         );
         const result = await checkAwsEmulatorInCI(root);
         assertEquals(result.usesAws, true);
         assertEquals(
-          result.emulatorConfigured,
+          result.wiring === "official-server",
           expected,
           `${viaScript ? "via script: " : ""}${script}`,
         );
@@ -1787,4 +1851,473 @@ Deno.test("workflowRunsAwsEmulator - hostile long inputs finish with the right a
     ),
     false,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #5112: wiring rules. Each refusal fixture is otherwise valid (a
+// pull_request workflow with a real runner step), so only the probed rule
+// refuses it, and each group has an allowed control.
+// ---------------------------------------------------------------------------
+
+const RUNNER_STEP = "aws-emulator-run -- ./t.sh";
+const CARGO_TOML_AWS =
+  '[package]\nname = "x"\n\n[dependencies]\naws-sdk-s3 = "1"\n';
+const EMBEDDED_STEP =
+  "# aws-emulator-embedded: version=1.2.3; justification=the Rust SDK tests need no Docker runner\ncargo test --workspace";
+const FLOCI_SERVICE =
+  "    services:\n      floci:\n        image: floci/floci:1.4.0\n";
+const GAP_RECORD =
+  "# aws-emulator-gap: version=2.1.0; behaviour=IAM policy simulation; evidence=ci/run-1.log; alternative=a real AWS sandbox account; recheck=2027-01-01\n";
+
+/** Write a CloudFormation template (AWS usage) plus `files`, then run the check. */
+async function checkRepoWith(
+  files: Record<string, string>,
+): Promise<AwsEmulatorCheckResult> {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "infra/cloudformation/host.yaml", CFN_TEMPLATE);
+    for (const [rel, text] of Object.entries(files)) {
+      await writeFile(root, rel, text);
+    }
+    return await checkAwsEmulatorInCI(root);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+/** One `run: |` step whose body is `run`, with extra step keys (indented to the step). */
+function stepYaml(run: string, keys: string[] = []): string {
+  const body = run.split("\n").map((line) => `          ${line}`).join("\n");
+  return [
+    "      - run: |",
+    body,
+    ...keys.map((key) => `        ${key}`),
+  ].join("\n") + "\n";
+}
+
+/** A workflow with one job `test` holding `steps`; `jobKeys` are extra job lines (indented 4). */
+function prWorkflow(
+  steps: string,
+  jobKeys = "",
+  on = "on: pull_request\n",
+): string {
+  return `${on}jobs:\n  test:\n    runs-on: ubuntu-latest\n${jobKeys}    steps:\n${steps}`;
+}
+
+function assertDiagnostic(
+  result: AwsEmulatorCheckResult,
+  fragment: string,
+): void {
+  assert(
+    result.wiringDiagnostics.some((d) => d.includes(fragment)),
+    `expected a diagnostic containing "${fragment}", got: ${
+      result.wiringDiagnostics.join(" | ")
+    }`,
+  );
+}
+
+Deno.test("checkAwsEmulatorInCI - a direct runner step in a pull_request job is official-server with its command as evidence", async () => {
+  const result = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(RUNNER_STEP)),
+  });
+  assertEquals(result.usesAws, true);
+  assertEquals(result.wiring, "official-server");
+  assertEquals(result.wiringEvidence, [
+    "`ci.yml` job `test`: `aws-emulator-run -- ./t.sh`",
+  ]);
+  assertEquals(result.wiringDiagnostics, []);
+});
+
+Deno.test("checkAwsEmulatorInCI - a repository script that runs the emulator is official-server, with the script call as evidence", async () => {
+  const result = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": "#!/usr/bin/env bash\naws-emulator-run -- ./t.sh\n",
+  });
+  assertEquals(result.wiring, "official-server");
+  assertEquals(result.wiringEvidence, ["`ci.yml` job `test`: `./ci/t.sh`"]);
+});
+
+Deno.test("checkAwsEmulatorInCI - a workflow_call workflow called from a pull_request workflow is official-server", async () => {
+  const caller =
+    "on: pull_request\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n";
+  const reusable = prWorkflow(stepYaml(RUNNER_STEP), "", "on: workflow_call\n");
+  const called = await checkRepoWith({
+    ".github/workflows/ci.yml": caller,
+    ".github/workflows/reusable.yml": reusable,
+  });
+  assertEquals(called.wiring, "official-server");
+  assertEquals(called.wiringEvidence, [
+    "`reusable.yml` job `test`: `aws-emulator-run -- ./t.sh`",
+  ]);
+});
+
+Deno.test("checkAwsEmulatorInCI - a workflow_call workflow that no pull_request workflow calls is not credited", async () => {
+  const uncalled = await checkRepoWith({
+    ".github/workflows/reusable.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "",
+      "on: workflow_call\n",
+    ),
+  });
+  assertEquals(uncalled.wiring, "missing");
+  assertDiagnostic(
+    uncalled,
+    "`reusable.yml`: does not run on pull_request and no pull_request workflow calls it",
+  );
+  // Control: the same file, once a pull_request workflow calls it.
+  const called = await checkRepoWith({
+    ".github/workflows/ci.yml":
+      "on: pull_request\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n",
+    ".github/workflows/reusable.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "",
+      "on: workflow_call\n",
+    ),
+  });
+  assertEquals(called.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - a push-only workflow is not credited; the same workflow on pull_request is", async () => {
+  const pushOnly = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "",
+      "on: push\n",
+    ),
+  });
+  assertEquals(pushOnly.wiring, "missing");
+  assertDiagnostic(pushOnly, "`ci.yml`: does not run on pull_request");
+  const pullRequest = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(RUNNER_STEP)),
+  });
+  assertEquals(pullRequest.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - a justified, pinned embedded marker with cargo test is official-embedded in a Rust repo", async () => {
+  const result = await checkRepoWith({
+    "Cargo.toml": CARGO_TOML_AWS,
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(EMBEDDED_STEP)),
+  });
+  assertEquals(result.wiring, "official-embedded");
+  assertEquals(result.wiringEvidence, [
+    "`ci.yml` job `test`: `cargo test --workspace`",
+  ]);
+});
+
+Deno.test("checkAwsEmulatorInCI - an embedded marker is refused when unpinned, unjustified, without cargo test, or outside a Rust repo", async () => {
+  const refusals: Array<[string, string, string]> = [
+    [
+      "unpinned version",
+      "# aws-emulator-embedded: version=1.2; justification=x\ncargo test",
+      "exact pin X.Y.Z",
+    ],
+    [
+      "missing version",
+      "# aws-emulator-embedded: justification=x\ncargo test",
+      "exact pin X.Y.Z",
+    ],
+    [
+      "empty justification",
+      "# aws-emulator-embedded: version=1.2.3; justification=\ncargo test",
+      "justification is empty",
+    ],
+    [
+      "no cargo test",
+      "# aws-emulator-embedded: version=1.2.3; justification=x\necho done",
+      "no status-preserving cargo test",
+    ],
+    [
+      "cargo test behind ||",
+      "# aws-emulator-embedded: version=1.2.3; justification=x\ncargo test || true",
+      "no status-preserving cargo test",
+    ],
+  ];
+  for (const [label, run, fragment] of refusals) {
+    const result = await checkRepoWith({
+      "Cargo.toml": CARGO_TOML_AWS,
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(run)),
+    });
+    assertEquals(result.wiring, "missing", label);
+    assertDiagnostic(result, fragment);
+  }
+  // A non-Rust repo (no Cargo.toml evidence): the valid marker earns nothing.
+  const nonRust = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(EMBEDDED_STEP)),
+  });
+  assertEquals(nonRust.wiring, "missing");
+  assertDiagnostic(nonRust, "no Cargo.toml with AWS evidence");
+});
+
+Deno.test("checkAwsEmulatorInCI - a comment naming the runner, an echo of it, or a command -v lookup is missing", async () => {
+  for (
+    const run of [
+      "# aws-emulator-run -- ./t.sh",
+      "echo aws-emulator-run -- ./t.sh",
+      "command -v aws-emulator-run",
+    ]
+  ) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(run)),
+    });
+    assertEquals(result.wiring, "missing", run);
+  }
+  const control = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(RUNNER_STEP)),
+  });
+  assertEquals(control.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - an emulator service image with no runner step is missing; with one it is official-server", async () => {
+  const service =
+    "    services:\n      emulator:\n        image: localstack/localstack:3\n";
+  const unused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("echo hi"), service),
+  });
+  assertEquals(unused.wiring, "missing");
+  const used = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(RUNNER_STEP), service),
+  });
+  assertEquals(used.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - a statically disabled job is missing; an expression-guarded one is official-server", async () => {
+  const disabled = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "    if: false\n",
+    ),
+  });
+  assertEquals(disabled.wiring, "missing");
+  const guarded = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "    if: github.ref == 'refs/heads/main'\n",
+    ),
+  });
+  assertEquals(guarded.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - continue-on-error, || true, !, a pipe and an if condition each refuse the credit with a diagnostic", async () => {
+  const refusals: Array<[string, string, string]> = [
+    [
+      "step continue-on-error",
+      prWorkflow(stepYaml(RUNNER_STEP, ["continue-on-error: true"])),
+      "sets continue-on-error",
+    ],
+    [
+      "job continue-on-error",
+      prWorkflow(stepYaml(RUNNER_STEP), "    continue-on-error: true\n"),
+      "job sets continue-on-error",
+    ],
+    [
+      "|| true",
+      prWorkflow(stepYaml(`${RUNNER_STEP} || true`)),
+      "is not status-preserving",
+    ],
+    [
+      "negated with !",
+      prWorkflow(stepYaml(`! ${RUNNER_STEP}`)),
+      "is not status-preserving",
+    ],
+    [
+      "piped to tee",
+      prWorkflow(stepYaml(`${RUNNER_STEP} | tee log`)),
+      "is not status-preserving",
+    ],
+    [
+      "backgrounded with a trailing &",
+      prWorkflow(stepYaml(`${RUNNER_STEP} &`)),
+      "is not status-preserving",
+    ],
+    [
+      "as an if condition",
+      prWorkflow(stepYaml(`if ${RUNNER_STEP}; then echo ok; fi`)),
+      "is not status-preserving",
+    ],
+  ];
+  for (const [label, workflow, fragment] of refusals) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": workflow,
+    });
+    assertEquals(result.wiring, "missing", label);
+    assertDiagnostic(result, fragment);
+  }
+  // Controls: an explicit `continue-on-error: false`, and a chain that keeps
+  // the status (`&& true` does not swallow a failure).
+  const explicitFalse = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP, ["continue-on-error: false"]),
+    ),
+  });
+  assertEquals(explicitFalse.wiring, "official-server");
+  const andChain = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${RUNNER_STEP} && echo ok`),
+    ),
+  });
+  assertEquals(andChain.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - Floci only is floci-only, with a diagnostic naming the job", async () => {
+  const result = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE),
+  });
+  assertEquals(result.wiring, "floci-only");
+  assertEquals(result.wiringEvidence, []);
+  assertDiagnostic(result, "`ci.yml` job `test` runs floci/floci");
+});
+
+Deno.test("checkAwsEmulatorInCI - Floci with a valid gap record is floci-gap, with the record as evidence", async () => {
+  const result = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE),
+  });
+  assertEquals(result.wiring, "floci-gap");
+  assertEquals(result.wiringEvidence.length, 1);
+  assert(result.wiringEvidence[0]!.includes("aws-emulator-gap: version=2.1.0"));
+});
+
+Deno.test("checkAwsEmulatorInCI - Floci with a gap record lacking recheck is floci-only and names recheck", async () => {
+  const withoutRecheck = GAP_RECORD.replace("; recheck=2027-01-01", "");
+  const result = await checkRepoWith({
+    ".github/workflows/ci.yml": withoutRecheck +
+      prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE),
+  });
+  assertEquals(result.wiring, "floci-only");
+  assertDiagnostic(result, "aws-emulator-gap record lacks recheck");
+  // A version without a digit is not a version.
+  const noDigit = GAP_RECORD.replace("version=2.1.0", "version=latest");
+  const badVersion = await checkRepoWith({
+    ".github/workflows/ci.yml": noDigit +
+      prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE),
+  });
+  assertEquals(badVersion.wiring, "floci-only");
+  assertDiagnostic(badVersion, "aws-emulator-gap record lacks version");
+});
+
+Deno.test("checkAwsEmulatorInCI - an unparseable workflow is listed in unreadableWorkflows; a readable one is still judged", async () => {
+  const mixed = await checkRepoWith({
+    ".github/workflows/broken.yml": "jobs: [\n",
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(RUNNER_STEP)),
+  });
+  assertEquals(mixed.unreadableWorkflows, ["broken.yml"]);
+  assertEquals(mixed.wiring, "official-server");
+  assertEquals(mixed.workflowsLoaded, true);
+
+  const onlyBroken = await checkRepoWith({
+    ".github/workflows/broken.yml": "jobs: [\n",
+  });
+  assertEquals(onlyBroken.unreadableWorkflows, ["broken.yml"]);
+  assertEquals(onlyBroken.wiring, "missing");
+  assertEquals(onlyBroken.workflowsLoaded, false);
+});
+
+Deno.test("checkAwsEmulatorInCI - a trailing & after a runner is refused, but a plain trailing newline is not", async () => {
+  // Pinned directly on the command list: the separator after the last command.
+  const background = reachableCommands(RUNNER_STEP + " &");
+  assertEquals(background.length, 1);
+  assertEquals(background[0]?.next, "&");
+  const plain = reachableCommands(RUNNER_STEP + "\n");
+  assertEquals(plain[0]?.next, "");
+  assertEquals(plain[0]?.sep, "");
+  const condition = reachableCommands(
+    `if ${RUNNER_STEP}; then echo ok; fi\nlast`,
+  );
+  assertEquals(condition[0]?.condition, true);
+  assertEquals(condition[0]?.next, ";");
+  assertEquals(condition.at(-1)?.words, ["last"]);
+  assertEquals(condition.at(-1)?.sep, "\n");
+  assertEquals(condition.at(-1)?.next, "");
+});
+
+Deno.test("terraformUsesAws - AWS providers, resources, data, required_providers, sources and registry modules are AWS", () => {
+  const positives = [
+    'provider "aws" {\n  region = "ap-southeast-2"\n}\n',
+    'resource "aws_s3_bucket" "b" {\n  bucket = "x"\n}\n',
+    'data "aws_iam_policy_document" "p" {\n}\n',
+    'terraform {\n  required_providers {\n    aws = {\n      source = "hashicorp/aws"\n    }\n  }\n}\n',
+    'module "x" {\n  source = "hashicorp/aws"\n}\n',
+    'module "x" {\n  source = "registry.terraform.io/hashicorp/aws"\n}\n',
+    'module "vpc" {\n  source = "terraform-aws-modules/vpc/aws"\n}\n',
+    'module "vpc" {\n  source = "github.com/terraform-aws-modules//vpc"\n}\n',
+    'module "net" {\n  source = "acme/network/aws"\n}\n',
+  ];
+  for (const text of positives) assert(terraformUsesAws(text), text);
+  const negatives = [
+    'provider "google" {\n  project = "x"\n}\n',
+    'resource "azurerm_resource_group" "rg" {\n}\n',
+    '# resource "aws_s3_bucket" "b" {}\n',
+    '// provider "aws" {}\n',
+    '/* data "aws_iam_role" "r" {} */\n',
+    'module "local" {\n  source = "./modules/aws"\n}\n',
+    'module "gcp" {\n  source = "terraform-google-modules/network/google"\n}\n',
+    'module "git" {\n  source = "git::https://example.com/foo//bar"\n}\n',
+  ];
+  for (const text of negatives) assert(!terraformUsesAws(text), text);
+});
+
+Deno.test("terraformUsesAws - hostile long lines finish with the right answer, one per pattern", () => {
+  // TF_AWS_BLOCK: `resource` then blanks, no quoted aws_ type.
+  assertEquals(terraformUsesAws(`resource${" ".repeat(100_000)}x`), false);
+  // TF_AWS_BLOCK: a long quoted aws_ type name.
+  assertEquals(
+    terraformUsesAws(`resource "aws_${"x".repeat(100_000)}"`),
+    true,
+  );
+  // TF_AWS_PROVIDER: `provider` then blanks.
+  assertEquals(terraformUsesAws(`provider${" ".repeat(100_000)}x`), false);
+  // TF_AWS_REQUIRED_PROVIDER: `aws` then blanks.
+  assertEquals(terraformUsesAws(`aws${" ".repeat(100_000)}x`), false);
+  // TF_SOURCE_LINE: an unterminated source value.
+  assertEquals(terraformUsesAws(`source = "${"a/".repeat(50_000)}`), false);
+  // TF_AWS_SOURCE: many segments ending in /aws are not a provider source.
+  assertEquals(
+    terraformUsesAws(`source = "${"a/".repeat(50_000)}aws"`),
+    false,
+  );
+  // TF_AWS_SOURCE: one long namespace over /aws is.
+  assertEquals(
+    terraformUsesAws(`source = "${"x".repeat(100_000)}/aws"`),
+    true,
+  );
+});
+
+Deno.test("checkAwsEmulatorInCI - a Terraform file counts only when it names AWS, and a .terraform cache never counts", async () => {
+  const google = await makeTempRepo();
+  try {
+    await writeFile(google, "main.tf", 'provider "google" {\n}\n');
+    const result = await checkAwsEmulatorInCI(google);
+    assertEquals(result.usesAws, false);
+  } finally {
+    await Deno.remove(google, { recursive: true });
+  }
+
+  const cache = await makeTempRepo();
+  try {
+    await writeFile(
+      cache,
+      ".terraform/modules/vpc/main.tf",
+      'resource "aws_vpc" "v" {\n}\n',
+    );
+    await writeFile(
+      cache,
+      ".terragrunt-cache/x/main.tf",
+      'provider "aws" {\n}\n',
+    );
+    const result = await checkAwsEmulatorInCI(cache);
+    assertEquals(result.usesAws, false);
+    assertEquals(result.awsEvidence, []);
+  } finally {
+    await Deno.remove(cache, { recursive: true });
+  }
+
+  const aws = await makeTempRepo();
+  try {
+    await writeFile(aws, "main.tf", 'provider "aws" {\n}\n');
+    const result = await checkAwsEmulatorInCI(aws);
+    assertEquals(result.usesAws, true);
+    assertEquals(result.awsEvidence, ["main.tf"]);
+  } finally {
+    await Deno.remove(aws, { recursive: true });
+  }
 });

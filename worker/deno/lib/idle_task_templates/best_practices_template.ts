@@ -1306,7 +1306,7 @@ export function createBestPracticesTemplate(
         );
       } else if (!aws.workflowsLoaded) {
         logger.info(
-          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — no workflow loaded, so whether CI runs Floci is unknown`,
+          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — no workflow loaded, so whether CI wires AWS Emulator tests is unknown`,
         );
       } else if (
         aws.wiring === "official-server" ||

@@ -34,6 +34,18 @@ const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * `;`/`|`/`&` starts a new command, and a `#` that starts a word ends the line.
  */
 export function shellCommands(script: string): ShellCommand[] {
+  return shellCommandList(script).commands;
+}
+
+/**
+ * The commands of {@link shellCommands} and the separator left pending after
+ * the last one (`""` when there is none, `"\n"` for a plain line end). A
+ * trailing `&` (`cmd &`) is pending here, although it has no command after it.
+ */
+function shellCommandList(script: string): {
+  commands: ShellCommand[];
+  trailing: string;
+} {
   const text = script.replace(/\\\r?\n/g, " ");
   const commands: ShellCommand[] = [];
   let words: string[] = [];
@@ -96,7 +108,7 @@ export function shellCommands(script: string): ShellCommand[] {
     inWord = true;
   }
   endCommand("\n");
-  return commands;
+  return { commands, trailing: sep };
 }
 
 /** The words of each command in a `run:` body (see {@link shellCommands}). */
@@ -406,7 +418,9 @@ export function reachableCommands(script: string): ReachableCommand[] {
       ...partial,
     });
 
-  const listed = shellCommands(stripHeredocBodies(script));
+  const { commands: listed, trailing } = shellCommandList(
+    stripHeredocBodies(script),
+  );
   for (const [index, { words: all, sep }] of listed.entries()) {
     let words = all;
     // Short-circuit chains: `false && x` and `true || x` skip x, while
@@ -522,7 +536,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
       out.push({
         words,
         sep,
-        next: listed[index + 1]?.sep ?? "",
+        next: listed[index + 1]?.sep ?? (trailing === "\n" ? "" : trailing),
         condition: frameOpen?.branch === "cond",
       });
       const at = commandIndex(words);

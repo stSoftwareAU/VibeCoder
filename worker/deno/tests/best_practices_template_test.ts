@@ -61,6 +61,7 @@ import {
   bucketSlug,
   buildAwsEmulatorFinding,
   createBestPracticesTemplate,
+  findEquivalentAwsEmulatorIssue,
   hasAwsEmulatorWaiver,
   isLanguageBucket,
   parseBucketFromBody,
@@ -149,6 +150,11 @@ function makeGhStub(scenario: {
   knownOpen?: Array<{ number: number; body: string }>;
   issueView?: { number: number; body: string };
   fileMissingLinterReturnsNumber?: number;
+  /** The AWS Emulator title lookup (Issue #5112): its rows, or a simulated gh failure. */
+  awsEmulatorTitleLookup?: {
+    rows?: Array<{ number: number; title: string; login: string }>;
+    fail?: boolean;
+  };
 }): { gh: (args: string[]) => Promise<string>; calls: GhCall[] } {
   const calls: GhCall[] = [];
   let snapshotCount = 0;
@@ -203,6 +209,26 @@ function makeGhStub(scenario: {
       }
       throw new Error("gh issue create not expected in this scenario");
     }
+    // AWS Emulator title lookup (Issue #5112): `issue list --search "AWS Emulator in:title"`.
+    if (
+      args[0] === "issue" && args[1] === "list" &&
+      args[args.indexOf("--search") + 1] === "AWS Emulator in:title"
+    ) {
+      if (scenario.awsEmulatorTitleLookup?.fail) {
+        return Promise.reject(
+          new Error("gh: simulated AWS Emulator lookup failure"),
+        );
+      }
+      return Promise.resolve(
+        JSON.stringify(
+          (scenario.awsEmulatorTitleLookup?.rows ?? []).map((r) => ({
+            number: r.number,
+            title: r.title,
+            author: { login: r.login },
+          })),
+        ),
+      );
+    }
     // Wrapper-presence search.
     if (
       args[0] === "issue" && args[1] === "list" && args.includes("--search")
@@ -219,7 +245,10 @@ function stubNoAws(): Promise<AwsEmulatorCheckResult> {
   return Promise.resolve({
     usesAws: false,
     awsEvidence: [],
-    wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
+    wiring: "missing",
+    wiringEvidence: [],
+    wiringDiagnostics: [],
+    unreadableWorkflows: [],
     workflowsLoaded: true,
   });
 }
@@ -1547,7 +1576,10 @@ function stubAwsNoFloci(
   return Promise.resolve({
     usesAws: true,
     awsEvidence: [...evidence],
-    wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
+    wiring: "missing",
+    wiringEvidence: [],
+    wiringDiagnostics: [],
+    unreadableWorkflows: [],
     workflowsLoaded: true,
   });
 }
@@ -1607,10 +1639,15 @@ Deno.test(
       assertStringIncludes(created!.body, "## Suggested fix");
       assertStringIncludes(created!.body, "infra/template.yaml");
       assertStringIncludes(created!.body, "Cargo.toml");
-      assertStringIncludes(created!.body, "CREATE_COMPLETE");
-      assertStringIncludes(created!.body, "::warning::");
-      assertStringIncludes(created!.body, "SKIPPED (needs Docker):");
-      assert(/floci\/floci@sha256:/.test(created!.body));
+      // Issue #5112: the suggested fix names the AWS Emulator wiring and
+      // no longer carries the Floci-as-default, stub-pass or Docker guidance.
+      assertStringIncludes(
+        created!.body,
+        "`aws-emulator-run [--timeout N] -- <test command>`",
+      );
+      assert(!created!.body.includes("::warning::"));
+      assert(!created!.body.includes("SKIPPED (needs Docker)"));
+      assert(!/floci\/floci@sha256:/.test(created!.body));
 
       assert(scanReceived !== undefined);
       assert(scanReceived!.knownOpen.includes(AWS_EMULATOR_FINDING_ID));
@@ -1669,21 +1706,70 @@ Deno.test(
 );
 
 Deno.test(
-  "runTask - AWS-emulator pre-check skips filing and logs why (floci configured / no AWS / no workflow)",
+  "runTask - AWS-emulator pre-check skips filing and logs why (static wiring / unreadable workflow / no AWS / no workflow)",
   async () => {
     const scenarios: Array<
       [string, () => Promise<AwsEmulatorCheckResult>, string]
     > = [
       [
-        "floci configured",
+        "floci gap recorded",
         () =>
           Promise.resolve({
             usesAws: true,
             awsEvidence: ["Cargo.toml"],
-            emulatorConfigured: true,
+            wiring: "floci-gap",
+            wiringEvidence: [
+              "`ci.yml`: `# aws-emulator-gap: version=2.1.0; behaviour=x; evidence=y; alternative=z; recheck=2027-01-01`",
+            ],
+            wiringDiagnostics: [],
+            unreadableWorkflows: [],
             workflowsLoaded: true,
           }),
-        "floci",
+        "floci-gap wiring (static wiring evidence; no CI result observed)",
+      ],
+      [
+        "official server wiring",
+        () =>
+          Promise.resolve({
+            usesAws: true,
+            awsEvidence: ["infra/template.yaml"],
+            wiring: "official-server",
+            wiringEvidence: [
+              "`aws-emulator.yml` job `test`: `aws-emulator-run -- ./t.sh`",
+            ],
+            wiringDiagnostics: [],
+            unreadableWorkflows: [],
+            workflowsLoaded: true,
+          }),
+        "official-server wiring",
+      ],
+      [
+        "official embedded wiring",
+        () =>
+          Promise.resolve({
+            usesAws: true,
+            awsEvidence: ["Cargo.toml"],
+            wiring: "official-embedded",
+            wiringEvidence: ["`ci.yml` job `rust`: `cargo test`"],
+            wiringDiagnostics: [],
+            unreadableWorkflows: [],
+            workflowsLoaded: true,
+          }),
+        "official-embedded wiring",
+      ],
+      [
+        "unreadable workflow",
+        () =>
+          Promise.resolve({
+            usesAws: true,
+            awsEvidence: ["Cargo.toml"],
+            wiring: "missing",
+            wiringEvidence: [],
+            wiringDiagnostics: [],
+            unreadableWorkflows: ["broken.yml"],
+            workflowsLoaded: true,
+          }),
+        "unreadable workflow(s) broken.yml",
       ],
       ["no AWS usage", stubNoAws, "no AWS"],
       [
@@ -1692,7 +1778,10 @@ Deno.test(
           Promise.resolve({
             usesAws: true,
             awsEvidence: ["Cargo.toml"],
-            wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
+            wiring: "missing",
+            wiringEvidence: [],
+            wiringDiagnostics: [],
+            unreadableWorkflows: [],
             workflowsLoaded: false,
           }),
         "no workflow",
@@ -2342,7 +2431,10 @@ Deno.test(
     const finding = buildAwsEmulatorFinding({
       usesAws: true,
       awsEvidence,
-      wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
+      wiring: "missing",
+      wiringEvidence: [],
+      wiringDiagnostics: [],
+      unreadableWorkflows: [],
       workflowsLoaded: true,
     });
     assertStringIncludes(finding.body, "`a49.tf`");
@@ -2361,7 +2453,10 @@ Deno.test(
     const finding = buildAwsEmulatorFinding({
       usesAws: true,
       awsEvidence,
-      wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
+      wiring: "missing",
+      wiringEvidence: [],
+      wiringDiagnostics: [],
+      unreadableWorkflows: [],
       workflowsLoaded: true,
     });
     assert(!/- … and \d+ more/.test(finding.body));
@@ -2425,5 +2520,275 @@ Deno.test(
     } finally {
       await Deno.remove(workDir, { recursive: true });
     }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// AWS Emulator wiring migration (Issue #5112)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the AWS pre-filer once with a fixed check result and an optional AWS
+ * Emulator title lookup. Returns the run outcome, every gh call and the info
+ * log lines.
+ */
+async function runAwsPreFiler(
+  check: AwsEmulatorCheckResult,
+  titleLookup?: {
+    rows?: Array<{ number: number; title: string; login: string }>;
+    fail?: boolean;
+  },
+): Promise<{ ok: boolean; calls: GhCall[]; infoMessages: string[] }> {
+  const workDir = await Deno.makeTempDir();
+  try {
+    const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
+    const { gh, calls } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [900],
+      knownOpen: [],
+      issueView: { number: 50, body: wrapperBody },
+      fileMissingLinterReturnsNumber: 900,
+      awsEmulatorTitleLookup: titleLookup,
+    });
+    const { logger, infoMessages } = spyLogger();
+    const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
+      ghCommandFn: gh,
+      checkLinterInCIFn: stubLinterConfigured,
+      checkAwsEmulatorFn: () => Promise.resolve(check),
+      logger,
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+    });
+    const result = await tpl.runTask({
+      repo: "org/repo",
+      workDir,
+      idleTaskIssueNumber: 50,
+    });
+    return { ok: result.ok, calls, infoMessages };
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+}
+
+/** A check result for a repo with AWS usage and the given wiring. */
+function awsCheck(
+  wiring: AwsEmulatorCheckResult["wiring"],
+  wiringDiagnostics: string[] = [],
+): AwsEmulatorCheckResult {
+  return {
+    usesAws: true,
+    awsEvidence: ["infra/template.yaml"],
+    wiring,
+    wiringEvidence: [],
+    wiringDiagnostics,
+    unreadableWorkflows: [],
+    workflowsLoaded: true,
+  };
+}
+
+/** Count the `issue create` calls in a gh call log. */
+function createCount(calls: GhCall[]): number {
+  return calls.filter((c) => c.args[0] === "issue" && c.args[1] === "create")
+    .length;
+}
+
+Deno.test(
+  "runTask - floci-only files ONE finding with the migration title and no Floci-default, docker.sock or stub-pass text",
+  async () => {
+    const run = await runAwsPreFiler(
+      awsCheck("floci-only", ["`ci.yml` job `test` runs floci/floci"]),
+    );
+    assert(run.ok);
+    assertEquals(createCount(run.calls), 1);
+    const created = readIssueCreate(run.calls);
+    assert(created !== null);
+    assertEquals(
+      created!.title,
+      "🟡 Migrate Floci-only AWS tests to AWS Emulator",
+    );
+    assert(created!.labels.includes("severity:medium"));
+    for (
+      const banned of [
+        "docker.sock",
+        "::warning::",
+        "ALLOW_STUB",
+        "FLOCI_SERVICES",
+        "SKIPPED (needs Docker)",
+        "one test per AWS service",
+        "Run `floci/floci@sha256",
+        "start `floci`",
+      ]
+    ) {
+      assert(
+        !created!.body.includes(banned),
+        `body must not contain ${banned}`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "runTask - missing wiring files the no-test-wiring title, not the Floci migration title",
+  async () => {
+    const run = await runAwsPreFiler(awsCheck("missing"));
+    assert(run.ok);
+    assertEquals(createCount(run.calls), 1);
+    assertEquals(
+      readIssueCreate(run.calls)!.title,
+      "🟡 No AWS Emulator test wiring in CI",
+    );
+  },
+);
+
+Deno.test(
+  "runTask - a fleet-authored open AWS Emulator issue with another title suppresses filing and is logged by number",
+  async () => {
+    const run = await runAwsPreFiler(awsCheck("missing"), {
+      rows: [{
+        number: 77,
+        title: "Add AWS Emulator tests to the CI pipeline",
+        login: FLEET_DEDUP_AUTHOR,
+      }],
+    });
+    assert(run.ok);
+    assertEquals(createCount(run.calls), 0);
+    assert(
+      run.infoMessages.some((m) => m.includes("#77")),
+      `expected #77 in the log, got: ${run.infoMessages.join(" | ")}`,
+    );
+  },
+);
+
+Deno.test(
+  "runTask - a non-fleet-authored open AWS Emulator issue does not suppress filing",
+  async () => {
+    const run = await runAwsPreFiler(awsCheck("missing"), {
+      rows: [{
+        number: 78,
+        title: "AWS Emulator tests please",
+        login: "a-stranger",
+      }],
+    });
+    assert(run.ok);
+    assertEquals(createCount(run.calls), 1);
+  },
+);
+
+Deno.test(
+  "runTask - an open issue whose title does not name the AWS Emulator does not suppress filing",
+  async () => {
+    const run = await runAwsPreFiler(awsCheck("missing"), {
+      rows: [{
+        number: 79,
+        title: "Fix the login page",
+        login: FLEET_DEDUP_AUTHOR,
+      }],
+    });
+    assert(run.ok);
+    assertEquals(createCount(run.calls), 1);
+  },
+);
+
+Deno.test(
+  "runTask - a gh failure in the AWS Emulator issue lookup fails the run and files nothing",
+  async () => {
+    const run = await runAwsPreFiler(awsCheck("missing"), { fail: true });
+    assertEquals(run.ok, false);
+    assertEquals(createCount(run.calls), 0);
+  },
+);
+
+Deno.test(
+  "findEquivalentAwsEmulatorIssue - queries open issues by AWS Emulator title and returns the fleet-authored number",
+  async () => {
+    const seen: string[][] = [];
+    const gh = (args: string[]): Promise<string> => {
+      seen.push([...args]);
+      return Promise.resolve(JSON.stringify([
+        { number: 5, title: "AWS Emulator", author: { login: "a-stranger" } },
+        {
+          number: 6,
+          title: "Use the aws emulator in CI",
+          author: { login: FLEET_DEDUP_AUTHOR },
+        },
+      ]));
+    };
+    const found = await findEquivalentAwsEmulatorIssue(
+      "org/repo",
+      gh,
+      DEDUP_AUTHORS,
+    );
+    assertEquals(found, 6);
+    const args = seen[0] ?? [];
+    assertEquals(args.slice(0, 3), ["issue", "list", "--repo"]);
+    assertEquals(args[args.indexOf("--search") + 1], "AWS Emulator in:title");
+    assertEquals(args[args.indexOf("--state") + 1], "open");
+    assertEquals(args[args.indexOf("--json") + 1], "number,title,author");
+  },
+);
+
+Deno.test(
+  "findEquivalentAwsEmulatorIssue - a gh failure or malformed payload throws with context",
+  async () => {
+    await assertRejects(
+      () =>
+        findEquivalentAwsEmulatorIssue(
+          "org/repo",
+          () => Promise.reject(new Error("rate limited")),
+          DEDUP_AUTHORS,
+        ),
+      Error,
+      "cannot list open AWS Emulator issues in org/repo",
+    );
+    await assertRejects(
+      () =>
+        findEquivalentAwsEmulatorIssue(
+          "org/repo",
+          () => Promise.resolve("not json"),
+          DEDUP_AUTHORS,
+        ),
+      Error,
+      "is not JSON",
+    );
+  },
+);
+
+Deno.test(
+  "buildAwsEmulatorFinding - body lists diagnostics, states what was checked, links the standard and is medium",
+  () => {
+    const finding = buildAwsEmulatorFinding(awsCheck("missing", [
+      "`ci.yml` job `test`: step running `aws-emulator-run -- x` sets continue-on-error",
+    ]));
+    assertStringIncludes(finding.body, "**Severity:** medium");
+    assertStringIncludes(finding.body, "## What the scan found");
+    // Backticks in a diagnostic are escaped so the code span cannot break.
+    assertStringIncludes(
+      finding.body,
+      "- 'ci.yml' job 'test': step running 'aws-emulator-run -- x' sets continue-on-error",
+    );
+    assertStringIncludes(
+      finding.body,
+      "configured execution, not an observed green CI run",
+    );
+    assertStringIncludes(
+      finding.body,
+      "https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#aws-integration-testing",
+    );
+    assertStringIncludes(
+      finding.body,
+      "`aws-emulator-run [--timeout N] -- <test command>`",
+    );
+    assertStringIncludes(finding.body, "`cargo test` or `cargo nextest`");
+    assert(!finding.body.includes("docker.sock"));
+    assert(!finding.body.includes("::warning::"));
+    assert(!finding.body.includes("SKIPPED (needs Docker)"));
+  },
+);
+
+Deno.test(
+  "buildAwsEmulatorFinding - a missing wiring finding says so when there are no diagnostics",
+  () => {
+    const finding = buildAwsEmulatorFinding(awsCheck("missing"));
+    assertStringIncludes(finding.body, "- No AWS Emulator wiring was found.");
   },
 );

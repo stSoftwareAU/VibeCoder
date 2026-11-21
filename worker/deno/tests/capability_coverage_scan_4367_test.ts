@@ -182,7 +182,10 @@ Deno.test("the best-practices template files one coverage issue and dedups a sec
       Promise.resolve({
         usesAws: false,
         awsEvidence: [],
-        wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
+        wiring: "missing",
+        wiringEvidence: [],
+        wiringDiagnostics: [],
+        unreadableWorkflows: [],
         workflowsLoaded: true,
       }),
     runScanFn: () => Promise.resolve({ ok: true, value: true }),
@@ -228,7 +231,10 @@ Deno.test("the best-practices template files one coverage issue and dedups a sec
       Promise.resolve({
         usesAws: false,
         awsEvidence: [],
-        wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
+        wiring: "missing",
+        wiringEvidence: [],
+        wiringDiagnostics: [],
+        unreadableWorkflows: [],
         workflowsLoaded: true,
       }),
     runScanFn: () => Promise.resolve({ ok: true, value: true }),
