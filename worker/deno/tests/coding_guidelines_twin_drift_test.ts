@@ -27,6 +27,11 @@
  * stated on one surface and not the other is drift, so both surfaces are read
  * and compared rung by rung, in order — an unordered ladder is not a ladder.
  *
+ * Issue #5111 added the AWS integration-testing policy: the guidelines, the
+ * review brief and the AWS-relevant bucket guides summarise it and link the one
+ * canonical standards section, so a renamed heading that strands those links
+ * fails here.
+ *
  * Modelled on `hidden_allowlist_drift_test.ts` (Issue #784).
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
@@ -430,4 +435,58 @@ Deno.test("twin pair - the guidelines name no timeout knob for a suite this repo
       "fully migrated to Deno — the knob names no runner this repository has, " +
       "and the prompt is filed verbatim into other repositories",
   );
+});
+
+Deno.test("AWS integration testing - every surface links the one canonical standards section (Issue #5111)", async () => {
+  const standards = await readStandards();
+  const headingLine = standards
+    .split("\n")
+    .find((line) => line === "## AWS integration testing");
+  assert(
+    headingLine,
+    "CODING-STANDARDS.md no longer has a `## AWS integration testing` heading",
+  );
+  // GitHub's anchor rule: lower-case, drop what is not a letter, digit, space
+  // or hyphen, then spaces become hyphens. Derived from the heading, not
+  // hard-coded, so a renamed heading changes the expected anchor.
+  const slug = headingLine
+    .slice("## ".length)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N} -]/gu, "")
+    .replace(/ /g, "-");
+
+  const guidelines = await latestPromptText("coding_guidelines");
+  const surfaces: [string, string][] = [
+    [
+      "the coding_guidelines AWS Integration Testing section",
+      section(guidelines, "AWS Integration Testing"),
+    ],
+    [
+      "prompts/pr_review_brief/prompt.md",
+      await readRepoDoc("prompts/pr_review_brief/prompt.md"),
+    ],
+  ];
+  for (
+    const bucket of [
+      "aws-cloudformation",
+      "terraform",
+      "typescript",
+      "rust",
+      "java",
+    ]
+  ) {
+    const path = `prompts/best_practices/buckets/${bucket}.md`;
+    surfaces.push([path, await readRepoDoc(path)]);
+  }
+
+  for (const [surface, text] of surfaces) {
+    const anchors = [
+      ...text.matchAll(/CODING-STANDARDS\.md#(aws[a-z0-9-]*)/g),
+    ].map((m) => m[1]!);
+    assertEquals(
+      [...new Set(anchors)],
+      [slug],
+      `${surface} must link the AWS standards section`,
+    );
+  }
 });

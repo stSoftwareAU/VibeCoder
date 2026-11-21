@@ -1736,6 +1736,40 @@ problem, not the specific inputs the tests happen to use. Special-casing a
 test's values, or branching on them to turn a suite green, is a failure dressed
 as a fix — the code must still be correct for inputs no test names.
 
+## AWS Integration Testing
+
+The canonical policy is **AWS integration testing** in Vibe Coder's
+`CODING-STANDARDS.md`
+(https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#aws-integration-testing),
+with worked examples; read it before you change AWS behaviour. In short:
+
+- **Scope follows the change.** A new or materially changed AWS CLI script,
+  SDK call, persistence path, queue or event, AWS-backed handler or supported
+  infrastructure behaviour needs a deterministic integration test against AWS
+  Emulator that drives the production script, client, adapter or handler and
+  asserts its observable outcome, error cases included. A pure calculation, UI
+  or other non-AWS change keeps its usual tests and needs no emulator test.
+- **Mocks alone are missing coverage** for a supported AWS change, and so are
+  a generic bucket or table smoke test and an integration suite nothing runs.
+  The repository's quality command and required CI job run the tests; report
+  unrun, skipped, unsupported and failed apart from passed.
+- **Start the emulator only from the test command.** Use the pinned
+  `aws-emulator-run` helper where the container provides it: it starts a
+  private emulator for one command and stops it afterwards. Never start one at
+  container entry, worker boot or shell start-up. Use unique resources per run,
+  no production data, no real credentials, verified TLS and no fallback to
+  real AWS.
+- **Unsupported is a gap, never a pass.** An HTTP 501, a skipped test or a
+  stubbed resource is recorded with the emulator version, the exact operation,
+  the failure, the alternative validation and a recheck condition, with no
+  human approval round; use Floci only for such a gap and only where it covers
+  it. AWS Blocks local tests cover the typed Block API, not the SDK/CLI path
+  beneath it.
+- **Emulator success proves no security.** IAM, resource-policy, KMS-policy
+  and deployment behaviour stay with the authorised real-AWS verification
+  path, so an IAM-only change is verified there, not in the emulator. Do not
+  seek live AWS authority for an ordinary test run.
+
 ## Dependency Bumps and Supply Chain
 
 Default to the latest version of every dependency on every PR. Two defences

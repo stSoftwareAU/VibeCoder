@@ -376,6 +376,8 @@ async function codePhaseBuilds(issueNumber: string) {
  */
 const CODE_PHASE_HEADINGS_BEFORE_2574 = [
   "## A Code Change Owes a Docs Change",
+  // Issue #5111: the AWS integration-testing summary in the guidelines' code layer.
+  "## AWS Integration Testing",
   "## Acceptance-Criteria Closure — Answer the Criteria Before the PR",
   "## Automated Review Comments",
   "## Autonomous Execution",

@@ -56,7 +56,27 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    contract. Prefer user-visible browser behaviour and semantic locators
    for UI, positive and negative contracts for APIs; visual baselines are
    appropriate when appearance is an explicit requirement and the baseline
-   is reviewable. When a change adds the same handling at more than one step
+   is reviewable.
+   For a change to AWS behaviour, apply **AWS integration testing**
+   (https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#aws-integration-testing).
+   A new or materially changed AWS CLI script, SDK call, persistence path,
+   queue or event, AWS-backed handler or supported infrastructure behaviour
+   needs a deterministic AWS Emulator test that drives the changed production
+   code and asserts its observable outcome, error cases included. Mocks alone,
+   a generic bucket or table smoke test, or an integration suite that the
+   repository's quality command and required CI job do not run is missing
+   coverage and a finding. Check the evidence is a real run: unrun, skipped,
+   unsupported and failed are not passed. A documented gap (emulator version,
+   exact operation, reproducible failure, the alternative validation actually
+   run, a recheck condition) is acceptable and needs no human approval; a gap
+   without that evidence, or a failing test downgraded to one, is a finding.
+   AWS Blocks local tests cover the typed Block API, not the SDK/CLI path
+   beneath it. Do not demand an emulator test for a pure calculation, UI or
+   other non-AWS change, and do not read emulator success as proof of IAM,
+   resource-policy, KMS-policy or deployment behaviour: an IAM-only change is
+   reviewed for least privilege and left to the authorised real-AWS
+   verification path.
+   When a change adds the same handling at more than one step
    of a path (a check up front and on each iteration, a limit on the connect
    and on each read), confirm that each new test named for a later step has a
    fixture that gets past every earlier step giving the same outcome; a test

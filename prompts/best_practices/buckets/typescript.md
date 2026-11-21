@@ -406,3 +406,16 @@ production path; never `severity:high`. Each stable id uses the standard
     exists (`lodash`, `moment`). Effect: estimate the saving from the
     library's published size. Risk: behaviour differences in the
     replacement. Stable id: title `Whole-library import of <package>`.
+
+## AWS SDK integration tests
+
+This section applies only when the repository calls AWS through an `@aws-sdk/*`
+(or legacy `aws-sdk`) dependency.
+Follow [AWS integration testing](https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#aws-integration-testing):
+a new or materially changed SDK client, adapter or handler is covered by a
+deterministic AWS Emulator test of that production code, not by mocks alone,
+while pure logic keeps its fast unit tests. Not yet:
+stSoftwareAU/VibeCoder#5112 will add the test-wiring detector and the migration
+findings, so do not file a per-module "missing emulator test" finding here;
+reuse the existing `BP-AWS-EMULATOR-MISSING` finding and open migration issues
+rather than filing a second integration-test campaign.

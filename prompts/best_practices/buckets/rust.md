@@ -871,3 +871,18 @@ named in the scope line at the top, never run `cargo deny`,
     `rust-version` in `Cargo.toml`; check 25 owns the case where the
     code contradicts a declared one. Severity: `severity:low`. Finding
     title: `Rust toolchain not pinned in <repo>`.
+
+## AWS SDK integration tests
+
+This section applies only when the repository calls AWS through the
+`aws-config` or `aws-sdk-*` crates.
+Follow [AWS integration testing](https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#aws-integration-testing):
+a new or materially changed SDK client, adapter or handler is covered by a
+deterministic AWS Emulator test of that production code, not by mocks alone,
+while pure logic keeps its fast unit tests. Not yet:
+stSoftwareAU/VibeCoder#5112 will add the test-wiring detector and the migration
+findings, so do not file a per-module "missing emulator test" finding here;
+reuse the existing `BP-AWS-EMULATOR-MISSING` finding and open migration issues
+rather than filing a second integration-test campaign. The installed server
+through `aws-emulator-run` is the default; the embedded mode suits a crate only
+where its build/resource cost and isolation are justified for that repository.

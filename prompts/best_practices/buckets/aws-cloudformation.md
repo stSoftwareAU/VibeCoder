@@ -15,13 +15,17 @@ containing `AWSTemplateFormatVersion`, plus CDK-emitted templates.
 
 Follow [AWS integration testing](https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#aws-integration-testing)
 for CLI/SDK tests, Blocks local tests, on-demand service lifecycle and
-documented coverage gaps. The runtime/CI rollout and detector migration are
-tracked in stSoftwareAU/VibeCoder#5109 through stSoftwareAU/VibeCoder#5112;
-this guide does not establish that they have shipped.
-Reuse the existing AWS-emulator finding and open migration issues rather
-than filing a second integration-test campaign. Installation or a successful
-stack status alone does not prove supported resource behaviour; unsupported
-resources remain explicit gaps. Keep security validation on real AWS.
+documented coverage gaps. The runtime (stSoftwareAU/VibeCoder#5109) and
+VibeCoder's reference CI path (stSoftwareAU/VibeCoder#5110) have shipped; not
+yet: stSoftwareAU/VibeCoder#5112 will add the test-wiring detector and the
+migration findings, so do not file a per-template "missing emulator test"
+finding here. Reuse the existing `BP-AWS-EMULATOR-MISSING` finding and open
+migration issues rather than filing a second integration-test campaign.
+Installation or a successful stack status alone does not prove supported
+resource behaviour; unsupported resources remain explicit gaps, and no
+template has to deploy in full when one of its resources is a recorded gap.
+Keep IAM, resource-policy and KMS-policy validation on real AWS: emulator
+success does not prove it.
 
 ## Checks
 
