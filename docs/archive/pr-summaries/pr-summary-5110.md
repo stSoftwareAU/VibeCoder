@@ -20,7 +20,9 @@ This PR closes that link:
   - have no soft `continue-on-error` (`[gate-soft]`);
   - have one step that runs `.github/scripts/gate.sh` by its exact path as its
     only command, with `NEEDS_JSON: ${{ toJSON(needs) }}`, no `if:` or soft
-    `continue-on-error`, and a shell that runs the body (`[gate-script]`);
+    `continue-on-error`, and a shell that runs the body (`[gate-script]`). The
+    step is read as Bash joins backslash continuations, so a `#` line after
+    `.github/scripts/gate.sh\` is part of that command, not a comment;
   - have no other step but `actions/checkout`.
 - `worker/deno/tests/quality_gate_script_5110_test.ts` runs the real `gate.sh`.
   It shows that a skipped, cancelled, failed or result-less `aws-emulator` job
@@ -108,9 +110,10 @@ flowchart LR
   failures exit non-zero);
   `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`
   (`[container-agent-run]`, `[gate-always]`, `[gate-soft]` and `[gate-script]`
-  refusals); `worker/deno/tests/quality_gate_script_5110_test.ts` (a skipped,
-  cancelled, failed or result-less `aws-emulator` closes `gate.sh`) — reviewer:
-  met
+  refusals, including a continued `# || true` line that would keep `gate.sh`
+  from running); `worker/deno/tests/quality_gate_script_5110_test.ts` (a
+  skipped, cancelled, failed or result-less `aws-emulator` closes `gate.sh`) —
+  reviewer: met
 - **met** — Every existing template is accounted for as exercised or as a
   specific unsupported case with alternative validation; no unsupported/stubbed
   resource is reported as proven. — evidence:
@@ -142,6 +145,16 @@ flowchart LR
   reason: fixed in this diff (`stepRunsGateScript` matches the exact path; any
   other `gate` step must be a plain `actions/checkout`; three refusal tests
   added)
+- **violation** — Writing a gate over text (read the text as the consumer does):
+  `stepRunsGateScript` read the step through `segmentsOf`, which drops every `#`
+  line before joining continuations. Bash joins first, so
+  `.github/scripts/gate.sh\` followed by `# || true` ran
+  `.github/scripts/gate.sh#`, failed to find it and exited 0 under `bash -e`
+  with `aws-emulator=failure`, yet the check returned `[]` — evidence:
+  `worker/deno/lib/aws_emulator_workflow_check.ts` — reason: fixed in this diff
+  (`stepRunsGateScript` reads the step with the existing continuation-aware
+  `codeLines` and compares the normalised lines by equality; three refusal tests
+  and one comment control added)
 - **clean** — Australian English; reuses `stepsOf`, `segmentsOf`,
   `effectiveShell`, `setsSoftContinueOnError` and `stepIsPlainCheckout`, with no
   copied helpers; malformed input yields findings, not a throw. Every new branch
@@ -167,9 +180,11 @@ flowchart LR
     - A trailing `set -euo pipefail` under `bash {0}` is refused so a failed
       gate remains the final exit status. A leading preamble is accepted.
     - `[gate-script]` refuses an extra step that overwrites `gate.sh`.
+    - `[gate-script]` refuses `.github/scripts/gate.sh\` followed by a
+      `# || true` line, bare, after `set -euo pipefail` and after `bash`.
   - Controls that return `[]`: `${{ always() }}`,
-    `bash .github/scripts/gate.sh`, a `set -euo pipefail` block, and
-    `./.github/scripts/gate.sh`.
+    `bash .github/scripts/gate.sh`, a `set -euo pipefail` block,
+    `./.github/scripts/gate.sh`, and a comment line no continuation reaches.
 - **Added `worker/deno/tests/quality_gate_script_5110_test.ts`, 10 tests:**
   - The fixture's `gate.needs` includes `aws-emulator`.
   - All success exits 0 with the PASSED line.
@@ -184,13 +199,22 @@ flowchart LR
     HEAD:…`), gave `172 passed | 12 failed`. Each returned `[]`
     where one finding was expected.
   - The 3 evasion refusals, run against 2695c88bf, gave `185 passed | 3 failed`.
+  - The 3 continued-`#` refusals, run against the validator at 2afe43ee3, gave
+    `190 passed | 3 failed`. Each returned `[]` where one finding was expected.
+  - Run by hand, `bash -e` on `.github/scripts/gate.sh\` then `# || true` with
+    `aws-emulator=failure` printed
+    `.github/scripts/gate.sh#: No such file or
+    directory` and exited 0.
 - **Existing tests:** none edited and no assertion removed. "real quality.yml
   calls aws-emulator.yml and gate needs it" still expects `[]`, so it now also
   covers the new rules.
 - **Focused run:** from `worker/deno`,
   `deno task test:unit tests/issue_5110_aws_emulator_workflow_test.ts tests/quality_gate_script_5110_test.ts < /dev/null`
-  gave 198 passed, 0 failed. `tests/integration_test_manifest_test.ts` passed
-  once the new test was listed in `IN_GATE_SCRIPT_SUITES`.
+  on the final commit gave 203 passed, 0 failed (193 and 10). That run used a
+  scratch import map in place of the `jsr:@std/assert` and `jsr:@std/yaml`
+  imports, since jsr.io was unreachable from the host; CI runs the task as
+  written. `tests/integration_test_manifest_test.ts` and
+  `tests/aws_emulator_cloudformation_5110_test.ts` also passed in that run.
 - **Full gate:** `./quality.sh < /dev/null` on c1f548851 gave
   `Result: PASSED (with skipped checks)`.
   - The gate itself skipped `config integration` (no `.config.json`) and

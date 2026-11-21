@@ -614,6 +614,46 @@ Deno.test("(gate-script) refuses a trailing set that masks the gate result under
   );
 });
 
+// Bash removes backslash-newline before it looks for comments, so a `#` line
+// straight after a line ending in `\` is part of that command. Each body below
+// exits 0 under `bash -e` without running gate.sh
+// (`.github/scripts/gate.sh#: No such file or directory`, then `|| true`).
+for (
+  const [label, body] of [
+    ["bare path", "          .github/scripts/gate.sh\\\n          # || true"],
+    [
+      "after set -euo pipefail",
+      "          set -euo pipefail\n          .github/scripts/gate.sh\\\n          # || true",
+    ],
+    [
+      "after bash",
+      "          bash .github/scripts/gate.sh\\\n          # || true",
+    ],
+  ] as const
+) {
+  Deno.test(`(gate-script) refuses a continued # line that swallows the gate result (${label})`, () => {
+    assertOneFinding(
+      checkQualityCallsAwsEmulator(
+        qualityMutated(GATE_RUN, `run: |\n${body}`),
+      ),
+      "[gate-script]",
+      "no gate step runs",
+    );
+  });
+}
+
+Deno.test("(gate-script) accepts a comment line that no continuation reaches", () => {
+  assertEquals(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_RUN,
+        "run: |\n          # Judge every needed job.\n          .github/scripts/gate.sh",
+      ),
+    ),
+    [],
+  );
+});
+
 Deno.test("(gate-script) accepts bash <path> and a set -euo pipefail block", () => {
   assertEquals(
     checkQualityCallsAwsEmulator(
