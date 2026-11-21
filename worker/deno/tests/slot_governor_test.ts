@@ -135,8 +135,7 @@ Deno.test("memory pressure - host probe: darwin sysctl levels map 1→ok, 2/4→
   assertEquals(
     (await probeHostMemoryPressure({
       os: "linux",
-      readMemInfo: () =>
-        Promise.resolve("MemTotal: 1000 kB\nMemAvailable: 50 kB\n"),
+      systemMemoryInfo: () => ({ total: 1000 * 1024, available: 50 * 1024 }),
     })).level,
     "high",
   );
