@@ -823,7 +823,12 @@ check earlier.
   the CI failure classifier calls it a code fault. Infrastructure, timing,
   aggregator and deployment-state failures never count.
 - When the same check and step fail on 3 or more distinct fleet PRs within 7
-  days, it files one issue in the repository that owns the fix:
+  days, it files one issue in the repository that owns the fix. Only failing
+  heads a fleet account pushed count: the run's `actor` must be a fleet author
+  or the babysitter. The `actor` stays the pushing account when a run is
+  re-run, unlike `triggering_actor`, which names whoever re-ran it. A commit the
+  owner pushed, or a GitHub "Update branch" merge the owner triggered, is not
+  counted, because the fleet's local gate never saw it (Issue #5320):
 
   | Situation                                                                                                       | Filed in                           |
   | --------------------------------------------------------------------------------------------------------------- | ---------------------------------- |

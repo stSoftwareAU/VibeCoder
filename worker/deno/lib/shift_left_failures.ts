@@ -19,7 +19,14 @@
  * - Observations are grouped by repository, check and failed step, with
  *   matrix shard numbers folded. A group that has failed on
  *   {@link SHIFT_LEFT_THRESHOLD} distinct fleet PRs within
- *   {@link SHIFT_LEFT_WINDOW_DAYS} days is a repeated failure.
+ *   {@link SHIFT_LEFT_WINDOW_DAYS} days is a repeated failure. The count
+ *   covers only failing heads a fleet account pushed (the run's `actor` is a
+ *   fleet author or the babysitter). A head the owner or another human
+ *   pushed, including a GitHub "Update branch" merge they triggered, does not
+ *   count, because the fleet's local gate never saw it (Issue #5320). The
+ *   run's `actor`, not its `triggering_actor`, names the pusher: GitHub sets
+ *   `triggering_actor` to whoever last re-ran the run, and the babysitter
+ *   re-runs cancelled runs on heads the owner pushed.
  * - It is routed to the repository that owns the fix:
  *   - VibeCoder, when most failing heads were pushed by the babysitter, or the
  *     repository's local gate (`quality.sh`) already runs the tool. Either way
@@ -42,7 +49,10 @@ import { redactedLogTail } from "./redacted_text.ts";
 import { getRepoVisibility } from "./repo_visibility.ts";
 import { selectFleetAuthoredMatches } from "./alert_dedup_authors.ts";
 
-/** Distinct fleet PRs a step must fail on before it is a repeated failure. */
+/**
+ * Distinct fleet PRs, at heads a fleet account pushed, a step must fail on
+ * before it is a repeated failure.
+ */
 export const SHIFT_LEFT_THRESHOLD = 3;
 /** The window the threshold is counted over. */
 export const SHIFT_LEFT_WINDOW_DAYS = 7;
@@ -72,7 +82,13 @@ export interface FailureObservation {
   jobId: number;
   prNumber: number;
   headSha: string;
-  /** Who pushed the failing head (the run's triggering actor). */
+  /**
+   * Who pushed the failing head: the run's `actor`, which stays the pushing
+   * account across re-runs (Issue #5320). The run's `triggering_actor` is
+   * only the fallback when `actor` is missing; it names whoever last re-ran
+   * the run. Observations recorded before this change hold the triggering
+   * actor and age out of the window.
+   */
   pushedBy: string;
   check: string;
   step: string;
@@ -574,6 +590,7 @@ interface RunSummary {
   created_at: string;
   head_sha: string;
   head_branch?: string;
+  actor?: { login?: string } | null;
   triggering_actor?: { login?: string } | null;
   pull_requests?: { number: number }[];
 }
@@ -644,7 +661,7 @@ async function observeRepo(
         new Date(since).toISOString()
       }&per_page=100`,
       "--jq",
-      ".workflow_runs[] | {id, created_at, head_sha, head_branch, triggering_actor: {login: .triggering_actor.login}, pull_requests: [.pull_requests[] | {number}]} | tojson",
+      ".workflow_runs[] | {id, created_at, head_sha, head_branch, actor: {login: .actor.login}, triggering_actor: {login: .triggering_actor.login}, pull_requests: [.pull_requests[] | {number}]} | tojson",
     ]),
   );
   const seen = new Set(
@@ -703,7 +720,7 @@ async function observeRepo(
         jobId: job.id,
         prNumber,
         headSha: run.head_sha,
-        pushedBy: run.triggering_actor?.login ?? "",
+        pushedBy: run.actor?.login ?? run.triggering_actor?.login ?? "",
         check: job.name,
         step,
         tool,
@@ -922,7 +939,21 @@ export async function runShiftLeftScan(deps: ShiftLeftScanDeps): Promise<void> {
   }
   const gates = new Map<string, string | null>();
   const routed: { group: RepeatedFailure; route: ShiftLeftRoute }[] = [];
-  for (const group of await repeatedFailures(deps.ledger, deps.nowMs)) {
+  // Only heads a fleet account pushed count; the fleet's gate never saw others.
+  // `pushedBy` is the run's actor, so a re-run by the fleet does not count an
+  // owner-pushed head, and a re-run by the owner does not hide a fleet one.
+  const fleetPushers = new Set(
+    [...deps.fleetAuthors, ...deps.babysitterLogins].map((l) =>
+      l.toLowerCase()
+    ),
+  );
+  const fleetPushed = {
+    ...deps.ledger,
+    observations: deps.ledger.observations.filter((o) =>
+      fleetPushers.has(o.pushedBy.toLowerCase())
+    ),
+  };
+  for (const group of await repeatedFailures(fleetPushed, deps.nowMs)) {
     if (!deps.repos.includes(group.repo)) continue;
     try {
       if (!gates.has(group.repo)) {
