@@ -3137,7 +3137,8 @@ async function runIssueScanLoop(
           guard: callbackGuard,
           outcome: thrownOutcome,
           phase: "serial",
-          telemetryAbsentReason: "agent_not_invoked",
+          // Issue #5296: the run may already have launched an agent.
+          telemetryAbsentReason: "run_unreported",
         },
       );
       throw thrown;
@@ -4289,7 +4290,8 @@ async function drainSlots(
           guard: pool.callbackGuard,
           outcome: abandonedOutcome,
           phase: finishRelease ? "execute" : "shutdown",
-          telemetryAbsentReason: "agent_not_invoked",
+          // Issue #5296: the run may already have launched an agent.
+          telemetryAbsentReason: "run_unreported",
         },
       );
     }
@@ -4933,7 +4935,8 @@ async function runSlot(
               guard: pool.callbackGuard,
               outcome: thrownOutcome,
               phase: "slot",
-              telemetryAbsentReason: "agent_not_invoked",
+              // Issue #5296: the run may already have launched an agent.
+              telemetryAbsentReason: "run_unreported",
             }
             : undefined,
         );
