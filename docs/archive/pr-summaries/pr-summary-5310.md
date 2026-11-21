@@ -215,7 +215,12 @@ flowchart LR
   - With the library from the previous head commit (`d6c9a377`), it gave
     `61 passed | 14 failed`: each of the seven text-before-label inputs failed
     both its output check and its no-value check.
-  - At head it gives `75 passed | 0 failed`.
+  - With the library from the previous head commit (before the
+    masked-placeholder tail check),
+    `credentials: TOKEN='<token>';db_pass=Winter2026` published
+    `;db_pass=Winter2026`; the two new tail cases (a masked token and a literal
+    placeholder, each followed by more of the same value) cover it.
+  - At head it gives `81 passed | 0 failed`.
 - **Existing tests:** none edited. Every test file that mentions
   `redactSecrets`, `containsSecret` or `secret_redaction` passes at head: 54
   files, 1,242 passed, 0 failed. This run used a scratch import map in place of

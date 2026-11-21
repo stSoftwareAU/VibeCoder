@@ -276,6 +276,18 @@ for (
       ["ab#c1", "c1TOKEN", GHP],
     ],
     [
+      "label, quote and masked token, then more of the same value",
+      `credentials: TOKEN='${GHP}';db_pass=Winter2026`,
+      `credentials: ${R}`,
+      ["Winter2026", "db_pass", GHP],
+    ],
+    [
+      "label, quote and placeholder, then more of the same value",
+      `credentials: TOKEN='${R}';db_pass=Winter2026`,
+      `credentials: ${R}`,
+      ["Winter2026", "db_pass"],
+    ],
+    [
       "chain of three pairs",
       "a_password: x1,b_token: y2,c_secret: z3",
       `a_password: ${R} ${R} ${R}`,

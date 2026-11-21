@@ -1035,7 +1035,8 @@ function labelEndingAt(
  * A label whose value is already the placeholder — the first pass's own
  * output, `api_key: ***REDACTED***` — also counts, so a second pass changes
  * nothing. The pattern refuses a redacted value, so without this the second
- * pass would mask the label.
+ * pass would mask the label — but only when the placeholder reaches the outer
+ * value's end (bar a closing quote); text after it keeps the outer mask.
  */
 function innerAssignment(
   text: string,
@@ -1046,8 +1047,14 @@ function innerAssignment(
   if (!label) return null;
   const window = text.slice(label.start, end + INNER_ASSIGNMENT_SPAN);
   const afterKey = window.slice(label.end - label.start);
-  if (MASKED_SEPARATOR.test(afterKey)) {
-    return { labelStart: label.start, resume: end };
+  const masked = MASKED_SEPARATOR.exec(afterKey);
+  if (masked) {
+    // The placeholder must reach the value's end (bar a closing quote); text
+    // after it belongs to the outer value, which stays masked whole.
+    const rest = text.slice(label.end + masked[0].length, end);
+    return rest === "" || rest === "'" || rest === '"'
+      ? { labelStart: label.start, resume: end }
+      : null;
   }
   if (!SEPARATOR_START.test(afterKey)) return null;
   const probe = execAssignmentAt(window, 0);
