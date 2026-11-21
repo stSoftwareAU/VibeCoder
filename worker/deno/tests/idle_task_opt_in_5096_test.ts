@@ -465,7 +465,12 @@ Deno.test(
       }),
     );
 
-    assertEquals(run.outcome, { routed: true, success: true });
+    // Issue #5296: the scan ran an agent that reported no usage.
+    assertEquals(run.outcome, {
+      routed: true,
+      success: true,
+      telemetryAbsentReason: "usage_not_reported",
+    });
     assertEquals(run.filed, [77]);
     assert(run.closed);
     assertStringIncludes(run.comments.join("\n"), "Filed 1 issues: #77");
@@ -483,7 +488,12 @@ Deno.test(
       }),
     );
 
-    assertEquals(run.outcome, { routed: true, success: true });
+    // Issue #5296: the scan ran an agent that reported no usage.
+    assertEquals(run.outcome, {
+      routed: true,
+      success: true,
+      telemetryAbsentReason: "usage_not_reported",
+    });
     assertEquals(run.filed, [77]);
     assert(run.closed);
     assertStringIncludes(run.comments.join("\n"), "Filed 1 issues: #77");
@@ -501,7 +511,12 @@ Deno.test(
       }),
     );
 
-    assertEquals(run.outcome, { routed: true, success: true });
+    // Issue #5296: the scan ran an agent that reported no usage.
+    assertEquals(run.outcome, {
+      routed: true,
+      success: true,
+      telemetryAbsentReason: "usage_not_reported",
+    });
     assertEquals(run.filed, [77]);
     assert(run.closed);
     assertStringIncludes(run.comments.join("\n"), "Filed 1 issues: #77");
@@ -568,7 +583,12 @@ Deno.test(
   async () => {
     const run = await runRoute(routeInputFiledBy("owner-human"));
 
-    assertEquals(run.outcome, { routed: true, success: true });
+    // Issue #5296: the scan ran an agent that reported no usage.
+    assertEquals(run.outcome, {
+      routed: true,
+      success: true,
+      telemetryAbsentReason: "usage_not_reported",
+    });
     assertEquals(run.filed, [77]);
     assert(run.closed);
     assertStringIncludes(run.comments.join("\n"), "Filed 1 issues: #77");
