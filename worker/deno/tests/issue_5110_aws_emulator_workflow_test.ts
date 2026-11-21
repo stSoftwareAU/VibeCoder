@@ -310,6 +310,30 @@ Deno.test("(b) refuses an escaped backslash ending an assignment before true <aw
   );
 });
 
+// Issue #5304 review round 2: a comment ends at its physical newline, so a
+// backslash at the end of a `#` line that a continuation reaches after a blank
+// is comment text, not a continuation (ShellCheck SC1143). The next line is
+// its own command: `exit 0` there ends the step before the script runs.
+for (
+  const [label, lines] of [
+    ["# note \\ then exit 0", ["# note \\", "exit 0"]],
+    ["# note \\ then exec true", ["# note \\", "exec true"]],
+    ["a bare #\\ then exit 0", ["#\\", "exit 0"]],
+    ["an indented # note \\ then exit 0", ["  # note \\", "exit 0"]],
+  ] as const
+) {
+  Deno.test(`(a) refuses set -euo pipefail \\ continued onto ${label} (Issue #5304)`, () => {
+    expectFindings(
+      mutate([
+        TEST_STEP_ANCHOR,
+        " \\\n" + lines.map((line) => `          ${line}\n`).join("") +
+        "          " + SCRIPT_LINE + "\n",
+      ]),
+      ["[test-step] the infra/cloudformation/test-aws-emulator.sh step must run only"],
+    );
+  });
+}
+
 Deno.test("(a) accepts an explicit continue-on-error: false on the test step", () => {
   expectFindings(
     mutate([
@@ -1157,6 +1181,22 @@ Deno.test("(container-agent-run) refuses an escaped backslash ending an assignme
     mutateText(CONTAINER_BUILD, [
       "          " + BUILD_TAG,
       "          FOO=\\\\\n          true " + BUILD_TAG,
+    ]),
+  ));
+  assertEquals(
+    problems.length,
+    1,
+    `expected one finding, got: ${JSON.stringify(problems)}`,
+  );
+  assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+});
+
+Deno.test("(container-agent-run) refuses set -euo pipefail \\ continued onto # note \\ then exit 0 before the docker line (Issue #5304)", () => {
+  const problems = checkContainerBuildRunsAwsEmulator(parseYaml(
+    mutateText(CONTAINER_BUILD, [
+      "          set -euo pipefail\n" + AGENT_DOCKER_LINE,
+      "          set -euo pipefail \\\n          # note \\\n          exit 0\n" +
+      AGENT_DOCKER_LINE,
     ]),
   ));
   assertEquals(

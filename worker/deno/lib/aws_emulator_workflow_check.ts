@@ -133,12 +133,28 @@ function endsInContinuation(line: string): boolean {
 }
 
 /**
+ * Whether a physical line that a continuation reaches opens a comment: its
+ * first character after spaces and tabs is `#`, and that `#` starts a word in
+ * the joined line, because blanks sit before it on this line or at the end of
+ * the pending text (`set -e \` then `# note`). A comment ends at its physical
+ * newline, so a backslash at its end is comment text, not a continuation
+ * (ShellCheck SC1143). `sh\` then `#` is the word `sh#`, not a comment.
+ */
+function continuedIntoComment(pending: string, physical: string): boolean {
+  const lead = /^[ \t]*#/.exec(physical);
+  if (lead === null) return false;
+  return lead[0].length > 1 || /[ \t]$/.test(pending);
+}
+
+/**
  * The `run:` text of a step as Bash reads it: backslash-newline removed with
  * no blank inserted (the next line's leading whitespace is kept), and comment
  * lines, per {@link isCommentLine}, dropped. Joining without a blank keeps
- * `sh\` + `#` as the word `sh#`, as Bash does. Only a real continuation, per
- * {@link endsInContinuation}, joins: a line ending in an escaped backslash
- * stays its own command.
+ * `sh\` + `#` as the word `sh#`, as Bash does. A line joins the next only on
+ * a real continuation, per {@link endsInContinuation}, outside a comment: a
+ * line ending in an escaped backslash stays its own command, and so does the
+ * line after a `#` comment that a continuation reached (see
+ * {@link continuedIntoComment}), whatever the comment ends in.
  */
 function codeOf(step: unknown): string {
   const lines: string[] = [];
@@ -146,6 +162,14 @@ function codeOf(step: unknown): string {
   for (const physical of runOf(step).split("\n")) {
     if (isCommentLine(continued, physical)) continue;
     const line = continued + physical;
+    if (continued !== "" && continuedIntoComment(continued, physical)) {
+      // The comment ends the command here and contributes no code; keeping
+      // its text would hand a trailing backslash to `shellCommands`, which
+      // would join the next line onto it.
+      lines.push(continued);
+      continued = "";
+      continue;
+    }
     if (endsInContinuation(line)) {
       continued = line.slice(0, -1);
       continue;

@@ -69,10 +69,14 @@ flowchart LR
   (`docker \` + `build` now matches the retag regex), and it can also make a
   caller accept a command `shellCommands` used to split: a script path, or
   `docker`, split mid-word by a real continuation is now read as the one word
-  Bash runs, and accepted. Only a real continuation joins: an odd run of
-  trailing backslashes. A line ending in an escaped backslash (an even run) ends
-  its command, as in Bash, so `FOO=\\` followed by `true <script>` still runs
-  `true`, and is refused. Both real workflows still pass.
+  Bash runs, and accepted. A line joins the next only on a real continuation
+  (an odd run of trailing backslashes) outside a comment. A line ending in an
+  escaped backslash (an even run) ends its command, as in Bash, so `FOO=\\`
+  followed by `true <script>` still runs `true`, and is refused. A `#` line
+  that a continuation reaches after a blank is a comment, which ends at its
+  newline whatever it ends in, so `set -euo pipefail \` / `# note \` /
+  `exit 0` before the script runs `exit 0` as its own command, and is refused.
+  Both real workflows still pass.
 - Docs: `docs/EC2-LINUX-VERIFICATION.md` names both validators, but nothing in
   it describes comment handling, so it is unchanged. Updated in this diff: the
   module header bullet (a), the `codeOf` doc comment, and the
@@ -133,7 +137,18 @@ flowchart LR
   split into `FOO=` and `true <script>`). Bash itself was checked:
   `FOO=\\` then `echo $FOO` prints `\`, and `FOO=\` then `echo` runs
   `FOO=echo`.
-- Not done or not checked: a non-ASCII character elsewhere on a kept line is
+- Comment reached by a continuation (review of `38003c5`): `set -euo pipefail \`
+  continued onto `# note \`, `#\` or an indented `  # note \`, then `exit 0`
+  (or `exec true`), before the script, gives the `[test-step] … must run only`
+  finding; the same three lines before the agent `docker run` give one
+  `[container-agent-run]` finding. The accept case `script.sh \` then
+  `# trailing note` still passes. The test file gives `ok | 213 passed |
+  0 failed`; with the library from `38003c5` it gave `FAILED | 208 passed |
+  5 failed` (these five). Bash was checked: that step prints nothing after
+  `exit 0` and exits 0.
+- Not done or not checked: the same-line shape, `set -euo pipefail # note \`
+  then `exit 0`, is still read as one continued line (main accepts it too; it
+  is recorded on #5304). A non-ASCII character elsewhere on a kept line is
   not refused on its own. A backslash inside quotes is still counted as if
   unquoted when deciding whether a line continues.
 
