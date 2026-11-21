@@ -40,14 +40,24 @@ a reusable workflow that
 [`quality.yml`](../.github/workflows/quality.yml) calls as the `aws-emulator`
 job, which the required `gate` job needs. There is no path filter: it runs on
 every pull request to `Develop`, `main` and `milestone/*` (drafts run when
-marked ready), and a failed, cancelled or skipped run turns `gate` red.
+marked ready), and a failed, cancelled or skipped run turns `gate` red. The
+`checkAwsEmulatorWorkflow` validator also requires that the test step, its job
+and the workflow set no `env:`, because `SHELLOPTS=noexec` or `BASH_ENV` could
+skip or alter the script.
 `checkQualityCallsAwsEmulator` in
 [`worker/deno/lib/aws_emulator_workflow_check.ts`](../worker/deno/lib/aws_emulator_workflow_check.ts)
 holds that wiring: `gate` needs `aws-emulator`, has `if: always()` and no soft
 `continue-on-error` (unset or `false`), and has a step that runs
 `.github/scripts/gate.sh` by its exact path as its only command with
 `NEEDS_JSON: ${{ toJSON(needs) }}`, no `if:` or soft `continue-on-error`, and a
-shell that runs the body. It has no other step but `actions/checkout`.
+shell that runs the body. It has no other step but `actions/checkout`. The gate
+step's `env:` sets nothing but `NEEDS_JSON`, and the `gate` job sets no `env:`
+or `container:`, nor does the workflow set `env:`. No `working-directory` is set
+on that step or in the job's or workflow's `defaults.run`, and the checkout's
+`with:` sets only `persist-credentials` and `fetch-depth`. A variable such as
+`SHELLOPTS=noexec` makes bash exit 0 without running the body, `BASH_ENV` runs a
+file first, and a working directory or another checkout can make the relative
+script path name a look-alike.
 [`worker/deno/tests/quality_gate_script_5110_test.ts`](../worker/deno/tests/quality_gate_script_5110_test.ts)
 runs that script and shows a skipped, cancelled or failed `aws-emulator` result
 closes the gate. The `aws-emulator` job needs no Docker socket and no service
@@ -66,10 +76,10 @@ manual run. Its exit status fails the check.
 holds that step's text to its contract. The step must use exactly one
 read-only volume holding the entrypoint and no flag outside `--rm`, `--user`,
 `--volume` and `--entrypoint`. The step sets no `env:`. The job and workflow
-`env:` set none of `BASH_ENV`, `ENV`, `PATH` or the `DOCKER_*` connection
-variables. The job takes `IMAGE_CHANGED` from the change detector, an earlier
-step runs `docker build -t "${IMAGE}"`, and no step names `GITHUB_ENV` or
-`GITHUB_PATH`. The check also requires job `container` to need `changes`, the
+`env:` set none of `BASH_ENV`, `ENV`, `PATH`, `SHELLOPTS` or the `DOCKER_*`
+connection variables. The job takes `IMAGE_CHANGED` from the change detector, an
+earlier step runs `docker build -t "${IMAGE}"`, and no step names `GITHUB_ENV`
+or `GITHUB_PATH`. The check also requires job `container` to need `changes`, the
 `changes` job to have no `if:` or `continue-on-error` and an `outputs.image` of
 exactly `${{ steps.filter.outputs.image }}`, and its step `id: filter` to have
 no `if:` or `continue-on-error`. That step's `BASE_SHA` and `HEAD_SHA` env must
@@ -86,12 +96,15 @@ that appends `image=true` to `"$GITHUB_OUTPUT"` and exits, then
 command is refused, including a `||`/`&&`/`if`/loop/`case` guard on the call, a
 trailing `&`, another `exit`, another `image=` write, and an assignment,
 `export` or `unset` of `GITHUB_OUTPUT`. The `changes` job permits only checkout
-and the filter step, with no job-level container or env. The workflow may set no
-env. Otherwise `IMAGE_CHANGED` may
-not be `true`, every image step and the agent run skip, and the required check
-passes without running the command. The validator is a text check, so it does
-not catch everything. It misses an indirect write to
-`GITHUB_ENV` or `GITHUB_PATH`, a step that rewrites the checked-out script or
+and the filter step, with no job-level container or env. The `changes`
+checkout's `with:` sets only `persist-credentials` and `fetch-depth` (no `ref`,
+`repository` or `path`), and no `working-directory` is set on the filter step or
+in the `changes` job's or workflow's `defaults.run`, so the relative script path
+cannot name a look-alike. The workflow may set no env. Otherwise `IMAGE_CHANGED`
+may not be `true`, every image step and the agent run skip, and the required
+check passes without running the command. The validator is a text check, so it
+does not catch everything. It misses an indirect write to `GITHUB_ENV` or
+`GITHUB_PATH`, a step that rewrites the checked-out script or
 replaces docker or its context, and a retag the check does not recognise.
 
 ```mermaid
