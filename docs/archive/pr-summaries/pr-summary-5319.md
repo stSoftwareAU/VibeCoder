@@ -79,6 +79,14 @@ flowchart LR
     `worker/deno/lib/memory_pressure.ts`.
 - `docs/INTERNALS.md:920`, which mentions `/proc/meminfo`, describes the bash
   crash-context collector, which this change does not touch.
+- Callers of `worker/deno/lib/wip_checkpoint.ts`: the only line this diff
+  changes there is the doc comment on `WipCheckpointOptions.probeMemory` (line
+  240). No function body or signature in that file changes.
+  - `buildDeclaredHandoffWipCommitMessage` at
+    `worker/deno/lib/phases/declared_handoff.ts:104` — **unchanged**. The
+    function (`wip_checkpoint.ts:187`) is untouched by this diff; its output is
+    still pinned by `tests/wip_commit_marker_test.ts` and
+    `tests/wip_checkpoint_test.ts`.
 
 ## Test Plan
 
