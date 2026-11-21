@@ -74,6 +74,7 @@ function evidenceRecord(): HardKillEvidence {
       workerLogTail: `[2026-10-25T00:59:00Z] starting\n${LOG_LINE}`,
       agentTranscriptTail: "",
       bootLogs: "",
+      hostState: { disk: "", memory: "" },
       guest: {
         ps: "",
         meminfo: "",
@@ -91,7 +92,13 @@ async function writeEvidence(home: string): Promise<string> {
   await Deno.mkdir(dir, { recursive: true });
   const epoch = Math.floor(Date.parse(CAPTURED_AT) / 1000);
   const path = `${dir}/hard-kill-${CONTAINER}-${epoch}.json`;
-  await Deno.writeTextFile(path, JSON.stringify(evidenceRecord()));
+  // Written in the old shape (no `hostState`): a file from before host facts
+  // were captured must still be reported on the next start.
+  const { hostState: _hostState, ...oldEvidence } = evidenceRecord().evidence;
+  await Deno.writeTextFile(
+    path,
+    JSON.stringify({ ...evidenceRecord(), evidence: oldEvidence }),
+  );
   return path;
 }
 

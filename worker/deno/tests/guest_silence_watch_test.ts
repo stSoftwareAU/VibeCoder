@@ -41,6 +41,8 @@ function fakeSeams(options: {
     },
     readTail: () => Promise.resolve(""),
     writeFile: () => Promise.resolve(),
+    diskReading: () => Promise.resolve(null),
+    memoryReading: () => Promise.resolve({ level: "unknown" }),
     hostname: () => "test-host",
     timeout: () => ({
       promise: new Promise<void>(() => {}),
