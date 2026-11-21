@@ -2038,6 +2038,180 @@ Deno.test("ownDiffUnchanged: a repeated filename in either listing is a fresh re
   }
 });
 
+// Issue #5307: a base merge absorbed the re-wrap hunk of docs/CALLBACKS.md while
+// the PR still changes its second hunk, so the head lists only that hunk, under
+// a shifted header. Every head hunk must match a sent-back hunk, in order.
+const callbacksHunkA =
+  "@@ -10,3 +10,3 @@\n context before\n-old wrap line\n+new wrap line\n context after";
+const callbacksHunkB =
+  "@@ -40,2 +40,3 @@\n line a\n+the real doc change\n line b";
+const callbacksHunkBShifted =
+  "@@ -41,2 +41,3 @@\n line a\n+the real doc change\n line b";
+const callbacksSentBack = [callbacksHunkA, callbacksHunkB].join("\n");
+
+// The sent-back own diff is docs/CALLBACKS.md (two hunks) and a.ts. The head
+// lists a.ts unchanged and docs/CALLBACKS.md with the given patch.
+const callbacksGh = (headDocs: string) =>
+  fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "merge",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([
+      { filename: "docs/CALLBACKS.md", patch: callbacksSentBack },
+      { filename: "a.ts", patch: dropPatch },
+    ]),
+    "repos/o/r/compare/main...head": compareFiles([
+      { filename: "a.ts", patch: dropPatch },
+      { filename: "docs/CALLBACKS.md", patch: headDocs },
+    ]),
+  }).gh;
+
+Deno.test("ownDiffUnchanged: a base merge that absorbed one hunk of a file the PR still changes is awaiting-fix (Issue #5307)", async () => {
+  const gh = callbacksGh(callbacksHunkBShifted);
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", [{ file: "a.ts" }]),
+    true,
+  );
+  assertEquals(
+    await skipReason(
+      searchPr({
+        headRefOid: "head",
+        baseRefName: "main",
+        reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+      }),
+      "nleck",
+      (since) =>
+        ownDiffUnchanged(gh, "o/r", "main", since, "head", [{ file: "a.ts" }]),
+    ),
+    "awaiting-fix",
+  );
+});
+
+Deno.test("ownDiffUnchanged: a finding naming the file, qualified or through an earlier gap, is a fresh review (Issue #5307)", async () => {
+  const gh = callbacksGh(callbacksHunkBShifted);
+  for (const file of ["docs/CALLBACKS.md", "repo/docs/CALLBACKS.md"]) {
+    assertEquals(
+      await ownDiffUnchanged(gh, "o/r", "main", "X", "head", [{ file }]),
+      false,
+      file,
+    );
+  }
+  const gap = {
+    file: "(earlier review)",
+    line: 0,
+    problem: "The earlier finding is not verified as fixed",
+    earlier: {
+      file: "docs/CALLBACKS.md",
+      line: 1,
+      problem: "Restore the wrap",
+    },
+  };
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", [gap]),
+    false,
+  );
+  // Control: only a.ts is named, so docs/CALLBACKS.md is compared hunk by hunk.
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", [{ file: "a.ts" }]),
+    true,
+  );
+});
+
+Deno.test("ownDiffUnchanged: unknown or empty findings keep the hunk count check (Issue #5307)", async () => {
+  const gh = callbacksGh(callbacksHunkBShifted);
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", undefined),
+    false,
+  );
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
+    false,
+  );
+  // Control: known findings that name only a.ts let the hunk match decide.
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", [{ file: "a.ts" }]),
+    true,
+  );
+});
+
+Deno.test("ownDiffUnchanged: a head hunk missing from the sent-back patch, or out of order, is a fresh review (Issue #5307)", async () => {
+  const finding = [{ file: "a.ts" }];
+  const headOnlyHunk = [
+    callbacksHunkBShifted,
+    "@@ -70,1 +71,2 @@\n line c\n+a new line",
+  ].join("\n");
+  const reordered = [callbacksHunkBShifted, callbacksHunkA].join("\n");
+  for (const headDocs of [headOnlyHunk, reordered]) {
+    assertEquals(
+      await ownDiffUnchanged(
+        callbacksGh(headDocs),
+        "o/r",
+        "main",
+        "X",
+        "head",
+        finding,
+      ),
+      false,
+      headDocs,
+    );
+  }
+  // Controls: the head's hunks in sent-back order are confirmed, whether it
+  // keeps only the second hunk or both.
+  assertEquals(
+    await ownDiffUnchanged(
+      callbacksGh(callbacksHunkBShifted),
+      "o/r",
+      "main",
+      "X",
+      "head",
+      finding,
+    ),
+    true,
+  );
+  assertEquals(
+    await ownDiffUnchanged(
+      callbacksGh([callbacksHunkA, callbacksHunkBShifted].join("\n")),
+      "o/r",
+      "main",
+      "X",
+      "head",
+      finding,
+    ),
+    true,
+  );
+});
+
+Deno.test("ownDiffUnchanged: a remaining hunk whose changed lines differ is a fresh review (Issue #5307)", async () => {
+  const editedHunk =
+    "@@ -41,2 +41,3 @@\n line a\n+the real doc change, edited\n line b";
+  assertEquals(
+    await ownDiffUnchanged(
+      callbacksGh(editedHunk),
+      "o/r",
+      "main",
+      "X",
+      "head",
+      [
+        { file: "a.ts" },
+      ],
+    ),
+    false,
+  );
+  // Control: the identical remaining hunk is confirmed.
+  assertEquals(
+    await ownDiffUnchanged(
+      callbacksGh(callbacksHunkBShifted),
+      "o/r",
+      "main",
+      "X",
+      "head",
+      [{ file: "a.ts" }],
+    ),
+    true,
+  );
+});
+
 // --- Issue #4643: a PR held for the owner, with only base merges since -------
 
 // A comment-only skill review that held the PR for the owner: it carries the

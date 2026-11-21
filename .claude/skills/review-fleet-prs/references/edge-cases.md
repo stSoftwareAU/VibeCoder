@@ -51,11 +51,12 @@ PRs continue. A persistence failure after an API request still fails loud.
 ## Version-only re-bumps
 
 The own-diff comparison skips a sent-back PR as `awaiting-fix` when each
-file still matches, apart from files that left the own diff (see below). A
-held PR is compared the same way on its strict path, with the rules in
-[Awaiting-owner](#awaiting-owner). In a
-file no earlier finding names, the added and removed lines must match: the same
-number of hunks, in the same order. Hunk headers
+file still matches, apart from files that left the own diff and absorbed hunks
+(see below). A held PR is compared the same way on its strict path, with the
+rules in [Awaiting-owner](#awaiting-owner). In a file no earlier finding names,
+the added and removed lines must match, in the same order, with the same number
+of hunks unless a base merge absorbed hunks (see the absorbed-hunks paragraph
+below). Hunk headers
 and unchanged context lines are ignored there, so a base merge that only moves
 the context around a CHANGELOG entry still awaits the fix. In a file an
 earlier finding names, or in any file when the findings for the exact
@@ -75,9 +76,10 @@ must contain exactly one removed line immediately followed by one added line.
 The two lines must be identical apart from the version token, including spacing
 and punctuation. This covers a workflow bump committed separately or in a
 base-merge resolution. Every other file must still match under the rules
-above (a file that left the own diff follows the drop rule at the end of this
-section): on its added and removed lines, and also on its context lines in a
-file an earlier finding names (or any file when the findings are unknown).
+above, the absorbed-hunks allowance included (a file that left the own diff
+follows the drop rule below): on its remaining added and removed lines, and
+also on its context lines in a file an earlier finding names (or any file when
+the findings are unknown).
 
 The numeric core has two to four components; each replacement keeps the same
 component count and increases the first differing component. A prerelease or
@@ -107,7 +109,18 @@ at the new head always gets a fresh review, and so does a sent-back listing
 that reaches the 300-file cap, since a truncated sent-back listing could hide or
 invent a drop. A new-head listing at the cap needs no rule of its own: it
 necessarily has a file the sent-back listing lacks, which gets a fresh review.
-Files present at both heads are compared as before.
+
+A base merge can also absorb one or more hunks of a file the PR still changes
+elsewhere, because the base gained the same edit. Those hunks may then be
+missing from the new head's patch, but only when the logged findings for the
+exact sent-back head are known, number at least one, and none names the file (a
+qualified path counts, as does a structured earlier-review gap that names it).
+Then every hunk still present at the new head must appear in the sent-back
+patch, in the same order, with identical added and removed lines. A hunk present
+only at the new head, or a remaining hunk whose changed lines differ, gets a
+fresh review; the version exception still needs the same hunk count. A file an
+earlier finding names, and any file when the findings are missing or empty, gets
+no such allowance: its whole patch must match as before.
 
 A Dependabot re-cut is the one force-push that can keep a sent-back PR
 `awaiting-fix` (`ownDiffUnchanged` in `scripts/gate.ts`). Dependabot never
