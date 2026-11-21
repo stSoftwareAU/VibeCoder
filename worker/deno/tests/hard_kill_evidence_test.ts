@@ -17,6 +17,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   bootLogsArgs,
   captureHardKillEvidence,
+  DEFAULT_STEP_TIMEOUT_MS,
   DEFAULT_TOTAL_CAP_MS,
   type EvidenceInvocation,
   type EvidenceOptions,
@@ -532,6 +533,8 @@ Deno.test("captureHardKillEvidence - a branch that throws names the failure in e
       },
     },
     runtime: () => new Promise<EvidenceInvocation>(() => {}),
+    diskReading: () => new Promise(() => {}),
+    memoryReading: () => new Promise(() => {}),
     firesFor: () => false,
   });
 
@@ -540,6 +543,7 @@ Deno.test("captureHardKillEvidence - a branch that throws names the failure in e
   assertEquals(outcome, { ok: true, file: FILE });
   const record = recordOf(h);
   const failed = "unavailable: capture step failed: Invalid time value";
+  assertEquals(record.evidence.hostState, { disk: failed, memory: failed });
   assertEquals(record.evidence.bootLogs, failed);
   assertEquals(record.evidence.guest.ps, failed);
   assertEquals(record.evidence.guest.pressureIo, failed);
@@ -555,6 +559,8 @@ Deno.test("captureHardKillEvidence - a hung runtime at the total cap leaves its 
   const h = harness({
     files: HAPPY_FILES,
     runtime: () => new Promise<EvidenceInvocation>(() => {}),
+    diskReading: () => new Promise(() => {}),
+    memoryReading: () => new Promise(() => {}),
     // Only the total cap fires; every step timer stays pending.
     firesFor: (ms) => ms === DEFAULT_TOTAL_CAP_MS,
   });
@@ -565,6 +571,10 @@ Deno.test("captureHardKillEvidence - a hung runtime at the total cap leaves its 
   const record = recordOf(h);
   const notCollected =
     `unavailable: not collected before the ${DEFAULT_TOTAL_CAP_MS}ms capture cap ended`;
+  assertEquals(record.evidence.hostState, {
+    disk: notCollected,
+    memory: notCollected,
+  });
   assertEquals(record.evidence.bootLogs, notCollected);
   assertEquals(record.evidence.guest.ps, notCollected);
   assertEquals(record.evidence.guest.pressureIo, notCollected);
@@ -850,4 +860,31 @@ Deno.test("captureHardKillEvidence - a host reading that fails is recorded with 
   );
   assertEquals(memory.startsWith("unavailable: "), true);
   assertEquals(memory.includes("sysctl timed out"), true);
+});
+
+Deno.test("host probe deadlines and disk rejection preserve the other evidence", async () => {
+  const timeout = `unavailable: no answer within ${DEFAULT_STEP_TIMEOUT_MS}ms`;
+  for (const rejectDisk of [false, true]) {
+    const h = harness({
+      files: HAPPY_FILES,
+      diskReading: () =>
+        rejectDisk
+          ? Promise.reject(new Error("df refused"))
+          : new Promise(() => {}),
+      memoryReading: () => new Promise(() => {}),
+    });
+    assertEquals(await captureHardKillEvidence(h.seams, BASE), {
+      ok: true,
+      file: FILE,
+    });
+    const record = recordOf(h);
+    assertEquals(record.evidence.hostState, {
+      disk: rejectDisk ? "unavailable: df refused" : timeout,
+      memory: timeout,
+    });
+    assertEquals(
+      record.evidence.workerLogTail,
+      HAPPY_RECORD.evidence.workerLogTail,
+    );
+  }
 });

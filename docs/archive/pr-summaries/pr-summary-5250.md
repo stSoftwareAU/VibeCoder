@@ -138,16 +138,10 @@ flowchart LR
   `^level=(?:ok|high)(?: available=\d+ total=\d+)?$` (`level=unknown` fails).
   With `systemMemoryInfo` removed from `run.sh`'s `--allow-sys` the test goes
   red with `unavailable: Requires sys access to "systemMemoryInfo"`.
-- **violation** — every outcome of an added branch needs a test — evidence:
-  `worker/deno/lib/hard_kill_evidence.ts:640`, `:686-688` — reason: open, not
-  fixed in this run. Three paths are unasserted: the disk read that throws or
-  times out (`!disk.ok`), the `markUnfilled` host fill, and a host reading that
-  hangs at the total cap.
-- **violation** — a refusal test must be refused by the rule it names —
-  evidence: `worker/deno/tests/hard_kill_report_test.ts:801-809` — reason: open,
-  not fixed in this run. The test checks only that the message contains
-  `"hostState"`. There is also no refusal test for a `hostState` object whose
-  `disk` or `memory` is missing.
+- **fixed** — capture tests assert disk rejection, per-probe timeout, branch
+  failure and total-cap causes in the persisted host fields.
+- **fixed** — parser tests assert the specific object and member validation
+  errors and parse each repaired record.
 - **violation** — DRY (in-repo helper re-implemented) — evidence:
   `worker/deno/lib/hard_kill_guest_facts.ts:58,197-199` — reason: open, not
   fixed in this run. `GIB` and `gib()` duplicate `formatMemoryBytes`
@@ -180,6 +174,8 @@ New tests (all under `worker/deno/tests/`):
   - `captureHardKillEvidence - a host reading that fails is recorded with its cause (Issue #5250)`:
     a null `df` reading and a thrown `sysctl timed out` each become an
     `unavailable: …` field carrying the cause.
+- Host probes are also exercised through rejection, timeout, branch failure and
+  total cap.
 - `memory_pressure_test.ts`: three `probeHostMemoryPressureFromSystem` tests
   (Linux classifies `systemMemoryInfo` with the bytes; a refused read throws its
   cause rather than returning `unknown`; an implausible reading is refused and a
@@ -189,6 +185,8 @@ New tests (all under `worker/deno/tests/`):
     is the old-shape persisted-data test: the body says `not available` for both
     host lines.
   - `parseHardKillEvidence refuses a hostState that is not an object (Issue #5250)`.
+  - Missing and non-string disk and memory fields are refused and repaired
+    individually.
 - `hard_kill_guest_facts_test.ts`:
   `hardKillHostDisk words the free space in GiB and percent`,
   `hardKillHostDisk never echoes free text or a path`,

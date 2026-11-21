@@ -814,12 +814,35 @@ Deno.test("parseHardKillEvidence refuses a hostState that is not an object (Issu
   const bad = JSON.parse(json(makeEvidence())) as {
     evidence: Record<string, unknown>;
   };
+  const original = bad.evidence["hostState"];
   bad.evidence["hostState"] = "available=1 total=2";
   assertThrowsWith(
     () => parseHardKillEvidence(JSON.stringify(bad)),
-    "hostState",
+    'field "hostState" is not an object',
   );
+  bad.evidence["hostState"] = original;
+  assertEquals(parseHardKillEvidence(JSON.stringify(bad)), makeEvidence());
 });
+
+for (const field of ["disk", "memory"] as const) {
+  Deno.test(`parseHardKillEvidence refuses a missing or non-string host ${field}`, () => {
+    const valid = makeEvidence();
+    const host: Record<string, unknown> = { ...valid.evidence.hostState };
+    const record = {
+      ...valid,
+      evidence: { ...valid.evidence, hostState: host },
+    };
+    for (const value of [undefined, 3]) {
+      host[field] = value;
+      assertThrowsWith(
+        () => parseHardKillEvidence(JSON.stringify(record)),
+        `field "${field}" is missing or not a string`,
+      );
+      host[field] = valid.evidence.hostState[field];
+      assertEquals(parseHardKillEvidence(JSON.stringify(record)), valid);
+    }
+  });
+}
 
 Deno.test("parseHardKillEvidence rejects a wrong version, naming it", () => {
   const wrong = JSON.parse(json(makeEvidence())) as Record<string, unknown>;
