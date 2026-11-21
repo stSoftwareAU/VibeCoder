@@ -57,11 +57,18 @@ Floci now gets one migration finding through the ordinary scan. Closes #5112.
   makes the result unknown: nothing is filed, and the next scheduled scan
   retries (the #5009 principle). A failing gh call in the new equivalent-issue
   lookup fails the run rather than filing on an unknown.
-- **An open older finding is reconciled, not left stale.** When the reused
-  fleet-authored issue carries this finding's `finding-id` marker (such as the
-  old "🟡 No AWS emulator (Floci) in CI" body that says to run Floci) and its
-  title or body differs from the current finding, `gh issue edit` replaces both.
-  A hand-written issue is never edited.
+- **An open older finding is answered, not left stale, and never edited.**
+  When the reused fleet-authored issue's body opens with this finding's
+  `finding-id` marker on its first line (such as the old "🟡 No AWS emulator
+  (Floci) in CI" body that says to run Floci) and the body, with the worker
+  record block set aside, differs from the current finding, the current finding
+  is posted on it as one comment. The comment opens with a `finding-update`
+  marker holding the finding body's SHA-256, so the same finding is commented
+  once, and carries no `finding-id` marker. The title and body are not edited:
+  an edit would drop an owner's added text and the `Deferred until` /
+  `Depends on` record discovery reads, and on an issue approved with `work-on`
+  would trip the content-integrity gate (PR review). A marker anywhere but the
+  first line, or a hand-written issue, is left alone.
 - **`.tf` reads are capped.** A `.tf` file is stat'ed first and skipped when it
   is over 1 MiB (the script reader's cap), so an oversized file is never loaded.
 
@@ -175,7 +182,18 @@ emulator test.
   script-without-`set -e` and custom-shell gaps were fixed after the review by
   the errexit-aware rule and the tests named here. The pre-PR verifier's Floci
   gap case (no test step, or a test step that ignores failure) and push-only job
-  case are fixed and tested too
+  case are fixed and tested too. After the second review, a failure swallowed
+  one level out (`{ runner; } || true`, `if true; then runner; fi || true`,
+  `( runner ) || true`, a group piped to `tee`, a loop `|| true`) and
+  `! runner || exit 1` are refused too, in the workflow and in a repository
+  script, each with a credited control:
+  `…::a runner whose group or compound is swallowed one level out, or a negated runner before || exit 1, earns no credit`.
+  The Floci test-step matcher reads whole command words, so an install-only
+  step beside a gap record earns nothing:
+  `…::a gap record whose Floci job only installs a test tool is floci-only; common test runners are floci-gap`.
+  A job or step `if:` that compares the ref with a branch or tag literal is
+  refused:
+  `…::a job or step if: that compares the ref with a branch or tag literal earns no pull_request credit`
 - **met** — Existing open findings are reused; valid suppressions still work,
   expired/malformed ones do not. — evidence:
   `worker/deno/tests/best_practices_template_test.ts::runTask - AWS finding already open under its finding-id is not re-filed`,
@@ -198,9 +216,12 @@ emulator test.
   evidence: `worker/deno/lib/idle_task_templates/best_practices_template.ts`
   (one finding per repo through `fileFindingOnce` in the scheduled scan, counted
   in the scan's 6-finding cap, with AWS evidence and wiring diagnostics in the
-  body; an open older finding is updated to the current body by
-  `reconcileAwsEmulatorIssue`),
-  `worker/deno/tests/best_practices_template_test.ts::runTask - an open old-body AWS finding ('No AWS emulator (Floci) in CI') is updated to the current title and body, not left stale or re-filed`,
+  body; an open older finding gets the current finding as one comment from
+  `reconcileAwsEmulatorIssue`, and is never edited),
+  `worker/deno/tests/best_practices_template_test.ts::runTask - an open old-body AWS finding ('No AWS emulator (Floci) in CI') gets the current finding as one comment, is not edited and is not re-filed`,
+  `…::runTask - the same current finding is not commented twice on a reused AWS Emulator issue`,
+  `…::runTask - a reused AWS finding whose body carries a worker record block keeps it: the body is never edited`,
+  `…::runTask - a reused AWS Emulator issue whose marker is not its first line is left alone`,
   `…::runTask - an open AWS finding already matching the current finding, or a hand-written AWS Emulator issue, is not edited`
   — reviewer: partial — reason: the reviewer found no live run. Scope 9 says to
   use the normal scan path, and that path is the scheduled best-practices scan,
@@ -219,8 +240,8 @@ emulator test.
   formats — reviewer: unrequested — reason: the issue requires recognising a
   documented gap and a justified, pinned embedded setup, and a static check
   needs a fixed format to read them
-- **unrequested** — A gh failure in the equivalent-issue lookup (or in the
-  reconcile edit) fails the scan run — reviewer: unrequested — reason: fail
+- **unrequested** — A gh failure in the equivalent-issue lookup (or in reading
+  the comments or posting the reconcile comment) fails the scan run — reviewer: unrequested — reason: fail
   loud. An unknown lookup must not file a possible duplicate, and the scan
   already retries a failed run.
 - **unrequested** — Only `pull_request` (not `pull_request_target` or
@@ -336,6 +357,37 @@ emulator test.
   worker re-runs the gate on this head): `Result: PASSED (with skipped checks)`.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
+
+- After the second review (of `c1f12f06`):
+  - `aws_emulator_in_ci_check_test.ts` gained three tests: groups and
+    compounds swallowed one level out and `! runner || exit 1` refused in the
+    workflow and in a `set -euo pipefail` repository script, with credited
+    controls (`{ runner; }`, `if true; then runner; fi`, `runner || exit 1`,
+    `if ! runner; then exit 1; fi`); install-only Floci steps (`pip install
+    pytest`, `npm install --save-dev jest`, `npm install typescript@latest`,
+    `npm ci`, `yarn add mocha`, `echo test`, `./scripts/attestation.sh`)
+    staying `floci-only` beside a valid gap record while 16 common runners
+    (including `make check` and `tox -e aws`) are `floci-gap`; and branch- and
+    tag-literal ref conditions refused on the job and the step, with five
+    pull-request-compatible controls. One existing test was changed: "a
+    statically disabled job is missing; an expression-guarded one is
+    official-server" now guards with `github.actor != 'dependabot[bot]'`,
+    because its old `github.ref == 'refs/heads/main'` never runs on a pull
+    request and is now refused.
+  - `best_practices_template_test.ts`: the reconcile test now expects one
+    comment and no edit; new tests cover the dedup marker (and a comment
+    that only quotes it), a body with a worker record block, and markers not
+    on the first line (an owner's paragraph above, a code-span quote).
+  - Every test file importing `shell_command_words.ts`,
+    `aws_emulator_in_ci_check.ts`, `aws_emulator_workflow_check.ts` or
+    `best_practices_template.ts` (13 files): `747 passed | 1 failed |
+    1 ignored`. The one failure, "unreadable nested directory rejects with
+    the path in the message", relies on an unreadable directory, which the
+    root user that ran it reads anyway; CI runs it as a normal user. The new
+    swallow test fails at `c1f12f06` (`workflow: a brace group || true`).
+    `deno lint` and `deno fmt --check` are clean; `deno check` reports nothing
+    in this repository's files. `./quality.sh` was not run here, so CI is the
+    gate for the rest.
 
 Not done or not checked: no live best-practices scan was run against fleet
 repositories from this run, so the first real findings appear on the next

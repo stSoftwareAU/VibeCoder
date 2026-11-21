@@ -368,20 +368,29 @@ Official server mode needs all of the following:
   `uses: ./.github/workflows/<file>`, transitively;
 - neither the job nor the step sets `continue-on-error` (other than
   `false`), and neither `if:` excludes pull requests: an `if:` that reads
-  `github.event_name` is read as an `||` of `&&` terms of the form
-  `github.event_name == 'E'` / `!= 'E'`, and earns no credit when every
-  term group is false on a pull request (`github.event_name == 'push'`) or
-  when it reads the event in any other form (parentheses, `contains(...)`);
+  `github.event_name`, `github.ref`, `github.ref_name` or `github.ref_type`
+  is read as an `||` of `&&` terms of the form `github.event_name == 'E'` /
+  `!= 'E'`, `github.ref` or `github.ref_name` `==` / `!=` a literal,
+  `github.ref_type == 'tag'` / `'branch'`, or `startsWith(github.ref, '…')`
+  (optionally negated). It earns no credit when every term group is false
+  on a pull request (`github.event_name == 'push'`,
+  `github.ref == 'refs/heads/main'`, `startsWith(github.ref, 'refs/tags/')`:
+  on a pull request the ref is `refs/pull/<n>/merge`), or when it reads
+  them in any other form (other parentheses, `contains(...)`);
 - the step's shell runs the body; and
 - the invocation's failure is preserved, in the workflow and in the
   script. A runner command, or the call to the script that runs it, is
   preserved when it is not in a condition, not behind `!`, not followed by
-  `||`, `|` or `&`, and one of: it runs via `exec`; it is the last command
+  `||`, `|` or `&`, not inside a `{ }` group, `( )` subshell or compound
+  (`if`/`fi`, a loop, `case`) whose closing word is followed by `||`, `|` or
+  `&` (`{ runner; } || true`, `if x; then runner; fi || true`), and one of: it runs via `exec`; it is the last command
   (or the rest of the body is an `&&` chain to the end); or errexit is on
   at that point and it is not followed by `&&`. Two explicit-exit idioms
   are also preserved, whatever errexit is: `runner || exit N` (N not 0, or
-  a bare `exit`) and `if ! runner; then ...; exit N; fi` (N not 0, in a
-  flat `then` branch).
+  a bare `exit`; not after a negated `! runner`, whose `!` turns a failure
+  into success before the `||`) and `if ! runner; then ...; exit N; fi` (N
+  not 0, in a flat `then` branch). Neither counts inside a group swallowed
+  one level out.
 
 **Errexit.** Errexit is on for a workflow step whose shell is unset or
 exactly `bash` or `sh` (GitHub adds `-e`), or whose custom shell sets `-e`
@@ -402,7 +411,7 @@ applies in the workflow and in the repository script alike (the helpers
 are in
 [`worker/deno/lib/shell_command_words.ts`](../worker/deno/lib/shell_command_words.ts)).
 A condition decided at run time (`[ -n "$X" ]`,
-`github.event_name == 'push'`) keeps its credit. Merely installing the
+`github.actor != 'dependabot[bot]'`) keeps its credit. Merely installing the
 emulator (`container/toolchains/aws-emulator.sh`, or
 `install ... /usr/local/bin/aws-emulator-run`) is not coverage. An
 `echo aws-emulator-run`, `command -v aws-emulator-run`, a comment, or a
@@ -432,10 +441,16 @@ A gap record counts only in a workflow that applies to `pull_request`
 disabled, has no `continue-on-error`, has no `if:` that excludes pull
 requests, and runs a test step: an enabled `run:` step without
 `continue-on-error` whose reachable, failure-preserving commands include a
-test run (a command word or one of the next three words naming `test`,
-`spec`, `jest`, `mocha`, `verify` or `integration`, other than `echo`,
-`docker` and similar). An unused Floci image beside a gap record earns
-nothing. Floci without a valid record
+test run, read on whole command words and subcommands, never substrings: a
+test runner (`pytest`, `jest`, `mocha`, `vitest`, `tox`, `nox`, `ctest`,
+`phpunit`, `rspec`, `bats`), a tool's test subcommand (`cargo test`,
+`go test`, `deno test`, `mvn verify`, `gradle check`, `python -m pytest`,
+`npx jest`), `npm test` / `yarn test` / `pnpm test`, `npm run <script>`
+whose script names a test (`test:aws`), `make <target>` naming a test
+(`make check`), or a repository script whose file name names a test
+(`./scripts/run-tests.sh`). An install step (`pip install pytest`,
+`npm install --save-dev jest`, `npm install typescript@latest`) is not a
+test run. An unused Floci image beside a gap record earns nothing. Floci without a valid record
 ("Floci-only") gets the migration finding.
 
 **What the scan establishes.** This scan records *static wiring
@@ -465,15 +480,25 @@ matters.
   the `fileFindingOnce` dedup; or
 - an open fleet-authored issue has a title containing "AWS Emulator", a
   hand-written equivalent. Only fleet-authored issues count, because
-  titles are attacker-writable (Issue #1243). When that issue's body
-  carries this finding's `finding-id` marker (an older finding such as
-  "No AWS emulator (Floci) in CI") and its title or body differs from the
-  current finding, `gh issue edit` replaces both, so an old body that
-  still says to run Floci is reconciled rather than left open. A
-  hand-written issue is never edited.
+  titles are attacker-writable (Issue #1243). When that issue's body opens
+  with this finding's `finding-id` marker on its first line (an older
+  finding such as "No AWS emulator (Floci) in CI") and the body, with its
+  machine-owned worker record block set aside, differs from the current
+  finding, the current finding is posted on it as **one comment**, so an
+  old body that still says to run Floci is answered rather than left
+  standing. The title and body are never edited: an edit would replace an
+  owner's added text and the `Deferred until` / `Depends on` record that
+  discovery reads, and on an issue already approved with `work-on` it
+  would be a service-account change to approved content, which the
+  content-integrity gate escalates to `needs-human`. The comment opens with
+  a `finding-update` marker holding the finding body's SHA-256, so the same
+  finding is commented once; it carries no `finding-id` marker, so it is
+  never read as a second finding. An issue whose marker is anywhere but the
+  first line (quoted in a code span, or under an owner's paragraph) is left
+  alone.
 
-A `gh` failure in that lookup, or in that edit, fails the scan run rather
-than filing.
+A `gh` failure in that lookup, or in reading the issue's comments or
+posting that comment, fails the scan run rather than filing.
 Each skip is logged with its reason.
 
 **Otherwise** the template files **one** issue with the fixed id

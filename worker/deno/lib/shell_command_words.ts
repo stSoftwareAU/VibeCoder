@@ -340,6 +340,8 @@ interface Frame {
   brace: boolean;
   /** A `( ... )` subshell: an `exit` inside it does not end the script. */
   sub: boolean;
+  /** Identity of this compound, for {@link ReachableCommand.groupSwallowed}. */
+  id: number;
 }
 
 function frameLive(f: Frame): boolean {
@@ -381,7 +383,19 @@ export interface ReachableCommand {
    * or `if ! cmd; then ...; exit 1; fi`.
    */
   failureExits: boolean;
+  /**
+   * True when the command sits inside a `{ }` group, `( )` subshell or other
+   * compound (`if`/`fi`, a loop, `case`) whose closing word is followed by
+   * `||`, `|` or `&`: the compound's status, and with it this command's
+   * failure, can then be swallowed one level out (`{ cmd; } || true`,
+   * `if x; then cmd; fi || true`), whatever separator follows the command
+   * itself.
+   */
+  groupSwallowed: boolean;
 }
+
+/** Separators after a compound's closing word that can swallow its status. */
+const GROUP_SWALLOWING_SEPARATORS = new Set(["||", "|", "&"]);
 
 const CHAINING_SEPARATORS = new Set(["|", "&", "||", "&&"]);
 /** Words that open a nested construct, which {@link failureExits} does not follow. */
@@ -421,6 +435,11 @@ function failureExits(listed: ShellCommand[], index: number): boolean {
   const after = listed[index + 1];
   if (here === undefined || after === undefined) return false;
   if (after.sep === "||" && isFailingExit(after.words, true)) {
+    // `! cmd || exit 1` inverts the status first: a failing cmd makes `!`
+    // succeed, so the exit never runs.
+    if (here.words.slice(0, commandIndex(here.words)).includes("!")) {
+      return false;
+    }
     const chained = listed[index + 2];
     return chained === undefined || !CHAINING_SEPARATORS.has(chained.sep);
   }
@@ -468,6 +487,12 @@ function failureExits(listed: ShellCommand[], index: number): boolean {
 export function reachableCommands(script: string): ReachableCommand[] {
   const out: ReachableCommand[] = [];
   const stack: Frame[] = [];
+  // For each emitted command, the compounds open around it; and for each
+  // compound that closed, whether the separator after its closing word can
+  // swallow its status (see ReachableCommand.groupSwallowed).
+  const enclosing: number[][] = [];
+  const swallowedFrames = new Set<number>();
+  let nextFrameId = 0;
   let exited = false;
   let prev: boolean | null = null; // static status of the previous command
 
@@ -491,6 +516,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
       brace: false,
       sub: false,
       ...partial,
+      id: nextFrameId++,
     });
 
   const { commands: listed, trailing } = shellCommandList(
@@ -498,6 +524,17 @@ export function reachableCommands(script: string): ReachableCommand[] {
   );
   for (const [index, { words: all, sep }] of listed.entries()) {
     let words = all;
+    // Close the innermost compound, noting whether what follows its closing
+    // word (`} || true`, `fi | tee`) can swallow its status.
+    const pop = (): Frame | undefined => {
+      const frame = stack.pop();
+      const after = listed[index + 1]?.sep ??
+        (trailing === "\n" ? "" : trailing);
+      if (frame && GROUP_SWALLOWING_SEPARATORS.has(after)) {
+        swallowedFrames.add(frame.id);
+      }
+      return frame;
+    };
     // Short-circuit chains: `false && x` and `true || x` skip x, while
     // `true && x` and `false || x` always run it. `runs` is null when a
     // runtime status decides.
@@ -528,15 +565,15 @@ export function reachableCommands(script: string): ReachableCommand[] {
         if (top.entryCertain && top.branchStatuses.size === 1) {
           closedStatus = top.branchStatuses.values().next().value ?? null;
         }
-        stack.pop();
+        pop();
       } else if (w === "done" || w === "esac") {
-        closedStatus = stack.pop()?.skippedStatus ?? null;
+        closedStatus = pop()?.skippedStatus ?? null;
       } else if (w === "}") {
         if (top?.brace) {
           // A brace group that ran returns its final command's status.
           closedStatus = top.skippedStatus ??
             (top.entryCertain && !top.fn && !top.sub ? prev : null);
-          stack.pop();
+          pop();
         }
       } else if (w === "if" || w === "while" || w === "until") {
         push({
@@ -567,7 +604,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
       } else if (w === ")") {
         if (top?.sub) {
           closedStatus = top.skippedStatus;
-          stack.pop();
+          pop();
         }
       } else if (
         w === "function" || FUNCTION_NAME.test(w) || words[1] === "()"
@@ -588,7 +625,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
       words = words.slice(1);
     }
     if (words.length === 0) {
-      prev = closeAfter ? stack.pop()?.skippedStatus ?? null : closedStatus;
+      prev = closeAfter ? pop()?.skippedStatus ?? null : closedStatus;
       continue;
     }
 
@@ -614,7 +651,9 @@ export function reachableCommands(script: string): ReachableCommand[] {
         next: listed[index + 1]?.sep ?? (trailing === "\n" ? "" : trailing),
         condition: frameOpen?.branch === "cond",
         failureExits: failureExits(listed, index),
+        groupSwallowed: false,
       });
+      enclosing.push(stack.map((frame) => frame.id));
       const at = commandIndex(words);
       const head = stripQuotes(words[at] ?? "");
       const certain = runs === true && sep !== "|" && sep !== "&" &&
@@ -623,7 +662,12 @@ export function reachableCommands(script: string): ReachableCommand[] {
         (head === "set" && readShellOptions(words.slice(at + 1)).noexec);
       if (stops && certain) exited = true;
     }
-    if (closeAfter) prev = stack.pop()?.skippedStatus ?? prev;
+    if (closeAfter) prev = pop()?.skippedStatus ?? prev;
+  }
+  for (const [k, cmd] of out.entries()) {
+    cmd.groupSwallowed = (enclosing[k] ?? []).some((id) =>
+      swallowedFrames.has(id)
+    );
   }
   return out;
 }

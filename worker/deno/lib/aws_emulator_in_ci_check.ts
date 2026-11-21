@@ -559,43 +559,117 @@ function ifIsStaticallyFalse(value: unknown): boolean {
 }
 
 /**
- * How one `&&` term of an `if:` reads on a pull request: true or false for
- * `github.event_name == 'E'` / `!= 'E'`, null when it does not read
- * `github.event_name` (decided at run time), `"unknown"` for any other form
- * that reads it.
+ * How `github.ref` or `github.ref_name` compared with `literal` reads on a
+ * pull request, where they are `refs/pull/<n>/merge` and `<n>/merge`: false
+ * for a branch or tag literal (`refs/heads/main`, `main`), `"unknown"` for one
+ * that could name the pull request ref itself (PR #5332 review).
  */
-function eventTermOnPullRequest(term: string): boolean | null | "unknown" {
+function refEqualsOnPullRequest(
+  field: string,
+  literal: string,
+): boolean | "unknown" {
+  if (field === "ref") {
+    return /^refs\/pull\//.test(literal) ? "unknown" : false;
+  }
+  return /^\d+(?:\/merge)?$/.test(literal) ? "unknown" : false;
+}
+
+/** How `startsWith(github.ref[_name], prefix)` reads on a pull request. */
+function refStartsWithOnPullRequest(
+  field: string,
+  prefix: string,
+): boolean | "unknown" {
+  if (prefix === "") return true;
+  if (field === "ref") {
+    if ("refs/pull/".startsWith(prefix)) return true;
+    return prefix.startsWith("refs/pull/") ? "unknown" : false;
+  }
+  return /^\d*(?:\/(?:m(?:e(?:r(?:ge?)?)?)?)?)?$/.test(prefix)
+    ? "unknown"
+    : false;
+}
+
+/**
+ * `startsWith(github.ref, '…')` and `startsWith(github.ref_name, '…')`, with an
+ * optional `!`: the one call form an `if:` term may use (PR #5332 review).
+ */
+const REF_STARTS_WITH =
+  /(!?)\s*startsWith\(\s*github\.(ref_name|ref)\s*,\s*'([^']*)'\s*\)/g;
+
+/**
+ * How one `&&` term of an `if:` reads on a pull request: true or false for
+ * `github.event_name == 'E'` / `!= 'E'`, for `github.ref` or
+ * `github.ref_name` compared with a branch or tag literal
+ * (`github.ref == 'refs/heads/main'` is never true on a pull request, where
+ * the ref is `refs/pull/<n>/merge`), for `github.ref_type == 'tag'`, and for a
+ * `startsWith` of the ref already decided into `decided`; null when it reads
+ * none of these (decided at run time), `"unknown"` for any other form that
+ * reads them.
+ */
+function eventTermOnPullRequest(
+  term: string,
+  decided: ReadonlyMap<string, boolean | "unknown"> = new Map(),
+): boolean | null | "unknown" {
   const text = term.trim();
-  if (!text.includes("github.event_name")) return null;
-  const m = /^github\.event_name\s*(==|!=)\s*'([A-Za-z_]+)'$/.exec(text);
-  if (m === null) return "unknown";
-  return (m[2] === "pull_request") === (m[1] === "==");
+  const placeholder = decided.get(text);
+  if (placeholder !== undefined) return placeholder;
+  if (!/github\.(?:event_name|ref_name|ref_type|ref)\b/.test(text)) return null;
+  const event = /^github\.event_name\s*(==|!=)\s*'([A-Za-z_]+)'$/.exec(text);
+  if (event !== null) {
+    return (event[2] === "pull_request") === (event[1] === "==");
+  }
+  const ref = /^github\.(ref_name|ref)\s*(==|!=)\s*'([^']*)'$/.exec(text);
+  if (ref !== null) {
+    const equal = refEqualsOnPullRequest(ref[1] ?? "", ref[3] ?? "");
+    if (equal === "unknown") return "unknown";
+    return ref[2] === "==" ? equal : !equal;
+  }
+  const refType = /^github\.ref_type\s*(==|!=)\s*'([a-z]+)'$/.exec(text);
+  if (refType !== null) {
+    return (refType[2] === "branch") === (refType[1] === "==");
+  }
+  return "unknown";
 }
 
 /**
  * Whether a job or step `if:` lets it run on a pull request, judged only where
- * the expression reads `github.event_name`. The expression is read as an `||`
- * of `&&` terms (see {@link eventTermOnPullRequest}); a disjunct is false on a
- * pull request when one of its terms is. Null (no refusal) when the expression
- * does not read the event or some disjunct can be true on a pull request
+ * the expression reads `github.event_name`, `github.ref`, `github.ref_name`
+ * or `github.ref_type`. The expression is read as an `||` of `&&` terms (see
+ * {@link eventTermOnPullRequest}); a disjunct is false on a pull request when
+ * one of its terms is. Null (no refusal) when the expression reads none of
+ * them or some disjunct can be true on a pull request
  * (`github.event_name != 'pull_request' || !github.event.pull_request.draft`);
  * `"excludes"` when every disjunct is false on a pull request
- * (`github.event_name == 'push'`); `"unknown"` when the event is read in another
- * form (parentheses, `contains(...)`), so it earns no credit either.
+ * (`github.event_name == 'push'`, `github.ref == 'refs/heads/main'`,
+ * `startsWith(github.ref, 'refs/tags/')`); `"unknown"` when they are read in
+ * another form (parentheses other than a ref `startsWith`, `contains(...)`),
+ * so it earns no credit either.
  */
 function eventIfRefusal(value: unknown): "excludes" | "unknown" | null {
-  if (typeof value !== "string" || !value.includes("github.event_name")) {
+  if (
+    typeof value !== "string" ||
+    !/github\.(?:event_name|ref_name|ref_type|ref)\b/.test(value)
+  ) {
     return null;
   }
   const text = value.trim();
   const wrapped = /^\$\{\{(.*)\}\}$/s.exec(text);
-  const expr = (wrapped?.[1] ?? text).trim();
+  const decided = new Map<string, boolean | "unknown">();
+  const expr = (wrapped?.[1] ?? text).trim().replace(
+    REF_STARTS_WITH,
+    (_m, bang: string, field: string, prefix: string) => {
+      const key = `\u0000ref${decided.size}\u0000`;
+      const onPr = refStartsWithOnPullRequest(field, prefix);
+      decided.set(key, onPr === "unknown" ? onPr : (bang === "!") !== onPr);
+      return key;
+    },
+  );
   if (/[()]/.test(expr)) return "unknown";
   let sawUnknown = false;
   for (const disjunct of expr.split("||")) {
     let verdict: "maybe" | "false" | "unknown" = "maybe";
     for (const term of disjunct.split("&&")) {
-      const onPr = eventTermOnPullRequest(term);
+      const onPr = eventTermOnPullRequest(term, decided);
       if (onPr === false) {
         verdict = "false";
         break;
@@ -749,11 +823,13 @@ function applicableWorkflowFiles(docs: WorkflowDoc[]): Set<string> {
 /**
  * True when a command's failure is not swallowed or inverted where it stands:
  * it runs (not in a condition), no word in front of it inverts or ignores its
- * status (`!`, `then`, ...), and the next separator does not swallow its failure
- * (`||`, `|`, `&`).
+ * status (`!`, `then`, ...), the next separator does not swallow its failure
+ * (`||`, `|`, `&`), and no group or compound around it is swallowed one level
+ * out (`{ cmd; } || true`, `if x; then cmd; fi || true`; see
+ * `ReachableCommand.groupSwallowed`).
  */
 function commandStatusNotSwallowed(cmd: ReachableCommand): boolean {
-  return !cmd.condition &&
+  return !cmd.condition && !cmd.groupSwallowed &&
     statusPreservingCommandIndex(cmd.words) !== -1 &&
     cmd.next !== "||" && cmd.next !== "|" && cmd.next !== "&";
 }
@@ -770,7 +846,9 @@ interface KeptCommand {
  *
  * `initialErrexit` says whether the body runs with `-e`; a reachable `set`
  * then updates it (`set -e`, `set -o errexit` on; `set +e`, `set +o errexit`
- * off). A command is kept when a failure always reaches an explicit failing
+ * off). A command inside a group or compound swallowed one level out
+ * (`ReachableCommand.groupSwallowed`) is never kept. Otherwise a command is
+ * kept when a failure always reaches an explicit failing
  * exit (`cmd || exit 1`, `if ! cmd; then ...; exit 1; fi`), or when its failure
  * is not swallowed (see {@link commandStatusNotSwallowed}) and one of these holds: it runs via `exec`;
  * every later reachable command is joined by `&&` (it is last, or the rest is an
@@ -790,8 +868,12 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
   for (const [k, cmd] of cmds.entries()) {
     const at = commandIndex(cmd.words);
     const viaExec = cmd.words.slice(0, at).includes("exec");
-    const kept = cmd.failureExits || (commandStatusNotSwallowed(cmd) &&
-      (viaExec || restAllAnd[k] === true || (errexit && cmd.next !== "&&")));
+    // A group swallowed one level out takes even `cmd || exit 1` with it when
+    // the group is a subshell, so it is never credited (fails closed).
+    const kept = !cmd.groupSwallowed && (cmd.failureExits ||
+      (commandStatusNotSwallowed(cmd) &&
+        (viaExec || restAllAnd[k] === true ||
+          (errexit && cmd.next !== "&&"))));
     out.push({ cmd, kept });
     if (stripQuotes(cmd.words[at] ?? "") === "set") {
       const option = readShellOptions(cmd.words.slice(at + 1)).errexit;
@@ -1116,34 +1198,134 @@ function gapRecords(raw: string): GapRecord[] {
   return out;
 }
 
-/** Words that mark a command as a test run (`npm test`, `mvn verify`, `pytest`). */
-const TEST_WORD = /test|spec|jest|mocha|verify|integration/i;
-/** Command words that never run a test, whatever their arguments say. */
-const NON_TEST_COMMANDS = new Set([
-  "echo",
-  "printf",
-  "true",
-  ":",
-  "docker",
-  "sleep",
-  "curl",
-  "wget",
-  "set",
-  "export",
-  "cd",
+/**
+ * Whole words that name a test in a script path, a make target or a package
+ * script (`run-tests.sh`, `make check`, `npm run test:aws`). Matched against
+ * the name split on anything but letters and digits, so `latest` or
+ * `attestation` is no test word.
+ */
+const TEST_NAME_WORDS = new Set([
+  "test",
+  "tests",
+  "spec",
+  "specs",
+  "integration",
+  "e2e",
+  "verify",
+  "check",
+]);
+
+/** Whether a script path, target or script name holds a {@link TEST_NAME_WORDS} word. */
+function namesTest(name: string): boolean {
+  return name.toLowerCase().split(/[^a-z0-9]+/).some((part) =>
+    TEST_NAME_WORDS.has(part)
+  );
+}
+
+/** Commands that are a test run whatever their arguments (`pytest -k aws`, `tox -e aws`). */
+const TEST_RUNNERS = new Set([
+  "pytest",
+  "py.test",
+  "jest",
+  "mocha",
+  "vitest",
+  "ava",
+  "tox",
+  "nox",
+  "ctest",
+  "phpunit",
+  "rspec",
+  "bats",
 ]);
 
 /**
- * True when a command looks like a test run: its command word is not one that
- * never runs a test (`echo`, `docker`, ...), and the command word or one of the
- * next three words names a test (`npm test`, `npm run test:aws`, `cargo test`,
- * `mvn verify`, `./scripts/integration.sh`).
+ * Commands whose first subcommand decides whether they run tests, with the
+ * subcommands that do (`cargo test`, `mvn verify`, `go test`).
+ */
+const TEST_SUBCOMMANDS = new Map<string, ReadonlySet<string>>([
+  ["cargo", new Set(["test", "nextest"])],
+  ["go", new Set(["test"])],
+  ["deno", new Set(["test"])],
+  ["bun", new Set(["test"])],
+  ["dotnet", new Set(["test"])],
+  ["mvn", new Set(["test", "verify", "integration-test"])],
+  ["mvnw", new Set(["test", "verify", "integration-test"])],
+  ["gradle", new Set(["test", "check", "integrationTest"])],
+  ["gradlew", new Set(["test", "check", "integrationTest"])],
+]);
+
+/** Package managers whose `test`, or `run <script>` naming a test, runs tests. */
+const PACKAGE_MANAGERS = new Set(["npm", "yarn", "pnpm"]);
+
+/** Package-manager subcommands that install, never test (`npm install jest`). */
+const INSTALL_SUBCOMMANDS = new Set([
+  "install",
+  "i",
+  "ci",
+  "add",
+  "update",
+  "upgrade",
+  "up",
+  "remove",
+  "rm",
+  "uninstall",
+]);
+
+/** The words after the command word, skipping leading `-x` options. */
+function argumentsAfter(words: string[], at: number): string[] {
+  const rest = words.slice(at + 1).map(stripQuotes);
+  let k = 0;
+  while (k < rest.length && (rest[k] ?? "").startsWith("-")) k++;
+  return rest.slice(k);
+}
+
+/**
+ * True when a command is a test run, read on whole command words and
+ * subcommands, never on substrings (PR #5332 review):
+ *
+ * - a test runner, whatever its arguments: `pytest`, `jest`, `tox -e aws`, ...;
+ * - a tool's test subcommand: `cargo test`, `go test`, `mvn verify`,
+ *   `gradle check`, `python -m pytest` or `-m unittest`, `npx jest`;
+ * - `npm test` / `yarn test` / `pnpm test` (`npm t` too), or
+ *   `npm run <script>` / `yarn <script>` whose script names a test
+ *   (`test:aws`); an install subcommand (`npm install jest`) never counts;
+ * - `make <target>` whose target names a test (`make check`, `make test-aws`);
+ * - a repository script whose file name names a test (`./scripts/run-tests.sh`,
+ *   `bash ci/integration.sh`).
+ *
+ * An install step (`pip install pytest`, `npm install --save-dev jest`) is
+ * none of these.
  */
 function looksLikeTestCommand(words: string[]): boolean {
   const at = commandIndex(words);
-  const head = stripQuotes(words[at] ?? "").replace(/^.*\//, "");
-  if (head.length === 0 || NON_TEST_COMMANDS.has(head)) return false;
-  return words.slice(at, at + 4).some((w) => TEST_WORD.test(stripQuotes(w)));
+  const raw = stripQuotes(words[at] ?? "");
+  const head = raw.replace(/^.*\//, "");
+  if (head.length === 0) return false;
+  const args = argumentsAfter(words, at);
+  const first = args[0] ?? "";
+  if (TEST_RUNNERS.has(head)) return true;
+  const subcommands = TEST_SUBCOMMANDS.get(head);
+  if (subcommands) return subcommands.has(first);
+  if (head === "python" || head === "python3") {
+    const m = words.slice(at + 1).map(stripQuotes);
+    const k = m.indexOf("-m");
+    return k !== -1 && ["pytest", "unittest"].includes(m[k + 1] ?? "");
+  }
+  if (head === "npx") return TEST_RUNNERS.has(first);
+  if (PACKAGE_MANAGERS.has(head)) {
+    if (INSTALL_SUBCOMMANDS.has(first)) return false;
+    if (first === "test" || first === "t") return true;
+    if (first === "run" || first === "run-script") {
+      return namesTest(args[1] ?? "");
+    }
+    // `yarn test:aws` runs a package script directly.
+    return head === "yarn" && namesTest(first);
+  }
+  if (head === "make") return namesTest(first);
+  if (head === "bash" || head === "sh") {
+    return first.includes("/") && namesTest(first.replace(/^.*\//, ""));
+  }
+  return raw.includes("/") && namesTest(head);
 }
 
 /**

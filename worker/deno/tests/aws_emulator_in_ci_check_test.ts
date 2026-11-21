@@ -2090,13 +2090,63 @@ Deno.test("checkAwsEmulatorInCI - a statically disabled job is missing; an expre
     ),
   });
   assertEquals(disabled.wiring, "missing");
+  // A condition that can be true on a pull request keeps the credit (PR #5332
+  // review: `github.ref == 'refs/heads/main'` never is, and is refused below).
   const guarded = await checkRepoWith({
     ".github/workflows/ci.yml": prWorkflow(
       stepYaml(RUNNER_STEP),
-      "    if: github.ref == 'refs/heads/main'\n",
+      "    if: github.actor != 'dependabot[bot]'\n",
     ),
   });
   assertEquals(guarded.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - a job or step if: that compares the ref with a branch or tag literal earns no pull_request credit", async () => {
+  const refused: Array<[string, string]> = [
+    ["github.ref == 'refs/heads/main'", "excludes pull_request"],
+    ["${{ github.ref == 'refs/heads/main' }}", "excludes pull_request"],
+    ["github.ref_name == 'main'", "excludes pull_request"],
+    ["startsWith(github.ref, 'refs/tags/')", "excludes pull_request"],
+    ["github.ref_type == 'tag'", "excludes pull_request"],
+    [
+      "github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')",
+      "excludes pull_request",
+    ],
+  ];
+  for (const [condition, fragment] of refused) {
+    const onJob = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(RUNNER_STEP),
+        `    if: ${condition}\n`,
+      ),
+    });
+    assertEquals(onJob.wiring, "missing", `job: ${condition}`);
+    assertDiagnostic(onJob, fragment);
+    const onStep = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(RUNNER_STEP, [`if: ${condition}`]),
+      ),
+    });
+    assertEquals(onStep.wiring, "missing", `step: ${condition}`);
+  }
+  // Controls: ref conditions that can be true on a pull request keep it.
+  for (
+    const condition of [
+      "github.ref != 'refs/heads/main'",
+      "startsWith(github.ref, 'refs/pull/')",
+      "${{ !startsWith(github.ref, 'refs/tags/') }}",
+      "github.ref_type == 'branch'",
+      "github.ref == 'refs/heads/main' || github.event_name == 'pull_request'",
+    ]
+  ) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(RUNNER_STEP),
+        `    if: ${condition}\n`,
+      ),
+    });
+    assertEquals(result.wiring, "official-server", condition);
+  }
 });
 
 Deno.test("checkAwsEmulatorInCI - continue-on-error, || true, !, a pipe and an if condition each refuse the credit with a diagnostic", async () => {
@@ -2610,5 +2660,106 @@ Deno.test("checkAwsEmulatorInCI - a .tf file over the 1 MiB cap is not read, so 
     assertEquals(result.awsEvidence, ["infra/small/main.tf"]);
   } finally {
     await Deno.remove(root, { recursive: true });
+  }
+});
+
+// PR #5332 review: a failure swallowed one level out, around a group or a
+// compound, is not credited, and neither is `|| exit 1` after a negated
+// runner. Each form is refused in the workflow and in a repository script,
+// with a credited control beside it.
+Deno.test("checkAwsEmulatorInCI - a runner whose group or compound is swallowed one level out, or a negated runner before || exit 1, earns no credit", async () => {
+  const refusedBodies: Array<[string, string]> = [
+    ["a brace group || true", `{ ${RUNNER_STEP}; } || true`],
+    ["an if/fi || true", `if true; then ${RUNNER_STEP}; fi || true`],
+    ["a subshell || true", `( ${RUNNER_STEP} ) || true`],
+    ["a brace group piped to tee", `{ ${RUNNER_STEP}; } | tee log`],
+    ["a for loop || true", `for i in 1; do ${RUNNER_STEP}; done || true`],
+    [
+      "a multi-line brace group || true",
+      `{\n  ${RUNNER_STEP}\n} || true`,
+    ],
+    ["! runner || exit 1, then more", `! ${RUNNER_STEP} || exit 1\necho after`],
+  ];
+  for (const [label, body] of refusedBodies) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "missing", `workflow: ${label}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(inScript.wiring, "missing", `script: ${label}`);
+  }
+  // Controls: the same groups and compounds that keep the status are credited.
+  const creditedBodies: Array<[string, string]> = [
+    ["a brace group", `{ ${RUNNER_STEP}; }`],
+    ["an if/fi", `if true; then ${RUNNER_STEP}; fi`],
+    ["a brace group && echo ok", `{ ${RUNNER_STEP}; } && echo ok`],
+    ["runner || exit 1, then more", `${RUNNER_STEP} || exit 1\necho after`],
+    [
+      "if ! runner; then exit 1; fi, then more",
+      `if ! ${RUNNER_STEP}; then\n  exit 1\nfi\necho after`,
+    ],
+  ];
+  for (const [label, body] of creditedBodies) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "official-server", `workflow: ${label}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(inScript.wiring, "official-server", `script: ${label}`);
+  }
+});
+
+// PR #5332 review: the Floci job's test step is read on whole command words.
+// An install-only step beside a valid gap record earns nothing, and the common
+// runners the matcher is meant to accept are credited.
+Deno.test("checkAwsEmulatorInCI - a gap record whose Floci job only installs a test tool is floci-only; common test runners are floci-gap", async () => {
+  for (
+    const command of [
+      "pip install pytest",
+      "npm install --save-dev jest",
+      "npm install typescript@latest",
+      "npm ci",
+      "yarn add mocha",
+      "echo test",
+      "./scripts/attestation.sh",
+    ]
+  ) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": GAP_RECORD +
+        prWorkflow(stepYaml(command), FLOCI_SERVICE),
+    });
+    assertEquals(result.wiring, "floci-only", command);
+  }
+  for (
+    const command of [
+      "npm test",
+      "npm run test:aws",
+      "yarn test",
+      "pnpm run integration",
+      "pytest -k aws",
+      "python -m pytest tests/aws",
+      "cargo test --workspace",
+      "go test ./...",
+      "mvn verify",
+      "./gradlew check",
+      "make check",
+      "make test-aws",
+      "tox -e aws",
+      "npx jest",
+      "./scripts/run-tests.sh",
+      "bash ci/integration.sh",
+    ]
+  ) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": GAP_RECORD +
+        prWorkflow(stepYaml(command), FLOCI_SERVICE),
+    });
+    assertEquals(result.wiring, "floci-gap", command);
   }
 });

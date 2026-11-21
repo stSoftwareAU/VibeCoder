@@ -62,6 +62,7 @@ import {
   registerTemplate,
 } from "../idle_task_template.ts";
 import { guardedLabelArgs } from "../guarded_issue_labels.ts";
+import { stripWorkerRecordBlocks } from "../worker_record_block.ts";
 import {
   type BucketPick,
   pickBucket as defaultPickBucket,
@@ -771,8 +772,8 @@ export function buildAwsEmulatorFinding(
  * example "Add AWS Emulator tests", or the older "No AWS emulator (Floci) in
  * CI" finding), with its number, title and body, or null when there is none.
  * Such an issue already tracks this gap, so the finding is not filed again
- * (see {@link reconcileAwsEmulatorIssue} for bringing an older finding up to
- * date).
+ * (see {@link reconcileAwsEmulatorIssue} for posting the current finding on
+ * an older one).
  *
  * Titles are text anyone can write, so only a fleet-authored match counts: the
  * author check is the one {@link findFleetAuthoredIssuesTitled} applies (Issue
@@ -809,13 +810,52 @@ export async function findEquivalentAwsEmulatorIssue(
 }
 
 /**
+ * The hidden marker on the comment {@link reconcileAwsEmulatorIssue} posts:
+ * the finding id and the SHA-256 of the finding body it carries, so the same
+ * update is posted once, and a changed finding is posted again.
+ */
+export function awsEmulatorUpdateMarker(
+  findingId: string,
+  bodyDigest: string,
+): string {
+  return `<!-- finding-update: ${findingId} sha256:${bodyDigest} -->`;
+}
+
+/** Hex SHA-256 of `text`, as UTF-8. */
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
  * Bring an open issue the AWS Emulator lookup reused up to date (Issue #5112
- * scope 7: reconcile rather than file again). Only an issue whose body carries
- * this finding's `finding-id` marker is edited, so a hand-written issue is
- * never overwritten. When its title or body differs from `finding` (an older
- * finding still telling the repository to run Floci, or one whose evidence
- * changed), `gh issue edit` replaces both. Returns true when it edited the
- * issue. A gh failure throws with context, like the lookup.
+ * scope 7: reconcile rather than file again), without editing it.
+ *
+ * Only an issue whose body's first line is this finding's `finding-id` marker
+ * (where the scan writes it) is a finding the scan filed; a marker anywhere
+ * else, such as one quoted in a code span or under an owner's paragraph, is
+ * not, and the issue is left alone. The body is compared with the current
+ * finding with its machine-owned record blocks set aside
+ * (`stripWorkerRecordBlocks`), so a `Deferred until` or `Depends on` record a
+ * worker added never reads as a stale finding.
+ *
+ * When the finding differs, the current finding is posted as one comment and
+ * the title and body are never edited. An edit would replace text the scan did
+ * not write (an owner's note, the worker record block that `time_deferral.ts`
+ * and `blocked_deferral.ts` read), and on an issue an owner has already
+ * approved with `work-on` it is a service-account change to approved content,
+ * which `work_on_content_integrity.ts` escalates to `needs-human`. A comment
+ * changes neither the title nor the body, so the approval digest and the
+ * record block are untouched. The comment carries
+ * {@link awsEmulatorUpdateMarker}, so a later scan with the same finding posts
+ * nothing; it does not carry the `finding-id` marker, so it is never read as a
+ * second finding. Returns true when it posted a comment. A gh failure throws
+ * with context, like the lookup.
  */
 export async function reconcileAwsEmulatorIssue(
   repo: string,
@@ -824,30 +864,75 @@ export async function reconcileAwsEmulatorIssue(
   ghCommandFn: (args: string[]) => Promise<string>,
 ): Promise<boolean> {
   const body = issue.body ?? "";
-  if (!body.includes(`<!-- finding-id: ${finding.findingId} -->`)) {
+  const marker = `<!-- finding-id: ${finding.findingId} -->`;
+  const firstLine = (body.split("\n", 1)[0] ?? "").replace(/\r$/, "").trim();
+  if (firstLine !== marker) return false;
+  if (stripWorkerRecordBlocks(body).trim() === finding.body.trim()) {
     return false;
   }
-  if (
-    (issue.title ?? "").trim() === finding.title.trim() &&
-    body.trim() === finding.body.trim()
-  ) {
-    return false;
-  }
+  const update = awsEmulatorUpdateMarker(
+    finding.findingId,
+    await sha256Hex(finding.body),
+  );
+  const context = `AWS Emulator finding #${issue.number} in ${repo}`;
+  let comments: unknown;
   try {
-    await ghCommandFn([
+    const raw = await ghCommandFn([
       "issue",
-      "edit",
+      "view",
       String(issue.number),
       "--repo",
       repo,
-      "--title",
-      finding.title,
+      "--json",
+      "comments",
+    ]);
+    comments = (JSON.parse(raw) as { comments?: unknown }).comments;
+  } catch (err) {
+    throw new Error(
+      `best-practices: cannot read the comments on ${context}: ${
+        (err as Error).message
+      }`,
+      { cause: err },
+    );
+  }
+  if (!Array.isArray(comments)) {
+    throw new Error(
+      `best-practices: cannot read the comments on ${context}: no comments list`,
+    );
+  }
+  const posted = comments.some((comment) =>
+    typeof (comment as { body?: unknown })?.body === "string" &&
+    ((comment as { body: string }).body.split("\n", 1)[0] ?? "").trim() ===
+      update
+  );
+  if (posted) return false;
+  const findingText = finding.body.split("\n").filter((line) =>
+    line.trim() !== marker
+  ).join("\n").trim();
+  const commentBody = [
+    update,
+    "",
+    "The best-practices scan's current finding for this repository differs " +
+    "from this issue's body. The issue is not edited, so its text and any " +
+    "approval stay as they are; this is the current finding.",
+    "",
+    `**Current title:** ${finding.title}`,
+    "",
+    findingText,
+  ].join("\n");
+  try {
+    await ghCommandFn([
+      "issue",
+      "comment",
+      String(issue.number),
+      "--repo",
+      repo,
       "--body",
-      finding.body,
+      commentBody,
     ]);
   } catch (err) {
     throw new Error(
-      `best-practices: cannot update AWS Emulator finding #${issue.number} in ${repo}: ${
+      `best-practices: cannot comment the current finding on ${context}: ${
         (err as Error).message
       }`,
       { cause: err },
@@ -1348,7 +1433,7 @@ export function createBestPracticesTemplate(
           logger.info(
             `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — open fleet-authored issue #${equivalent.number} already tracks AWS Emulator wiring${
               updated
-                ? " (its title and body were updated to the current finding)"
+                ? " (the current finding was posted on it as a comment; its title and body were not edited)"
                 : ""
             }`,
           );

@@ -56,6 +56,7 @@ import {
 import {
   assembleBestPracticesPrompt,
   AWS_EMULATOR_FINDING_ID,
+  awsEmulatorUpdateMarker,
   BEST_PRACTICES_ISSUE_TITLE,
   type BlameFileFn,
   bucketSlug,
@@ -68,6 +69,7 @@ import {
   renderBestPracticesSummary,
 } from "../lib/idle_task_templates/best_practices_template.ts";
 import { getTemplate, listTemplates } from "../lib/idle_task_template.ts";
+import { upsertWorkerRecordLine } from "../lib/worker_record_block.ts";
 import type { OpenIssueTitle } from "../lib/idle_task_snapshot.ts";
 import type {
   BucketPick,
@@ -160,6 +162,8 @@ function makeGhStub(scenario: {
     }>;
     fail?: boolean;
   };
+  /** Comments on the reused AWS Emulator issue (`issue view --json comments`). */
+  awsEmulatorComments?: Array<{ body: string }>;
 }): { gh: (args: string[]) => Promise<string>; calls: GhCall[] } {
   const calls: GhCall[] = [];
   let snapshotCount = 0;
@@ -197,6 +201,18 @@ function makeGhStub(scenario: {
           })),
         ),
       );
+    }
+    // Comments on the reused AWS Emulator issue (Issue #5112 reconcile).
+    if (
+      args[0] === "issue" && args[1] === "view" &&
+      args[args.indexOf("--json") + 1] === "comments"
+    ) {
+      return Promise.resolve(
+        JSON.stringify({ comments: scenario.awsEmulatorComments ?? [] }),
+      );
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      return Promise.resolve("");
     }
     // Wrapper body lookup: `issue view <n> --json body`
     if (args[0] === "issue" && args[1] === "view") {
@@ -2549,6 +2565,7 @@ async function runAwsPreFiler(
     }>;
     fail?: boolean;
   },
+  awsEmulatorComments?: Array<{ body: string }>,
 ): Promise<{ ok: boolean; calls: GhCall[]; infoMessages: string[] }> {
   const workDir = await Deno.makeTempDir();
   try {
@@ -2560,6 +2577,7 @@ async function runAwsPreFiler(
       issueView: { number: 50, body: wrapperBody },
       fileMissingLinterReturnsNumber: 900,
       awsEmulatorTitleLookup: titleLookup,
+      awsEmulatorComments,
     });
     const { logger, infoMessages } = spyLogger();
     const tpl = createBestPracticesTemplate({
@@ -2671,18 +2689,39 @@ Deno.test(
 );
 
 /** The body the base code filed for BP-AWS-EMULATOR-MISSING before #5112: it told the repo to run Floci. */
+/** An older scan-filed body: the marker on its first line, Floci advice below. */
 const OLD_FLOCI_FINDING_BODY = [
-  "Run floci/floci as a service container; mount /var/run/docker.sock.",
-  "",
   "<!-- finding-id: BP-AWS-EMULATOR-MISSING -->",
+  "",
+  "Run floci/floci as a service container; mount /var/run/docker.sock.",
 ].join("\n");
 
 function editCalls(calls: GhCall[]): GhCall[] {
   return calls.filter((c) => c.args[0] === "issue" && c.args[1] === "edit");
 }
 
+function commentCalls(calls: GhCall[]): GhCall[] {
+  return calls.filter((c) => c.args[0] === "issue" && c.args[1] === "comment");
+}
+
+/** The `--body` of a gh call. */
+function bodyArg(call: GhCall | undefined): string {
+  const args = call?.args ?? [];
+  return args[args.indexOf("--body") + 1] ?? "";
+}
+
+async function sha256HexOf(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 Deno.test(
-  "runTask - an open old-body AWS finding ('No AWS emulator (Floci) in CI') is updated to the current title and body, not left stale or re-filed",
+  "runTask - an open old-body AWS finding ('No AWS emulator (Floci) in CI') gets the current finding as one comment, is not edited and is not re-filed",
   async () => {
     const check = awsCheck("floci-only");
     const run = await runAwsPreFiler(check, {
@@ -2695,23 +2734,139 @@ Deno.test(
     });
     assert(run.ok);
     assertEquals(createCount(run.calls), 0);
-    const edits = editCalls(run.calls);
-    assertEquals(edits.length, 1);
-    const args = edits[0]?.args ?? [];
-    assertEquals(args.slice(0, 5), [
+    assertEquals(editCalls(run.calls).length, 0);
+    const comments = commentCalls(run.calls);
+    assertEquals(comments.length, 1);
+    assertEquals(comments[0]?.args.slice(0, 5), [
       "issue",
-      "edit",
+      "comment",
       "81",
       "--repo",
       "org/repo",
     ]);
     const finding = buildAwsEmulatorFinding(check);
-    assertEquals(args[args.indexOf("--title") + 1], finding.title);
-    assertEquals(args[args.indexOf("--body") + 1], finding.body);
-    assert(!finding.body.includes("docker.sock"));
-    assert(
-      run.infoMessages.some((m) => m.includes("#81") && m.includes("updated")),
+    const posted = bodyArg(comments[0]);
+    assertEquals(
+      posted.split("\n", 1)[0],
+      awsEmulatorUpdateMarker(
+        finding.findingId,
+        await sha256HexOf(finding.body),
+      ),
     );
+    assert(posted.includes(finding.title));
+    assert(posted.includes("## Why this matters"));
+    // The comment is never read as a second finding.
+    assert(!posted.includes("<!-- finding-id:"));
+    assert(!posted.includes("docker.sock"));
+    assert(
+      run.infoMessages.some((m) =>
+        m.includes("#81") && m.includes("posted on it as a comment")
+      ),
+    );
+  },
+);
+
+Deno.test(
+  "runTask - the same current finding is not commented twice on a reused AWS Emulator issue",
+  async () => {
+    const check = awsCheck("floci-only");
+    const finding = buildAwsEmulatorFinding(check);
+    const marker = awsEmulatorUpdateMarker(
+      finding.findingId,
+      await sha256HexOf(finding.body),
+    );
+    const run = await runAwsPreFiler(check, {
+      rows: [{
+        number: 81,
+        title: "🟡 No AWS emulator (Floci) in CI",
+        login: FLEET_DEDUP_AUTHOR,
+        body: OLD_FLOCI_FINDING_BODY,
+      }],
+    }, [{ body: `${marker}\n\nThe current finding.` }]);
+    assert(run.ok);
+    assertEquals(commentCalls(run.calls).length, 0);
+    assertEquals(editCalls(run.calls).length, 0);
+    assertEquals(createCount(run.calls), 0);
+    // A comment that only quotes the marker further down does not count.
+    const quoted = await runAwsPreFiler(check, {
+      rows: [{
+        number: 81,
+        title: "🟡 No AWS emulator (Floci) in CI",
+        login: FLEET_DEDUP_AUTHOR,
+        body: OLD_FLOCI_FINDING_BODY,
+      }],
+    }, [{ body: `Someone pasted \`${marker}\` here.` }]);
+    assertEquals(commentCalls(quoted.calls).length, 1);
+  },
+);
+
+Deno.test(
+  "runTask - a reused AWS finding whose body carries a worker record block keeps it: the body is never edited",
+  async () => {
+    const check = awsCheck("missing");
+    const current = buildAwsEmulatorFinding(check);
+    const deferred = upsertWorkerRecordLine(
+      current.body,
+      "Deferred until 2026-12-01T00:00:00Z",
+    );
+    // The current finding plus a record block is up to date: nothing is posted.
+    const upToDate = await runAwsPreFiler(check, {
+      rows: [{
+        number: 84,
+        title: current.title,
+        login: FLEET_DEDUP_AUTHOR,
+        body: deferred,
+      }],
+    });
+    assert(upToDate.ok);
+    assertEquals(editCalls(upToDate.calls).length, 0);
+    assertEquals(commentCalls(upToDate.calls).length, 0);
+    // An older finding with a record block gets a comment; the body, and so
+    // the record discovery reads, is not rewritten.
+    const older = await runAwsPreFiler(check, {
+      rows: [{
+        number: 85,
+        title: "🟡 No AWS emulator (Floci) in CI",
+        login: FLEET_DEDUP_AUTHOR,
+        body: upsertWorkerRecordLine(
+          OLD_FLOCI_FINDING_BODY,
+          "Deferred until 2026-12-01T00:00:00Z",
+        ),
+      }],
+    });
+    assert(older.ok);
+    assertEquals(editCalls(older.calls).length, 0);
+    assertEquals(commentCalls(older.calls).length, 1);
+    assertEquals(createCount(older.calls), 0);
+  },
+);
+
+Deno.test(
+  "runTask - a reused AWS Emulator issue whose marker is not its first line is left alone",
+  async () => {
+    const check = awsCheck("missing");
+    for (
+      const body of [
+        // An owner's paragraph above the generated text.
+        "Owner note: we will wire this after the Q1 freeze.\n\n" +
+        OLD_FLOCI_FINDING_BODY,
+        // A body that only quotes the marker in a code span.
+        "Tracking `<!-- finding-id: BP-AWS-EMULATOR-MISSING -->` from the scan.",
+      ]
+    ) {
+      const run = await runAwsPreFiler(check, {
+        rows: [{
+          number: 86,
+          title: "AWS Emulator wiring",
+          login: FLEET_DEDUP_AUTHOR,
+          body,
+        }],
+      });
+      assert(run.ok);
+      assertEquals(editCalls(run.calls).length, 0, body);
+      assertEquals(commentCalls(run.calls).length, 0, body);
+      assertEquals(createCount(run.calls), 0, body);
+    }
   },
 );
 
