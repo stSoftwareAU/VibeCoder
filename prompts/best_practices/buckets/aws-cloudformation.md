@@ -20,12 +20,13 @@ VibeCoder's reference CI path (stSoftwareAU/VibeCoder#5110) have shipped; not
 yet: stSoftwareAU/VibeCoder#5112 will add the test-wiring detector and the
 migration findings, so do not file a per-template "missing emulator test"
 finding here. Reuse the existing `BP-AWS-EMULATOR-MISSING` finding and open
-migration issues rather than filing a second integration-test campaign.
-Installation or a successful stack status alone does not prove supported
-resource behaviour; unsupported resources remain explicit gaps, and no
-template has to deploy in full when one of its resources is a recorded gap.
-Keep IAM, resource-policy and KMS-policy validation on real AWS: emulator
-success does not prove it.
+migration issues rather than filing a second integration-test campaign. Where
+that finding's older Floci wording disagrees with the canonical policy, the
+policy wins until stSoftwareAU/VibeCoder#5112 rewrites it. Installation or a
+successful stack status alone does not prove supported resource behaviour;
+unsupported resources remain explicit gaps, and no template has to deploy in
+full when one of its resources is a recorded gap. Keep IAM, resource-policy and
+KMS-policy validation on real AWS: emulator success does not prove it.
 
 ## Checks
 

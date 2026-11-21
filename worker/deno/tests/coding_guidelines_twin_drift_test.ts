@@ -456,32 +456,45 @@ Deno.test("AWS integration testing - every surface links the one canonical stand
     .replace(/ /g, "-");
 
   const guidelines = await latestPromptText("coding_guidelines");
-  const surfaces: [string, string][] = [
+  const review = await readRepoDoc("prompts/pr_review_brief/prompt.md");
+  // Each surface is narrowed to its own section (CODING-STANDARDS.md
+  // "Documentation-drift tests", condition 1). The review brief's section also
+  // links the non-AWS `#dummy-tests-and-how-tests-are-refused` anchor, so only
+  // its `aws` anchors are filtered; the guidelines and bucket sections hold no
+  // other standards link, so any wrong anchor in them fails.
+  const anyAnchor = /CODING-STANDARDS\.md#([a-z0-9-]+)/g;
+  const awsAnchor = /CODING-STANDARDS\.md#(aws[a-z0-9-]*)/g;
+  const surfaces: [string, string, RegExp][] = [
     [
       "the coding_guidelines AWS Integration Testing section",
       section(guidelines, "AWS Integration Testing"),
+      anyAnchor,
     ],
     [
-      "prompts/pr_review_brief/prompt.md",
-      await readRepoDoc("prompts/pr_review_brief/prompt.md"),
+      "the prompts/pr_review_brief/prompt.md Review Mode section",
+      section(review, "Review Mode — one change against its linked issue"),
+      awsAnchor,
     ],
   ];
-  for (
-    const bucket of [
-      "aws-cloudformation",
-      "terraform",
-      "typescript",
-      "rust",
-      "java",
-    ]
-  ) {
+  const buckets: [string, string][] = [
+    ["aws-cloudformation", "AWS integration-test guidance"],
+    ["terraform", "AWS integration-test guidance"],
+    ["typescript", "AWS SDK integration tests"],
+    ["rust", "AWS SDK integration tests"],
+    ["java", "AWS SDK integration tests"],
+  ];
+  for (const [bucket, title] of buckets) {
     const path = `prompts/best_practices/buckets/${bucket}.md`;
-    surfaces.push([path, await readRepoDoc(path)]);
+    surfaces.push([
+      path,
+      section(await readRepoDoc(path), title),
+      anyAnchor,
+    ]);
   }
 
-  for (const [surface, text] of surfaces) {
+  for (const [surface, text, anchorPattern] of surfaces) {
     const anchors = [
-      ...text.matchAll(/CODING-STANDARDS\.md#(aws[a-z0-9-]*)/g),
+      ...text.matchAll(anchorPattern),
     ].map((m) => m[1]!);
     assertEquals(
       [...new Set(anchors)],
