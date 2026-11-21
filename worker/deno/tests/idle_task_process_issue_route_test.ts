@@ -39,6 +39,8 @@ import {
   IDLE_TASK_RUNWAY_DECLINED_MESSAGE,
   routeIdleTaskInProcessIssue,
 } from "../lib/idle_task_process_issue_route.ts";
+import { runIdleTaskClaude } from "../lib/idle_task_claude_budget.ts";
+import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 import type { HandleIdleTaskIssueResult } from "../lib/idle_task_claim_handler.ts";
 import { IDLE_TASK_FAILURE_COMMENT_PREFIX } from "../lib/idle_task_wrapper_closure.ts";
 import type { IdleTaskTemplate } from "../lib/idle_task_template.ts";
@@ -143,7 +145,11 @@ Deno.test(
     );
 
     // A scan ran, so its provider provenance is unknown to this route.
-    assertEquals(outcome, { routed: true, success: true });
+    assertEquals(outcome, {
+      routed: true,
+      success: true,
+      telemetryAbsentReason: "agent_not_invoked",
+    });
 
     // Exactly two gh calls — the summary comment, then the close — both
     // REST on the core quota so they land under the primary-quota latch
@@ -202,7 +208,11 @@ Deno.test(
       },
     );
 
-    assertEquals(outcome, { routed: true, success: false });
+    assertEquals(outcome, {
+      routed: true,
+      success: false,
+      telemetryAbsentReason: "agent_not_invoked",
+    });
     assertEquals(ghCalls.length, 1);
     const args = ghCalls[0]!;
     assertEquals(args.slice(0, 4), [
@@ -276,7 +286,11 @@ Deno.test(
 
     // The route still reports success — the run completed, only the
     // close call failed.
-    assertEquals(outcome, { routed: true, success: true });
+    assertEquals(outcome, {
+      routed: true,
+      success: true,
+      telemetryAbsentReason: "agent_not_invoked",
+    });
 
     // Both REST writes were refused: the summary comment and then the
     // close, each named (Issue #1753).
@@ -353,7 +367,11 @@ Deno.test(
 
     assertEquals(cloneCalls, [["owner/widget", "/tmp/widget"]]);
     assertEquals(handlerWorkDir, "/tmp/widget");
-    assertEquals(outcome, { routed: true, success: true });
+    assertEquals(outcome, {
+      routed: true,
+      success: true,
+      telemetryAbsentReason: "agent_not_invoked",
+    });
   },
 );
 
@@ -664,7 +682,11 @@ Deno.test(
       },
     );
 
-    assertEquals(outcome, { routed: true, success: true });
+    assertEquals(outcome, {
+      routed: true,
+      success: true,
+      telemetryAbsentReason: "agent_not_invoked",
+    });
     assertEquals(claimAttempted, true);
     // The deadline still reaches the claim handler, so Issue #186's bound
     // is applied to the scan exactly as before.
@@ -711,3 +733,97 @@ Deno.test(
     );
   },
 );
+
+// ---------------------------------------------------------------------------
+// Agent telemetry on the routed outcome (Issue #5296)
+// ---------------------------------------------------------------------------
+
+/** Route a wrapper whose handler runs `runIdleTaskClaude` with `runStats`. */
+function routeWithAgent(runStats: Record<string, unknown> | undefined) {
+  const { logger } = makeLogger();
+  return routeIdleTaskInProcessIssue(
+    { ...WRAPPER_INPUT, configuredProvider: "claude" },
+    {
+      logger,
+      handleIdleTaskFn: async () => {
+        await runIdleTaskClaude(
+          { prompt: "scan", cwd: "/tmp/widget" } as RunClaudeOptions,
+          undefined,
+          () =>
+            Promise.resolve({
+              ok: true,
+              value: {
+                exitCode: 0,
+                output: "",
+                timedOut: false,
+                ...(runStats ? { runStats } : {}),
+              } as never,
+            }),
+        );
+        return { handled: true, ok: true, summary: "done" };
+      },
+      ensureCloneFn: okClone,
+      claimRouteFn: okClaim,
+      ghCommandFn: () => Promise.resolve(""),
+    },
+  );
+}
+
+Deno.test("routed idle-task outcome carries the agent's token telemetry (Issue #5296)", async () => {
+  const outcome = await routeWithAgent({
+    servedModels: ["claude-sonnet-4"],
+    requestedModel: "sonnet",
+    tokenUsage: {
+      inputTokens: 1000,
+      outputTokens: 200,
+      cacheCreationTokens: 30,
+      cacheReadTokens: 4,
+    },
+    numTurns: 5,
+    wallClockMs: 1000,
+  });
+  assert(outcome.routed && "success" in outcome);
+  const o = outcome as {
+    telemetry?: Record<string, unknown>;
+    telemetryAbsentReason?: string;
+  };
+  assertEquals(o.telemetryAbsentReason, undefined);
+  assertEquals(o.telemetry?.inputTokens, 1000);
+  assertEquals(o.telemetry?.outputTokens, 200);
+  assertEquals(o.telemetry?.cacheCreationTokens, 30);
+  assertEquals(o.telemetry?.cacheReadTokens, 4);
+  assertEquals(o.telemetry?.turns, 5);
+});
+
+Deno.test("routed idle-task outcome reports usage_not_reported when the agent gave no usage (Issue #5296)", async () => {
+  const outcome = await routeWithAgent({
+    servedModels: [],
+    requestedModel: "sonnet",
+    wallClockMs: 1000,
+  });
+  assertEquals(outcome, {
+    routed: true,
+    success: true,
+    telemetryAbsentReason: "usage_not_reported",
+  });
+});
+
+Deno.test("routed idle-task outcome reports agent_not_invoked when the template ran no agent (Issue #5296)", async () => {
+  const { logger } = makeLogger();
+  const outcome = await routeIdleTaskInProcessIssue(
+    WRAPPER_INPUT,
+    {
+      logger,
+      handleIdleTaskFn: () =>
+        Promise.resolve({ handled: true, ok: true, summary: "no agent" }),
+      ensureCloneFn: okClone,
+      claimRouteFn: okClaim,
+      ghCommandFn: () => Promise.resolve(""),
+    },
+  );
+  assertEquals(outcome, {
+    routed: true,
+    success: true,
+    telemetryAbsentReason: "agent_not_invoked",
+  });
+});
