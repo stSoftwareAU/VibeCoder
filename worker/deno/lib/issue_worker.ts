@@ -295,6 +295,8 @@ async function workOnIssueRecorded(
     // Summed from the same per-invocation stats the run-stats comment
     // renders, and omitted when no invocation reported parseable usage.
     const telemetry = summariseCallbackTelemetry(state.claudeRunStats ?? []);
+    // Issue #5295: the invocations' own providers decide the reason; the
+    // configured provider is only the fallback when none named one.
     const telemetryAbsentReason = callbackTelemetryAbsenceReason(
       state.claudeRunStats ?? [],
       ctx.config.agentProvider,
