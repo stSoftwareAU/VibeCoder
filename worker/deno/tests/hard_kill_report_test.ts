@@ -96,6 +96,10 @@ function makeEvidence(
         pressureMemory: "some avg10=99.00",
         pressureIo: "some avg10=0.00",
       },
+      hostState: {
+        disk: "available=3435973837 total=493921239040",
+        memory: "level=high available=858993459 total=17179869184",
+      },
     },
   };
   return {
@@ -791,6 +795,55 @@ Deno.test("parseHardKillEvidence round-trips a valid file", () => {
   assertEquals(parseHardKillEvidence(json(ev)), ev);
 });
 
+Deno.test("parseHardKillEvidence reads a file written before host facts were captured (Issue #5250)", () => {
+  const ev = makeEvidence();
+  const old = JSON.parse(json(ev)) as {
+    evidence: Record<string, unknown>;
+  };
+  delete old.evidence["hostState"];
+  const parsed = parseHardKillEvidence(JSON.stringify(old));
+  const cause =
+    "unavailable: not recorded (evidence written before host facts were captured)";
+  assertEquals(parsed.evidence.hostState, { disk: cause, memory: cause });
+  const body = formatHardKillBody(parsed, hardKillSignature(parsed));
+  assertStringIncludes(body, "**Host disk:** not available");
+  assertStringIncludes(body, "**Host memory:** not available");
+});
+
+Deno.test("parseHardKillEvidence refuses a hostState that is not an object (Issue #5250)", () => {
+  const bad = JSON.parse(json(makeEvidence())) as {
+    evidence: Record<string, unknown>;
+  };
+  const original = bad.evidence["hostState"];
+  bad.evidence["hostState"] = "available=1 total=2";
+  assertThrowsWith(
+    () => parseHardKillEvidence(JSON.stringify(bad)),
+    'field "hostState" is not an object',
+  );
+  bad.evidence["hostState"] = original;
+  assertEquals(parseHardKillEvidence(JSON.stringify(bad)), makeEvidence());
+});
+
+for (const field of ["disk", "memory"] as const) {
+  Deno.test(`parseHardKillEvidence refuses a missing or non-string host ${field}`, () => {
+    const valid = makeEvidence();
+    const host: Record<string, unknown> = { ...valid.evidence.hostState };
+    const record = {
+      ...valid,
+      evidence: { ...valid.evidence, hostState: host },
+    };
+    for (const value of [undefined, 3]) {
+      host[field] = value;
+      assertThrowsWith(
+        () => parseHardKillEvidence(JSON.stringify(record)),
+        `field "${field}" is missing or not a string`,
+      );
+      host[field] = valid.evidence.hostState[field];
+      assertEquals(parseHardKillEvidence(JSON.stringify(record)), valid);
+    }
+  });
+}
+
 Deno.test("parseHardKillEvidence rejects a wrong version, naming it", () => {
   const wrong = JSON.parse(json(makeEvidence())) as Record<string, unknown>;
   wrong.version = 2;
@@ -1294,7 +1347,7 @@ Deno.test("a repeat kill's follow-up occurrence line names its last step (Issue 
   );
 });
 
-Deno.test("the body carries the four guest figures under the last log time (Issue #5062)", () => {
+Deno.test("the body carries the guest and host figures under the last log time (Issue #5062)", () => {
   const failed =
     "unavailable: container exec did not answer: exit 1: OCI runtime exec failed";
   const ev = makeEvidence({
@@ -1312,13 +1365,15 @@ Deno.test("the body carries the four guest figures under the last log time (Issu
   const lines = formatHardKillBody(ev, hardKillSignature(ev)).split("\n");
   const at = lines.indexOf("**Last log time:** 2026-11-11 16:53:16Z");
   assert(at >= 0, "the last log time line is present");
-  assertEquals(lines.slice(at + 1, at + 5), [
+  assertEquals(lines.slice(at + 1, at + 7), [
     "**Silent before capture:** 48m 51s",
     "**Guest probe:** `did not answer`",
     "**Guest memory:** not available",
     "**Guest pressure:** not available",
+    "**Host disk:** 3.2 GiB free of 460.0 GiB (0% free)",
+    "**Host memory:** pressure high, 0.8 GiB available of 16.0 GiB",
   ]);
-  assertEquals(lines[at + 5], "", "a blank line follows the four figures");
+  assertEquals(lines[at + 7], "", "a blank line follows the six figures");
 });
 
 Deno.test("an answered guest shows its numbers in the body (Issue #5062)", () => {
@@ -1365,7 +1420,7 @@ Deno.test("guest free text never reaches the body (Issue #5062)", () => {
   assertStringIncludes(body, "**Guest pressure:** cpu some avg10=1.00");
 });
 
-Deno.test("a recurrence's follow-up line carries the silent time and the guest probe (Issue #5062)", async () => {
+Deno.test("a recurrence's follow-up line carries the guest and host figures (Issue #5062)", async () => {
   const fs = fakeFs({
     [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
     [evidenceName("vibe-coder-s1-4255", 1761355900)]: json(
@@ -1389,6 +1444,11 @@ Deno.test("a recurrence's follow-up line carries the silent time and the guest p
   assertStringIncludes(
     argAfter(gh.commentCalls[0]!, "--body"),
     ", silent 2m 42s, guest probe `did not answer`",
+  );
+  assertStringIncludes(
+    argAfter(gh.commentCalls[0]!, "--body"),
+    ", guest probe `did not answer`, host disk 3.2 GiB free of 460.0 GiB " +
+      "(0% free), host memory pressure high, 0.8 GiB available of 16.0 GiB",
   );
 });
 

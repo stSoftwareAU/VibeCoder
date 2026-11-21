@@ -70,7 +70,8 @@ export const DEFAULT_LOW_FLOOR_GB = 20;
 /** …or below this percentage of the filesystem, whichever is larger. */
 export const DEFAULT_LOW_FLOOR_PERCENT = 10;
 
-const GIB = 1_073_741_824;
+/** Bytes in one GiB, shared with the hard-kill host disk figure. */
+export const GIB = 1_073_741_824;
 const DF_TIMEOUT_MS = 10_000;
 
 /** One free-space reading of a filesystem. */

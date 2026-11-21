@@ -66,6 +66,10 @@ function evidence(
         pressureMemory: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0",
         pressureIo: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0",
       },
+      hostState: {
+        disk: "available=3435973837 total=493921239040",
+        memory: "level=ok available=8589934592 total=17179869184",
+      },
     },
     ...over,
   };

@@ -32,6 +32,8 @@ import {
   hardKillGuestMemory,
   hardKillGuestPressure,
   hardKillGuestProbe,
+  hardKillHostDisk,
+  hardKillHostMemory,
   hardKillSilentFor,
 } from "../lib/hard_kill_guest_facts.ts";
 
@@ -125,6 +127,8 @@ function seamsFor(
       written.push({ path, text });
       return Promise.resolve();
     },
+    diskReading: () => Promise.resolve(null),
+    memoryReading: () => Promise.resolve({ level: "unknown" }),
     hostname: () => "test-host",
     timeout: (ms) => {
       let handle: ReturnType<typeof setTimeout> | undefined;
@@ -184,6 +188,10 @@ function recordWith(
         pressureMemory: PSI_MEMORY,
         pressureIo: PSI_IO,
         ...guest,
+      },
+      hostState: {
+        disk: "available=3435973837 total=493921239040",
+        memory: "level=high available=858993459 total=17179869184",
       },
     },
   };
@@ -557,4 +565,84 @@ Deno.test("a long digit run in the log timestamp gives unknown", () => {
     })),
     "unknown",
   );
+});
+
+/** A record whose host state fields are the given text. */
+function withHostState(disk: string, memory: string): HardKillEvidence {
+  const base = recordWith();
+  return {
+    ...base,
+    evidence: { ...base.evidence, hostState: { disk, memory } },
+  };
+}
+
+Deno.test("hardKillHostDisk words the free space in GiB and percent (Issue #5250)", () => {
+  assertEquals(
+    hardKillHostDisk(
+      withHostState("available=3435973837 total=493921239040", ""),
+    ),
+    "3.2 GiB free of 460.0 GiB (0% free)",
+  );
+  assertEquals(
+    hardKillHostDisk(
+      withHostState("available=1073741824 total=2147483648", ""),
+    ),
+    "1.0 GiB free of 2.0 GiB (50% free)",
+  );
+});
+
+Deno.test("hardKillHostDisk never echoes free text or a path (Issue #5250)", () => {
+  assertEquals(
+    hardKillHostDisk(
+      withHostState(
+        "unavailable: df could not read /Users/someone/private",
+        "",
+      ),
+    ),
+    "not available",
+  );
+  assertEquals(
+    hardKillHostDisk(withHostState("available=" + "1".repeat(50000) + "x", "")),
+    "not available",
+  );
+  assertEquals(
+    hardKillHostDisk(withHostState("available=5 total=0", "")),
+    "not available",
+  );
+  assertEquals(
+    hardKillHostDisk(withHostState("available=9 total=5", "")),
+    "not available",
+  );
+});
+
+Deno.test("hardKillHostMemory words the pressure level and bytes (Issue #5250)", () => {
+  assertEquals(
+    hardKillHostMemory(
+      withHostState("", "level=high available=858993459 total=17179869184"),
+    ),
+    "pressure high, 0.8 GiB available of 16.0 GiB",
+  );
+  assertEquals(
+    hardKillHostMemory(withHostState("", "level=ok")),
+    "pressure ok",
+  );
+});
+
+Deno.test("hardKillHostMemory gives not available for unknown, inconsistent or hostile fields (Issue #5250)", () => {
+  for (
+    const memory of [
+      "level=unknown",
+      "level=ok available=9 total=5",
+      "level=ok available=1 total=0",
+      "level=" + "o".repeat(50000),
+      "level=ok available=" + "1".repeat(50000) + "x",
+      "unavailable: sysctl timed out at /Users/someone/private",
+    ]
+  ) {
+    assertEquals(
+      hardKillHostMemory(withHostState("", memory)),
+      "not available",
+      memory.slice(0, 40),
+    );
+  }
 });

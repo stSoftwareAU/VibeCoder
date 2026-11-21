@@ -406,6 +406,8 @@ function stubDeps(overrides: Partial<ReapDeps> = {}): {
       listLogFiles: () => Promise.resolve([]),
       readTail: () => Promise.resolve(""),
       writeFile: () => Promise.resolve(),
+      diskReading: () => Promise.resolve(null),
+      memoryReading: () => Promise.resolve({ level: "unknown" }),
       hostname: () => "test-host",
       timeout: () => ({
         promise: new Promise<void>(() => {}),
@@ -759,6 +761,8 @@ function evidenceFake(
       options.order?.push("evidence-write");
       return Promise.resolve();
     },
+    diskReading: () => Promise.resolve(null),
+    memoryReading: () => Promise.resolve({ level: "unknown" }),
     hostname: () => {
       touched.push("hostname");
       return "test-host";
@@ -821,6 +825,7 @@ Deno.test("reapWedgedContainer - writes one evidence file with every field, befo
     "agentTranscriptTail",
     "bootLogs",
     "guest",
+    "hostState",
     "workerLogTail",
   ]);
   assertEquals(record.container, "vibe-coder-5");
