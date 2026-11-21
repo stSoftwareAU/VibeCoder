@@ -4,11 +4,13 @@
  *
  * These find command words in a GitHub Actions `run:` body; they are not a
  * shell parser. `shellSegments` splits a body into commands, `commandIndex`
- * finds a command's word, and `reachableSegments` drops commands that cannot
+ * finds a command's word, and `reachableCommands` drops commands that cannot
  * run (after an unconditional `exit` or `set -n`, behind `false &&`, in a branch or loop
  * whose condition is statically false, in any function body, or inside
- * a here-document). A construct it cannot judge counts as reachable only when
- * a runtime value decides it, so an unknown condition keeps its commands.
+ * a here-document). It also reports each reachable command's separators and
+ * whether it is an `if`/`elif`/`while`/`until` condition. A construct it cannot judge counts
+ * as reachable only when a runtime value decides it, so an unknown condition
+ * keeps its commands.
  *
  * Used by aws_emulator_in_ci_check.ts and aws_emulator_workflow_check.ts.
  *
@@ -31,6 +33,18 @@ const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * `;`/`|`/`&` starts a new command, and a `#` that starts a word ends the line.
  */
 export function shellCommands(script: string): ShellCommand[] {
+  return shellCommandList(script).commands;
+}
+
+/**
+ * The commands of {@link shellCommands} and the separator left pending after
+ * the last one (`""` when there is none, `"\n"` for a plain line end). A
+ * trailing `&` (`cmd &`) is pending here, although it has no command after it.
+ */
+function shellCommandList(script: string): {
+  commands: ShellCommand[];
+  trailing: string;
+} {
   const text = script.replace(/\\\r?\n/g, " ");
   const commands: ShellCommand[] = [];
   let words: string[] = [];
@@ -93,7 +107,7 @@ export function shellCommands(script: string): ShellCommand[] {
     inWord = true;
   }
   endCommand("\n");
-  return commands;
+  return { commands, trailing: sep };
 }
 
 /** The words of each command in a `run:` body (see {@link shellCommands}). */
@@ -227,6 +241,8 @@ export interface ShellOptions {
   commandString: boolean;
   /** Index of the first operand (the script path, for an invocation). */
   operand: number;
+  /** `-e` or `-o errexit` (true), `+e` or `+o errexit` (false); null when the words do not say. */
+  errexit: boolean | null;
 }
 
 /** Long options of `bash` that take a separate value word. */
@@ -241,6 +257,7 @@ const SHELL_LONG_VALUE_OPTIONS = new Set(["--rcfile", "--init-file"]);
 export function readShellOptions(args: string[]): ShellOptions {
   let noexec = false;
   let commandString = false;
+  let errexit: boolean | null = null;
   let i = 0;
   while (i < args.length) {
     const w = stripQuotes(args[i] ?? "");
@@ -257,17 +274,19 @@ export function readShellOptions(args: string[]): ShellOptions {
     const on = w.startsWith("-");
     let consumed = 1;
     for (const letter of w.slice(1)) {
-      if (letter === "n") noexec = on;
+      if (letter === "e") errexit = on;
+      else if (letter === "n") noexec = on;
       else if (letter === "c") commandString = commandString || on;
       else if (letter === "o" || letter === "O") {
         const name = stripQuotes(args[i + consumed] ?? "");
         if (letter === "o" && name === "noexec") noexec = on;
+        if (letter === "o" && name === "errexit") errexit = on;
         consumed++;
       }
     }
     i += consumed;
   }
-  return { noexec, commandString, operand: i };
+  return { noexec, commandString, operand: i, errexit };
 }
 
 /**
@@ -344,6 +363,92 @@ function frameCertain(f: Frame): boolean {
 const FUNCTION_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*\(\)$/;
 
 /**
+ * A reachable command (see {@link reachableCommands}): its words, the separator
+ * before it, the separator after it (`next`, `""` when it is the last command
+ * of the body) and whether it sits in an `if`/`elif`/`while`/`until` condition.
+ */
+export interface ReachableCommand {
+  words: string[];
+  /** Separator before this command, as in {@link shellCommands}. */
+  sep: string;
+  /** Separator of the following command in the {@link shellCommands} list; `""` when last. */
+  next: string;
+  /** True when the command sits in an `if`/`elif`/`while`/`until` condition. */
+  condition: boolean;
+  /**
+   * True when a failure of this command always ends the body with a failing
+   * status through an explicit exit (see {@link failureExits}): `cmd || exit 1`
+   * or `if ! cmd; then ...; exit 1; fi`.
+   */
+  failureExits: boolean;
+}
+
+const CHAINING_SEPARATORS = new Set(["|", "&", "||", "&&"]);
+/** Words that open a nested construct, which {@link failureExits} does not follow. */
+const NESTED_OPENERS = new Set([
+  "if",
+  "while",
+  "until",
+  "for",
+  "case",
+  "select",
+  "{",
+  "(",
+  "function",
+]);
+
+/** True when `words` is `exit N` with a non-zero integer N, or (when `bare`) a plain `exit`. */
+function isFailingExit(words: string[], bare: boolean): boolean {
+  if (stripQuotes(words[0] ?? "") !== "exit") return false;
+  if (words.length === 1) return bare;
+  return words.length === 2 && /^[1-9]\d*$/.test(stripQuotes(words[1] ?? ""));
+}
+
+/**
+ * True when a failure of the listed command at `index` always ends the body
+ * with a failing status, by one of two idioms:
+ *
+ * - `cmd || exit N` (N not 0, or a bare `exit`, which keeps the failing
+ *   status), where nothing chains on after the `exit`;
+ * - `if ! cmd; then ...; exit N; fi` (N not 0), where the `then` branch is
+ *   flat (no nested construct) and runs the `exit` unconditionally (after `;`
+ *   or a newline, with nothing chained after it).
+ *
+ * Any other form is false, so the caller falls back to its own rules.
+ */
+function failureExits(listed: ShellCommand[], index: number): boolean {
+  const here = listed[index];
+  const after = listed[index + 1];
+  if (here === undefined || after === undefined) return false;
+  if (after.sep === "||" && isFailingExit(after.words, true)) {
+    const chained = listed[index + 2];
+    return chained === undefined || !CHAINING_SEPARATORS.has(chained.sep);
+  }
+  if (here.words[0] !== "if" || here.words[1] !== "!") return false;
+  if (CHAINING_SEPARATORS.has(after.sep) || after.words[0] !== "then") {
+    return false;
+  }
+  let exits = false;
+  for (let j = index + 1; j < listed.length; j++) {
+    const entry = listed[j];
+    if (entry === undefined) break;
+    const words = j === index + 1 ? entry.words.slice(1) : entry.words;
+    const head = words[0];
+    if (head === undefined) continue;
+    if (head === "fi" || head === "else" || head === "elif") return exits;
+    if (NESTED_OPENERS.has(head) || words.includes("fi")) return false;
+    const next = listed[j + 1];
+    if (
+      isFailingExit(words, false) && !CHAINING_SEPARATORS.has(entry.sep) &&
+      (next === undefined || !CHAINING_SEPARATORS.has(next.sep))
+    ) {
+      exits = true;
+    }
+  }
+  return false;
+}
+
+/**
  * The commands of a `run:` body that can run: it drops commands after an
  * unconditional `exit` or `set -n` / `set -o noexec`, behind `false &&` or `true ||`, in an `if`/`elif`/
  * `else` branch or a `while`/`until` body whose condition is statically false
@@ -355,10 +460,13 @@ const FUNCTION_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*\(\)$/;
  * unknown `if`) does not end the script here, so later commands still count;
  * one a static chain always reaches (`true && exit 0`, `false || exit 0`)
  * does.
- * Returns each reachable command's words, keywords such as `then` included.
+ * Returns each reachable command with its words (keywords such as `then`
+ * stripped), the separators around it and whether it is a condition. The
+ * separators and `condition` come from the same `shellCommands` list the
+ * reachability walk reads, so a caller can tell `cmd || true` from `cmd`.
  */
-export function reachableSegments(script: string): string[][] {
-  const out: string[][] = [];
+export function reachableCommands(script: string): ReachableCommand[] {
+  const out: ReachableCommand[] = [];
   const stack: Frame[] = [];
   let exited = false;
   let prev: boolean | null = null; // static status of the previous command
@@ -385,7 +493,10 @@ export function reachableSegments(script: string): string[][] {
       ...partial,
     });
 
-  for (const { words: all, sep } of shellCommands(stripHeredocBodies(script))) {
+  const { commands: listed, trailing } = shellCommandList(
+    stripHeredocBodies(script),
+  );
+  for (const [index, { words: all, sep }] of listed.entries()) {
     let words = all;
     // Short-circuit chains: `false && x` and `true || x` skip x, while
     // `true && x` and `false || x` always run it. `runs` is null when a
@@ -497,7 +608,13 @@ export function reachableSegments(script: string): string[][] {
         : !prev;
     }
     if (reached) {
-      out.push(words);
+      out.push({
+        words,
+        sep,
+        next: listed[index + 1]?.sep ?? (trailing === "\n" ? "" : trailing),
+        condition: frameOpen?.branch === "cond",
+        failureExits: failureExits(listed, index),
+      });
       const at = commandIndex(words);
       const head = stripQuotes(words[at] ?? "");
       const certain = runs === true && sep !== "|" && sep !== "&" &&
