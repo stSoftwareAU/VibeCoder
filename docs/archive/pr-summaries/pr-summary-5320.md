@@ -11,9 +11,12 @@ owner triggered (#5312). The fleet's local gate never saw those heads, so they
 are not evidence that the fleet skipped it.
 
 `runShiftLeftScan` now groups only observations whose failing head a fleet
-account pushed. The run's triggering actor must be a fleet author or the
-babysitter, matched case-insensitively. Observations are still recorded as
-before, so entries already in a host's ledger are filtered too.
+account pushed. The run's `actor` must be a fleet author or the babysitter,
+matched case-insensitively. `observeRepo` now records the run's `actor` as
+`pushedBy`, falling back to `triggering_actor` only when `actor` is missing:
+GitHub rewrites `triggering_actor` to whoever re-ran a run, and the babysitter
+re-runs cancelled runs on a fleet PR's head whoever pushed it. Entries already
+in a host's ledger are filtered too.
 
 One fleet path the issue describes is still only partly covered: the fleet's own
 GitHub update-branch base refresh. On a strict base it waits for the required
@@ -30,14 +33,19 @@ below). Part of #5320.
   re-filed or recurred the issue with nothing in the fleet to fix.
 - The filter sits at grouping, not observation, so no persisted ledger shape
   changes, and old entries with an owner `pushedBy` stop counting at once.
+- `pushedBy` is the run's `actor`, which stays the pushing account across
+  re-runs. Using `triggering_actor` would count an owner-pushed head the fleet
+  re-ran, and hide a fleet-pushed head the owner re-ran. Entries recorded before
+  this change hold the triggering actor; they age out of the window.
 
 ### Essential Design Decisions
 
 - A fleet push means the lower-cased `pushedBy` is in `fleetAuthors` ∪
   `babysitterLogins`, the same lists the scan already uses for PR authorship and
   babysitter routing. An empty `pushedBy` is not a fleet push.
-- `repeatedFailures` and `observeRepo` are unchanged. Only the production entry
-  point, `runShiftLeftScan`, applies the filter.
+- `repeatedFailures` is unchanged. `observeRepo` changes only which field it
+  records as `pushedBy` (its runs projection now asks for `actor` too). Only the
+  production entry point, `runShiftLeftScan`, applies the filter.
 - The issue has no acceptance-criteria heading. The completion checks named one
   criterion, for the update-branch refresh. A Spec reviewer sub-agent judged it
   over this diff and the refresh code. Its verdict is recorded below.
@@ -60,6 +68,10 @@ below). Part of #5320.
   | #5266 | `5a0cea0e6`  | nleck                    | owner commit                                                            |
   | #5312 | `395dca0cf`  | nleck                    | GitHub update-branch merge after #5308 changed `EvidenceSeams` (TS2739) |
 
+  The table's triggering actors are also each run's `actor`: the PR review
+  compared both fields on the 116 failed `pull_request` runs since 2026-11-07
+  and found them different only on run 42519001410 (#4896), not cited here.
+
   #5267's fleet-pushed failing head (`e5113dbbd`) failed
   `PR summary freshness and gates`, not a Deno step; its other failing head
   (`a93b11848`) was the owner's commit.
@@ -76,7 +88,7 @@ Backend-only change: no UI files are touched.
 
 ```mermaid
 flowchart LR
-    R[failed PR run] --> O[observation<br/>pushedBy = triggering actor]
+    R[failed PR run] --> O[observation<br/>pushedBy = run actor]
     O --> L[(ledger)]
     L --> F{pushedBy in fleet authors<br/>or babysitter?}
     F -- yes --> G[group: 3 distinct PRs in 7 days?]
@@ -96,8 +108,9 @@ flowchart LR
   and the job log reads
   `TS2739 [ERROR]: ... is missing the following
   properties from type 'EvidenceSeams': diskReading, memoryReading`.
-- The fixture's `triggering_actor.login` mirrors the field `observeRepo` already
-  reads from the GitHub runs API (`.triggering_actor.login`).
+- The fixture's runs carry both `actor.login` and `triggering_actor.login`, as
+  the GitHub runs API does; `observeRepo` projects both and records
+  `actor.login`.
 - Issue numbers cited: #4610 (the detector), #5169 (Fix local quality-check
   bypasses before fleet publication), #5230 (the earlier shift-left issue,
   closed as a duplicate of #5169), #5320 (this issue).
@@ -121,7 +134,8 @@ flowchart LR
 ## Test Plan
 
 Added to `worker/deno/tests/shift_left_failures_test.ts`. The `fakeGh` fixture
-gains an optional index-aligned `pushers` list for each run's triggering actor:
+gains an optional index-aligned `pushers` list for each run's `actor`, and a
+`rerunBy` list for its `triggering_actor` (defaulting to the actor):
 
 - `scan: failures whose heads the owner pushed file nothing (Issue #5320)`: no
   issue created or commented on.
@@ -134,6 +148,15 @@ gains an optional index-aligned `pushers` list for each run's triggering actor:
   (Issue #5320)`:
   no issue created from seeded owner-pushed entries.
 - `scan: pusher matching is case-insensitive (Issue #5320)`: one issue filed.
+- `scan: owner-pushed heads the fleet re-ran file nothing (Issue #5320)`: owner
+  `actor`, fleet `triggering_actor` on three PRs; no issue created or commented
+  on.
+- `scan: fleet-pushed heads the owner re-ran still file one issue
+  (Issue #5320)`:
+  fleet `actor`, owner `triggering_actor` on three PRs; one issue filed.
+- `scan: the runs listing asks GitHub for each run's actor (Issue #5320)`: the
+  runs request's `--jq` projects `actor: {login: .actor.login}`. The fake
+  returns whole runs whatever the projection asks, so this pins it.
 - The existing test
   `scan: a clippy failure on three fleet PRs that the local
   gate runs files one VibeCoder issue`
@@ -147,10 +170,16 @@ Results:
   failed. The three failures were the owner-pushed, below-threshold and
   seeded-ledger tests, each seeing 1 issue created where 0 was expected. The
   babysitter and case-insensitive tests passed on base, as expected.
-- After the fix: `deno task test:unit tests/shift_left_failures_test.ts` gave 29
-  passed and 0 failed. `deno task test:unit tests/fleet_pr_babysitter_test.ts`
-  gave 122 passed and 0 failed. `deno check`, `deno lint` and `deno fmt` on both
-  TypeScript files are clean.
+- Red for the re-run fix: with `lib/shift_left_failures.ts` at `ba4142d9` (the
+  triggering-actor version), the file gave 29 passed and 3 failed: the two
+  re-run tests and the projection test.
+- After the fix: `tests/shift_left_failures_test.ts` gave 32 passed and 0
+  failed. `tests/fleet_pr_babysitter_test.ts` gave 121 passed and 1 failed; the
+  failure, `babysitter default heartbeat resolves its checkout revision`, spawns
+  `deno run`, which could not download `jsr:@std/yaml` on the host (jsr.io
+  unreachable). These runs used a scratch import map in place of the
+  `jsr:@std/*` imports for the same reason; CI runs both files as written.
+  `deno check`, `deno lint` and `deno fmt` on both TypeScript files are clean.
 - Docs: updated the "Shift-left detection" section of
   `docs/workflows/fleet-pr-babysitter.md`, the module doc in
   `worker/deno/lib/shift_left_failures.ts`, and the `SHIFT_LEFT_THRESHOLD` doc
