@@ -999,6 +999,10 @@ for (
       [[JOB_IMAGE_LINE, JOB_IMAGE_LINE + "      BASH_ENV: /tmp/x\n"]],
     ],
     [
+      "a job-level env SHELLOPTS",
+      [[JOB_IMAGE_LINE, JOB_IMAGE_LINE + "      SHELLOPTS: noexec\n"]],
+    ],
+    [
       "a workflow-level env DOCKER_HOST",
       [[
         "permissions:\n  contents: read\n",
@@ -1344,6 +1348,35 @@ for (
       "jobs:\n",
       "env: ${{ fromJSON(vars.E) }}\njobs:\n",
     ]], "workflow must set no env:"],
+    ["the filter step setting working-directory", [[
+      FILTER_ID,
+      FILTER_ID + "        working-directory: sub\n",
+    ]], "may have no working-directory"],
+    ["job changes setting defaults.run.working-directory", [[
+      CHANGES_JOB,
+      CHANGES_JOB +
+      "    defaults:\n      run:\n        working-directory: sub\n",
+    ]], "may have no working-directory"],
+    ["the workflow setting defaults.run.working-directory", [[
+      "jobs:\n",
+      "defaults:\n  run:\n    working-directory: sub\njobs:\n",
+    ]], "may have no working-directory"],
+    ["job changes with defaults given as an expression", [[
+      CHANGES_JOB,
+      CHANGES_JOB + "    defaults: ${{ fromJSON(vars.D) }}\n",
+    ]], "may have no working-directory"],
+    ["the changes checkout gaining ref", [[
+      "          fetch-depth: 0\n",
+      "          fetch-depth: 0\n          ref: other\n",
+    ]], "no with: but persist-credentials and fetch-depth"],
+    ["the changes checkout gaining repository", [[
+      "          fetch-depth: 0\n",
+      "          fetch-depth: 0\n          repository: other/repo\n",
+    ]], "no with: but persist-credentials and fetch-depth"],
+    ["the changes checkout gaining path", [[
+      "          fetch-depth: 0\n",
+      "          fetch-depth: 0\n          path: sub\n",
+    ]], "no with: but persist-credentials and fetch-depth"],
     ["an echo of --image=foo before the script call", [[
       DETECT_CALL_LINE,
       '          echo "--image=foo"\n' + DETECT_CALL_LINE,
@@ -1445,3 +1478,135 @@ Deno.test("checkContainerBuildRunsAwsEmulator reports malformed input without th
     1,
   );
 });
+
+// Keys that change which script a relative path names, or stop bash running
+// a step body (Issue #5305).
+
+Deno.test("(container-agent-run) accepts job changes defaults.run.shell without a working-directory", () => {
+  assertEquals(
+    checkContainerBuildRunsAwsEmulator(
+      parseYaml(mutateText(CONTAINER_BUILD, [
+        CHANGES_JOB,
+        CHANGES_JOB + "    defaults:\n      run:\n        shell: bash\n",
+      ])),
+    ),
+    [],
+  );
+});
+
+const GATE_CHECKOUT_WITH = "          persist-credentials: false\n";
+
+for (
+  const [label, from, to, substring] of [
+    [
+      "a gate step env SHELLOPTS",
+      GATE_ENV,
+      GATE_ENV + "          SHELLOPTS: noexec\n",
+      "must set only NEEDS_JSON",
+    ],
+    [
+      "a gate job env SHELLOPTS",
+      GATE_ALWAYS,
+      GATE_ALWAYS + "    env:\n      SHELLOPTS: noexec\n",
+      "the gate job must set no env:",
+    ],
+    [
+      "a workflow env SHELLOPTS",
+      "jobs:\n",
+      "env:\n  SHELLOPTS: noexec\njobs:\n",
+      "must set no workflow env:",
+    ],
+    [
+      "a gate job container",
+      GATE_ALWAYS,
+      GATE_ALWAYS + "    container: ubuntu:latest\n",
+      "the gate job must set no container:",
+    ],
+    [
+      "a gate step working-directory",
+      GATE_STEP_NAME,
+      GATE_STEP_NAME + "        working-directory: sub\n",
+      "may have no working-directory",
+    ],
+    [
+      "a gate job defaults.run.working-directory",
+      GATE_ALWAYS,
+      GATE_ALWAYS +
+      "    defaults:\n      run:\n        working-directory: sub\n",
+      "may have no working-directory",
+    ],
+    [
+      "a workflow defaults.run.working-directory",
+      "jobs:\n",
+      "defaults:\n  run:\n    working-directory: sub\njobs:\n",
+      "may have no working-directory",
+    ],
+    [
+      "a gate checkout gaining ref",
+      GATE_CHECKOUT_WITH,
+      GATE_CHECKOUT_WITH + "          ref: other\n",
+      "no step but actions/checkout",
+    ],
+    [
+      "a gate checkout gaining repository",
+      GATE_CHECKOUT_WITH,
+      GATE_CHECKOUT_WITH + "          repository: other/repo\n",
+      "no step but actions/checkout",
+    ],
+  ] as const
+) {
+  Deno.test(`(gate-script) refuses ${label}`, () => {
+    assertOneFinding(
+      checkQualityCallsAwsEmulator(qualityMutated(from, to)),
+      "[gate-script]",
+      substring,
+    );
+  });
+}
+
+Deno.test("(gate-script) accepts a gate checkout gaining fetch-depth", () => {
+  assertEquals(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_CHECKOUT_WITH,
+        GATE_CHECKOUT_WITH + "          fetch-depth: 0\n",
+      ),
+    ),
+    [],
+  );
+});
+
+Deno.test("(gate-script) accepts gate job defaults.run.shell without a working-directory", () => {
+  assertEquals(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_ALWAYS,
+        GATE_ALWAYS + "    defaults:\n      run:\n        shell: bash\n",
+      ),
+    ),
+    [],
+  );
+});
+
+for (
+  const [label, pairs] of [
+    ["the test step env SHELLOPTS", [[
+      TEST_STEP_NAME,
+      TEST_STEP_NAME + "        env:\n          SHELLOPTS: noexec\n",
+    ]]],
+    ["the job env SHELLOPTS", [[
+      "    timeout-minutes: 25\n",
+      "    timeout-minutes: 25\n    env:\n      SHELLOPTS: noexec\n",
+    ]]],
+    ["the workflow env SHELLOPTS", [[
+      "permissions:\n  contents: read\n",
+      "permissions:\n  contents: read\nenv:\n  SHELLOPTS: noexec\n",
+    ]]],
+  ] as [string, [string, string][]][]
+) {
+  Deno.test(`(a) refuses ${label}`, () => {
+    expectFindings(mutate(...pairs), [
+      "[test-step] the infra/cloudformation/test-aws-emulator.sh step, job cloudformation and the workflow must set no env",
+    ]);
+  });
+}
