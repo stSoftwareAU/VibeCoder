@@ -559,6 +559,67 @@ function ifIsStaticallyFalse(value: unknown): boolean {
 }
 
 /**
+ * How one `&&` term of an `if:` reads on a pull request: true or false for
+ * `github.event_name == 'E'` / `!= 'E'`, null when it does not read
+ * `github.event_name` (decided at run time), `"unknown"` for any other form
+ * that reads it.
+ */
+function eventTermOnPullRequest(term: string): boolean | null | "unknown" {
+  const text = term.trim();
+  if (!text.includes("github.event_name")) return null;
+  const m = /^github\.event_name\s*(==|!=)\s*'([A-Za-z_]+)'$/.exec(text);
+  if (m === null) return "unknown";
+  return (m[2] === "pull_request") === (m[1] === "==");
+}
+
+/**
+ * Whether a job or step `if:` lets it run on a pull request, judged only where
+ * the expression reads `github.event_name`. The expression is read as an `||`
+ * of `&&` terms (see {@link eventTermOnPullRequest}); a disjunct is false on a
+ * pull request when one of its terms is. Null (no refusal) when the expression
+ * does not read the event or some disjunct can be true on a pull request
+ * (`github.event_name != 'pull_request' || !github.event.pull_request.draft`);
+ * `"excludes"` when every disjunct is false on a pull request
+ * (`github.event_name == 'push'`); `"unknown"` when the event is read in another
+ * form (parentheses, `contains(...)`), so it earns no credit either.
+ */
+function eventIfRefusal(value: unknown): "excludes" | "unknown" | null {
+  if (typeof value !== "string" || !value.includes("github.event_name")) {
+    return null;
+  }
+  const text = value.trim();
+  const wrapped = /^\$\{\{(.*)\}\}$/s.exec(text);
+  const expr = (wrapped?.[1] ?? text).trim();
+  if (/[()]/.test(expr)) return "unknown";
+  let sawUnknown = false;
+  for (const disjunct of expr.split("||")) {
+    let verdict: "maybe" | "false" | "unknown" = "maybe";
+    for (const term of disjunct.split("&&")) {
+      const onPr = eventTermOnPullRequest(term);
+      if (onPr === false) {
+        verdict = "false";
+        break;
+      }
+      if (onPr === "unknown") verdict = "unknown";
+    }
+    if (verdict === "maybe") return null;
+    if (verdict === "unknown") sawUnknown = true;
+  }
+  return sawUnknown ? "unknown" : "excludes";
+}
+
+/** A diagnostic for a job or step `if:` that {@link eventIfRefusal} refuses, or null. */
+function eventIfDiagnostic(where: string, value: unknown): string | null {
+  const refusal = eventIfRefusal(value);
+  if (refusal === null) return null;
+  return refusal === "excludes"
+    ? `${where}: if: \`${String(value)}\` excludes pull_request events`
+    : `${where}: if: \`${
+      String(value)
+    }\` reads the event in a form this check cannot decide, so it earns no pull_request credit`;
+}
+
+/**
  * True when a `continue-on-error` value sets failures aside: anything other
  * than absent, `false` or `"false"` (an expression is decided at run time, so
  * it earns no credit).
@@ -648,7 +709,7 @@ function callsWorkflow(doc: unknown, file: string): boolean {
   if (!isRecord(doc) || !isRecord(doc.jobs)) return false;
   return Object.values(doc.jobs).some((job) =>
     isRecord(job) && !ifIsStaticallyFalse(job.if) &&
-    typeof job.uses === "string" &&
+    eventIfRefusal(job.if) === null && typeof job.uses === "string" &&
     job.uses.replace(/^\.\//, "") === `.github/workflows/${file}`
   );
 }
@@ -709,8 +770,9 @@ interface KeptCommand {
  *
  * `initialErrexit` says whether the body runs with `-e`; a reachable `set`
  * then updates it (`set -e`, `set -o errexit` on; `set +e`, `set +o errexit`
- * off). A command is kept when its failure is not swallowed (see
- * {@link commandStatusNotSwallowed}) and one of these holds: it runs via `exec`;
+ * off). A command is kept when a failure always reaches an explicit failing
+ * exit (`cmd || exit 1`, `if ! cmd; then ...; exit 1; fi`), or when its failure
+ * is not swallowed (see {@link commandStatusNotSwallowed}) and one of these holds: it runs via `exec`;
  * every later reachable command is joined by `&&` (it is last, or the rest is an
  * `&&` chain to the end); or errexit is on and it is not followed by `&&`.
  */
@@ -728,8 +790,8 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
   for (const [k, cmd] of cmds.entries()) {
     const at = commandIndex(cmd.words);
     const viaExec = cmd.words.slice(0, at).includes("exec");
-    const kept = commandStatusNotSwallowed(cmd) &&
-      (viaExec || restAllAnd[k] === true || (errexit && cmd.next !== "&&"));
+    const kept = cmd.failureExits || (commandStatusNotSwallowed(cmd) &&
+      (viaExec || restAllAnd[k] === true || (errexit && cmd.next !== "&&")));
     out.push({ cmd, kept });
     if (stripQuotes(cmd.words[at] ?? "") === "set") {
       const option = readShellOptions(cmd.words.slice(at + 1)).errexit;
@@ -926,6 +988,14 @@ function scanWorkflowDoc(
             `${where}: step running \`${label}\` sets continue-on-error`,
           );
         }
+        for (
+          const diagnostic of [
+            eventIfDiagnostic(where, job.if),
+            eventIfDiagnostic(`${where} step running \`${label}\``, step.if),
+          ]
+        ) {
+          if (diagnostic !== null) out.push(diagnostic);
+        }
         if (shellIsNoexec(shell)) {
           out.push(
             `${where}: step shell \`${
@@ -1046,16 +1116,76 @@ function gapRecords(raw: string): GapRecord[] {
   return out;
 }
 
+/** Words that mark a command as a test run (`npm test`, `mvn verify`, `pytest`). */
+const TEST_WORD = /test|spec|jest|mocha|verify|integration/i;
+/** Command words that never run a test, whatever their arguments say. */
+const NON_TEST_COMMANDS = new Set([
+  "echo",
+  "printf",
+  "true",
+  ":",
+  "docker",
+  "sleep",
+  "curl",
+  "wget",
+  "set",
+  "export",
+  "cd",
+]);
+
+/**
+ * True when a command looks like a test run: its command word is not one that
+ * never runs a test (`echo`, `docker`, ...), and the command word or one of the
+ * next three words names a test (`npm test`, `npm run test:aws`, `cargo test`,
+ * `mvn verify`, `./scripts/integration.sh`).
+ */
+function looksLikeTestCommand(words: string[]): boolean {
+  const at = commandIndex(words);
+  const head = stripQuotes(words[at] ?? "").replace(/^.*\//, "");
+  if (head.length === 0 || NON_TEST_COMMANDS.has(head)) return false;
+  return words.slice(at, at + 4).some((w) => TEST_WORD.test(stripQuotes(w)));
+}
+
+/**
+ * True when a Floci job runs a test whose failure fails the job: an enabled
+ * `run:` step (no static-false `if:`, no `if:` that excludes pull requests, no
+ * `continue-on-error`, a shell that runs the body) with a reachable test
+ * command (see {@link looksLikeTestCommand}) whose failure is kept (see
+ * {@link keptCommands}).
+ */
+function flociJobRunsTest(job: Record<string, unknown>, doc: unknown): boolean {
+  const steps = job.steps;
+  if (!Array.isArray(steps)) return false;
+  const jobShell = defaultShell(job) ??
+    (isRecord(doc) ? defaultShell(doc) : undefined);
+  return steps.some((step) => {
+    if (!isRecord(step) || typeof step.run !== "string") return false;
+    if (ifIsStaticallyFalse(step.if) || eventIfRefusal(step.if) !== null) {
+      return false;
+    }
+    if (continueOnErrorSet(step["continue-on-error"])) return false;
+    const shell = step.shell ?? jobShell;
+    if (shellIsNoexec(shell)) return false;
+    return keptCommands(step.run, stepStartsErrexit(shell)).some((k) =>
+      k.kept && looksLikeTestCommand(k.cmd.words)
+    );
+  });
+}
+
 /**
  * The ids of the jobs that run Floci and could carry a gap: not statically
- * disabled by `if:`, and not `continue-on-error`.
+ * disabled by `if:`, no `if:` that excludes pull requests, not
+ * `continue-on-error`, and running a failure-preserving test step (see
+ * {@link flociJobRunsTest}).
  */
 function creditableFlociJobIds(parsedYaml: unknown): string[] {
   if (!isRecord(parsedYaml) || !isRecord(parsedYaml.jobs)) return [];
   return Object.entries(parsedYaml.jobs)
     .filter(([, job]) =>
       isRecord(job) && jobRunsFloci(job) && !ifIsStaticallyFalse(job.if) &&
-      !continueOnErrorSet(job["continue-on-error"])
+      eventIfRefusal(job.if) === null &&
+      !continueOnErrorSet(job["continue-on-error"]) &&
+      flociJobRunsTest(job, parsedYaml)
     )
     .map(([id]) => id);
 }
@@ -1063,8 +1193,8 @@ function creditableFlociJobIds(parsedYaml: unknown): string[] {
 /**
  * Why a workflow's valid gap record cannot credit `floci-gap`, or null when it
  * can: the workflow must be applicable (it runs on pull_request, or a
- * pull_request workflow calls it), and it must have a Floci job that is not
- * disabled and does not set `continue-on-error`.
+ * pull_request workflow calls it), and it must have a Floci job that
+ * {@link creditableFlociJobIds} accepts.
  */
 function gapRecordRefusal(d: WorkflowDoc, applicable: boolean): string | null {
   const prefix = `\`${d.file}\`: aws-emulator-gap record is not credited:`;
@@ -1072,7 +1202,7 @@ function gapRecordRefusal(d: WorkflowDoc, applicable: boolean): string | null {
     return `${prefix} the workflow does not run on pull_request and no pull_request workflow calls it`;
   }
   if (creditableFlociJobIds(d.doc).length === 0) {
-    return `${prefix} every Floci job is disabled by if: or sets continue-on-error`;
+    return `${prefix} no Floci job is enabled for pull_request without continue-on-error and runs a test step whose failure fails the job`;
   }
   return null;
 }
@@ -1127,7 +1257,7 @@ async function checkFile(
   evidence: Set<string>,
 ): Promise<void> {
   if (name.endsWith(".tf")) {
-    const tf = await readFileOrSkip(path);
+    const tf = await readFileOrSkip(path, MAX_SCRIPT_BYTES);
     if (tf !== null && terraformUsesAws(tf)) evidence.add(relPath);
     return;
   }
@@ -1171,9 +1301,19 @@ async function checkFile(
   }
 }
 
-/** Read a file's text, or null when it vanished mid-walk. Other read errors throw, wrapped with the path. */
-async function readFileOrSkip(path: string): Promise<string | null> {
+/**
+ * Read a file's text, or null when it vanished mid-walk or (when `maxBytes` is
+ * given) is larger than `maxBytes`, so an oversized file is never loaded. Other
+ * read errors throw, wrapped with the path.
+ */
+async function readFileOrSkip(
+  path: string,
+  maxBytes?: number,
+): Promise<string | null> {
   try {
+    if (maxBytes !== undefined && (await Deno.stat(path)).size > maxBytes) {
+      return null;
+    }
     return await Deno.readTextFile(path);
   } catch (err) {
     if (err instanceof Deno.errors.NotFound) return null;

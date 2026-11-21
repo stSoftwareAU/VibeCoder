@@ -367,14 +367,21 @@ Official server mode needs all of the following:
   workflow that a `pull_request` workflow calls via
   `uses: ./.github/workflows/<file>`, transitively;
 - neither the job nor the step sets `continue-on-error` (other than
-  `false`);
+  `false`), and neither `if:` excludes pull requests: an `if:` that reads
+  `github.event_name` is read as an `||` of `&&` terms of the form
+  `github.event_name == 'E'` / `!= 'E'`, and earns no credit when every
+  term group is false on a pull request (`github.event_name == 'push'`) or
+  when it reads the event in any other form (parentheses, `contains(...)`);
 - the step's shell runs the body; and
 - the invocation's failure is preserved, in the workflow and in the
   script. A runner command, or the call to the script that runs it, is
   preserved when it is not in a condition, not behind `!`, not followed by
   `||`, `|` or `&`, and one of: it runs via `exec`; it is the last command
   (or the rest of the body is an `&&` chain to the end); or errexit is on
-  at that point and it is not followed by `&&`.
+  at that point and it is not followed by `&&`. Two explicit-exit idioms
+  are also preserved, whatever errexit is: `runner || exit N` (N not 0, or
+  a bare `exit`) and `if ! runner; then ...; exit N; fi` (N not 0, in a
+  flat `then` branch).
 
 **Errexit.** Errexit is on for a workflow step whose shell is unset or
 exactly `bash` or `sh` (GitHub adds `-e`), or whose custom shell sets `-e`
@@ -422,7 +429,13 @@ gap record: a YAML comment line in that workflow of the form
 All five keys must be non-empty, and the version must contain a digit.
 A gap record counts only in a workflow that applies to `pull_request`
 (by the same rule as official wiring) whose Floci job is not statically
-disabled and has no `continue-on-error`. Floci without a valid record
+disabled, has no `continue-on-error`, has no `if:` that excludes pull
+requests, and runs a test step: an enabled `run:` step without
+`continue-on-error` whose reachable, failure-preserving commands include a
+test run (a command word or one of the next three words naming `test`,
+`spec`, `jest`, `mocha`, `verify` or `integration`, other than `echo`,
+`docker` and similar). An unused Floci image beside a gap record earns
+nothing. Floci without a valid record
 ("Floci-only") gets the migration finding.
 
 **What the scan establishes.** This scan records *static wiring
@@ -452,9 +465,15 @@ matters.
   the `fileFindingOnce` dedup; or
 - an open fleet-authored issue has a title containing "AWS Emulator", a
   hand-written equivalent. Only fleet-authored issues count, because
-  titles are attacker-writable (Issue #1243).
+  titles are attacker-writable (Issue #1243). When that issue's body
+  carries this finding's `finding-id` marker (an older finding such as
+  "No AWS emulator (Floci) in CI") and its title or body differs from the
+  current finding, `gh issue edit` replaces both, so an old body that
+  still says to run Floci is reconciled rather than left open. A
+  hand-written issue is never edited.
 
-A `gh` failure in that lookup fails the scan run rather than filing.
+A `gh` failure in that lookup, or in that edit, fails the scan run rather
+than filing.
 Each skip is logged with its reason.
 
 **Otherwise** the template files **one** issue with the fixed id

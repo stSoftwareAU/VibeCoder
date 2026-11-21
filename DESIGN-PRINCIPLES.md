@@ -1899,8 +1899,8 @@ echoes and comments do not count. Floci (`floci/floci`) never counts as the
 official emulator. A workflow that runs it passes only with a valid
 `# aws-emulator-gap: version=…; behaviour=…; evidence=…; alternative=…; recheck=…`
 record (all five keys non-empty, version containing a digit) in a
-`pull_request`-applicable workflow whose Floci job is not statically disabled
-and has no `continue-on-error`. Floci without such a record ("Floci-only") gets
+`pull_request`-applicable workflow whose Floci job is not statically disabled,
+has no `continue-on-error`, and runs a test step whose failure fails the job. Floci without such a record ("Floci-only") gets
 the migration finding.
 
 A repo that uses AWS and does not pass, with no valid

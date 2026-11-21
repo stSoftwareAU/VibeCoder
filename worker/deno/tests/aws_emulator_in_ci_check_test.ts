@@ -1523,7 +1523,7 @@ const EXECUTED: [
   [
     "a step if decided at run time",
     RUNNER,
-    { if: "github.event_name == 'push'" },
+    { if: "github.actor != 'dependabot[bot]'" },
     {},
   ],
   ["a job if decided at run time", RUNNER, {}, { if: "always()" }],
@@ -1866,6 +1866,8 @@ const EMBEDDED_STEP =
   "# aws-emulator-embedded: version=1.2.3; justification=the Rust SDK tests need no Docker runner\ncargo test --workspace";
 const FLOCI_SERVICE =
   "    services:\n      floci:\n        image: floci/floci:1.4.0\n";
+/** A Floci job's test step: a test run whose failure fails the job. */
+const FLOCI_TEST_STEP = "npm test";
 const GAP_RECORD =
   "# aws-emulator-gap: version=2.1.0; behaviour=IAM policy simulation; evidence=ci/run-1.log; alternative=a real AWS sandbox account; recheck=2027-01-01\n";
 
@@ -2170,7 +2172,7 @@ Deno.test("checkAwsEmulatorInCI - Floci only is floci-only, with a diagnostic na
 Deno.test("checkAwsEmulatorInCI - Floci with a valid gap record is floci-gap, with the record as evidence", async () => {
   const result = await checkRepoWith({
     ".github/workflows/ci.yml": GAP_RECORD +
-      prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE),
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), FLOCI_SERVICE),
   });
   assertEquals(result.wiring, "floci-gap");
   assertEquals(result.wiringEvidence.length, 1);
@@ -2181,7 +2183,7 @@ Deno.test("checkAwsEmulatorInCI - Floci with a gap record lacking recheck is flo
   const withoutRecheck = GAP_RECORD.replace("; recheck=2027-01-01", "");
   const result = await checkRepoWith({
     ".github/workflows/ci.yml": withoutRecheck +
-      prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE),
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), FLOCI_SERVICE),
   });
   assertEquals(result.wiring, "floci-only");
   assertDiagnostic(result, "aws-emulator-gap record lacks recheck");
@@ -2189,7 +2191,7 @@ Deno.test("checkAwsEmulatorInCI - Floci with a gap record lacking recheck is flo
   const noDigit = GAP_RECORD.replace("version=2.1.0", "version=latest");
   const badVersion = await checkRepoWith({
     ".github/workflows/ci.yml": noDigit +
-      prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE),
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), FLOCI_SERVICE),
   });
   assertEquals(badVersion.wiring, "floci-only");
   assertDiagnostic(badVersion, "aws-emulator-gap record lacks version");
@@ -2418,24 +2420,24 @@ Deno.test("checkAwsEmulatorInCI - a step shell of bash {0} with a later command 
 Deno.test("checkAwsEmulatorInCI - a valid Floci gap in a disabled Floci job is floci-only, with the reason; the enabled job is floci-gap", async () => {
   const disabled = await checkRepoWith({
     ".github/workflows/ci.yml": GAP_RECORD +
-      prWorkflow(stepYaml("echo hi"), "    if: false\n" + FLOCI_SERVICE),
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), "    if: false\n" + FLOCI_SERVICE),
   });
   assertEquals(disabled.wiring, "floci-only");
   assertDiagnostic(
     disabled,
-    "every Floci job is disabled by if: or sets continue-on-error",
+    "no Floci job is enabled for pull_request without continue-on-error and runs a test step",
   );
   const continued = await checkRepoWith({
     ".github/workflows/ci.yml": GAP_RECORD +
       prWorkflow(
-        stepYaml("echo hi"),
+        stepYaml(FLOCI_TEST_STEP),
         "    continue-on-error: true\n" + FLOCI_SERVICE,
       ),
   });
   assertEquals(continued.wiring, "floci-only");
   const control = await checkRepoWith({
     ".github/workflows/ci.yml": GAP_RECORD +
-      prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE),
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), FLOCI_SERVICE),
   });
   assertEquals(control.wiring, "floci-gap");
 });
@@ -2443,7 +2445,7 @@ Deno.test("checkAwsEmulatorInCI - a valid Floci gap in a disabled Floci job is f
 Deno.test("checkAwsEmulatorInCI - a valid Floci gap in a push-only workflow is floci-only, with the reason; on pull_request it is floci-gap", async () => {
   const pushOnly = await checkRepoWith({
     ".github/workflows/ci.yml": GAP_RECORD +
-      prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE, "on: push\n"),
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), FLOCI_SERVICE, "on: push\n"),
   });
   assertEquals(pushOnly.wiring, "floci-only");
   assertDiagnostic(
@@ -2452,7 +2454,161 @@ Deno.test("checkAwsEmulatorInCI - a valid Floci gap in a push-only workflow is f
   );
   const control = await checkRepoWith({
     ".github/workflows/ci.yml": GAP_RECORD +
-      prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE),
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), FLOCI_SERVICE),
   });
   assertEquals(control.wiring, "floci-gap");
+});
+
+// ---------------------------------------------------------------------------
+// Pre-PR verifier findings (Issue #5112): Floci gap credit needs a test step,
+// failure-preserving idioms, pull_request event conditions, the .tf size cap.
+// ---------------------------------------------------------------------------
+
+Deno.test("checkAwsEmulatorInCI - a gap record with an unused Floci image and no test step is floci-only; a Floci test step credits floci-gap", async () => {
+  const unusedImage = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(
+        stepYaml("echo hello", ["continue-on-error: true"]),
+        FLOCI_SERVICE,
+      ),
+  });
+  assertEquals(unusedImage.wiring, "floci-only");
+  assertDiagnostic(unusedImage, "runs a test step whose failure fails the job");
+  const echoOnly = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml("echo hello"), FLOCI_SERVICE),
+  });
+  assertEquals(echoOnly.wiring, "floci-only");
+  const control = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml("npm test"), FLOCI_SERVICE),
+  });
+  assertEquals(control.wiring, "floci-gap");
+});
+
+Deno.test("checkAwsEmulatorInCI - a gap record whose Floci test step ignores failure (continue-on-error, || true, push-only if) is floci-only", async () => {
+  const fixtures: Array<[string, string]> = [
+    [
+      "step continue-on-error",
+      stepYaml("npm test", ["continue-on-error: true"]),
+    ],
+    ["|| true", stepYaml("npm test || true")],
+    [
+      "step if excludes pull_request",
+      stepYaml("npm test", ["if: github.event_name == 'push'"]),
+    ],
+  ];
+  for (const [label, steps] of fixtures) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": GAP_RECORD +
+        prWorkflow(steps, FLOCI_SERVICE),
+    });
+    assertEquals(result.wiring, "floci-only", label);
+  }
+  const pushOnlyJob = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(
+        stepYaml("npm test"),
+        "    if: github.event_name == 'push'\n" + FLOCI_SERVICE,
+        "on: [push, pull_request]\n",
+      ),
+  });
+  assertEquals(pushOnlyJob.wiring, "floci-only");
+});
+
+Deno.test("checkAwsEmulatorInCI - if ! runner; then ...; exit 1; fi with a later command is credited; exit 0 in the branch is refused", async () => {
+  const credited = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(
+        `if ! ${RUNNER_STEP}; then\n  echo "::error::tests failed"\n  exit 1\nfi\necho finished`,
+        ["shell: bash {0}"],
+      ),
+    ),
+  });
+  assertEquals(credited.wiring, "official-server");
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(
+        `if ! ${RUNNER_STEP}; then\n  echo "tests failed"\n  exit 0\nfi\necho finished`,
+      ),
+    ),
+  });
+  assertEquals(refused.wiring, "missing");
+  assertDiagnostic(refused, "is not status-preserving");
+});
+
+Deno.test("checkAwsEmulatorInCI - a script running runner || exit 1 then more lines is credited; runner || exit 0 is refused", async () => {
+  const credited = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      "#!/usr/bin/env bash\naws-emulator-run -- ./t.sh || exit 1\necho done\n",
+  });
+  assertEquals(credited.wiring, "official-server");
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      "#!/usr/bin/env bash\naws-emulator-run -- ./t.sh || exit 0\necho done\n",
+  });
+  assertEquals(refused.wiring, "missing");
+});
+
+Deno.test("checkAwsEmulatorInCI - a push-only job in a push and pull_request workflow earns no official credit; a pull_request-inclusive if does", async () => {
+  const pushOnly = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "    if: github.event_name == 'push'\n",
+      "on: [push, pull_request]\n",
+    ),
+  });
+  assertEquals(pushOnly.wiring, "missing");
+  assertDiagnostic(pushOnly, "excludes pull_request events");
+  const notPr = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP, ["if: ${{ github.event_name != 'pull_request' }}"]),
+      "",
+      "on: [push, pull_request]\n",
+    ),
+  });
+  assertEquals(notPr.wiring, "missing");
+  const undecided = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "    if: contains(fromJSON('[\"push\"]'), github.event_name)\n",
+      "on: [push, pull_request]\n",
+    ),
+  });
+  assertEquals(undecided.wiring, "missing");
+  assertDiagnostic(
+    undecided,
+    "reads the event in a form this check cannot decide",
+  );
+  for (
+    const condition of [
+      "github.event_name == 'pull_request'",
+      "github.event_name == 'push' || github.event_name == 'pull_request'",
+      "${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}",
+    ]
+  ) {
+    const credited = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(RUNNER_STEP),
+        `    if: "${condition}"\n`,
+        "on: [push, pull_request]\n",
+      ),
+    });
+    assertEquals(credited.wiring, "official-server", condition);
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - a .tf file over the 1 MiB cap is not read, so it is not evidence; a small one is", async () => {
+  const root = await makeTempRepo();
+  try {
+    const aws = 'resource "aws_s3_bucket" "b" {}\n';
+    await writeFile(root, "infra/big.tf", aws + "#".repeat(1024 * 1024));
+    await writeFile(root, "infra/small/main.tf", aws);
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.awsEvidence, ["infra/small/main.tf"]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });

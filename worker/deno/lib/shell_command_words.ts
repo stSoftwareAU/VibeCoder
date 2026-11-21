@@ -375,6 +375,77 @@ export interface ReachableCommand {
   next: string;
   /** True when the command sits in an `if`/`elif`/`while`/`until` condition. */
   condition: boolean;
+  /**
+   * True when a failure of this command always ends the body with a failing
+   * status through an explicit exit (see {@link failureExits}): `cmd || exit 1`
+   * or `if ! cmd; then ...; exit 1; fi`.
+   */
+  failureExits: boolean;
+}
+
+const CHAINING_SEPARATORS = new Set(["|", "&", "||", "&&"]);
+/** Words that open a nested construct, which {@link failureExits} does not follow. */
+const NESTED_OPENERS = new Set([
+  "if",
+  "while",
+  "until",
+  "for",
+  "case",
+  "select",
+  "{",
+  "(",
+  "function",
+]);
+
+/** True when `words` is `exit N` with a non-zero integer N, or (when `bare`) a plain `exit`. */
+function isFailingExit(words: string[], bare: boolean): boolean {
+  if (stripQuotes(words[0] ?? "") !== "exit") return false;
+  if (words.length === 1) return bare;
+  return words.length === 2 && /^[1-9]\d*$/.test(stripQuotes(words[1] ?? ""));
+}
+
+/**
+ * True when a failure of the listed command at `index` always ends the body
+ * with a failing status, by one of two idioms:
+ *
+ * - `cmd || exit N` (N not 0, or a bare `exit`, which keeps the failing
+ *   status), where nothing chains on after the `exit`;
+ * - `if ! cmd; then ...; exit N; fi` (N not 0), where the `then` branch is
+ *   flat (no nested construct) and runs the `exit` unconditionally (after `;`
+ *   or a newline, with nothing chained after it).
+ *
+ * Any other form is false, so the caller falls back to its own rules.
+ */
+function failureExits(listed: ShellCommand[], index: number): boolean {
+  const here = listed[index];
+  const after = listed[index + 1];
+  if (here === undefined || after === undefined) return false;
+  if (after.sep === "||" && isFailingExit(after.words, true)) {
+    const chained = listed[index + 2];
+    return chained === undefined || !CHAINING_SEPARATORS.has(chained.sep);
+  }
+  if (here.words[0] !== "if" || here.words[1] !== "!") return false;
+  if (CHAINING_SEPARATORS.has(after.sep) || after.words[0] !== "then") {
+    return false;
+  }
+  let exits = false;
+  for (let j = index + 1; j < listed.length; j++) {
+    const entry = listed[j];
+    if (entry === undefined) break;
+    const words = j === index + 1 ? entry.words.slice(1) : entry.words;
+    const head = words[0];
+    if (head === undefined) continue;
+    if (head === "fi" || head === "else" || head === "elif") return exits;
+    if (NESTED_OPENERS.has(head) || words.includes("fi")) return false;
+    const next = listed[j + 1];
+    if (
+      isFailingExit(words, false) && !CHAINING_SEPARATORS.has(entry.sep) &&
+      (next === undefined || !CHAINING_SEPARATORS.has(next.sep))
+    ) {
+      exits = true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -542,6 +613,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
         sep,
         next: listed[index + 1]?.sep ?? (trailing === "\n" ? "" : trailing),
         condition: frameOpen?.branch === "cond",
+        failureExits: failureExits(listed, index),
       });
       const at = commandIndex(words);
       const head = stripQuotes(words[at] ?? "");

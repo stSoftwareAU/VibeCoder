@@ -767,10 +767,12 @@ export function buildAwsEmulatorFinding(
 }
 
 /**
- * The number of an open, fleet-authored hand-written issue whose title names
- * the AWS Emulator (for example "Add AWS Emulator tests"), or null when there
- * is none. Such an issue already tracks this gap, so the finding is not filed
- * again.
+ * The first open, fleet-authored issue whose title names the AWS Emulator (for
+ * example "Add AWS Emulator tests", or the older "No AWS emulator (Floci) in
+ * CI" finding), with its number, title and body, or null when there is none.
+ * Such an issue already tracks this gap, so the finding is not filed again
+ * (see {@link reconcileAwsEmulatorIssue} for bringing an older finding up to
+ * date).
  *
  * Titles are text anyone can write, so only a fleet-authored match counts: the
  * author check is the one {@link findFleetAuthoredIssuesTitled} applies (Issue
@@ -781,7 +783,7 @@ export async function findEquivalentAwsEmulatorIssue(
   repo: string,
   ghCommandFn: (args: string[]) => Promise<string>,
   dedupAuthors: AlertDedupAuthorOptions,
-): Promise<number | null> {
+): Promise<TitleMarkerDedupRow | null> {
   let matches: TitleMarkerDedupRow[];
   try {
     matches = await findFleetAuthoredIssuesTitled({
@@ -803,7 +805,55 @@ export async function findEquivalentAwsEmulatorIssue(
       { cause: err },
     );
   }
-  return matches[0]?.number ?? null;
+  return matches[0] ?? null;
+}
+
+/**
+ * Bring an open issue the AWS Emulator lookup reused up to date (Issue #5112
+ * scope 7: reconcile rather than file again). Only an issue whose body carries
+ * this finding's `finding-id` marker is edited, so a hand-written issue is
+ * never overwritten. When its title or body differs from `finding` (an older
+ * finding still telling the repository to run Floci, or one whose evidence
+ * changed), `gh issue edit` replaces both. Returns true when it edited the
+ * issue. A gh failure throws with context, like the lookup.
+ */
+export async function reconcileAwsEmulatorIssue(
+  repo: string,
+  issue: TitleMarkerDedupRow,
+  finding: PreFiledFinding,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<boolean> {
+  const body = issue.body ?? "";
+  if (!body.includes(`<!-- finding-id: ${finding.findingId} -->`)) {
+    return false;
+  }
+  if (
+    (issue.title ?? "").trim() === finding.title.trim() &&
+    body.trim() === finding.body.trim()
+  ) {
+    return false;
+  }
+  try {
+    await ghCommandFn([
+      "issue",
+      "edit",
+      String(issue.number),
+      "--repo",
+      repo,
+      "--title",
+      finding.title,
+      "--body",
+      finding.body,
+    ]);
+  } catch (err) {
+    throw new Error(
+      `best-practices: cannot update AWS Emulator finding #${issue.number} in ${repo}: ${
+        (err as Error).message
+      }`,
+      { cause: err },
+    );
+  }
+  return true;
 }
 
 /** The repo-relative candidate file's text and relative path for the AWS-emulator waiver scan. */
@@ -1289,8 +1339,18 @@ export function createBestPracticesTemplate(
           dedupAuthors,
         );
         if (equivalent !== null) {
+          const updated = await reconcileAwsEmulatorIssue(
+            opts.repo,
+            equivalent,
+            buildAwsEmulatorFinding(aws),
+            ghCommandFn,
+          );
           logger.info(
-            `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — open fleet-authored issue #${equivalent} already tracks AWS Emulator wiring`,
+            `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — open fleet-authored issue #${equivalent.number} already tracks AWS Emulator wiring${
+              updated
+                ? " (its title and body were updated to the current finding)"
+                : ""
+            }`,
           );
         } else {
           const filed = await fileFindingOnce({

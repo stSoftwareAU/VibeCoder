@@ -152,7 +152,12 @@ function makeGhStub(scenario: {
   fileMissingLinterReturnsNumber?: number;
   /** The AWS Emulator title lookup (Issue #5112): its rows, or a simulated gh failure. */
   awsEmulatorTitleLookup?: {
-    rows?: Array<{ number: number; title: string; login: string }>;
+    rows?: Array<{
+      number: number;
+      title: string;
+      login: string;
+      body?: string;
+    }>;
     fail?: boolean;
   };
 }): { gh: (args: string[]) => Promise<string>; calls: GhCall[] } {
@@ -224,6 +229,7 @@ function makeGhStub(scenario: {
           (scenario.awsEmulatorTitleLookup?.rows ?? []).map((r) => ({
             number: r.number,
             title: r.title,
+            body: r.body ?? "",
             author: { login: r.login },
           })),
         ),
@@ -2535,7 +2541,12 @@ Deno.test(
 async function runAwsPreFiler(
   check: AwsEmulatorCheckResult,
   titleLookup?: {
-    rows?: Array<{ number: number; title: string; login: string }>;
+    rows?: Array<{
+      number: number;
+      title: string;
+      login: string;
+      body?: string;
+    }>;
     fail?: boolean;
   },
 ): Promise<{ ok: boolean; calls: GhCall[]; infoMessages: string[] }> {
@@ -2659,6 +2670,81 @@ Deno.test(
   },
 );
 
+/** The body the base code filed for BP-AWS-EMULATOR-MISSING before #5112: it told the repo to run Floci. */
+const OLD_FLOCI_FINDING_BODY = [
+  "Run floci/floci as a service container; mount /var/run/docker.sock.",
+  "",
+  "<!-- finding-id: BP-AWS-EMULATOR-MISSING -->",
+].join("\n");
+
+function editCalls(calls: GhCall[]): GhCall[] {
+  return calls.filter((c) => c.args[0] === "issue" && c.args[1] === "edit");
+}
+
+Deno.test(
+  "runTask - an open old-body AWS finding ('No AWS emulator (Floci) in CI') is updated to the current title and body, not left stale or re-filed",
+  async () => {
+    const check = awsCheck("floci-only");
+    const run = await runAwsPreFiler(check, {
+      rows: [{
+        number: 81,
+        title: "🟡 No AWS emulator (Floci) in CI",
+        login: FLEET_DEDUP_AUTHOR,
+        body: OLD_FLOCI_FINDING_BODY,
+      }],
+    });
+    assert(run.ok);
+    assertEquals(createCount(run.calls), 0);
+    const edits = editCalls(run.calls);
+    assertEquals(edits.length, 1);
+    const args = edits[0]?.args ?? [];
+    assertEquals(args.slice(0, 5), [
+      "issue",
+      "edit",
+      "81",
+      "--repo",
+      "org/repo",
+    ]);
+    const finding = buildAwsEmulatorFinding(check);
+    assertEquals(args[args.indexOf("--title") + 1], finding.title);
+    assertEquals(args[args.indexOf("--body") + 1], finding.body);
+    assert(!finding.body.includes("docker.sock"));
+    assert(
+      run.infoMessages.some((m) => m.includes("#81") && m.includes("updated")),
+    );
+  },
+);
+
+Deno.test(
+  "runTask - an open AWS finding already matching the current finding, or a hand-written AWS Emulator issue, is not edited",
+  async () => {
+    const check = awsCheck("missing");
+    const current = buildAwsEmulatorFinding(check);
+    const upToDate = await runAwsPreFiler(check, {
+      rows: [{
+        number: 82,
+        title: current.title,
+        login: FLEET_DEDUP_AUTHOR,
+        body: current.body,
+      }],
+    });
+    assert(upToDate.ok);
+    assertEquals(editCalls(upToDate.calls).length, 0);
+    assertEquals(createCount(upToDate.calls), 0);
+    const handWritten = await runAwsPreFiler(check, {
+      rows: [{
+        number: 83,
+        title: "Add AWS Emulator tests",
+        login: FLEET_DEDUP_AUTHOR,
+        body: "Please wire the AWS Emulator into CI.",
+      }],
+    });
+    assert(handWritten.ok);
+    assertEquals(editCalls(handWritten.calls).length, 0);
+    assertEquals(createCount(handWritten.calls), 0);
+  },
+);
+
 Deno.test(
   "runTask - a non-fleet-authored open AWS Emulator issue does not suppress filing",
   async () => {
@@ -2718,7 +2804,7 @@ Deno.test(
       gh,
       DEDUP_AUTHORS,
     );
-    assertEquals(found, 6);
+    assertEquals(found?.number, 6);
     const args = seen[0] ?? [];
     assertEquals(args.slice(0, 3), ["issue", "list", "--repo"]);
     assertEquals(
