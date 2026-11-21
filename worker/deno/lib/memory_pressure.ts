@@ -104,7 +104,7 @@ export async function probeMemoryPressure(options: {
     if (!warnedCauses.has(cause)) {
       warnedCauses.add(cause);
       (options.warn ?? ((m: string) => console.warn(m)))(
-        `WARNING: memory-pressure probe cannot read Deno.systemMemoryInfo() (${cause}) — reporting "unknown" (Issue #5319)`,
+        `memory-pressure probe cannot read Deno.systemMemoryInfo() (${cause}) — reporting "unknown" (Issue #5319)`,
       );
     }
     return { level: "unknown" };

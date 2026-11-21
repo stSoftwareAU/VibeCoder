@@ -70,10 +70,10 @@ Deno.test("probeMemoryPressure - a refused read warns once with its cause and re
   );
   assertEquals(warnings.length, 1);
   assertStringIncludes(
-    warnings[0],
+    warnings[0] ?? "",
     'NotCapable: Requires sys access to "systemMemoryInfo"',
   );
-  assertStringIncludes(warnings[0], 'reporting "unknown"');
+  assertStringIncludes(warnings[0] ?? "", 'reporting "unknown"');
   // A different cause is a new warning.
   assertEquals(
     await probeMemoryPressure({
@@ -84,7 +84,7 @@ Deno.test("probeMemoryPressure - a refused read warns once with its cause and re
     { level: "unknown" },
   );
   assertEquals(warnings.length, 2);
-  assertStringIncludes(warnings[1], "systemMemoryInfo returned total=0");
+  assertStringIncludes(warnings[1] ?? "", "systemMemoryInfo returned total=0");
 });
 
 Deno.test("probeMemoryPressure - a non-Linux host reads unknown silently without calling the reader (Issue #5319)", async () => {
