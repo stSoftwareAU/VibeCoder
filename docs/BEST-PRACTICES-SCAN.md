@@ -402,7 +402,14 @@ Official server mode needs all of the following:
   a bare `exit`; not after a negated `! runner`, whose `!` turns a failure
   into success before the `||`) and `if ! runner; then ...; exit N; fi` (N
   not 0, in a flat `then` branch). Neither counts inside a group swallowed
-  one level out.
+  one level out. After a `trap` whose `EXIT` (or `0`) or `ERR` handler may
+  run `exit 0` (in the handler itself, or in a function the body defines and
+  the handler calls), only a runner run via `exec` is preserved: the
+  handler's `exit 0` replaces the failing status, `runner || exit 1`
+  included, while `exec` replaces the shell before the handler runs. A
+  handler that tidies up, or exits bare, with `$?` or with a saved status
+  (`exit $rc`), keeps the failure, and `trap - EXIT` or `trap '' EXIT`
+  clears the condition it names.
 
 **Errexit.** Errexit is on for a workflow step whose shell is unset or
 exactly `bash` or `sh` (GitHub adds `-e`), or whose custom shell sets `-e`

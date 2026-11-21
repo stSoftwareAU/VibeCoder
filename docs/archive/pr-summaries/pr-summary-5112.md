@@ -194,6 +194,9 @@ emulator test.
   `&&` with more after it, and a runner that is not last in a compound left
   of `&&`), and
   `…::a runner in a loop body in a script without set -e earns no credit; with set -e or in a default workflow shell it does`.
+  An `EXIT` or `ERR` trap whose handler may `exit 0` is refused too, with
+  status-keeping handlers, resets and `exec` credited:
+  `…::an EXIT or ERR trap whose handler may exit 0 earns no credit; a status-keeping handler, a reset or exec does`.
   The Floci test-step matcher reads whole command words, so an install-only
   step beside a gap record earns nothing:
   `…::a gap record whose Floci job only installs a test tool is floci-only; common test runners are floci-gap`.
@@ -364,6 +367,19 @@ emulator test.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
+- Owner review of `83013b2f`: a `trap 'exit 0' EXIT` (or `ERR`) before the
+  runner was credited, but bash then exits 0 when the tests fail (checked
+  with `bash -e -c "trap 'exit 0' EXIT; false"`, which exits 0). A new test
+  refuses nine handler forms (literal, quoted, `--` and `0`, lower case, a
+  cleanup function, a `function` keyword handler, a nested function call,
+  `runner || exit 1` under the trap, an `ERR` trap left by an `EXIT` reset)
+  in the workflow and in a script, plus a step trap before a script call.
+  It credits ten controls (a tidy-up handler, `exit $rc`, a bare `exit`,
+  `exit $?`, `exit 3`, `trap - EXIT`, `trap '' EXIT`, `INT TERM`, `trap -p`
+  and `exec` under the trap). The refusals fail at `83013b2f`. The six AWS
+  test files pass (653 passed; the one failure is the root-only unreadable
+  directory case noted below). A handler that calls a function the body does
+  not define (a sourced library) is not followed.
 - After the fifth review (of `8654e2f9`): the swallow test adds a subshell, a
   brace group and a multi-line subshell as an `if` condition; swallowed
   multi-line subshells after `cd $(git rev-parse --show-toplevel)`,

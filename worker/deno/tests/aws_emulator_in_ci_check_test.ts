@@ -2847,6 +2847,87 @@ Deno.test("checkAwsEmulatorInCI - a runner in a loop body in a script without se
   }
 });
 
+// PR #5332 review: an `EXIT` or `ERR` trap whose handler runs `exit 0`
+// replaces the failing status, so the step passes when the tests fail. Each
+// form is refused in the workflow and in a repository script, with credited
+// controls for handlers that keep the status, resets and `exec`.
+Deno.test("checkAwsEmulatorInCI - an EXIT or ERR trap whose handler may exit 0 earns no credit; a status-keeping handler, a reset or exec does", async () => {
+  const refusedBodies: Array<[string, string]> = [
+    ["trap 'exit 0' EXIT", `trap 'exit 0' EXIT\n${RUNNER_STEP}`],
+    ['trap "exit 0" ERR', `trap "exit 0" ERR\n${RUNNER_STEP}`],
+    [
+      "trap -- 'echo done; exit 0' 0",
+      `trap -- 'echo done; exit 0' 0\n${RUNNER_STEP}`,
+    ],
+    ["a lower-case exit condition", `trap 'exit 0' exit\n${RUNNER_STEP}`],
+    [
+      "a cleanup function that exits 0",
+      `cleanup() {\n  rm -rf tmp\n  exit 0\n}\ntrap cleanup EXIT\n${RUNNER_STEP}`,
+    ],
+    [
+      "a function-keyword handler on ERR",
+      `function cleanup { exit 0; }\ntrap cleanup ERR\n${RUNNER_STEP}`,
+    ],
+    [
+      "a handler calling a function that exits 0",
+      `finish() { exit 0; }\ncleanup() {\n  echo bye\n  finish\n}\ntrap cleanup EXIT\n${RUNNER_STEP}`,
+    ],
+    [
+      "runner || exit 1 under the trap",
+      `trap 'exit 0' EXIT\n${RUNNER_STEP} || exit 1`,
+    ],
+    [
+      "an ERR trap left by an EXIT reset",
+      `trap 'exit 0' ERR\ntrap - EXIT\n${RUNNER_STEP}`,
+    ],
+  ];
+  for (const [label, body] of refusedBodies) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "missing", `workflow: ${label}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(inScript.wiring, "missing", `script: ${label}`);
+  }
+  // A trap in the step before it calls a script swallows the script's failure.
+  const stepTrap = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml("trap 'exit 0' EXIT\n./ci/t.sh"),
+    ),
+    "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${RUNNER_STEP}\n`,
+  });
+  assertEquals(stepTrap.wiring, "missing", "a step trap before the script");
+  const creditedBodies: Array<[string, string]> = [
+    ["a tidy-up handler", `trap 'rm -rf tmp' EXIT\n${RUNNER_STEP}`],
+    [
+      "a cleanup function that exits with the saved status",
+      `cleanup() {\n  rc=$?\n  rm -rf tmp\n  exit $rc\n}\ntrap cleanup EXIT\n${RUNNER_STEP}`,
+    ],
+    ["a bare exit", `trap 'echo done; exit' EXIT\n${RUNNER_STEP}`],
+    ["exit $?", `trap 'exit $?' ERR\n${RUNNER_STEP}`],
+    ["a non-zero exit", `trap 'exit 3' EXIT\n${RUNNER_STEP}`],
+    ["trap - EXIT", `trap 'exit 0' EXIT\ntrap - EXIT\n${RUNNER_STEP}`],
+    ["trap '' EXIT", `trap 'exit 0' EXIT\ntrap '' EXIT\n${RUNNER_STEP}`],
+    ["another condition", `trap 'exit 0' INT TERM\n${RUNNER_STEP}`],
+    ["trap -p", `trap -p\n${RUNNER_STEP}`],
+    ["exec under the trap", `trap 'exit 0' EXIT\nexec ${RUNNER_STEP}`],
+  ];
+  for (const [label, body] of creditedBodies) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "official-server", `workflow: ${label}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(inScript.wiring, "official-server", `script: ${label}`);
+  }
+});
+
 // PR #5332 review: the Floci job's test step is read on whole command words.
 // An install-only step beside a valid gap record earns nothing, and the common
 // runners the matcher is meant to accept are credited.

@@ -851,13 +851,104 @@ interface KeptCommand {
  * compound followed by `&&` is judged with errexit off
  * (`ReachableCommand.errexitIgnored`). A command in a loop body is never
  * kept by being last (`ReachableCommand.inLoop`): the loop's status is its
- * last pass's. Otherwise a command is
+ * last pass's. A command after a reachable `trap` whose `EXIT` or `ERR`
+ * handler may `exit 0` is kept only when it runs via `exec`, which replaces
+ * the shell before the handler can run (see {@link applyTrap}). Otherwise a
+ * command is
  * kept when a failure always reaches an explicit failing
  * exit (`cmd || exit 1`, `if ! cmd; then ...; exit 1; fi`), or when its failure
  * is not swallowed (see {@link commandStatusNotSwallowed}) and one of these holds: it runs via `exec`;
  * every later reachable command is joined by `&&` (it is last, or the rest is an
  * `&&` chain to the end); or errexit is on and it is not followed by `&&`.
  */
+/** Trap conditions whose handler runs as the shell exits or a command fails. */
+const EXIT_TRAP_CONDITIONS = new Set(["exit", "err"]);
+
+/** Most nested function calls followed when reading a trap handler. */
+const TRAP_HANDLER_DEPTH = 4;
+
+/**
+ * The body of shell function `name` as defined in `text` (`name() {`,
+ * `function name {` or `function name() {`), up to its matching `}`; null
+ * when `text` does not define it. Braces inside quotes are skipped.
+ */
+function functionBodyText(text: string, name: string): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const head = new RegExp(
+    `(?:^|[\\n;&|])[ \\t]*(?:function[ \\t]+${escaped}[ \\t]*(?:\\([ \\t]*\\))?|${escaped}[ \\t]*\\([ \\t]*\\))[ \\t\\n]*\\{`,
+  ).exec(text);
+  if (head === null) return null;
+  const start = head.index + head[0].length;
+  let depth = 1;
+  let quote: string | null = null;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (quote !== null) {
+      if (ch === "\\" && quote === '"') i++;
+      else if (ch === quote) quote = null;
+    } else if (ch === "\\") i++;
+    else if (ch === "'" || ch === '"') quote = ch;
+    else if (ch === "{") depth++;
+    else if (ch === "}" && --depth === 0) return text.slice(start, i);
+  }
+  return text.slice(start);
+}
+
+/**
+ * Whether a trap handler may end the shell with status 0: one of its reachable
+ * commands is `exit 0` (any all-zero literal), directly or in a function the
+ * handler calls that `text` defines (followed {@link TRAP_HANDLER_DEPTH}
+ * deep). A bare `exit`, `exit $?` or `exit $rc` keeps the failing status, as
+ * does a handler that never exits (`trap cleanup EXIT` whose `cleanup` only
+ * tidies up), so those are not counted.
+ */
+function handlerExitsZero(handler: string, text: string, depth = 0): boolean {
+  if (depth > TRAP_HANDLER_DEPTH) return false;
+  for (const cmd of reachableCommands(handler)) {
+    const at = commandIndex(cmd.words);
+    const head = stripQuotes(cmd.words[at] ?? "");
+    if (head === "exit") {
+      if (/^0+$/.test(stripQuotes(cmd.words[at + 1] ?? ""))) return true;
+      continue;
+    }
+    if (head === "") continue;
+    const fn = functionBodyText(text, head);
+    if (fn !== null && handlerExitsZero(fn, text, depth + 1)) return true;
+  }
+  return false;
+}
+
+/**
+ * Apply a reachable `trap` command to `trapped`, the exit and failure
+ * conditions (`exit`, `err`) whose handler may turn a failure into a pass
+ * (`trap 'exit 0' EXIT` or `ERR`: the handler's `exit 0` replaces the failing
+ * status, so the step passes when the test fails). A handler that may exit 0
+ * adds its conditions; any other handler, `trap - EXIT` and `trap '' EXIT`
+ * remove them; `trap -p` and `trap -l` change nothing. `0` is read as `exit`.
+ */
+function applyTrap(
+  words: string[],
+  at: number,
+  text: string,
+  trapped: Set<string>,
+): void {
+  let args = words.slice(at + 1);
+  if (args[0] === "--") args = args.slice(1);
+  if (args.length < 2 || /^-[lp]/.test(args[0] ?? "")) return;
+  const conditions = args.slice(1)
+    .map((w) => stripQuotes(w).toLowerCase())
+    .map((c) => c === "0" ? "exit" : c)
+    .filter((c) => EXIT_TRAP_CONDITIONS.has(c));
+  if (conditions.length === 0) return;
+  const handler = stripQuotes(args[0] ?? "");
+  const swallows = args[0] !== "-" && handler !== "" &&
+    handlerExitsZero(handler, text);
+  for (const c of conditions) {
+    if (swallows) trapped.add(c);
+    else trapped.delete(c);
+  }
+}
+
 function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
   const cmds = reachableCommands(body);
   // restAllAnd[k]: every reachable command after k is joined by `&&`.
@@ -869,19 +960,28 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
   }
   const out: KeptCommand[] = [];
   let errexit = initialErrexit;
+  // An earlier `trap 'exit 0' EXIT` (or ERR) turns every later failure into a
+  // pass, `cmd || exit 1` included. Only `exec` escapes it: the shell is
+  // replaced, so the handler never runs.
+  const trapped = new Set<string>();
   for (const [k, cmd] of cmds.entries()) {
     const at = commandIndex(cmd.words);
     const viaExec = cmd.words.slice(0, at).includes("exec");
     // A group swallowed one level out takes even `cmd || exit 1` with it when
     // the group is a subshell, so it is never credited (fails closed).
-    const kept = !cmd.groupSwallowed && (cmd.failureExits ||
-      (commandStatusNotSwallowed(cmd) &&
-        (viaExec || (!cmd.inLoop && restAllAnd[k] === true) ||
-          (errexit && !cmd.errexitIgnored && cmd.next !== "&&"))));
+    const kept = !cmd.groupSwallowed &&
+      (trapped.size === 0 || (viaExec && commandStatusNotSwallowed(cmd))) &&
+      (cmd.failureExits ||
+        (commandStatusNotSwallowed(cmd) &&
+          (viaExec || (!cmd.inLoop && restAllAnd[k] === true) ||
+            (errexit && !cmd.errexitIgnored && cmd.next !== "&&"))));
     out.push({ cmd, kept });
-    if (stripQuotes(cmd.words[at] ?? "") === "set") {
+    const head = stripQuotes(cmd.words[at] ?? "");
+    if (head === "set") {
       const option = readShellOptions(cmd.words.slice(at + 1)).errexit;
       if (option !== null) errexit = option;
+    } else if (head === "trap") {
+      applyTrap(cmd.words, at, body, trapped);
     }
   }
   return out;
