@@ -133,3 +133,57 @@ Deno.test("#5310 hostile: many TOKEN words then a rejected character", () => {
   const expected = "credentials: " + R;
   assertEquals(redactSecrets(input), expected);
 });
+
+// Inner labels that do not open with a plain word run (pre-PR verifier):
+// a hyphen, a dot or an opening quote before the keyword.
+leak(
+  "hyphenated inner label, same line",
+  `Rotate these credentials: DEPLOY-TOKEN = ${V}`,
+  `Rotate these credentials: DEPLOY-TOKEN = ${R}`,
+);
+leak(
+  "dotted inner label, same line",
+  `credentials: app.DEPLOY_TOKEN = ${V}`,
+  `credentials: app.DEPLOY_TOKEN = ${R}`,
+);
+leak(
+  "double-quoted inner label, same line",
+  `credentials: "DEPLOY_TOKEN" = ${V}`,
+  `credentials: "DEPLOY_TOKEN" = ${R}`,
+);
+leak(
+  "single-quoted inner label, same line",
+  `credentials: 'DEPLOY_TOKEN' = ${V}`,
+  `credentials: 'DEPLOY_TOKEN' = ${R}`,
+);
+leak(
+  "hyphenated inner label, next line",
+  `credentials: DEPLOY-TOKEN:\n  ${V}`,
+  `credentials: DEPLOY-TOKEN:\n  ${R}`,
+);
+
+// A real value that merely contains a keyword keeps the base's mask when no
+// inner assignment masks a value (pre-PR verifier).
+for (
+  const [name, tail] of [
+    ["trailing space then newline", " \n"],
+    ["end of text", ""],
+    ["dangling equals", " ="],
+    ["dangling colon", " :"],
+    ["equals then newline", " = \n"],
+    ["switch word after", " is the old one"],
+  ]
+) {
+  keep(
+    `keyword-bearing value keeps its mask: ${name}`,
+    `password: abcTOKENxyz${tail}`,
+    `password: ${R}${tail}`,
+    true,
+  );
+}
+keep(
+  "keyword-bearing value keeps its mask: cross-line prose value",
+  "password: abcTOKENxyz:\nThe next line text",
+  `password: ${R}\nThe next line text`,
+  true,
+);

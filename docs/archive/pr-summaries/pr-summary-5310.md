@@ -10,14 +10,18 @@ unchanged. The same leak hit `The secret: api_key: <value>`, a YAML child such
 as `secrets:` then `API_TOKEN: <value>`, and
 `credentials: DEPLOY_TOKEN="<value>"`.
 
-`SECRET_ASSIGNMENT_PATTERN` now has one bounded negative lookahead directly
-after its separator. It refuses a value that is itself a credential label whose
-own separator has whitespace or a double quote around it. Those are the only
-shapes where the bare-value run (`[^\s"]+`) stops before the inner value. The
-scan then reaches the inner label, and that label's own match masks its value.
-`redactSecrets` and `containsSecret` share the pattern, so both change together.
-`SECURITY.md` records the rule. `.github/gitleaks.toml` exempts two exact
-historical mentions of the new test's synthetic fixture (see Test Plan).
+The pattern is unchanged from the base. The decision is made where the value is
+judged: a new walker, `walkAssignments`, is the one scan both the replacement
+pass (`redactAssignments`) and `containsSecret`'s detection use. When an
+assignment starts inside the outer value, runs past its end and is itself
+masked, the outer candidate is given up and the walk resumes at the inner label,
+whose own match masks its value. This covers hyphenated, dotted and quoted inner
+labels (`DEPLOY-TOKEN`, `app.DEPLOY_TOKEN`, `"DEPLOY_TOKEN"`). Otherwise the
+outer value is masked exactly as on base, so a keyword-bearing value with no
+masked inner value (`password: abcTOKENxyz =`) keeps its mask. An inner value
+already reading `***REDACTED***` also gives the outer up, so the pass stays
+idempotent. `SECURITY.md` records the rule. `.github/gitleaks.toml` exempts two
+exact historical mentions of the new test's synthetic fixture (see Test Plan).
 
 Closes #5310.
 
@@ -31,20 +35,17 @@ Closes #5310.
   cross-line checks from Issue #1727). No new masking logic is added.
 - The issue suggested refusing any label followed by `=` or `:`. That would
   split a password such as `MySecret:2024x` and publish its `MySecret:` prefix,
-  because the inner match would mask only `2024x`. The narrower lookahead
-  refuses only the shapes that actually leak, so `KEY=v` and `Secret:abc` are
-  still masked whole, exactly as before.
+  because the inner match would mask only `2024x`. The walker refuses only the
+  shapes that actually leak, so `KEY=v` and `Secret:abc` are still masked whole,
+  exactly as before.
 
 ### Essential Design Decisions
 
-- Every quantifier in the lookahead is bounded (Issue #3942 linearity rule): at
-  most 64 word characters either side of the keyword, and at most 32 whitespace
-  characters before the separator. Past those bounds the rule behaves as it did
-  before this change. That is the accepted cost; no realistic label is that
-  long.
-- The keyword list in the lookahead is a copy of the key group's list in the
-  same literal. A keyword added to one must be added to the other.
-  `secret-cli-flag` uses its own lower-case list and is unchanged.
+- The inner search is cut to the outer value plus 256 characters
+  (`INNER_ASSIGNMENT_SPAN`), so each candidate costs bounded extra work (Issue
+  #3942 linearity rule).
+- `CREDENTIAL_KEYWORD` copies the key group's keyword list, used only by the
+  idempotence check. A keyword added to one must be added to the other.
 
 ### Undiscoverable Facts
 
@@ -59,17 +60,17 @@ Backend only; no UI file is touched.
 
 ```mermaid
 flowchart LR
-    A["credentials: DEPLOY_TOKEN = v"] --> B{"value is a label<br/>with its own spaced separator?"}
-    B -->|"yes (new lookahead)"| C["outer candidate refused"]
+    A["credentials: DEPLOY_TOKEN = v"] --> B{"masked assignment starts<br/>inside the value?"}
+    B -->|"yes (walkAssignments)"| C["outer candidate refused"]
     C --> D["scan reaches DEPLOY_TOKEN"]
     D --> E["DEPLOY_TOKEN = ***REDACTED***"]
     B -->|"no (e.g. KEY=v)"| F["value masked whole, as before"]
 ```
 
-- Fix: `SECRET_ASSIGNMENT_PATTERN` and the comment above the `secret-assignment`
-  entry in `RULES`, in `worker/deno/lib/secret_redaction.ts`. The
-  `MAPPING_KEY_VALUE` doc comment notes that a credential-labelled child key no
-  longer reaches that test.
+- Fix: `walkAssignments`, `innerAssignment` and `redactAssignments`, and the
+  comment above the `secret-assignment` entry in `RULES`, in
+  `worker/deno/lib/secret_redaction.ts`. The `MAPPING_KEY_VALUE` doc comment
+  notes that a credential-labelled child key no longer reaches that test.
 - Docs: `SECURITY.md`, section "An assignment's value is judged, not only its
   label", has a new bullet. I read the whole section. `docs/THREAT-MODEL.md` and
   `README.md` do not describe this rule.
@@ -133,7 +134,8 @@ flowchart LR
 
 ## Not done or not checked
 
-- Past 64 characters either side of the keyword, or 32 whitespace characters
-  before the separator, an inner label still leaks as it did before.
+- An inner assignment starting more than 256 characters past the outer value is
+  not searched; no inner label can start there, as it must start inside the
+  value.
 - No reviewer sub-agents ran: the issue has no acceptance-criteria list.
 - CI on this head has not run yet.

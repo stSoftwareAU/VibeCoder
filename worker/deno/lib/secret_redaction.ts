@@ -50,7 +50,7 @@ import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
  * means and why every quantifier is bounded.
  */
 const SECRET_ASSIGNMENT_PATTERN =
-  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?![A-Za-z0-9_]{0,64}(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]{0,64}(?:["']?\s{1,32}[=:]|"[=:]|'?[=:][\s"]))(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|[^\s"]+)/gi;
+  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|[^\s"]+)/gi;
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -134,9 +134,9 @@ const MIN_CROSS_LINE_LENGTH = 8;
  * anchored, so it is constant work per candidate (the Issue #3942 linearity
  * rule).
  *
- * A credential-labelled child key (`API_TOKEN:`) never reaches this test: the
- * pattern refuses it as the parent's value (Issue #5310), so the scan reaches
- * the child and judges the child's own value.
+ * A credential-labelled child key (`API_TOKEN:`) whose own value is masked
+ * never reaches this test: `walkAssignments` gives the parent up for the child
+ * (Issue #5310), so the scan reaches the child and judges the child's value.
  */
 const MAPPING_KEY_VALUE = /^[A-Za-z0-9_.-]{1,128}:$/;
 
@@ -666,15 +666,9 @@ const RULES: readonly RedactionRule[] = [
   // A credential label is never taken as the value of the label before it
   // (Issue #5310). In `credentials: DEPLOY_TOKEN = <value>` the bare-value
   // branch stops at whitespace, so the outer match masked only `DEPLOY_TOKEN`,
-  // the scan resumed after it, and the real value was published. A lookahead
-  // directly after the separator refuses a candidate that is itself a
-  // credential label followed by its own separator when whitespace or a double
-  // quote sits around that separator (the only cases where the run would end
-  // before the inner value); the scan then resumes at the inner label, whose
-  // own match masks its value. `KEY=v` and `Secret:abc` stay inside one run
-  // and are masked whole, as before. Every quantifier is bounded (Issue
-  // #3942): past 64 characters either side of the keyword, or 32 whitespace
-  // characters before the separator, the rule falls back to the old behaviour.
+  // the scan resumed after it, and the real value was published. The pattern
+  // itself is unchanged; `walkAssignments` makes the decision where the value
+  // is judged — see there.
   //
   // JSON structure survives the mask (Issue #4169's transcript tee is the
   // sink that showed it). Every stream-json line the agent emits carries a
@@ -819,26 +813,145 @@ function matchesSignatureRule(text: string): boolean {
  * scan depend on this one.
  */
 function detectsSecretAssignment(text: string): boolean {
+  return walkAssignments(text).some((a) => a.masked);
+}
+
+/** One `secret-assignment` candidate and the verdict on it. */
+interface AssignmentVerdict {
+  readonly index: number;
+  readonly end: number;
+  readonly key: string;
+  readonly sep: string;
+  readonly value: string;
+  readonly masked: boolean;
+}
+
+/**
+ * How far past the outer value an inner label's assignment is searched
+ * (Issue #5310). A ReDoS ceiling (Issue #3942), not a syntax rule: it bounds
+ * the extra scan each candidate costs.
+ */
+const INNER_ASSIGNMENT_SPAN = 256;
+
+/** Run the shared pattern once from `from`, saving and restoring `lastIndex`. */
+function execAssignmentAt(
+  text: string,
+  from: number,
+): RegExpExecArray | null {
   const pattern = SECRET_ASSIGNMENT_PATTERN;
   const resume = pattern.lastIndex;
-  pattern.lastIndex = 0;
+  pattern.lastIndex = from;
   try {
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text)) !== null) {
-      const following = textAfter(text, match.index + match[0].length);
-      if (
-        assignmentIsMasked(
-          match[1] ?? "",
-          match[2] ?? "",
-          match[3] ?? "",
-          following,
-        )
-      ) return true;
-    }
-    return false;
+    return pattern.exec(text);
   } finally {
     pattern.lastIndex = resume;
   }
+}
+
+/** Judge one pattern match with {@link assignmentIsMasked}. */
+function verdictOf(text: string, match: RegExpExecArray): AssignmentVerdict {
+  const end = match.index + match[0].length;
+  const key = match[1] ?? "";
+  const sep = match[2] ?? "";
+  const value = match[3] ?? "";
+  return {
+    index: match.index,
+    end,
+    key,
+    sep,
+    value,
+    masked: assignmentIsMasked(key, sep, value, textAfter(text, end)),
+  };
+}
+
+/**
+ * Every `secret-assignment` candidate in `text`, in order, with its verdict —
+ * the one walk both {@link redactAssignments} and
+ * {@link detectsSecretAssignment} use, so they cannot disagree.
+ *
+ * Issue #5310: the value a label captured can itself be a credential label —
+ * `credentials: DEPLOY_TOKEN = <value>`, `credentials: "app.DEPLOY-TOKEN" =
+ * <value>`. Masking that run masked the inner label and published the inner
+ * value, because the scan resumed after the run. So when an assignment starts
+ * *inside* the outer value, runs past its end, and is itself masked, the outer
+ * candidate is given up and the walk resumes at the inner label, whose own
+ * match masks its value. Otherwise the outer value is judged and masked
+ * exactly as before — an inner label with no value, a switch word or a
+ * cross-line value judged as prose never costs the outer mask.
+ */
+function walkAssignments(text: string): AssignmentVerdict[] {
+  const verdicts: AssignmentVerdict[] = [];
+  let from = 0;
+  let match: RegExpExecArray | null;
+  while ((match = execAssignmentAt(text, from)) !== null) {
+    const outer = verdictOf(text, match);
+    const valueStart = outer.end - outer.value.length;
+    const inner = innerAssignment(text, valueStart, outer.end);
+    if (inner) {
+      from = inner.index;
+      continue;
+    }
+    verdicts.push(outer);
+    from = outer.end > outer.index ? outer.end : outer.index + 1;
+  }
+  return verdicts;
+}
+
+/**
+ * A masked assignment starting inside the value `[start, end)` and running
+ * past `end`, or `null` (Issue #5310). The search is cut to the value plus
+ * {@link INNER_ASSIGNMENT_SPAN} so each candidate costs bounded extra work;
+ * the full text is then re-scanned from the found label, so the verdict is
+ * the one the walk itself will reach there.
+ */
+function innerAssignment(
+  text: string,
+  start: number,
+  end: number,
+): AssignmentVerdict | null {
+  const window = text.slice(start, end + INNER_ASSIGNMENT_SPAN);
+  if (innerValueAlreadyMasked(window, end - start)) {
+    return { index: end, end, key: "", sep: "", value: "", masked: true };
+  }
+  const probe = execAssignmentAt(window, 0);
+  if (!probe || start + probe.index >= end) return null;
+  const match = execAssignmentAt(text, start + probe.index);
+  if (!match || match.index >= end) return null;
+  const verdict = verdictOf(text, match);
+  return verdict.end > end && verdict.masked ? verdict : null;
+}
+
+/** A credential keyword anywhere in a value run (Issue #5310). */
+const CREDENTIAL_KEYWORD =
+  /TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL/i;
+
+/** A separator then the placeholder: an inner value an earlier pass masked. */
+const MASKED_SEPARATOR =
+  /^["']?[ \t]{0,32}[=:]\s{0,32}["']?\*\*\*REDACTED\*\*\*/;
+
+/**
+ * Whether the value `window.slice(0, valueLength)` is a credential label whose
+ * own value is already the placeholder — `DEPLOY_TOKEN = ***REDACTED***`. The
+ * pattern refuses a redacted value, so without this a second pass would mask
+ * the label and the chokepoint would not be idempotent (Issue #5310).
+ */
+function innerValueAlreadyMasked(window: string, valueLength: number): boolean {
+  return CREDENTIAL_KEYWORD.test(window.slice(0, valueLength)) &&
+    MASKED_SEPARATOR.test(window.slice(valueLength));
+}
+
+/** Mask every `secret-assignment` value {@link walkAssignments} judges masked. */
+function redactAssignments(text: string): string {
+  let out = "";
+  let last = 0;
+  for (const a of walkAssignments(text)) {
+    if (!a.masked) continue;
+    const quote = QUOTED_VALUE.test(a.value) ? a.value.charAt(0) : "";
+    out += text.slice(last, a.index) +
+      `${a.key}${a.sep}${quote}${REDACTION_PLACEHOLDER}${quote}`;
+    last = a.end;
+  }
+  return out + text.slice(last);
 }
 
 /**
@@ -857,10 +970,12 @@ export function redactSecrets(text: string): string {
   let out = text;
   for (const rule of RULES) {
     // Each rule's pattern is global; replace handles every match in the line.
-    out = out.replace(
-      rule.pattern,
-      rule.replace as (substring: string, ...args: unknown[]) => string,
-    );
+    out = rule.pattern === SECRET_ASSIGNMENT_PATTERN
+      ? redactAssignments(out)
+      : out.replace(
+        rule.pattern,
+        rule.replace as (substring: string, ...args: unknown[]) => string,
+      );
   }
   return redactTransformedSecrets(
     out,
