@@ -17,22 +17,10 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { isPrBranchConflictError, updatePrBranch } from "../lib/git_pull.ts";
 import { isLocalAheadOfRemoteError } from "../lib/git_branch_sync.ts";
-import { type GitCommandOptions, runGitCommand } from "../lib/git_timeout.ts";
-import {
-  NO_HOST_GIT_CONFIG,
-  NO_HOST_HOOKS_ARGS,
-} from "./support/no_host_git_config.ts";
-
-/** Fixture git, shut off from the host's config and hooks (Issue #5309). */
-function fixtureGit(args: string[], options: GitCommandOptions = {}) {
-  return runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
-    ...options,
-    env: { ...options.env, ...NO_HOST_GIT_CONFIG },
-  });
-}
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 
 async function git(args: string[], cwd: string): Promise<string> {
-  const result = await fixtureGit(args, { cwd });
+  const result = await runFixtureGit(args, { cwd });
   return result.ok ? result.value.stdout.trim() : "";
 }
 
@@ -51,49 +39,49 @@ async function setupStaleLocalBranch(): Promise<{
   const localPath = `${tmpDir}/local`;
 
   await Deno.mkdir(remotePath, { recursive: true });
-  await fixtureGit(["init", "--bare"], { cwd: remotePath });
-  await fixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
+  await runFixtureGit(["init", "--bare"], { cwd: remotePath });
+  await runFixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
     cwd: remotePath,
   });
-  await fixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
-  await fixtureGit(["config", "user.email", "test@example.com"], {
+  await runFixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
+  await runFixtureGit(["config", "user.email", "test@example.com"], {
     cwd: localPath,
   });
-  await fixtureGit(["config", "user.name", "Test User"], { cwd: localPath });
+  await runFixtureGit(["config", "user.name", "Test User"], { cwd: localPath });
 
   await Deno.writeTextFile(`${localPath}/shared.txt`, "base\n");
-  await fixtureGit(["add", "."], { cwd: localPath });
-  await fixtureGit(["commit", "-m", "Initial commit"], { cwd: localPath });
-  await fixtureGit(["push", "origin", "main"], { cwd: localPath });
+  await runFixtureGit(["add", "."], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Initial commit"], { cwd: localPath });
+  await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
   // The PR branch: touches a different file, so it rebases onto main cleanly.
-  await fixtureGit(["checkout", "-b", "issue-556-fix"], { cwd: localPath });
+  await runFixtureGit(["checkout", "-b", "issue-556-fix"], { cwd: localPath });
   await Deno.writeTextFile(`${localPath}/feature.txt`, "feature\n");
-  await fixtureGit(["add", "."], { cwd: localPath });
-  await fixtureGit(["commit", "-m", "Add feature"], { cwd: localPath });
-  await fixtureGit(["push", "-u", "origin", "issue-556-fix"], {
+  await runFixtureGit(["add", "."], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Add feature"], { cwd: localPath });
+  await runFixtureGit(["push", "-u", "origin", "issue-556-fix"], {
     cwd: localPath,
   });
   const remoteHead = await git(["rev-parse", "HEAD"], localPath);
 
   // main moves on, touching shared.txt.
-  await fixtureGit(["checkout", "main"], { cwd: localPath });
+  await runFixtureGit(["checkout", "main"], { cwd: localPath });
   await Deno.writeTextFile(`${localPath}/shared.txt`, "main change\n");
-  await fixtureGit(["add", "."], { cwd: localPath });
-  await fixtureGit(["commit", "-m", "Change shared on main"], {
+  await runFixtureGit(["add", "."], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Change shared on main"], {
     cwd: localPath,
   });
-  await fixtureGit(["push", "origin", "main"], { cwd: localPath });
+  await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
   // The stale local-only commit on the PR branch: collides with main.
-  await fixtureGit(["checkout", "issue-556-fix"], { cwd: localPath });
+  await runFixtureGit(["checkout", "issue-556-fix"], { cwd: localPath });
   await Deno.writeTextFile(`${localPath}/shared.txt`, "stale local change\n");
-  await fixtureGit(["add", "."], { cwd: localPath });
-  await fixtureGit(["commit", "-m", "Stale local commit"], {
+  await runFixtureGit(["add", "."], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Stale local commit"], {
     cwd: localPath,
   });
   const staleSha = await git(["rev-parse", "HEAD"], localPath);
-  await fixtureGit(["checkout", "main"], { cwd: localPath });
+  await runFixtureGit(["checkout", "main"], { cwd: localPath });
 
   return { tmpDir, localPath, staleSha, remoteHead };
 }
@@ -137,43 +125,43 @@ Deno.test("updatePrBranch - a genuine conflict on the remote head is still left 
     const remotePath = `${tmpDir}/remote.git`;
     const localPath = `${tmpDir}/local`;
     await Deno.mkdir(remotePath, { recursive: true });
-    await fixtureGit(["init", "--bare"], { cwd: remotePath });
-    await fixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
+    await runFixtureGit(["init", "--bare"], { cwd: remotePath });
+    await runFixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
       cwd: remotePath,
     });
-    await fixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
-    await fixtureGit(["config", "user.email", "test@example.com"], {
+    await runFixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
+    await runFixtureGit(["config", "user.email", "test@example.com"], {
       cwd: localPath,
     });
-    await fixtureGit(["config", "user.name", "Test User"], {
+    await runFixtureGit(["config", "user.name", "Test User"], {
       cwd: localPath,
     });
 
     await Deno.writeTextFile(`${localPath}/shared.txt`, "base\n");
-    await fixtureGit(["add", "."], { cwd: localPath });
-    await fixtureGit(["commit", "-m", "Initial commit"], { cwd: localPath });
-    await fixtureGit(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["add", "."], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Initial commit"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
     // The PR branch really does collide with main — and it is pushed.
-    await fixtureGit(["checkout", "-b", "issue-9-collide"], {
+    await runFixtureGit(["checkout", "-b", "issue-9-collide"], {
       cwd: localPath,
     });
     await Deno.writeTextFile(`${localPath}/shared.txt`, "pr change\n");
-    await fixtureGit(["add", "."], { cwd: localPath });
-    await fixtureGit(["commit", "-m", "PR changes shared"], {
+    await runFixtureGit(["add", "."], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "PR changes shared"], {
       cwd: localPath,
     });
-    await fixtureGit(["push", "-u", "origin", "issue-9-collide"], {
+    await runFixtureGit(["push", "-u", "origin", "issue-9-collide"], {
       cwd: localPath,
     });
 
-    await fixtureGit(["checkout", "main"], { cwd: localPath });
+    await runFixtureGit(["checkout", "main"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/shared.txt`, "main change\n");
-    await fixtureGit(["add", "."], { cwd: localPath });
-    await fixtureGit(["commit", "-m", "main changes shared"], {
+    await runFixtureGit(["add", "."], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "main changes shared"], {
       cwd: localPath,
     });
-    await fixtureGit(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
     const result = await updatePrBranch("issue-9-collide", "main", {
       cwd: localPath,

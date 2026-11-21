@@ -20,7 +20,6 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { runGitCommand } from "../lib/git_timeout.ts";
 import {
   githubVisibilityCheck,
   LEARNINGS_CONFIG_CAP_BYTES,
@@ -55,6 +54,7 @@ import {
 import {
   NO_HOST_GIT_CONFIG,
   NO_HOST_HOOKS_ARGS,
+  runFixtureGit,
 } from "./support/no_host_git_config.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
@@ -180,18 +180,6 @@ function recorder(): {
       return Promise.resolve();
     },
   };
-}
-
-/**
- * Run a fixture git command shielded from the host's config and hooks
- * (Issue #5309). The store and clone calls in this file go through here.
- */
-function runFixtureGit(
-  args: string[],
-): ReturnType<typeof runGitCommand> {
-  return runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
-    env: NO_HOST_GIT_CONFIG,
-  });
 }
 
 /** Run one git command, throwing on failure. */

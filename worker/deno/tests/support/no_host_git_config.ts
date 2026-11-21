@@ -13,6 +13,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  type GitCommandOptions,
+  runGitCommand,
+} from "../../lib/git_timeout.ts";
+
 /**
  * Pass as a git child's `env`. Deno overlays it on the inherited environment,
  * so it cancels the host's injected `GIT_CONFIG_COUNT` entries and shuts out
@@ -32,3 +37,14 @@ export const NO_HOST_HOOKS_ARGS: readonly string[] = Object.freeze([
   "-c",
   "core.hooksPath=/dev/null",
 ]);
+
+/** Fixture git with the shield spread last, so a caller's env cannot re-inject host config. */
+export function runFixtureGit(
+  args: string[],
+  options: GitCommandOptions = {},
+): ReturnType<typeof runGitCommand> {
+  return runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
+    ...options,
+    env: { ...options.env, ...NO_HOST_GIT_CONFIG },
+  });
+}

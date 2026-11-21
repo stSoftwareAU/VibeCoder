@@ -13,11 +13,7 @@ import {
   syncMilestoneBranchWithDefault,
   updatePrBranch,
 } from "../lib/git_pull.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
-import {
-  NO_HOST_GIT_CONFIG,
-  NO_HOST_HOOKS_ARGS,
-} from "./support/no_host_git_config.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 import {
   isForcedPush,
   recordedPushes,
@@ -28,21 +24,6 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers — create real git repos for integration testing
 // ---------------------------------------------------------------------------
-
-/**
- * Run a fixture git command shielded from the host's config and hooks
- * (Issue #5309). Only the repo-building calls use it; the production calls
- * under test go through their own lib functions.
- */
-function runFixtureGit(
-  args: string[],
-  options: { cwd: string },
-): ReturnType<typeof runGitCommand> {
-  return runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
-    ...options,
-    env: NO_HOST_GIT_CONFIG,
-  });
-}
 
 /** Create a temporary directory for test repos. */
 async function createTempDir(): Promise<string> {
