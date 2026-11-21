@@ -144,6 +144,40 @@ const MAPPING_KEY_VALUE = /^[A-Za-z0-9_.-]{1,128}:$/;
 const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
 
 /**
+ * The separator of a prose heading: a bare colon then spaces, on one line
+ * (Issue #5253). No quote, no `=` and no line break, so only `Name: text` reads
+ * as a heading.
+ */
+const PROSE_HEADING_SEPARATOR = /^:[ \t]{1,32}$/;
+
+/**
+ * A Capitalised word or a PascalCase run of them, letters only: the shape of a
+ * product name used as a heading, such as `TokenBudget` (Issue #5253).
+ * Bounded on both counts, so it is linear (the Issue #3942 rule).
+ */
+const PROSE_HEADING_KEY = /^(?:[A-Z][a-z]{1,31}){1,8}$/;
+
+/**
+ * A key that ends in a credential word, whatever its case: `GithubToken`,
+ * `ApiKey`, `ClientSecret`, `SecretValue`, and equally `Userpassword`,
+ * `Accesskey` or `Authtoken` (Issue #5253). The key's ending decides, not its
+ * last capitalised word, so a lower-case suffix cannot hide the credential
+ * word. Anchored at the end and a fixed alternation, so it is linear.
+ */
+const CREDENTIAL_KEY_ENDING =
+  /(?:tokens?|secrets?|passwords?|passwd|keys?|credentials?|values?)$/i;
+
+/**
+ * Text after a prose heading's value: spaces then a further word on the same
+ * line (Issue #5253). A heading leads into a sentence; a `Key: word` that ends
+ * its line is a field, so it stays masked. Bounded, so it is linear.
+ */
+const PROSE_CONTINUATION = /^[ \t]{1,32}[A-Za-z]/;
+
+/** How much text after a value {@link PROSE_CONTINUATION} needs to see. */
+const PROSE_CONTINUATION_SPAN = 33;
+
+/**
  * Report whether a matched `secret-assignment` value is credential-shaped
  * (Issue #1727).
  *
@@ -155,12 +189,16 @@ const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
  * stopped rendering; the prose variant masked a sentence's first word.
  *
  * The label side of the rule is deliberately blunt and stays that way — it
- * catches real secrets. Only the value is judged, and only when the separator
- * crossed a line break. **An inline assignment is masked exactly as before**:
+ * catches real secrets. The one exception is a prose heading (Issue #5253),
+ * whose key is read only by {@link isProseHeading}. Apart from that check, only
+ * the value is judged, and only when the separator crossed a line break.
+ * **An inline assignment is masked exactly as before**, bar a prose heading:
  * `secret_scanning: enabled`, `PASSWORD=12345` and a value wrapped in
  * backticks, or opening with `#`, `>` or `|` — all legitimate password
  * characters — are untouched by this predicate. That boundary is load-bearing:
- * judging inline values too is what let a fence-wrapped secret through.
+ * judging inline values too is what let a fence-wrapped secret through. The
+ * one inline exception, a prose heading (Issue #5253), is decided before this
+ * predicate by {@link isProseHeading}.
  *
  * Across a line break the value must earn the mask: complete Markdown
  * ({@link FENCE_VALUE}, {@link IMAGE_VALUE}) and a child mapping key
@@ -195,13 +233,54 @@ export function isCredentialShapedValue(
 }
 
 /**
+ * Report whether an assignment is a product name used as a prose heading
+ * (Issue #5253), so the rule must not mask the word after its colon.
+ *
+ * A heading such as `TokenBudget: run the agreed trial` names a product, and
+ * its name does not end in a credential word. A credential field's name does
+ * (`GithubToken`, `Password`, `Userpassword`), and those stay masked whatever
+ * the value. All four must hold: a bare colon, a Capitalised key not ending in
+ * a credential word, a plain single word as the value, and a further word after
+ * it on the same line (`following` is the text after the value). So a value
+ * with a digit, symbol, quote or over 15 letters is still masked under any key,
+ * as is a `Key: word` that ends its line (`SecretString: hunter`), and so are
+ * `=`, quoted keys, `_` keys and lower-camel identifiers.
+ */
+function isProseHeading(
+  key: string,
+  sep: string,
+  value: string,
+  following: string,
+): boolean {
+  if (!PROSE_HEADING_SEPARATOR.test(sep)) return false;
+  if (!PROSE_HEADING_KEY.test(key)) return false;
+  if (CREDENTIAL_KEY_ENDING.test(key)) return false;
+  if (!PLAIN_WORD.test(value)) return false;
+  return PROSE_CONTINUATION.test(following);
+}
+
+/** The bounded run of `text` after a match ending at `end` (Issue #5253). */
+function textAfter(text: string, end: number): string {
+  return text.slice(end, end + PROSE_CONTINUATION_SPAN);
+}
+
+/**
  * Apply {@link isCredentialShapedValue} to one `secret-assignment` match.
  *
  * The single place the separator's shape is turned into a `sameLine` verdict,
  * so the replacement pass and {@link matchesSignatureRule} cannot drift apart
- * (Issue #1727).
+ * (Issue #1727). A prose heading is not an assignment at all, so
+ * {@link isProseHeading} exempts it first (Issue #5253); `following` is the
+ * text after the value, cut to {@link PROSE_CONTINUATION_SPAN} by
+ * {@link textAfter}.
  */
-function assignmentIsMasked(sep: string, value: string): boolean {
+function assignmentIsMasked(
+  key: string,
+  sep: string,
+  value: string,
+  following: string,
+): boolean {
+  if (isProseHeading(key, sep, value, following)) return false;
   return isCredentialShapedValue(value, !LINE_TERMINATOR.test(sep));
 }
 
@@ -553,7 +632,18 @@ const RULES: readonly RedactionRule[] = [
   // rendering. `isCredentialShapedValue` judges the value before the
   // substitution: Markdown structure is never a credential, and a value the
   // separator reached across a line break must look like one. An inline
-  // assignment is unaffected, so the label side stays as blunt as it was.
+  // assignment is unaffected, except a prose heading (Issue #5253, below); the
+  // label side stays blunt apart from that check.
+  //
+  // A product name used as a prose heading is not an assignment (Issue #5253).
+  // The PR title for Issue #4959, a product-name heading, had the word after its
+  // colon published as the placeholder. When the key is a Capitalised product
+  // name that does not end in a credential word (`TokenBudget`, though
+  // `GithubToken` and `Userpassword` do), the separator is a bare colon and
+  // spaces, the value is one plain word, and a further word follows it on the
+  // same line, the mask is lifted by `isProseHeading`. `=`, quoted keys, `_`
+  // keys, lower-camel identifiers, a `Key: word` ending its line and any value
+  // with a digit, symbol or quote stay masked.
   //
   // A bare switch is configuration, not a credential. The
   // `github-actions-audit` idle task filed fourteen issues whose whole
@@ -613,8 +703,22 @@ const RULES: readonly RedactionRule[] = [
   {
     name: "secret-assignment",
     pattern: SECRET_ASSIGNMENT_PATTERN,
-    replace: (match: string, key: string, sep: string, value: string) => {
-      if (!assignmentIsMasked(sep, value)) return match;
+    replace: (
+      match: string,
+      key: string,
+      sep: string,
+      value: string,
+      offset: unknown,
+      text: unknown,
+    ) => {
+      // `String.replace` passes the match offset and the whole string after
+      // the groups; the rule interface types the tail as strings, so narrow.
+      // Without them `following` is empty and the prose-heading exemption is
+      // refused, so the value stays masked (Issue #5253).
+      const following = typeof offset === "number" && typeof text === "string"
+        ? textAfter(text, offset + match.length)
+        : "";
+      if (!assignmentIsMasked(key, sep, value, following)) return match;
       const quote = QUOTED_VALUE.test(value) ? value.charAt(0) : "";
       return `${key}${sep}${quote}${REDACTION_PLACEHOLDER}${quote}`;
     },
@@ -721,7 +825,15 @@ function detectsSecretAssignment(text: string): boolean {
   try {
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(text)) !== null) {
-      if (assignmentIsMasked(match[2] ?? "", match[3] ?? "")) return true;
+      const following = textAfter(text, match.index + match[0].length);
+      if (
+        assignmentIsMasked(
+          match[1] ?? "",
+          match[2] ?? "",
+          match[3] ?? "",
+          following,
+        )
+      ) return true;
     }
     return false;
   } finally {

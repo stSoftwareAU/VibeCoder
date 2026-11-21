@@ -525,16 +525,17 @@ Mermaid fence beneath it published as `***REDACTED***`, and the diagram
 `CODING-STANDARDS.md` requires stopped rendering (Issue #1727). The prose
 variant masked the following sentence's first word.
 
-The label side stays deliberately blunt — it catches real secrets. The value is
-judged before the mask is applied, and **only when the separator crossed a line
-break**:
+The label side stays deliberately blunt — it catches real secrets — apart from
+the prose-heading check below. The value is judged before the mask is applied,
+and, apart from that check, **only when the separator crossed a line break**:
 
-- An **inline** assignment is masked exactly as it always was.
-  `secret_scanning: enabled`, `PASSWORD=12345`, and a value wrapped in
-  backticks or opening with `#`, `>` or `|` — all legitimate password
-  characters — are untouched by the judgement. That boundary is load-bearing:
-  an earlier cut judged inline values too, and a secret wearing a code fence
-  (`SECRET: ` + fence + key) was published verbatim.
+- An **inline** assignment is masked exactly as it always was, with one
+  exception: a prose heading (Issue #5253, below). `secret_scanning: enabled`,
+  `PASSWORD=12345`, and a value wrapped in backticks or opening with `#`, `>`
+  or `|` — all legitimate password characters — are untouched by the
+  judgement. That boundary is load-bearing: an earlier cut judged inline values
+  too, and a secret wearing a code fence (`SECRET: ` + fence + key) was
+  published verbatim.
 - Across a line break, **complete** Markdown is never a credential: a fence
   line (three or more backticks or tildes plus at most a language tag) or a
   closed inline image. The test matches the *whole* value, never a prefix, for
@@ -557,12 +558,28 @@ break**:
 does, so detection and redaction cannot drift apart — a body that redacts to
 itself must not report as carrying a secret, and vice versa.
 
-The accepted cost is one rule: a credential shorter than eight characters, or
-one whose emphasis-stripped value is a single lower-case word, sitting alone on
-the line **after** its label. That is narrower than the false positive it
-removes, which silently degraded every PR body whose lead-in sentence ended in
-a credential label. A credential in that position still carrying a provider
-prefix is masked by its own signature rule regardless.
+A product-name heading is not an assignment (Issue #5253). The PR title for
+Issue #4959, a product-name heading, had the word after its colon published as
+the placeholder, because the rule read the heading's `Name:` as a label. The
+word after a bare `: ` is now left alone when four things hold: the key is a
+Capitalised product name that does not end in a credential word (`TokenBudget`,
+though `GithubToken` and `Userpassword` do), the value is a single plain word of
+at most 15 letters, and a further word follows it on the same line, so the
+heading leads into a sentence. It is the one judgement made on a single line,
+and it looks at the key, the value and what follows rather than a line break. A
+key ending in a credential word keeps its mask whatever its value, a
+`Key: word` that ends its line (`SecretString: hunter`) stays masked, and `=`,
+quoted keys, underscore keys and lower-camel identifiers are never exempt.
+
+The accepted costs are two rules. The first: a credential shorter than eight
+characters, or one whose emphasis-stripped value is a single lower-case word,
+sitting alone on the line **after** its label. That is narrower than the false
+positive it removes, which silently degraded every PR body whose lead-in
+sentence ended in a credential label. A credential in that position still
+carrying a provider prefix is masked by its own signature rule regardless. The
+second: a credential that is a single plain word of at most 15 letters, sitting
+after a PascalCase heading that does not end in a credential word, on the same
+line after `: `, with a further word after it on that line.
 
 ### Transformed secrets are decoded, then re-scanned
 
