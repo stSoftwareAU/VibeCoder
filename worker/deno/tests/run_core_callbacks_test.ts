@@ -900,3 +900,112 @@ Deno.test("run_core ordinary skips do not publish a landed outcome in either dis
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// A run that never reported is not a run that never invoked an agent
+// (Issue #5296)
+// ---------------------------------------------------------------------------
+
+Deno.test("run_core callbacks - a serial-loop throw reports run_unreported, not agent_not_invoked (Issue #5296)", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      throw new Error("the serial run exploded after the agent launched");
+    },
+  });
+
+  await runCycle(deps, 1);
+
+  assertEquals(runs.length, 1);
+  assertEquals(runs[0]?.telemetryAbsentReason, "run_unreported");
+  assert(!("telemetry" in runs[0]!));
+});
+
+Deno.test("run_core callbacks - a slot throw reports run_unreported, not agent_not_invoked (Issue #5296)", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      throw new Error("the slot run exploded after the agent launched");
+    },
+  });
+
+  await runCycle(deps, 2);
+
+  assertEquals(runs.length, 1);
+  assertEquals(runs[0]?.telemetryAbsentReason, "run_unreported");
+  assert(!("telemetry" in runs[0]!));
+});
+
+Deno.test("run_core callbacks - a slot abandoned at the shutdown grace reports run_unreported (Issue #5296)", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const handlers: Record<string, () => void> = {};
+  let now = 0;
+  let clockTimer: ReturnType<typeof setInterval> | undefined;
+  let hangResolve: (() => void) | undefined;
+  const deps = createMockDeps({
+    now: () => now,
+    runIssueCallbacks,
+    slotDrainGraceSeconds: 30,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    addSignalListener: (signal, handler) => {
+      handlers[signal] = handler;
+    },
+    findNextIssue: issueQueue([issue("o/fast", 1), issue("o/hang", 2)]),
+    processIssue: async (i) => {
+      if (i.repo === "o/fast") {
+        await new Promise((r) => setTimeout(r, 5));
+        handlers["SIGTERM"]?.();
+        clockTimer = setInterval(() => {
+          now += 31_000;
+        }, 20);
+        return { ok: true, value: { success: true } };
+      }
+      await new Promise<void>((r) => {
+        hangResolve = r;
+      });
+      return { ok: true, value: { success: true } };
+    },
+  });
+
+  await runCycle(deps, 2);
+  if (clockTimer !== undefined) clearInterval(clockTimer);
+
+  const hung = runs.find((r) => r.repo === "o/hang");
+  assert(hung, "the abandoned slot was not reported");
+  assertEquals(hung.telemetryAbsentReason, "run_unreported");
+  assert(!("telemetry" in hung));
+  hangResolve?.();
+  await new Promise((r) => setTimeout(r, 5));
+});
+
+Deno.test("run_core callbacks - an ordinary run that reported no usage still reports agent_not_invoked (Issue #5296)", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runCycle(deps, 1);
+
+  assertEquals(runs.length, 1);
+  assertEquals(runs[0]?.telemetryAbsentReason, "agent_not_invoked");
+});
