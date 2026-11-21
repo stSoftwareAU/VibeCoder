@@ -387,7 +387,10 @@ Official server mode needs all of the following:
   `( cd infra; runner; cd .. ) | tee log`; a `)` attached to a word, quoted
   or not, closes a subshell when the command holds one more unquoted `)` than
   `(`, so `cd $(git rev-parse --show-toplevel)` or `args=(--foo bar)` does
-  not), not in a group or subshell that is itself an `if` or `while` test
+  not; redirections after the `)` belong to the subshell, so
+  `( runner; echo done ) 2>&1 | tee log` is swallowed too; a `$(` or `(`
+  left open at a line end, such as `VERSION=$(`, is closed by the `)` that
+  balances it, not by the subshell's), not in a group or subshell that is itself an `if` or `while` test
   (`if ( runner ); then …`), nor by `&&` with more of the body after that
   chain, and one of the following. Bash ignores errexit inside a compound on
   the left of `&&`, so a command there is judged with errexit off:
@@ -409,13 +412,19 @@ Official server mode needs all of the following:
   included, while `exec` replaces the shell before the handler runs. A
   handler that tidies up, or exits bare, with `$?` or with a saved status
   (`exit $rc`), keeps the failure, and `trap - EXIT` or `trap '' EXIT`
-  clears the condition it names.
+  clears the condition it names. An `&` inside a redirection (`2>&1`, `>&2`,
+  `&>log`) is not a background `&`, so `runner > log 2>&1` is preserved,
+  while `runner |& tee log` is a pipe. As a backstop, nothing inside a
+  subshell that never closes is credited, and nothing in a body with a `)`
+  that closes no subshell or `case` pattern.
 
 **Errexit.** Errexit is on for a workflow step whose shell is unset or
 exactly `bash` or `sh` (GitHub adds `-e`), or whose custom shell sets `-e`
 or `-o errexit`, and off at the start of a repository script. `set -e` or
 `set -o errexit` turn it on and `set +e` turns it off, at the point each
-appears.
+appears; inside a `( )` subshell the change lasts only until the subshell
+closes, so `( set -e; make build )` leaves errexit off for the lines after
+it.
 
 The command word, once shell reserved words, `sudo`/`env`/`exec`,
 `VAR=value` and the `time`/`nice`/`timeout`/`command` wrappers are

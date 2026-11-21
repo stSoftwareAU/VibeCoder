@@ -851,7 +851,8 @@ interface KeptCommand {
  * compound followed by `&&` is judged with errexit off
  * (`ReachableCommand.errexitIgnored`). A command in a loop body is never
  * kept by being last (`ReachableCommand.inLoop`): the loop's status is its
- * last pass's. A command after a reachable `trap` whose `EXIT` or `ERR`
+ * last pass's. A `set` inside a `( )` subshell changes errexit only until
+ * that subshell closes (`ReachableCommand.subshells`). A command after a reachable `trap` whose `EXIT` or `ERR`
  * handler may `exit 0` is kept only when it runs via `exec`, which replaces
  * the shell before the handler can run (see {@link applyTrap}). Otherwise a
  * command is
@@ -864,6 +865,10 @@ interface KeptCommand {
 /** Trap conditions whose handler runs as the shell exits or a command fails. */
 const EXIT_TRAP_CONDITIONS = new Set(["exit", "err"]);
 
+/** A shell function header up to its `{`: `name() {`, `function name {` or `function name() {`. */
+const FUNCTION_HEADER =
+  /(?:^|[\n;&|])[ \t]*(?:function[ \t]+([A-Za-z_][\w.:-]*)[ \t]*(?:\([ \t]*\))?|([A-Za-z_][\w.:-]*)[ \t]*\([ \t]*\))[ \t\n]*\{/g;
+
 /** Most nested function calls followed when reading a trap handler. */
 const TRAP_HANDLER_DEPTH = 4;
 
@@ -873,12 +878,14 @@ const TRAP_HANDLER_DEPTH = 4;
  * when `text` does not define it. Braces inside quotes are skipped.
  */
 function functionBodyText(text: string, name: string): string | null {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const head = new RegExp(
-    `(?:^|[\\n;&|])[ \\t]*(?:function[ \\t]+${escaped}[ \\t]*(?:\\([ \\t]*\\))?|${escaped}[ \\t]*\\([ \\t]*\\))[ \\t\\n]*\\{`,
-  ).exec(text);
-  if (head === null) return null;
-  const start = head.index + head[0].length;
+  let start = -1;
+  for (const head of text.matchAll(FUNCTION_HEADER)) {
+    if ((head[1] ?? head[2]) === name) {
+      start = (head.index ?? 0) + head[0].length;
+      break;
+    }
+  }
+  if (start === -1) return null;
   let depth = 1;
   let quote: string | null = null;
   for (let i = start; i < text.length; i++) {
@@ -964,7 +971,13 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
   // pass, `cmd || exit 1` included. Only `exec` escapes it: the shell is
   // replaced, so the handler never runs.
   const trapped = new Set<string>();
+  // errexit as it was outside each subshell whose `set` changed it, restored
+  // when a later command is no longer inside that subshell.
+  const saved: Array<{ id: number; errexit: boolean }> = [];
   for (const [k, cmd] of cmds.entries()) {
+    while (saved.length > 0 && !cmd.subshells.includes(saved.at(-1)!.id)) {
+      errexit = saved.pop()!.errexit;
+    }
     const at = commandIndex(cmd.words);
     const viaExec = cmd.words.slice(0, at).includes("exec");
     // A group swallowed one level out takes even `cmd || exit 1` with it when
@@ -979,6 +992,13 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
     const head = stripQuotes(cmd.words[at] ?? "");
     if (head === "set") {
       const option = readShellOptions(cmd.words.slice(at + 1)).errexit;
+      const inner = cmd.subshells.at(-1);
+      if (
+        option !== null && inner !== undefined &&
+        saved.at(-1)?.id !== inner
+      ) {
+        saved.push({ id: inner, errexit });
+      }
       if (option !== null) errexit = option;
     } else if (head === "trap") {
       applyTrap(cmd.words, at, body, trapped);

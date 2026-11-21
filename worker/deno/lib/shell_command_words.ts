@@ -97,6 +97,23 @@ function shellCommandList(script: string): {
       i = newline - 1; // the loop's i++ lands on the newline
       continue;
     }
+    // An `&` in a redirection is part of the word, not a background `&`:
+    // `2>&1`, `>&2`, `<&3`, `&>log`, `&>>log` (PR #5332 review).
+    if (
+      ch === "&" &&
+      ((inWord && /[<>]$/.test(word)) ||
+        (text.charAt(i + 1) === ">" && text.charAt(i - 1) !== "&"))
+    ) {
+      word += ch;
+      inWord = true;
+      continue;
+    }
+    // `|&` pipes stderr too (`2>&1 |`): a pipe for this walk.
+    if (ch === "|" && text.charAt(i + 1) === "&") {
+      endCommand("|");
+      i++;
+      continue;
+    }
     if (SHELL_SEPARATORS.has(ch)) {
       const doubled = text.charAt(i + 1) === ch; // `&&` and `||`
       endCommand(doubled ? ch + ch : ch);
@@ -340,6 +357,14 @@ interface Frame {
   brace: boolean;
   /** A `( ... )` subshell: an `exit` inside it does not end the script. */
   sub: boolean;
+  /**
+   * A `$(` substitution or `(` array literal left open at a line end, ended
+   * by the `)` that balances it (PR #5332 review). It is also `sub`, and no
+   * command inside it is credited.
+   */
+  subst: boolean;
+  /** A `case` statement, whose patterns end in `)`. */
+  kase: boolean;
   /** Identity of this compound, for {@link ReachableCommand.groupSwallowed}. */
   id: number;
   /** A `for`, `select`, `while` or `until` loop. */
@@ -409,6 +434,12 @@ export interface ReachableCommand {
    * earlier pass is lost when a later one succeeds (PR #5332 review).
    */
   inLoop: boolean;
+  /**
+   * Ids of the `( )` subshells and substitutions open around the command,
+   * innermost last: a `set` inside one changes the options only until it
+   * closes (PR #5332 review).
+   */
+  subshells: number[];
 }
 
 /** Separators after a compound's closing word that can swallow its status. */
@@ -514,17 +545,48 @@ function parenBalance(word: string): { delta: number; endsClose: boolean } {
   return { delta, endsClose: quote === "" && endsClose };
 }
 
+/** A redirection operator alone (`>`, `2>>`, `&>`, `<`), its target in the next word. */
+const REDIRECT_OPERATOR = /^(?:\d*(?:>>?|<|<>|>\||<<<)|&>>?)$/;
+/** A redirection with its target attached (`>log`, `2>&1`, `&>log`, `</dev/null`). */
+const REDIRECT_ATTACHED = /^(?:\d*(?:>>?|<|<>|>\||<<<)|&>>?)[^<>]/;
+
 /**
- * Whether a command's last word closes the open subshell: it ends in an
- * unquoted `)`, and across all the command's words, outside quotes, there is
- * one more `)` than `(` (PR #5332 review). So `done)`, `"done")` and
- * `echo 'a')` close it, while `cd $(git rev-parse --show-toplevel)`,
- * `args=(--foo bar)` and `$(date)` do not.
+ * Whether `words[from..]` is only redirections, each an attached one or an
+ * operator and its target: `) 2>&1`, `) > log 2>&1` and `) </dev/null` are a
+ * close followed by redirections (PR #5332 review).
  */
-function closesSubshell(words: string[]): boolean {
-  let depth = 0;
-  for (const word of words) depth += parenBalance(word).delta;
-  return depth < 0 && parenBalance(words.at(-1) ?? "").endsClose;
+function redirectionsFrom(words: string[], from: number): boolean {
+  for (let i = from; i < words.length; i++) {
+    const w = words[i] ?? "";
+    if (REDIRECT_OPERATOR.test(w)) {
+      if (i + 1 >= words.length) return false;
+      i++;
+    } else if (!REDIRECT_ATTACHED.test(w)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Index of the word whose unquoted `)` closes the open subshell, or -1: the
+ * last word before any trailing redirections ends in an unquoted `)`, and
+ * across the words up to it, outside quotes, there is one more `)` than `(`
+ * (PR #5332 review). So `done)`, `"done")`, `echo 'a')` and `done) 2>&1`
+ * close it, while `cd $(git rev-parse --show-toplevel)`, `args=(--foo bar)`
+ * and `$(date)` do not.
+ */
+function subshellCloseIndex(words: string[]): number {
+  for (let j = words.length - 1; j >= 0; j--) {
+    if (!parenBalance(words[j] ?? "").endsClose) continue;
+    if (!redirectionsFrom(words, j + 1)) return -1;
+    let depth = 0;
+    for (const word of words.slice(0, j + 1)) {
+      depth += parenBalance(word).delta;
+    }
+    return depth < 0 ? j : -1;
+  }
+  return -1;
 }
 
 /**
@@ -555,6 +617,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
   // Compounds whose closing word is followed by `&&` (errexit ignored inside).
   const andLeftFrames = new Set<number>();
   let nextFrameId = 0;
+  let strayClose = false;
   let exited = false;
   let prev: boolean | null = null; // static status of the previous command
 
@@ -577,6 +640,8 @@ export function reachableCommands(script: string): ReachableCommand[] {
       awaitBrace: false,
       brace: false,
       sub: false,
+      subst: false,
+      kase: false,
       iterates: false,
       ...partial,
       id: nextFrameId++,
@@ -665,7 +730,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
       } else if (w === "else") {
         if (top) top.branch = "else";
       } else if (w === "for" || w === "case" || w === "select") {
-        push({ iterates: w !== "case" });
+        push({ iterates: w !== "case", kase: w === "case" });
         words = [];
         break;
       } else if (w === "{") {
@@ -681,6 +746,10 @@ export function reachableCommands(script: string): ReachableCommand[] {
         if (top?.sub) {
           closedStatus = top.skippedStatus;
           pop();
+        } else if (!stack.some((frame) => frame.kase)) {
+          // A `)` with no open subshell: the walk lost track of the
+          // parentheses, so nothing in the body is credited (fails closed).
+          strayClose = true;
         }
       } else if (
         w === "function" || FUNCTION_NAME.test(w) || words[1] === "()"
@@ -703,21 +772,38 @@ export function reachableCommands(script: string): ReachableCommand[] {
     // A `)` that ends a later command of an open subshell closes it too:
     // `( cd infra; runner; cd .. )` and `(cd infra; runner; echo done)`. Only
     // an unbalanced `)` counts, so `$(date)` or a quoted `)` does not.
+    // Redirections after the `)` belong to the subshell and are dropped:
+    // `( runner; echo done ) 2>&1 | tee log` (PR #5332 review).
     if (!closeAfter && stack.at(-1)?.sub && words.length > 0) {
-      const last = words.at(-1) ?? "";
-      if (closesSubshell(words)) {
+      const at = subshellCloseIndex(words);
+      if (at !== -1) {
         closeAfter = true;
-        const trimmed = last.slice(0, -1);
-        words = trimmed === "" ? words.slice(0, -1) : [
-          ...words.slice(0, -1),
+        const trimmed = (words[at] ?? "").slice(0, -1);
+        words = trimmed === "" ? words.slice(0, at) : [
+          ...words.slice(0, at),
           trimmed,
         ];
       }
+    }
+    // A `$(` or `(` left open at the line end (`VERSION=$(`, `args=(`)
+    // opens a frame that the balancing `)` closes, so that `)` does not close
+    // an enclosing subshell instead.
+    let opensSubst = false;
+    if (!closeAfter) {
+      let depth = 0;
+      for (const word of words) depth += parenBalance(word).delta;
+      opensSubst = depth > 0;
     }
     if (words.length === 0) {
       prev = closeAfter ? pop()?.skippedStatus ?? null : closedStatus;
       continue;
     }
+    const pushSubst = () => {
+      if (!opensSubst) return;
+      push({ truth: true, sub: true, subst: true });
+      const frame = stack.at(-1);
+      if (frame) swallowedFrames.add(frame.id);
+    };
 
     const frameOpen = stack.at(-1);
     if (!skipped) {
@@ -746,6 +832,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
         groupSwallowed: false,
         errexitIgnored: false,
         inLoop: stack.some((frame) => frame.iterates),
+        subshells: stack.filter((frame) => frame.sub).map((frame) => frame.id),
       });
       enclosing.push(stack.map((frame) => frame.id));
       const at = commandIndex(words);
@@ -757,11 +844,14 @@ export function reachableCommands(script: string): ReachableCommand[] {
       if (stops && certain) exited = true;
     }
     if (closeAfter) prev = pop()?.skippedStatus ?? prev;
+    pushSubst();
   }
+  // A subshell or substitution still open at the end: the walk lost track of
+  // its `)`, so nothing inside it is credited (fails closed).
+  for (const frame of stack) if (frame.sub) swallowedFrames.add(frame.id);
   for (const [k, cmd] of out.entries()) {
-    cmd.groupSwallowed = (enclosing[k] ?? []).some((id) =>
-      swallowedFrames.has(id)
-    );
+    cmd.groupSwallowed = strayClose ||
+      (enclosing[k] ?? []).some((id) => swallowedFrames.has(id));
     cmd.errexitIgnored = (enclosing[k] ?? []).some((id) =>
       andLeftFrames.has(id)
     );

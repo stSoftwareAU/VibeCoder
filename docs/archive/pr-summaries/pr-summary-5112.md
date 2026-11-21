@@ -197,6 +197,13 @@ emulator test.
   An `EXIT` or `ERR` trap whose handler may `exit 0` is refused too, with
   status-keeping handlers, resets and `exec` credited:
   `…::an EXIT or ERR trap whose handler may exit 0 earns no credit; a status-keeping handler, a reset or exec does`.
+  After the sixth review, a swallowed subshell closed before redirections
+  (`) 2>&1 | tee log`, `) > log 2>&1 || true`) or holding a multi-line `$(`
+  is refused, and a runner with an fd redirection (`> log 2>&1`, `2>&1`,
+  `&>`, `>&2`) is credited again:
+  `…::a swallowed subshell closed before redirections or holding a multi-line $( earns no credit; a redirected runner does`;
+  a `set -e` inside a subshell ends with it:
+  `…::set -e inside a subshell ends with it; a top-level set -e keeps the runner credited`.
   The Floci test-step matcher reads whole command words, so an install-only
   step beside a gap record earns nothing:
   `…::a gap record whose Floci job only installs a test tool is floci-only; common test runners are floci-gap`.
@@ -367,6 +374,24 @@ emulator test.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
+- After the sixth review (of `83013b2f`), in the same push as the owner
+  fix: `&` inside a redirection (`2>&1`, `>&2`, `<&3`, `&>`) is part of the
+  word, not a background `&`, and `|&` is a pipe. A subshell closes on its
+  last unquoted `)` even with redirections after it, which belong to the
+  subshell. A `$(` or `(` left open at a line end opens its own frame, which
+  its balancing `)` closes and inside which nothing is credited. A subshell
+  still open at the end, or a `)` that closes no subshell or `case`
+  pattern, gives no credit (backstop). `keptCommands` restores errexit when
+  a subshell whose `set` changed it closes. New tests: the six refused forms
+  in the workflow and a `set -euo pipefail` script, five workflow-only
+  refusals (including both backstops), eight credited controls (four
+  redirected runners, a redirected subshell followed by a line, a multi-line
+  `$(` and array before the runner, and a spaced `case` pattern), and the
+  subshell `set -e` test with its top-level control. Every test file
+  importing `shell_command_words.ts`, `aws_emulator_in_ci_check.ts`,
+  `aws_emulator_workflow_check.ts` or `best_practices_template.ts`
+  (13 files): 796 passed, 1 failed (the root-only unreadable-directory
+  case). The new refusals fail at `83013b2f`.
 - Owner review of `83013b2f`: a `trap 'exit 0' EXIT` (or `ERR`) before the
   runner was credited, but bash then exits 0 when the tests fail (checked
   with `bash -e -c "trap 'exit 0' EXIT; false"`, which exits 0). A new test
@@ -376,9 +401,7 @@ emulator test.
   in the workflow and in a script, plus a step trap before a script call.
   It credits ten controls (a tidy-up handler, `exit $rc`, a bare `exit`,
   `exit $?`, `exit 3`, `trap - EXIT`, `trap '' EXIT`, `INT TERM`, `trap -p`
-  and `exec` under the trap). The refusals fail at `83013b2f`. The six AWS
-  test files pass (653 passed; the one failure is the root-only unreadable
-  directory case noted below). A handler that calls a function the body does
+  and `exec` under the trap). The refusals fail at `83013b2f`. A handler that calls a function the body does
   not define (a sourced library) is not followed.
 - After the fifth review (of `8654e2f9`): the swallow test adds a subshell, a
   brace group and a multi-line subshell as an `if` condition; swallowed

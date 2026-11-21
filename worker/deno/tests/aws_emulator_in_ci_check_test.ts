@@ -2928,6 +2928,126 @@ Deno.test("checkAwsEmulatorInCI - an EXIT or ERR trap whose handler may exit 0 e
   }
 });
 
+// PR #5332 review round 6: a subshell closed by `)` and then redirections, or
+// one holding a multi-line `$(`, is still swallowed by `|| true` or a pipe; a
+// `set -e` inside a subshell ends with it; and an `&` in a redirection
+// (`2>&1`, `>&2`, `&>`) is not a background `&`.
+Deno.test("checkAwsEmulatorInCI - a swallowed subshell closed before redirections or holding a multi-line $( earns no credit; a redirected runner does", async () => {
+  const multiLineSubst =
+    `(\n  VERSION=$(\n    cat VERSION\n  )\n  ${RUNNER_STEP}\n  echo done\n)`;
+  const refusedBodies: Array<[string, string]> = [
+    [
+      "a subshell ) 2>&1 | tee log",
+      `( cd infra; ${RUNNER_STEP}; echo done ) 2>&1 | tee log`,
+    ],
+    [
+      "a subshell ) > log 2>&1 || true",
+      `( cd infra; ${RUNNER_STEP}; echo done ) > log 2>&1 || true`,
+    ],
+    [
+      "an attached subshell) >log || true",
+      `(cd infra; ${RUNNER_STEP}; echo done) >log || true`,
+    ],
+    ["a multi-line $( in a subshell || true", `${multiLineSubst} || true`],
+    ["a runner |& tee log", `${RUNNER_STEP} |& tee log`],
+    ["a runner 2>&1 | tee log", `${RUNNER_STEP} 2>&1 | tee log`],
+  ];
+  for (const [label, body] of refusedBodies) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "missing", `workflow: ${label}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(inScript.wiring, "missing", `script: ${label}`);
+  }
+  // Without pipefail in a default workflow shell, a pipe swallows too.
+  for (
+    const body of [
+      `( ${RUNNER_STEP}; echo done ) >/dev/null || true`,
+      `( ${RUNNER_STEP}; echo done ) </dev/null | tee log`,
+      `${multiLineSubst} | tee log`,
+      // Backstops: a subshell never closed, and a `)` with none open.
+      `(\n  ${RUNNER_STEP}\n  echo done`,
+      `${RUNNER_STEP}\n)\necho x`,
+    ]
+  ) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(result.wiring, "missing", `workflow: ${body}`);
+  }
+  const credited: Array<[string, string, string]> = [
+    ["a runner > log 2>&1", "workflow", `${RUNNER_STEP} > log 2>&1`],
+    ["a runner 2>&1, then more", "workflow", `${RUNNER_STEP} 2>&1\necho more`],
+    ["a runner &> test.log", "workflow", `${RUNNER_STEP} &> test.log`],
+    ["a runner >&2, then more", "script", `${RUNNER_STEP} >&2\necho more`],
+    [
+      "a subshell >log, then more",
+      "workflow",
+      `( ${RUNNER_STEP}; echo done ) >log\necho more`,
+    ],
+    [
+      "a multi-line $( before the runner",
+      "workflow",
+      `VERSION=$(\n  cat VERSION\n)\n${RUNNER_STEP}\necho done`,
+    ],
+    [
+      "a multi-line array before the runner",
+      "workflow",
+      `args=(\n  --foo\n  bar\n)\n${RUNNER_STEP} "\${args[@]}"`,
+    ],
+    [
+      "a case pattern closed by a spaced )",
+      "workflow",
+      `case "$1" in\n  ci )\n    echo ci\n    ;;\nesac\n${RUNNER_STEP}\necho more`,
+    ],
+  ];
+  for (const [label, where, body] of credited) {
+    const result = await checkRepoWith(
+      where === "workflow"
+        ? { ".github/workflows/ci.yml": prWorkflow(stepYaml(body)) }
+        : {
+          ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+          "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+        },
+    );
+    assertEquals(result.wiring, "official-server", `${where}: ${label}`);
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - set -e inside a subshell ends with it; a top-level set -e keeps the runner credited", async () => {
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      `#!/usr/bin/env bash\n( set -e; make build )\n${RUNNER_STEP}\necho done\n`,
+  });
+  assertEquals(refused.wiring, "missing", "set -e only in a subshell");
+  const multiLine = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      `#!/usr/bin/env bash\n(\n  set -e\n  make build\n)\n${RUNNER_STEP}\necho done\n`,
+  });
+  assertEquals(multiLine.wiring, "missing", "set -e in a multi-line subshell");
+  const credited = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      `#!/usr/bin/env bash\nset -e\n( make build )\n${RUNNER_STEP}\necho done\n`,
+  });
+  assertEquals(credited.wiring, "official-server", "top-level set -e");
+  const inside = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\n( set -e; ${RUNNER_STEP}; echo done )\n`,
+  });
+  assertEquals(
+    inside.wiring,
+    "official-server",
+    "runner inside the set -e subshell",
+  );
+});
+
 // PR #5332 review: the Floci job's test step is read on whole command words.
 // An install-only step beside a valid gap record earns nothing, and the common
 // runners the matcher is meant to accept are credited.
