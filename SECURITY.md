@@ -543,6 +543,15 @@ break**:
   that is not a single word without a digit, symbol or internal capital. That
   word test is **length-bounded**: an unbounded one read a lower-case
   passphrase such as `correcthorsebatterystaple` as prose.
+- A credential label followed by its **own** separator is never taken as an
+  earlier label's value. In `credentials: DEPLOY_TOKEN = <value>` (same line or
+  next) the bare value ends at whitespace, so the earlier match used to mask
+  only `DEPLOY_TOKEN` and publish `<value>`; the earlier label is now refused
+  and the scan masks the inner label's value (Issue #5310). The refusal applies
+  when whitespace or a double quote sits around the inner separator, within
+  64 characters either side of the keyword and 32 whitespace characters before
+  the separator (every quantifier is bounded); `KEY=v` and `Secret:abc` stay in
+  one run and are masked whole as before.
 
 `containsSecret()` asks the value predicate the same question the replacement
 does, so detection and redaction cannot drift apart — a body that redacts to

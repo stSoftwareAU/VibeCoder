@@ -50,7 +50,7 @@ import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
  * means and why every quantifier is bounded.
  */
 const SECRET_ASSIGNMENT_PATTERN =
-  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|[^\s"]+)/gi;
+  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?![A-Za-z0-9_]{0,64}(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]{0,64}(?:["']?\s{1,32}[=:]|"[=:]|'?[=:][\s"]))(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|[^\s"]+)/gi;
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -133,6 +133,10 @@ const MIN_CROSS_LINE_LENGTH = 8;
  * structure, the parent's first child, never a credential. Bounded and
  * anchored, so it is constant work per candidate (the Issue #3942 linearity
  * rule).
+ *
+ * A credential-labelled child key (`API_TOKEN:`) never reaches this test: the
+ * pattern refuses it as the parent's value (Issue #5310), so the scan reaches
+ * the child and judges the child's own value.
  */
 const MAPPING_KEY_VALUE = /^[A-Za-z0-9_.-]{1,128}:$/;
 
@@ -568,6 +572,19 @@ const RULES: readonly RedactionRule[] = [
   // to end there, so `PASSWORD=false-Flag-9f8e` and `API_KEY=no1Secret` are
   // still masked. Both lookaheads are fixed-width alternations — constant
   // work per candidate (the Issue #3942 linearity rule).
+  //
+  // A credential label is never taken as the value of the label before it
+  // (Issue #5310). In `credentials: DEPLOY_TOKEN = <value>` the bare-value
+  // branch stops at whitespace, so the outer match masked only `DEPLOY_TOKEN`,
+  // the scan resumed after it, and the real value was published. A lookahead
+  // directly after the separator refuses a candidate that is itself a
+  // credential label followed by its own separator when whitespace or a double
+  // quote sits around that separator (the only cases where the run would end
+  // before the inner value); the scan then resumes at the inner label, whose
+  // own match masks its value. `KEY=v` and `Secret:abc` stay inside one run
+  // and are masked whole, as before. Every quantifier is bounded (Issue
+  // #3942): past 64 characters either side of the keyword, or 32 whitespace
+  // characters before the separator, the rule falls back to the old behaviour.
   //
   // JSON structure survives the mask (Issue #4169's transcript tee is the
   // sink that showed it). Every stream-json line the agent emits carries a
