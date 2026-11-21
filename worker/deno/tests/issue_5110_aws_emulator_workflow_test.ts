@@ -475,6 +475,241 @@ Deno.test("(gate-call) refuses a quality.yml without the aws-emulator caller job
   assert(findings[0]?.startsWith("[gate-call]"), findings[0]);
 });
 
+const GATE_ALWAYS = "    if: always()\n";
+const GATE_STEP_NAME =
+  "      - name: Require every gated workflow to have succeeded\n";
+const GATE_RUN = "run: .github/scripts/gate.sh";
+const GATE_ENV = "        env:\n          NEEDS_JSON: ${{ toJSON(needs) }}\n";
+const GATE_NEEDS_JSON = "NEEDS_JSON: ${{ toJSON(needs) }}";
+
+function assertOneFinding(
+  findings: string[],
+  prefix: string,
+  substring: string,
+): void {
+  assertEquals(findings.length, 1, findings.join("\n"));
+  assert(findings[0]?.startsWith(prefix), findings[0]);
+  assert(findings[0]?.includes(substring), findings[0]);
+}
+
+for (
+  const [label, to] of [
+    ["removed", ""],
+    ["success()", "    if: success()\n"],
+    ["always() && false", "    if: ${{ always() && false }}\n"],
+  ] as const
+) {
+  Deno.test(`(gate-always) refuses a gate whose if: is ${label}`, () => {
+    assertOneFinding(
+      checkQualityCallsAwsEmulator(qualityMutated(GATE_ALWAYS, to)),
+      "[gate-always]",
+      "if: always()",
+    );
+  });
+}
+
+Deno.test("(gate-always) accepts if: ${{ always() }}", () => {
+  assertEquals(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(GATE_ALWAYS, "    if: ${{ always() }}\n"),
+    ),
+    [],
+  );
+});
+
+Deno.test("(gate-soft) refuses continue-on-error on the gate job", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_ALWAYS + "    runs-on",
+        GATE_ALWAYS + "    continue-on-error: true\n    runs-on",
+      ),
+    ),
+    "[gate-soft]",
+    "continue-on-error",
+  );
+});
+
+for (
+  const [label, to] of [
+    ["|| true", `${GATE_RUN} || true`],
+    ["echo", "run: echo .github/scripts/gate.sh"],
+    ["true", "run: true"],
+  ] as const
+) {
+  Deno.test(`(gate-script) refuses a gate step whose command is ${label}`, () => {
+    assertOneFinding(
+      checkQualityCallsAwsEmulator(qualityMutated(GATE_RUN, to)),
+      "[gate-script]",
+      "gate.sh",
+    );
+  });
+}
+
+Deno.test("(gate-script) refuses a constant NEEDS_JSON", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_NEEDS_JSON,
+        `NEEDS_JSON: '{"aws-emulator":{"result":"success"}}'`,
+      ),
+    ),
+    "[gate-script]",
+    "NEEDS_JSON",
+  );
+});
+
+Deno.test("(gate-script) refuses a gate step with no env", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(qualityMutated(GATE_ENV, "")),
+    "[gate-script]",
+    "NEEDS_JSON",
+  );
+});
+
+Deno.test("(gate-script) refuses a soft gate step", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_STEP_NAME,
+        GATE_STEP_NAME + "        continue-on-error: true\n",
+      ),
+    ),
+    "[gate-script]",
+    "continue-on-error",
+  );
+});
+
+Deno.test("(gate-script) refuses a conditional gate step", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(GATE_STEP_NAME, GATE_STEP_NAME + "        if: false\n"),
+    ),
+    "[gate-script]",
+    "if:",
+  );
+});
+
+Deno.test("(gate-script) refuses a shell that does not run the body", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_STEP_NAME,
+        GATE_STEP_NAME + "        shell: bash -n {0}\n",
+      ),
+    ),
+    "[gate-script]",
+    "shell",
+  );
+});
+
+Deno.test("(gate-script) refuses a trailing set that masks the gate result under bash {0}", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(qualityMutated(
+      GATE_RUN,
+      "shell: bash {0}\n        run: |\n          bash .github/scripts/gate.sh\n          set -euo pipefail",
+    )),
+    "[gate-script]",
+    "no gate step runs",
+  );
+});
+
+// Bash removes backslash-newline before it looks for comments, so a `#` line
+// straight after a line ending in `\` is part of that command. Each body below
+// exits 0 under `bash -e` without running gate.sh
+// (`.github/scripts/gate.sh#: No such file or directory`, then `|| true`).
+for (
+  const [label, body] of [
+    ["bare path", "          .github/scripts/gate.sh\\\n          # || true"],
+    [
+      "after set -euo pipefail",
+      "          set -euo pipefail\n          .github/scripts/gate.sh\\\n          # || true",
+    ],
+    [
+      "after bash",
+      "          bash .github/scripts/gate.sh\\\n          # || true",
+    ],
+  ] as const
+) {
+  Deno.test(`(gate-script) refuses a continued # line that swallows the gate result (${label})`, () => {
+    assertOneFinding(
+      checkQualityCallsAwsEmulator(
+        qualityMutated(GATE_RUN, `run: |\n${body}`),
+      ),
+      "[gate-script]",
+      "no gate step runs",
+    );
+  });
+}
+
+Deno.test("(gate-script) accepts a comment line that no continuation reaches", () => {
+  assertEquals(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_RUN,
+        "run: |\n          # Judge every needed job.\n          .github/scripts/gate.sh",
+      ),
+    ),
+    [],
+  );
+});
+
+Deno.test("(gate-script) accepts bash <path> and a set -euo pipefail block", () => {
+  assertEquals(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(GATE_RUN, "run: bash .github/scripts/gate.sh"),
+    ),
+    [],
+  );
+  assertEquals(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_RUN,
+        "run: |\n          set -euo pipefail\n          .github/scripts/gate.sh",
+      ),
+    ),
+    [],
+  );
+});
+
+for (
+  const path of [
+    "./evil.github/scripts/gate.sh",
+    "/tmp/x/.github/scripts/gate.sh",
+  ]
+) {
+  Deno.test(`(gate-script) refuses a command that is not the exact path ${path}`, () => {
+    assertOneFinding(
+      checkQualityCallsAwsEmulator(qualityMutated(GATE_RUN, `run: ${path}`)),
+      "[gate-script]",
+      "no gate step runs",
+    );
+  });
+}
+
+Deno.test("(gate-script) refuses an extra step that could replace the script", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_STEP_NAME,
+        '      - run: echo "exit 0" > .github/scripts/gate.sh\n' +
+          GATE_STEP_NAME,
+      ),
+    ),
+    "[gate-script]",
+    "no step but actions/checkout",
+  );
+});
+
+Deno.test("(gate-script) accepts ./.github/scripts/gate.sh", () => {
+  assertEquals(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(GATE_RUN, "run: ./.github/scripts/gate.sh"),
+    ),
+    [],
+  );
+});
+
 Deno.test("checkQualityCallsAwsEmulator reports non-object input without throwing", () => {
   assertEquals(checkQualityCallsAwsEmulator(null), [
     "quality workflow is not an object",
