@@ -1595,6 +1595,8 @@ async function runClaudeWithTimeoutBody(
   // the survivors of an external kill can be collected after the fact.
   let descendantSnapshotTimer: TimerHandle | undefined;
   let descendantTracker: DescendantTracker | undefined;
+  // The spawn tag of this run (Issue #4815), hoisted so the catch reaps too.
+  let agentSpawnTag: string | undefined;
   // Set when the host crosses its disk floor while the agent is running
   // (Issue #4360). The run then fails as infrastructure, not as a timeout.
   let hostDiskPark: string | undefined;
@@ -1668,7 +1670,7 @@ async function runClaudeWithTimeoutBody(
     // starts inherits it, detached jobs included, so the leftover reaper can
     // find and terminate what outlives the agent. Set before the gh guard
     // shim and the pre-push hook copy baseEnv, so the child carries it.
-    const agentSpawnTag = newAgentSpawnTag();
+    agentSpawnTag = newAgentSpawnTag();
     baseEnv[AGENT_SPAWN_TAG_ENV] = agentSpawnTag;
     // The TokenEconomizer plugin's allow-listed environment (Issue #4956),
     // overlaid before the gh guard shim and the pre-push hook copy baseEnv, so
@@ -3178,6 +3180,17 @@ async function runClaudeWithTimeoutBody(
     if (descendantSnapshotTimer) clock.clearInterval(descendantSnapshotTimer);
     if (hostDiskPoll) clock.clearInterval(hostDiskPoll);
     if (descendantTracker) await descendantTracker.settle();
+    // On a throw the agent may still be alive, and it carries the tag too, so
+    // it is terminated along with its leftovers rather than abandoned
+    // (Issue #4815).
+    if (agentSpawnTag !== undefined) {
+      await reapAgentLeftovers({
+        tag: agentSpawnTag,
+        maxWaitSeconds: killAfterSeconds,
+        logger,
+        deps: options.leftoverReaperDeps,
+      });
+    }
     for (const [pid, run] of activeAgentRuns) {
       if (run.logger === logger && run.label.startsWith(phase ?? "agent")) {
         activeAgentRuns.delete(pid);

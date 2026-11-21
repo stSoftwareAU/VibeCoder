@@ -75,6 +75,10 @@ interface FakeOptions {
   unkillable?: number[];
   /** A pid whose signal throws. */
   failOn?: number;
+  /** Pids with no identity fingerprint, so they must never be signalled. */
+  noIdentity?: number[];
+  /** Pids whose identity changes once they have been sent TERM. */
+  replacedAfterTerm?: number[];
   /** The reaper's own pid. Default 1. */
   selfPid?: number;
   /** Whether the platform is supported. Default true. */
@@ -102,6 +106,17 @@ function fakeReaper(options: FakeOptions) {
       return Promise.resolve(names);
     },
     isRunning: (pid) => Promise.resolve(alive.has(pid)),
+    captureIdentity: (pid) => {
+      if (options.noIdentity?.includes(pid)) return Promise.resolve(null);
+      return Promise.resolve({ pid, startedAt: `start-${pid}` });
+    },
+    isSame: (pid, identity) => {
+      const replaced = options.replacedAfterTerm?.includes(pid) === true &&
+        signals.includes(`TERM ${pid}`);
+      return Promise.resolve(
+        identity.pid === pid && alive.has(pid) && !replaced,
+      );
+    },
     sendSignal: (pid, signal) => {
       signals.push(`${signal} ${pid}`);
       if (options.failOn === pid) {
@@ -274,7 +289,12 @@ Deno.test({
     });
 
     assertEquals(fake.signals, []);
-    assertEquals(result, { supported: true, collected: [], survivors: [] });
+    assertEquals(result, {
+      supported: true,
+      collected: [],
+      survivors: [],
+      skipped: [],
+    });
     assertEquals(recorded.warn, []);
     assertEquals(recorded.error, []);
     assertEquals(recorded.security, []);
@@ -348,11 +368,78 @@ Deno.test({
 
     assertEquals(fake.signals, ["TERM 801", "TERM 802"]);
     assertEquals(result.collected, [801]);
-    assertEquals(result.survivors, []);
+    // Neither pid was proven gone, so both are listed as unknown.
+    assertEquals(result.survivors, [801, 802]);
     assertStringIncludes(result.error ?? "", "operation not permitted");
     assertEquals(recorded.error.length, 1);
     assertStringIncludes(firstOf(recorded.error), "operation not permitted");
     assertStringIncludes(firstOf(recorded.error), "signalled: 801");
+    assertEquals(recorded.security.length, 1);
+    assertEquals(
+      firstOf(recorded.security).event,
+      "AGENT_LEFTOVERS_UNCHECKED",
+    );
+    assertStringIncludes(
+      firstOf(recorded.security).details,
+      "cause=kill 802: operation not permitted",
+    );
+    assertStringIncludes(
+      firstOf(recorded.security).details,
+      "unproven=801,802",
+    );
+  },
+});
+
+Deno.test({
+  name: "reaper - a pid replaced between TERM and KILL is never KILLed",
+  permissions: { read: true, env: true },
+  async fn() {
+    const fake = fakeReaper({
+      found: { ok: true, pids: [401] },
+      alive: [401],
+      ignoreTerm: [401],
+      replacedAfterTerm: [401],
+    });
+    const recorded = newRecorded();
+    const result = await reapAgentLeftovers({
+      tag: TAG,
+      maxWaitSeconds: 1,
+      logger: recordingLogger(recorded),
+      deps: fake.deps,
+    });
+
+    // TERM was sent while the identity still matched; KILL was not, because
+    // at KILL time the pid no longer holds the fingerprinted process.
+    assertEquals(fake.signals, ["TERM 401"]);
+    assertEquals(result.collected, [401]);
+    assertEquals(result.skipped, [401]);
+    assertEquals(result.survivors, []);
+    assertStringIncludes(firstOf(recorded.warn), "; skipped: 401");
+  },
+});
+
+Deno.test({
+  name: "reaper - a pid with no identity is never signalled",
+  permissions: { read: true, env: true },
+  async fn() {
+    const fake = fakeReaper({
+      found: { ok: true, pids: [501, 502] },
+      alive: [501, 502],
+      noIdentity: [501],
+    });
+    const recorded = newRecorded();
+    const result = await reapAgentLeftovers({
+      tag: TAG,
+      maxWaitSeconds: 2,
+      logger: recordingLogger(recorded),
+      deps: fake.deps,
+    });
+
+    assertEquals(fake.signals, ["TERM 502"]);
+    assertEquals(result.collected, [502]);
+    assertEquals(result.skipped, [501]);
+    assertEquals(result.survivors, []);
+    assertStringIncludes(firstOf(recorded.warn), "; skipped: 501");
   },
 });
 

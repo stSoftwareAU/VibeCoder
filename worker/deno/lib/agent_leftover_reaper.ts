@@ -18,6 +18,11 @@
 import type { Logger } from "../types.ts";
 import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
 import { DEFAULT_ORPHAN_COLLECTOR_DEPS } from "./orphan_collector.ts";
+import {
+  captureProcessIdentity,
+  isSameProcess,
+  type ProcessIdentity,
+} from "./pid_guard.ts";
 
 /** Environment variable carrying the per-spawn tag (Issue #4815). */
 export const AGENT_SPAWN_TAG_ENV = "VIBE_AGENT_SPAWN_TAG";
@@ -62,6 +67,10 @@ export interface LeftoverReaperDeps {
   isRunning: (pid: number) => Promise<boolean>;
   /** Send TERM or KILL to a single pid (never a group). */
   sendSignal: (pid: number, signal: "TERM" | "KILL") => Promise<void>;
+  /** Fingerprint of the process holding a pid; `null` when unidentifiable. */
+  captureIdentity: (pid: number) => Promise<ProcessIdentity | null>;
+  /** Whether the pid still holds the process `identity` fingerprinted. */
+  isSame: (pid: number, identity: ProcessIdentity) => Promise<boolean>;
   /** Sleep between poll iterations. */
   sleep: (ms: number) => Promise<void>;
   /** This process; never signalled. */
@@ -87,10 +96,18 @@ export interface ReapAgentLeftoversOptions {
 export interface ReapAgentLeftoversResult {
   /** False only on a platform the scan does not run on. */
   supported: boolean;
-  /** Pids signalled, in the order they were found. */
+  /** Pids signalled with TERM, in the order they were found. */
   collected: number[];
-  /** Pids still running after KILL. */
+  /**
+   * Pids still running after KILL. When the pass stopped on an error, every
+   * pid not proven gone, since none of them can be called clear.
+   */
   survivors: number[];
+  /**
+   * Pids never signalled because their identity was missing or no longer
+   * matched at the moment of a signal.
+   */
+  skipped: number[];
   /** The cause, when the scan or the signalling failed. */
   error?: string;
 }
@@ -174,27 +191,41 @@ export const DEFAULT_LEFTOVER_REAPER_DEPS: LeftoverReaperDeps = {
   processNames: defaultProcessNames,
   isRunning: DEFAULT_ORPHAN_COLLECTOR_DEPS.isRunning,
   sendSignal: DEFAULT_ORPHAN_COLLECTOR_DEPS.sendSignal,
+  captureIdentity: captureProcessIdentity,
+  isSame: async (pid, identity) =>
+    identity.pid === pid && await isSameProcess(identity),
   sleep: DEFAULT_ORPHAN_COLLECTOR_DEPS.sleep,
   selfPid: Deno.pid,
   supported: Deno.build.os === "linux",
 };
 
+/**
+ * The pids among `pids` still running. Each pid found gone is recorded in
+ * `gone` when one is given, so a pass that stops early knows what it proved.
+ */
 async function runningOf(
   deps: LeftoverReaperDeps,
   pids: number[],
+  gone?: Set<number>,
 ): Promise<number[]> {
   const running: number[] = [];
   for (const pid of pids) {
     if (await deps.isRunning(pid)) running.push(pid);
+    else gone?.add(pid);
   }
   return running;
 }
 
 /**
  * Terminate every same-user process that carries the agent's spawn tag.
- * Call once the agent has exited. TERM first, then KILL after the bound.
- * Never throws: a scan failure is logged with its cause, and a signal or
- * probe that throws stops the pass and keeps what was done.
+ * Call once the agent has exited. Each pid is fingerprinted after the scan
+ * and re-checked immediately before every TERM and KILL; a pid with no
+ * fingerprint, or one that no longer matches, is never signalled and is
+ * reported as skipped. TERM first, then KILL after the bound.
+ * Never throws: a scan failure is logged with its cause and reported as
+ * `AGENT_LEFTOVERS_UNCHECKED`. A signal, identity or probe that throws stops
+ * the pass, logs the cause under the same event, and reports as survivors
+ * every pid not proven gone.
  */
 export async function reapAgentLeftovers(
   options: ReapAgentLeftoversOptions,
@@ -209,10 +240,16 @@ export async function reapAgentLeftovers(
       `Not checking for processes the ${label} left running (Issue #4815): ` +
         `${error}; nothing was scanned`,
     );
-    return { supported: deps.supported, collected: [], survivors: [], error };
+    return {
+      supported: deps.supported,
+      collected: [],
+      survivors: [],
+      skipped: [],
+      error,
+    };
   }
   if (!deps.supported) {
-    return { supported: false, collected: [], survivors: [] };
+    return { supported: false, collected: [], survivors: [], skipped: [] };
   }
 
   const entry = `${AGENT_SPAWN_TAG_ENV}=${options.tag}`;
@@ -232,46 +269,80 @@ export async function reapAgentLeftovers(
       supported: true,
       collected: [],
       survivors: [],
+      skipped: [],
       error: found.error,
     };
   }
 
   const pids = found.pids.filter((pid) => pid !== deps.selfPid);
   if (pids.length === 0) {
-    return { supported: true, collected: [], survivors: [] };
+    return { supported: true, collected: [], survivors: [], skipped: [] };
   }
 
   const signalled: number[] = [];
+  const skipped: number[] = [];
+  const gone = new Set<number>();
+  const identities = new Map<number, ProcessIdentity>();
   let names = new Map<number, string>();
+  // Checked immediately before every signal: a pid with no fingerprint, or
+  // one that no longer matches its fingerprint, is never signalled.
+  const stillOurs = async (pid: number): Promise<boolean> => {
+    const identity = identities.get(pid);
+    return identity !== undefined && await deps.isSame(pid, identity);
+  };
   let survivors: number[];
   try {
     names = await deps.processNames(pids);
     for (const pid of pids) {
+      const identity = await deps.captureIdentity(pid);
+      if (identity !== null) identities.set(pid, identity);
+    }
+    for (const pid of pids) {
+      if (!(await stillOurs(pid))) {
+        skipped.push(pid);
+        continue;
+      }
       await deps.sendSignal(pid, "TERM");
       signalled.push(pid);
     }
     const waitSeconds = Math.max(1, Math.floor(options.maxWaitSeconds));
     for (let i = 0; i < waitSeconds; i++) {
-      if ((await runningOf(deps, pids)).length === 0) break;
+      if ((await runningOf(deps, signalled, gone)).length === 0) break;
       await deps.sleep(1000);
     }
-    for (const pid of await runningOf(deps, pids)) {
+    for (const pid of await runningOf(deps, signalled, gone)) {
+      if (!(await stillOurs(pid))) {
+        skipped.push(pid);
+        continue;
+      }
       await deps.sendSignal(pid, "KILL");
     }
     await deps.sleep(POST_KILL_SETTLE_MS);
-    survivors = await runningOf(deps, pids);
+    survivors = (await runningOf(deps, signalled, gone)).filter((pid) =>
+      !skipped.includes(pid)
+    );
   } catch (error) {
     const cause = errorText(error);
     const done = signalled.length > 0 ? signalled.join(",") : "none";
+    // Not proven gone: a pid the pass never confirmed absent, so it is listed
+    // as unknown rather than as clear. A skipped pid is not ours to report.
+    const unproven = pids.filter((pid) =>
+      !gone.has(pid) && !skipped.includes(pid)
+    );
     logger?.error(
       `Stopped terminating the processes the ${label} left running: ` +
         `${cause}; signalled: ${done}; any other leftover is still ` +
         "running (Issue #4815)",
     );
+    logger?.security?.(
+      "AGENT_LEFTOVERS_UNCHECKED",
+      `cause=${cause} unproven=${unproven.join(",") || "none"}`,
+    );
     return {
       supported: true,
       collected: signalled,
-      survivors: [],
+      survivors: unproven,
+      skipped,
       error: cause,
     };
   }
@@ -282,11 +353,12 @@ export async function reapAgentLeftovers(
   logger?.warn(
     `The ${label} left ${pids.length} process(es) running after it exited: ` +
       `${described}; terminated (Issue #4815)` +
-      (survivors.length > 0 ? `; still running: ${survivors.join(", ")}` : ""),
+      (survivors.length > 0 ? `; still running: ${survivors.join(", ")}` : "") +
+      (skipped.length > 0 ? `; skipped: ${skipped.join(", ")}` : ""),
   );
   logger?.security?.(
     "AGENT_LEFTOVERS_COLLECTED",
-    `collected=${pids.join(",")} survivors=${survivors.join(",")}`,
+    `collected=${signalled.join(",")} survivors=${survivors.join(",")}`,
   );
-  return { supported: true, collected: pids, survivors };
+  return { supported: true, collected: signalled, survivors, skipped };
 }
