@@ -21,6 +21,18 @@ import {
   buildPullArgs,
   buildRebaseArgs,
 } from "../lib/git_ref_args.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+
+/** Run a fixture git call shut off from the host's config and hooks. */
+function fixtureGit(args: string[], cwd: string) {
+  return runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
+    cwd,
+    env: NO_HOST_GIT_CONFIG,
+  });
+}
 
 /** Initialise a bare "remote" plus a working clone with one commit on main. */
 async function setupRepos(
@@ -30,20 +42,16 @@ async function setupRepos(
   const localPath = `${tmpDir}/local`;
 
   await Deno.mkdir(remotePath, { recursive: true });
-  await runGitCommand(["init", "--bare"], { cwd: remotePath });
-  await runGitCommand(["symbolic-ref", "HEAD", "refs/heads/main"], {
-    cwd: remotePath,
-  });
-  await runGitCommand(["clone", remotePath, localPath], { cwd: tmpDir });
-  await runGitCommand(["config", "user.email", "test@example.com"], {
-    cwd: localPath,
-  });
-  await runGitCommand(["config", "user.name", "Test User"], { cwd: localPath });
+  await fixtureGit(["init", "--bare"], remotePath);
+  await fixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], remotePath);
+  await fixtureGit(["clone", remotePath, localPath], tmpDir);
+  await fixtureGit(["config", "user.email", "test@example.com"], localPath);
+  await fixtureGit(["config", "user.name", "Test User"], localPath);
 
   await Deno.writeTextFile(`${localPath}/README.md`, "# Test Repo\n");
-  await runGitCommand(["add", "README.md"], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Initial commit"], { cwd: localPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  await fixtureGit(["add", "README.md"], localPath);
+  await fixtureGit(["commit", "-m", "Initial commit"], localPath);
+  await fixtureGit(["push", "origin", "main"], localPath);
 
   return { localPath };
 }

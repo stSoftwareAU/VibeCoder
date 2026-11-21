@@ -17,6 +17,10 @@ import {
 } from "../lib/git_pull.ts";
 import { pushUnpushedCommits } from "../lib/git_push.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import type { GitRunner } from "../lib/branch_currency.ts";
 import { mergeOntoBase, syncBranchesForPrRaise } from "../lib/pr_raise_sync.ts";
 import {
@@ -43,7 +47,10 @@ async function git(
   cwd: string,
   env: Record<string, string> = {},
 ): Promise<string> {
-  const result = await runGitCommand(args, { cwd, env });
+  const result = await runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
+    cwd,
+    env: { ...env, ...NO_HOST_GIT_CONFIG },
+  });
   if (!result.ok) throw result.error;
   if (result.value.code !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${result.value.stderr}`);
@@ -112,8 +119,14 @@ async function remoteContains(
   ancestor: string,
 ): Promise<boolean> {
   const result = await runGitCommand(
-    ["merge-base", "--is-ancestor", ancestor, `refs/heads/${branch}`],
-    { cwd: fx.remote },
+    [
+      ...NO_HOST_HOOKS_ARGS,
+      "merge-base",
+      "--is-ancestor",
+      ancestor,
+      `refs/heads/${branch}`,
+    ],
+    { cwd: fx.remote, env: NO_HOST_GIT_CONFIG },
   );
   return result.ok && result.value.code === 0;
 }
@@ -317,8 +330,8 @@ Deno.test("sync point 2, PR raise: a conflicting merge is aborted and leaves the
     assertEquals(await git(["rev-parse", "HEAD"], worker), before);
     assertEquals(await git(["status", "--porcelain"], worker), "");
     const merging = await runGitCommand(
-      ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
-      { cwd: worker },
+      [...NO_HOST_HOOKS_ARGS, "rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
+      { cwd: worker, env: NO_HOST_GIT_CONFIG },
     );
     assert(merging.ok && merging.value.code !== 0, "MERGE_HEAD survived");
   } finally {

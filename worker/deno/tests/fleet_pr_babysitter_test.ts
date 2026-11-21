@@ -65,6 +65,10 @@ import {
   type SyncPrBodyInput,
 } from "../lib/pr_body_sync.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { buildIdempotencyMarker, closingKeywordLine } from "../lib/pr_body.ts";
 import {
   applyPrBody,
@@ -128,8 +132,9 @@ async function runGitForTest(
   options: { cwd?: string; timeoutSeconds?: number } = {},
 ): Promise<string> {
   const output = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd: options.cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdin: "null",
     stdout: "piped",
     stderr: "piped",
@@ -211,7 +216,11 @@ const syncLogger = createLogger({
 });
 
 async function runGit(cwd: string, ...args: string[]): Promise<string> {
-  const result = await runGitCommand(args, { cwd, timeoutSeconds: 10 });
+  const result = await runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
+    cwd,
+    timeoutSeconds: 10,
+    env: NO_HOST_GIT_CONFIG,
+  });
   if (!result.ok) throw result.error;
   if (result.value.code !== 0) {
     throw new Error(result.value.stderr || result.value.stdout);

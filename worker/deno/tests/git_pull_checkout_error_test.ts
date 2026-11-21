@@ -14,6 +14,23 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ensurePrMergeable, updatePrBranch } from "../lib/git_pull.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+
+/**
+ * Run a fixture git call with the host's config and hooks shut off (Issue #5309).
+ */
+async function fixtureGit(
+  args: string[],
+  options: { cwd: string },
+): ReturnType<typeof runGitCommand> {
+  return await runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
+    ...options,
+    env: NO_HOST_GIT_CONFIG,
+  });
+}
 
 /** A clone on `main` with one commit and no feature branch anywhere. */
 async function setupCloneWithoutFeatureBranch(): Promise<{
@@ -25,20 +42,20 @@ async function setupCloneWithoutFeatureBranch(): Promise<{
   const localPath = `${tmpDir}/local`;
 
   await Deno.mkdir(remotePath, { recursive: true });
-  await runGitCommand(["init", "--bare"], { cwd: remotePath });
-  await runGitCommand(["symbolic-ref", "HEAD", "refs/heads/main"], {
+  await fixtureGit(["init", "--bare"], { cwd: remotePath });
+  await fixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
     cwd: remotePath,
   });
-  await runGitCommand(["clone", remotePath, localPath], { cwd: tmpDir });
-  await runGitCommand(["config", "user.email", "test@example.com"], {
+  await fixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
+  await fixtureGit(["config", "user.email", "test@example.com"], {
     cwd: localPath,
   });
-  await runGitCommand(["config", "user.name", "Test User"], { cwd: localPath });
+  await fixtureGit(["config", "user.name", "Test User"], { cwd: localPath });
 
   await Deno.writeTextFile(`${localPath}/shared.txt`, "base\n");
-  await runGitCommand(["add", "."], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Initial commit"], { cwd: localPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  await fixtureGit(["add", "."], { cwd: localPath });
+  await fixtureGit(["commit", "-m", "Initial commit"], { cwd: localPath });
+  await fixtureGit(["push", "origin", "main"], { cwd: localPath });
 
   return { tmpDir, localPath };
 }
