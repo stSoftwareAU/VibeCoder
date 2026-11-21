@@ -890,7 +890,10 @@ function walkAssignments(text: string): AssignmentVerdict[] {
     const outer = verdictOf(text, match);
     const valueStart = outer.end - outer.value.length;
     const inner = innerAssignment(text, valueStart, outer.end);
-    if (inner && isLabelOnly(text, valueStart, inner.labelStart)) {
+    if (
+      inner && !inner.keepsOuter &&
+      isLabelOnly(text, valueStart, inner.labelStart)
+    ) {
       from = inner.resume;
       continue;
     }
@@ -988,9 +991,11 @@ function trailingLabel(
   text: string,
   start: number,
   end: number,
-): { readonly start: number; readonly end: number } | null {
+):
+  | { readonly start: number; readonly end: number; readonly viaQuote: boolean }
+  | null {
   const atEnd = labelEndingAt(text, start, end);
-  if (atEnd) return atEnd;
+  if (atEnd) return { ...atEnd, viaQuote: false };
   const from = Math.max(start, end - INNER_ASSIGNMENT_SPAN);
   const tail = text.slice(from, end);
   // The last quote, or the one before it when the value closed its own quote
@@ -998,7 +1003,7 @@ function trailingLabel(
   let quote = tail.lastIndexOf("'");
   for (let tries = 0; tries < 2 && quote > 0; tries++) {
     const label = labelEndingAt(text, start, from + quote + 1);
-    if (label) return label;
+    if (label) return { ...label, viaQuote: true };
     quote = tail.lastIndexOf("'", quote - 1);
   }
   return null;
@@ -1053,7 +1058,7 @@ function innerAssignment(
     // after it belongs to the outer value, which stays masked whole.
     const rest = text.slice(label.end + masked[0].length, end);
     return rest === "" || rest === "'" || rest === '"'
-      ? { labelStart: label.start, resume: end }
+      ? { labelStart: label.start, resume: end, keepsOuter: false }
       : null;
   }
   if (!SEPARATOR_START.test(afterKey)) return null;
@@ -1062,9 +1067,16 @@ function innerAssignment(
   const match = execAssignmentAt(text, label.start);
   if (!match || match.index !== label.start) return null;
   const verdict = verdictOf(text, match);
-  return verdict.end > end && verdict.masked
-    ? { labelStart: label.start, resume: label.start }
-    : null;
+  if (!(verdict.end > end && verdict.masked)) return null;
+  // A single-quoted inner value holding a space, found before one of the
+  // value's quotes, that runs straight into more text (`DEPLOY_TOKEN='a b'.`):
+  // its mask removes the space, so a second pass reads the label, placeholder
+  // and that text as one outer value and masks it whole. Keep the outer mask
+  // now, so the first pass already gives that output and a second changes
+  // nothing.
+  const runsOn = label.viaQuote && verdict.end < text.length &&
+    !/\s/.test(text.charAt(verdict.end));
+  return { labelStart: label.start, resume: label.start, keepsOuter: runsOn };
 }
 
 /**
@@ -1076,6 +1088,8 @@ function innerAssignment(
 interface InnerLabel {
   readonly labelStart: number;
   readonly resume: number;
+  /** The outer value stays masked even when it is only the label. */
+  readonly keepsOuter: boolean;
 }
 
 /** Mask every `secret-assignment` value {@link walkAssignments} judges masked. */

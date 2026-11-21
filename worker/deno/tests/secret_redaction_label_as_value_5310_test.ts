@@ -117,7 +117,7 @@ Deno.test("#5310 hostile: long run before a label stays linear and publishes not
   assertEquals(redactSecrets(input), expected);
 });
 
-Deno.test("#5310 control: label within the 64-character bound is masked", () => {
+Deno.test("#5310 control: a 66-character label, within the 128-character bound, is masked", () => {
   const input = `credentials: ${"A".repeat(60)}_TOKEN = ${V}`;
   assertEquals(
     redactSecrets(input),
@@ -303,6 +303,21 @@ for (
     }
   });
 }
+
+// A single-quoted inner value holding a space that runs straight into more
+// text: its mask removes the space, so a second pass would read label,
+// placeholder and tail as one outer value and mask it whole. The first pass
+// keeps the outer mask, so a second changes nothing (PR #5322 review round 3).
+leak(
+  "single-quoted inner value running into punctuation",
+  "credentials: DEPLOY_TOKEN='a b'.",
+  `credentials: ${R}${R}.`,
+);
+leak(
+  "single-quoted inner value running into another assignment",
+  "credentials: DEPLOY_TOKEN='a b';x=1",
+  `credentials: ${R}${R};x=1`,
+);
 
 // Redaction is idempotent on every leak form, and its output reads clean
 // (pre-PR verifier): `api_key: pw42` once lost its label on a second pass.
