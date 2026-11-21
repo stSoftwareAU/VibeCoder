@@ -394,6 +394,13 @@ export interface ReachableCommand {
    * itself.
    */
   groupSwallowed: boolean;
+  /**
+   * True when the command sits inside a compound whose closing word is
+   * followed by `&&` (`{ cmd; other; } && echo ok`): Bash ignores errexit for
+   * every command in it, so a failure stops the body only through the
+   * compound's own status (PR #5332 review).
+   */
+  errexitIgnored: boolean;
 }
 
 /** Separators after a compound's closing word that can swallow its status. */
@@ -470,6 +477,37 @@ function failureExits(listed: ShellCommand[], index: number): boolean {
 }
 
 /**
+ * Whether a word ends in a `)` outside its quotes that no `(` in the word,
+ * outside quotes, opens: `done)`, `"done")`, `'done')` close a subshell, while
+ * `$(date)` and `"a)"` do not (PR #5332 review).
+ */
+function endsWithUnquotedCloseParen(word: string): boolean {
+  let quote = "";
+  let depth = 0;
+  let lastWasClose = false;
+  for (let i = 0; i < word.length; i++) {
+    const ch = word[i];
+    lastWasClose = false;
+    if (quote !== "") {
+      if (ch === "\\" && quote === '"') i++;
+      else if (ch === quote) quote = "";
+      continue;
+    }
+    if (ch === "\\") {
+      i++;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === "(") {
+      depth++;
+    } else if (ch === ")") {
+      depth--;
+      lastWasClose = true;
+    }
+  }
+  return quote === "" && lastWasClose && depth < 0;
+}
+
+/**
  * The commands of a `run:` body that can run: it drops commands after an
  * unconditional `exit` or `set -n` / `set -o noexec`, behind `false &&` or `true ||`, in an `if`/`elif`/
  * `else` branch or a `while`/`until` body whose condition is statically false
@@ -494,6 +532,8 @@ export function reachableCommands(script: string): ReachableCommand[] {
   // swallow its status (see ReachableCommand.groupSwallowed).
   const enclosing: number[][] = [];
   const swallowedFrames = new Set<number>();
+  // Compounds whose closing word is followed by `&&` (errexit ignored inside).
+  const andLeftFrames = new Set<number>();
   let nextFrameId = 0;
   let exited = false;
   let prev: boolean | null = null; // static status of the previous command
@@ -540,6 +580,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
       if (frame && (GROUP_SWALLOWING_SEPARATORS.has(after) || andWithMore)) {
         swallowedFrames.add(frame.id);
       }
+      if (frame && after === "&&") andLeftFrames.add(frame.id);
       return frame;
     };
     // Short-circuit chains: `false && x` and `true || x` skip x, while
@@ -642,11 +683,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
     // an unbalanced `)` counts, so `$(date)` or a quoted `)` does not.
     if (!closeAfter && stack.at(-1)?.sub && words.length > 0) {
       const last = words.at(-1) ?? "";
-      const opens = (last.match(/\(/g) ?? []).length;
-      const closes = (last.match(/\)/g) ?? []).length;
-      if (
-        last.endsWith(")") && closes > opens && !/^["']/.test(last)
-      ) {
+      if (endsWithUnquotedCloseParen(last)) {
         closeAfter = true;
         const trimmed = last.slice(0, -1);
         words = trimmed === "" ? words.slice(0, -1) : [
@@ -683,6 +720,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
         condition: frameOpen?.branch === "cond",
         failureExits: failureExits(listed, index),
         groupSwallowed: false,
+        errexitIgnored: false,
       });
       enclosing.push(stack.map((frame) => frame.id));
       const at = commandIndex(words);
@@ -698,6 +736,9 @@ export function reachableCommands(script: string): ReachableCommand[] {
   for (const [k, cmd] of out.entries()) {
     cmd.groupSwallowed = (enclosing[k] ?? []).some((id) =>
       swallowedFrames.has(id)
+    );
+    cmd.errexitIgnored = (enclosing[k] ?? []).some((id) =>
+      andLeftFrames.has(id)
     );
   }
   return out;

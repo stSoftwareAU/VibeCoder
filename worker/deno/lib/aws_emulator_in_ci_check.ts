@@ -847,7 +847,9 @@ interface KeptCommand {
  * `initialErrexit` says whether the body runs with `-e`; a reachable `set`
  * then updates it (`set -e`, `set -o errexit` on; `set +e`, `set +o errexit`
  * off). A command inside a group or compound swallowed one level out
- * (`ReachableCommand.groupSwallowed`) is never kept. Otherwise a command is
+ * (`ReachableCommand.groupSwallowed`) is never kept, and one inside a
+ * compound followed by `&&` is judged with errexit off
+ * (`ReachableCommand.errexitIgnored`). Otherwise a command is
  * kept when a failure always reaches an explicit failing
  * exit (`cmd || exit 1`, `if ! cmd; then ...; exit 1; fi`), or when its failure
  * is not swallowed (see {@link commandStatusNotSwallowed}) and one of these holds: it runs via `exec`;
@@ -873,7 +875,7 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
     const kept = !cmd.groupSwallowed && (cmd.failureExits ||
       (commandStatusNotSwallowed(cmd) &&
         (viaExec || restAllAnd[k] === true ||
-          (errexit && cmd.next !== "&&"))));
+          (errexit && !cmd.errexitIgnored && cmd.next !== "&&"))));
     out.push({ cmd, kept });
     if (stripQuotes(cmd.words[at] ?? "") === "set") {
       const option = readShellOptions(cmd.words.slice(at + 1)).errexit;
@@ -1254,10 +1256,29 @@ const TEST_RUNNERS = new Set([
 ]);
 
 /**
- * Words that make a command a probe, not a test run (`pytest --version`,
- * `npx jest --help`).
+ * Words that make any command a probe, not a test run (`pytest --version`,
+ * `npx jest --help`, `mvn --version`).
  */
-const PROBE_WORDS = new Set(["--version", "-V", "--help", "-h"]);
+const PROBE_WORDS = new Set(["--version", "--help"]);
+
+/**
+ * Short options that are a version or help probe only for the tool named:
+ * `pytest -V` prints its version, but Maven's `-V` is `--show-version`, which
+ * prints it and carries on with the build, and CTest's `-V` is `--verbose`
+ * (PR #5332 review).
+ */
+const SHORT_PROBES = new Map<string, ReadonlySet<string>>([
+  ["pytest", new Set(["-V", "-h"])],
+  ["py.test", new Set(["-V", "-h"])],
+  ["mvn", new Set(["-v", "-h"])],
+  ["mvnw", new Set(["-v", "-h"])],
+  ["gradle", new Set(["-v", "-h", "-?"])],
+  ["gradlew", new Set(["-v", "-h", "-?"])],
+  ["cargo", new Set(["-V", "-h"])],
+  ["jest", new Set(["-h"])],
+  ["mocha", new Set(["-V", "-h"])],
+  ["vitest", new Set(["-v", "-h"])],
+]);
 
 /**
  * Commands whose first subcommand decides whether they run tests, with the
@@ -1399,7 +1420,9 @@ function operandsAfter(words: string[], at: number, tool: string): string[] {
  * - any of these behind `poetry run`, `uv run`, `pipenv run`, `pdm run`,
  *   `hatch run` or `bundle exec`.
  *
- * A probe (`pytest --version`, `npx jest --help`) and an install step
+ * A probe (`pytest --version`, `pytest -V`, `npx jest --help`; a short
+ * option counts only for the tool where it is one, see {@link SHORT_PROBES})
+ * and an install step
  * (`pip install pytest`, `npm install --save-dev jest`) are none of these.
  */
 function looksLikeTestCommand(words: string[]): boolean {
@@ -1407,9 +1430,12 @@ function looksLikeTestCommand(words: string[]): boolean {
   const raw = stripQuotes(words[at] ?? "");
   const head = raw.replace(/^.*\//, "");
   if (head.length === 0) return false;
-  if (words.slice(at + 1).some((w) => PROBE_WORDS.has(stripQuotes(w)))) {
-    return false;
-  }
+  const shortProbes = SHORT_PROBES.get(head) ?? new Set<string>();
+  if (
+    words.slice(at + 1).some((w) =>
+      PROBE_WORDS.has(stripQuotes(w)) || shortProbes.has(stripQuotes(w))
+    )
+  ) return false;
   const wrapperVerb = RUN_WRAPPERS.get(head);
   if (wrapperVerb !== undefined) {
     const next = operandsAfter(words, at, head);

@@ -384,10 +384,12 @@ Official server mode needs all of the following:
   `||`, `|` or `&`, not inside a `{ }` group, `( )` subshell or compound
   (`if`/`fi`, a loop, `case`) whose closing word is followed by `||`, `|` or
   `&` (`{ runner; } || true`, `if x; then runner; fi || true`,
-  `( cd infra; runner; cd .. ) | tee log`), nor by `&&` with more of the body
-  after that chain (errexit is ignored inside a compound on the left of
-  `&&`, so `{ runner; } && echo ok` then another line passes when the runner
-  fails), and one of: it runs via `exec`; it is the last command
+  `( cd infra; runner; cd .. ) | tee log`; a `)` attached to a word, quoted
+  or not, closes a subshell), nor by `&&` with more of the body after that
+  chain, and one of the following. Bash ignores errexit inside a compound on
+  the left of `&&`, so a command there is judged with errexit off:
+  `{ runner; } && echo ok` at the end of the body is credited, but
+  `{ runner; echo done; } && echo ok` is not. The rules are: it runs via `exec`; it is the last command
   (or the rest of the body is an `&&` chain to the end); or errexit is on
   at that point and it is not followed by `&&`. Two explicit-exit idioms
   are also preserved, whatever errexit is: `runner || exit N` (N not 0, or
@@ -459,7 +461,9 @@ as `--prefix app` skipped), or `npm run <script>` whose script names a test
 (`./scripts/run-tests.sh`); or any of these behind `poetry run`, `uv run`,
 `pipenv run`, `pdm run`, `hatch run` or `bundle exec`. A name that also says
 install, setup, deps or bootstrap (`make install-test-deps`,
-`./scripts/check-install.sh`), a version or help probe (`pytest --version`),
+`./scripts/check-install.sh`), a version or help probe (`--version`,
+`--help`, or a short option where the tool reads it as one: `pytest -V`, but
+not Maven's `-V`, which is `--show-version`, or CTest's `-V`, `--verbose`),
 and an install step (`pip install pytest`, `npm install --save-dev jest`,
 `npm install typescript@latest`) are not test runs. An unused Floci image beside a gap record earns nothing. Floci without a valid record
 ("Floci-only") gets the migration finding.

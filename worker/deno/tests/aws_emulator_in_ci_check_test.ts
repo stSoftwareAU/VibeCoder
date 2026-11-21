@@ -2705,6 +2705,34 @@ Deno.test("checkAwsEmulatorInCI - a runner whose group or compound is swallowed 
       "an if/fi && echo ok, then more",
       `if true; then ${RUNNER_STEP}; fi && echo ok\necho more`,
     ],
+    // A `)` attached to a quoted word closes the subshell too (PR #5332
+    // review round 4).
+    [
+      "a subshell closed by a double-quoted word's ) || true",
+      `(cd infra; ${RUNNER_STEP}; echo "done") || true`,
+    ],
+    [
+      "a subshell closed by a single-quoted word's ) || true",
+      `( ${RUNNER_STEP}; echo 'done') || true`,
+    ],
+    [
+      "a subshell closed by a quoted word's ) piped to tee",
+      `(${RUNNER_STEP}; echo "done") | tee log`,
+    ],
+    [
+      'a runner after ( cd infra; echo "built") then exit 0',
+      `( cd infra; echo "built")\nexit 0\n${RUNNER_STEP}`,
+    ],
+    // errexit is ignored inside a compound left of `&&`, so a runner that is
+    // not its last command is lost even when the chain ends the body.
+    [
+      "a brace group whose runner is not last && echo ok",
+      `{ ${RUNNER_STEP}; echo done; } && echo ok`,
+    ],
+    [
+      "an if/fi whose runner is not last && echo ok",
+      `if true; then ${RUNNER_STEP}; echo done; fi && echo ok`,
+    ],
     // A subshell that closes before an unconditional exit leaves the runner
     // after it unreachable.
     [
@@ -2776,6 +2804,8 @@ Deno.test("checkAwsEmulatorInCI - a gap record whose Floci job only installs a t
       "mvn -B package -DskipTests",
       "./gradlew build -x test",
       "mvn -P test compile",
+      "mvn --version",
+      "pytest -V",
     ]
   ) {
     const result = await checkRepoWith({
@@ -2815,6 +2845,10 @@ Deno.test("checkAwsEmulatorInCI - a gap record whose Floci job only installs a t
       "bundle exec rspec",
       "npm --prefix app test",
       "make -C infra test",
+      // `-V` is not a probe for every tool (PR #5332 review round 4).
+      "mvn -B -V verify",
+      "mvn -V -B clean verify",
+      "ctest -V",
     ]
   ) {
     const result = await checkRepoWith({

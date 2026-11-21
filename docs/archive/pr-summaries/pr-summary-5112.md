@@ -188,8 +188,9 @@ emulator test.
   `! runner || exit 1` are refused too, in the workflow and in a repository
   script, each with a credited control:
   `…::a runner whose group or compound is swallowed one level out, or a negated runner before || exit 1, earns no credit`
-  (after the third review it also covers multi-command subshells, attached
-  parentheses and a compound followed by `&&` with more after it).
+  (after the third and fourth reviews it also covers multi-command subshells,
+  attached and quoted closing parentheses, a compound followed by `&&` with
+  more after it, and a runner that is not last in a compound left of `&&`).
   The Floci test-step matcher reads whole command words, so an install-only
   step beside a gap record earns nothing:
   `…::a gap record whose Floci job only installs a test tool is floci-only; common test runners are floci-gap`.
@@ -360,6 +361,16 @@ emulator test.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
+- After the fourth review (of `1367ed64`): the swallow test adds a subshell
+  closed by a quoted word's `)` (`echo "done")`, `echo 'done')`, the same
+  piped to `tee`, and the unreachable runner after `( cd infra; echo
+  "built")` then `exit 0`), and a runner that is not the last command of a
+  compound left of `&&` (`{ runner; echo done; } && echo ok` and the `if`/`fi`
+  form); `{ runner; } && echo ok` stays credited. A `)` outside its word's
+  quotes now closes the subshell, and a command inside a compound followed by
+  `&&` is judged with errexit off. The matcher's short probes are per tool, so
+  `mvn -B -V verify`, `mvn -V -B clean verify` and `ctest -V` are credited and
+  `mvn --version` and `pytest -V` refused. Each new case fails at `1367ed64`.
 - After the third review (of `e0d44a4c`):
   - The swallow test now also refuses a subshell holding more than one command
     (`( cd infra; runner; cd .. ) || true`, `(cd infra; runner; echo done) ||
