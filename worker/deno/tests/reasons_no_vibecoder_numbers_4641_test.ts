@@ -5,15 +5,16 @@
  * to an unrelated issue there. The one exception is a live PR number, which
  * belongs to the target repository and is kept.
  *
- * Covers the three reason builders that reach a target-repo comment:
- * the changed-workflow gate message, the prompt-too-long reason, and the
- * context-budget failure message from the execute phase.
+ * Covers the four reason builders that reach a target-repo comment:
+ * the changed-workflow gate message, the prompt-too-long reason, the
+ * context-budget failure message from the execute phase, and the
+ * not-finished retry reason (Issue #5315).
  *
  * Same approach as tests/failure_comment_no_vibecoder_numbers_4585_test.ts.
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildChangedWorkflowGateMessage,
   evaluateChangedWorkflowGate,
@@ -29,6 +30,9 @@ import {
   type ExecuteClaudePhaseOptions,
   runExecuteClaudePhase,
 } from "../lib/execute_claude_phase.ts";
+import { retryUnfinishedIssue } from "../lib/unfinished_issue_retry.ts";
+import { createLogger } from "../lib/logger.ts";
+import type { GitHubClient } from "../types.ts";
 
 /** Every `#<digits>` token in the text, in order. */
 function hashNumbers(text: string): string[] {
@@ -255,5 +259,45 @@ Deno.test("execute phase context-budget failure - the planning hand-off message 
     hashNumbers(message),
     [],
     `context-budget failure message carries a number: ${message}`,
+  );
+});
+
+Deno.test("not-finished retry reason - names no VibeCoder number and still reads as no_changes (Issue #5315)", async () => {
+  const posted: string[] = [];
+  const ghClient = {
+    postComment: (_repo: string, _issue: number, body: string) => {
+      posted.push(body);
+      return Promise.resolve();
+    },
+  } as unknown as GitHubClient;
+
+  const result = await retryUnfinishedIssue({
+    ghClient,
+    repo: "org/repo",
+    issueNumber: 42,
+    why: "it made no code change",
+    agentOutput: "",
+    diagnostics: {},
+    logger: createLogger({ write: () => {} }),
+  });
+
+  assert(result.status === "failure", "the run fails into the retry ladder");
+  assertEquals(result.category, "no_changes");
+  const reason = result.reason ?? "";
+  assertEquals(
+    hashNumbers(reason),
+    [],
+    `not-finished retry reason carries a number: ${reason}`,
+  );
+  assertStringIncludes(reason, "it made no code change");
+  assertStringIncludes(reason, "without making any changes");
+  assertEquals(detectFailureCategory(reason), "no_changes");
+
+  assertEquals(posted.length, 1, "one not-finished comment is posted");
+  const comment = posted[0] ?? "";
+  assertEquals(
+    hashNumbers(comment),
+    [],
+    `not-finished comment carries a number: ${comment}`,
   );
 });
