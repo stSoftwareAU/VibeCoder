@@ -210,6 +210,130 @@ Deno.test("(a) refuses the call only in a comment line", () => {
   );
 });
 
+// Issue #5304: a comment line is one whose first character after spaces and
+// tabs (Bash's only blanks) is `#`, and which no backslash continues into.
+const SCRIPT_LINE = "./infra/cloudformation/test-aws-emulator.sh";
+for (
+  const [label, replacement] of [
+    [
+      "a non-breaking space before # || exit 0",
+      "\n          \u00a0# || exit 0\n          " + SCRIPT_LINE + "\n",
+    ],
+    [
+      "an ideographic space before # || exit 0",
+      "\n          \u3000# || exit 0\n          " + SCRIPT_LINE + "\n",
+    ],
+    [
+      "the script line continued onto a # || true line",
+      "\n          " + SCRIPT_LINE + "\\\n          # || true\n",
+    ],
+    [
+      "the script line continued onto a bare # line",
+      "\n          " + SCRIPT_LINE + "\\\n          #\n",
+    ],
+  ] as const
+) {
+  Deno.test(`(a) refuses ${label} (Issue #5304)`, () => {
+    expectFindings(mutate([TEST_STEP_ANCHOR, replacement]), [
+      "[test-step] no step runs",
+    ]);
+  });
+}
+
+for (
+  const [label, replacement] of [
+    [
+      "an ASCII-space comment line",
+      "\n          # Deploy every template.\n          " + SCRIPT_LINE + "\n",
+    ],
+    [
+      "a tab-indented comment line",
+      "\n          \t# note\n          " + SCRIPT_LINE + "\n",
+    ],
+    [
+      "a trailing comment after a continued script line",
+      "\n          " + SCRIPT_LINE + " \\\n          # trailing note\n",
+    ],
+  ] as const
+) {
+  Deno.test(`(a) accepts ${label} (Issue #5304)`, () => {
+    assertEquals(problemsOf(mutate([TEST_STEP_ANCHOR, replacement])), []);
+  });
+}
+
+// Issue #5304 review: only an odd run of trailing backslashes continues a
+// line. An escaped backslash at the end of a line (two backslashes) ends the
+// command there, so `FOO=\\` assigns a backslash and the next line is its own
+// command: `true <script>` runs `true`, not the script.
+for (
+  const [label, replacement] of [
+    [
+      "an escaped backslash ending an assignment before true <script>",
+      "\n          FOO=\\\\\n          true " + SCRIPT_LINE + "\n",
+    ],
+    [
+      "an escaped backslash ending an assignment before : <script>",
+      "\n          FOO=\\\\\n          : " + SCRIPT_LINE + "\n",
+    ],
+  ] as const
+) {
+  Deno.test(`(a) refuses ${label} (Issue #5304)`, () => {
+    expectFindings(mutate([TEST_STEP_ANCHOR, replacement]), [
+      "[test-step] no step runs",
+    ]);
+  });
+}
+
+Deno.test("(a) accepts a real continuation from an assignment into true <script> (Issue #5304)", () => {
+  // `FOO=\` + newline + `true <script>` is `FOO=true <script>`: the script runs.
+  assertEquals(
+    problemsOf(mutate([
+      TEST_STEP_ANCHOR,
+      "\n          FOO=\\\n          true " + SCRIPT_LINE + "\n",
+    ])),
+    [],
+  );
+});
+
+Deno.test("(b) refuses an escaped backslash ending an assignment before true <aws-cli install> (Issue #5304)", () => {
+  // The install line itself runs `true`; the toolchain call then sits behind
+  // `FOO=\\`, which ends its own command, so `true bash …aws-cli.sh` runs `true`.
+  const manifest =
+    'TOOLCHAIN_MANIFEST="${GITHUB_WORKSPACE}/container/tools.json"';
+  expectFindings(
+    mutate([
+      manifest + " \\\n            " + CLI_TOOLCHAIN_ANCHOR + "\n",
+      manifest + " true\n          FOO=\\\\\n          true " +
+      CLI_TOOLCHAIN_ANCHOR + "\n",
+    ]),
+    ["[pinned-cli] no step runs"],
+  );
+});
+
+// Issue #5304 review round 2: a comment ends at its physical newline, so a
+// backslash at the end of a `#` line that a continuation reaches after a blank
+// is comment text, not a continuation (ShellCheck SC1143). The next line is
+// its own command: `exit 0` there ends the step before the script runs.
+for (
+  const [label, lines] of [
+    ["# note \\ then exit 0", ["# note \\", "exit 0"]],
+    ["# note \\ then exec true", ["# note \\", "exec true"]],
+    ["a bare #\\ then exit 0", ["#\\", "exit 0"]],
+    ["an indented # note \\ then exit 0", ["  # note \\", "exit 0"]],
+  ] as const
+) {
+  Deno.test(`(a) refuses set -euo pipefail \\ continued onto ${label} (Issue #5304)`, () => {
+    expectFindings(
+      mutate([
+        TEST_STEP_ANCHOR,
+        " \\\n" + lines.map((line) => `          ${line}\n`).join("") +
+        "          " + SCRIPT_LINE + "\n",
+      ]),
+      ["[test-step] the infra/cloudformation/test-aws-emulator.sh step must run only"],
+    );
+  });
+}
+
 Deno.test("(a) accepts an explicit continue-on-error: false on the test step", () => {
   expectFindings(
     mutate([
@@ -838,6 +962,19 @@ for (
       "a commented-out docker line",
       [[AGENT_DOCKER_LINE, "          # " + AGENT_DOCKER_LINE.trimStart()]],
     ],
+    // Comment-line evasions (Issue #5304): Bash's only blanks are space and
+    // tab, and a `#` line a trailing backslash continues into is not a comment.
+    [
+      "a non-breaking space before a # || exit 0 line",
+      [[
+        AGENT_DOCKER_LINE,
+        "          \u00a0# || exit 0\n" + AGENT_DOCKER_LINE,
+      ]],
+    ],
+    [
+      "a docker line continued onto a # || true line",
+      [[AGENT_TAIL, AGENT_TAIL + "\\\n          # || true"]],
+    ],
     [
       "a help-only wrapper",
       [[
@@ -1030,6 +1167,49 @@ for (
     assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
   });
 }
+
+Deno.test("(container-agent-run) accepts an ASCII comment line above the docker line (Issue #5304)", () => {
+  assertEquals(
+    checkContainerBuildRunsAwsEmulator(parseYaml(
+      mutateText(CONTAINER_BUILD, [
+        AGENT_DOCKER_LINE,
+        "          # Run as agent.\n" + AGENT_DOCKER_LINE,
+      ]),
+    )),
+    [],
+  );
+});
+
+Deno.test("(container-agent-run) refuses an escaped backslash ending an assignment before true docker build (Issue #5304)", () => {
+  const problems = checkContainerBuildRunsAwsEmulator(parseYaml(
+    mutateText(CONTAINER_BUILD, [
+      "          " + BUILD_TAG,
+      "          FOO=\\\\\n          true " + BUILD_TAG,
+    ]),
+  ));
+  assertEquals(
+    problems.length,
+    1,
+    `expected one finding, got: ${JSON.stringify(problems)}`,
+  );
+  assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+});
+
+Deno.test("(container-agent-run) refuses set -euo pipefail \\ continued onto # note \\ then exit 0 before the docker line (Issue #5304)", () => {
+  const problems = checkContainerBuildRunsAwsEmulator(parseYaml(
+    mutateText(CONTAINER_BUILD, [
+      "          set -euo pipefail\n" + AGENT_DOCKER_LINE,
+      "          set -euo pipefail \\\n          # note \\\n          exit 0\n" +
+      AGENT_DOCKER_LINE,
+    ]),
+  ));
+  assertEquals(
+    problems.length,
+    1,
+    `expected one finding, got: ${JSON.stringify(problems)}`,
+  );
+  assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+});
 
 const AGENT_ONE_LINE_ARGS = [
   "docker run --rm --user agent",
