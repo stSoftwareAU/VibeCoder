@@ -209,10 +209,10 @@ function makeGhStub(scenario: {
       }
       throw new Error("gh issue create not expected in this scenario");
     }
-    // AWS Emulator title lookup (Issue #5112): `issue list --search "AWS Emulator in:title"`.
+    // AWS Emulator title lookup (Issue #5112): `issue list --search "\"AWS Emulator\" in:title"`.
     if (
       args[0] === "issue" && args[1] === "list" &&
-      args[args.indexOf("--search") + 1] === "AWS Emulator in:title"
+      args[args.indexOf("--search") + 1] === `"AWS Emulator" in:title`
     ) {
       if (scenario.awsEmulatorTitleLookup?.fail) {
         return Promise.reject(
@@ -2721,14 +2721,18 @@ Deno.test(
     assertEquals(found, 6);
     const args = seen[0] ?? [];
     assertEquals(args.slice(0, 3), ["issue", "list", "--repo"]);
-    assertEquals(args[args.indexOf("--search") + 1], "AWS Emulator in:title");
+    assertEquals(
+      args[args.indexOf("--search") + 1],
+      `"AWS Emulator" in:title`,
+    );
     assertEquals(args[args.indexOf("--state") + 1], "open");
-    assertEquals(args[args.indexOf("--json") + 1], "number,title,author");
+    assertEquals(args[args.indexOf("--limit") + 1], "50");
+    assert(args[args.indexOf("--json") + 1]?.includes("title"));
   },
 );
 
 Deno.test(
-  "findEquivalentAwsEmulatorIssue - a gh failure or malformed payload throws with context",
+  "findEquivalentAwsEmulatorIssue - a gh failure throws with context, so the lookup never reads as no match",
   async () => {
     await assertRejects(
       () =>
@@ -2738,17 +2742,7 @@ Deno.test(
           DEDUP_AUTHORS,
         ),
       Error,
-      "cannot list open AWS Emulator issues in org/repo",
-    );
-    await assertRejects(
-      () =>
-        findEquivalentAwsEmulatorIssue(
-          "org/repo",
-          () => Promise.resolve("not json"),
-          DEDUP_AUTHORS,
-        ),
-      Error,
-      "is not JSON",
+      "cannot look up open AWS Emulator issues in org/repo",
     );
   },
 );

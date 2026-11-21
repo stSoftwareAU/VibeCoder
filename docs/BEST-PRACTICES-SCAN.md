@@ -369,9 +369,18 @@ Official server mode needs all of the following:
 - neither the job nor the step sets `continue-on-error` (other than
   `false`);
 - the step's shell runs the body; and
-- the invocation's failure is preserved: it is not in an `if`, `while`
-  or `until` condition, not behind `!`, and not followed by `||`, `|` or
-  `&`, in the workflow and in the script.
+- the invocation's failure is preserved, in the workflow and in the
+  script. A runner command, or the call to the script that runs it, is
+  preserved when it is not in a condition, not behind `!`, not followed by
+  `||`, `|` or `&`, and one of: it runs via `exec`; it is the last command
+  (or the rest of the body is an `&&` chain to the end); or errexit is on
+  at that point and it is not followed by `&&`.
+
+**Errexit.** Errexit is on for a workflow step whose shell is unset or
+exactly `bash` or `sh` (GitHub adds `-e`), or whose custom shell sets `-e`
+or `-o errexit`, and off at the start of a repository script. `set -e` or
+`set -o errexit` turn it on and `set +e` turns it off, at the point each
+appears.
 
 The command word, once shell reserved words, `sudo`/`env`/`exec`,
 `VAR=value` and the `time`/`nice`/`timeout`/`command` wrappers are
@@ -411,7 +420,10 @@ gap record: a YAML comment line in that workflow of the form
 `# aws-emulator-gap: version=<v>; behaviour=<…>; evidence=<…>; alternative=<…>; recheck=<…>`
 
 All five keys must be non-empty, and the version must contain a digit.
-Floci without a valid record ("Floci-only") gets the migration finding.
+A gap record counts only in a workflow that applies to `pull_request`
+(by the same rule as official wiring) whose Floci job is not statically
+disabled and has no `continue-on-error`. Floci without a valid record
+("Floci-only") gets the migration finding.
 
 **What the scan establishes.** This scan records *static wiring
 evidence*: the configured execution in workflow and script text. It does

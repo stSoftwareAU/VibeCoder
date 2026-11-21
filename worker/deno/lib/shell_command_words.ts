@@ -8,8 +8,7 @@
  * run (after an unconditional `exit` or `set -n`, behind `false &&`, in a branch or loop
  * whose condition is statically false, in any function body, or inside
  * a here-document). It also reports each reachable command's separators and
- * whether it is an `if`/`elif`/`while`/`until` condition. `reachableSegments`
- * is the words-only view of the same list. A construct it cannot judge counts
+ * whether it is an `if`/`elif`/`while`/`until` condition. A construct it cannot judge counts
  * as reachable only when a runtime value decides it, so an unknown condition
  * keeps its commands.
  *
@@ -242,6 +241,8 @@ export interface ShellOptions {
   commandString: boolean;
   /** Index of the first operand (the script path, for an invocation). */
   operand: number;
+  /** `-e` or `-o errexit` (true), `+e` or `+o errexit` (false); null when the words do not say. */
+  errexit: boolean | null;
 }
 
 /** Long options of `bash` that take a separate value word. */
@@ -256,6 +257,7 @@ const SHELL_LONG_VALUE_OPTIONS = new Set(["--rcfile", "--init-file"]);
 export function readShellOptions(args: string[]): ShellOptions {
   let noexec = false;
   let commandString = false;
+  let errexit: boolean | null = null;
   let i = 0;
   while (i < args.length) {
     const w = stripQuotes(args[i] ?? "");
@@ -272,17 +274,19 @@ export function readShellOptions(args: string[]): ShellOptions {
     const on = w.startsWith("-");
     let consumed = 1;
     for (const letter of w.slice(1)) {
-      if (letter === "n") noexec = on;
+      if (letter === "e") errexit = on;
+      else if (letter === "n") noexec = on;
       else if (letter === "c") commandString = commandString || on;
       else if (letter === "o" || letter === "O") {
         const name = stripQuotes(args[i + consumed] ?? "");
         if (letter === "o" && name === "noexec") noexec = on;
+        if (letter === "o" && name === "errexit") errexit = on;
         consumed++;
       }
     }
     i += consumed;
   }
-  return { noexec, commandString, operand: i };
+  return { noexec, commandString, operand: i, errexit };
 }
 
 /**
@@ -550,12 +554,4 @@ export function reachableCommands(script: string): ReachableCommand[] {
     if (closeAfter) prev = stack.pop()?.skippedStatus ?? prev;
   }
   return out;
-}
-
-/**
- * The words of each reachable command, keywords such as `then` included (see
- * {@link reachableCommands} for what is dropped and why).
- */
-export function reachableSegments(script: string): string[][] {
-  return reachableCommands(script).map((c) => c.words);
 }

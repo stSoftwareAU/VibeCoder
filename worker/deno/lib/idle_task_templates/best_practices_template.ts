@@ -94,12 +94,12 @@ import {
   planCapabilityCoverageFiling,
   scanCapabilityCoverageDir,
 } from "../capability_coverage_scan.ts";
+import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
 import {
-  type AlertDedupAuthorOptions,
-  type AlertDedupRow,
-  selectFleetAuthoredMatches,
-} from "../alert_dedup_authors.ts";
-import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
+  findFleetAuthoredIssuesTitled,
+  hasFleetAuthoredOpenIssueTitled,
+  type TitleMarkerDedupRow,
+} from "../idle_task_wrapper_dedup.ts";
 import {
   getPromptsDir,
   loadPrompt as defaultLoadPrompt,
@@ -766,92 +766,44 @@ export function buildAwsEmulatorFinding(
   return { findingId, title, body };
 }
 
-/** An open issue row from the AWS Emulator title search. */
-interface AwsEmulatorTitleRow extends AlertDedupRow {
-  title: string;
-}
-
 /**
  * The number of an open, fleet-authored hand-written issue whose title names
  * the AWS Emulator (for example "Add AWS Emulator tests"), or null when there
  * is none. Such an issue already tracks this gap, so the finding is not filed
  * again.
  *
- * Titles are text anyone can write, so only a fleet-authored match counts:
- * {@link selectFleetAuthoredMatches} applies the same author check as the
- * finding-id look-up (Issue #1243). A gh failure or a malformed payload throws
- * with context: an unknown lookup must not file a duplicate, and the run's
- * catch turns the throw into ok:false.
+ * Titles are text anyone can write, so only a fleet-authored match counts: the
+ * author check is the one {@link findFleetAuthoredIssuesTitled} applies (Issue
+ * #1243). A gh failure throws with context: an unknown lookup must not file a
+ * duplicate, and the run's catch turns the throw into ok:false.
  */
 export async function findEquivalentAwsEmulatorIssue(
   repo: string,
   ghCommandFn: (args: string[]) => Promise<string>,
   dedupAuthors: AlertDedupAuthorOptions,
 ): Promise<number | null> {
-  let raw: string;
+  let matches: TitleMarkerDedupRow[];
   try {
-    raw = await ghCommandFn([
-      "issue",
-      "list",
-      "--repo",
+    matches = await findFleetAuthoredIssuesTitled({
+      ...dedupAuthors,
       repo,
-      "--state",
-      "open",
-      "--search",
-      "AWS Emulator in:title",
-      "--json",
-      "number,title,author",
-      "--limit",
-      "50",
-    ]);
+      title: "AWS Emulator",
+      context: `AWS Emulator issue lookup ${repo}`,
+      ghCommand: ghCommandFn,
+      searchExpression: `"AWS Emulator" in:title`,
+      titleMatches: (title) => title.toLowerCase().includes("aws emulator"),
+      limit: 50,
+      log: (message) => defaultLogger.warn(message),
+    });
   } catch (err) {
     throw new Error(
-      `best-practices: cannot list open AWS Emulator issues in ${repo}: ${
+      `best-practices: cannot look up open AWS Emulator issues in ${repo}: ${
         (err as Error).message
       }`,
       { cause: err },
     );
   }
-  let payload: unknown;
-  try {
-    payload = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `best-practices: open AWS Emulator issue list for ${repo} is not JSON: ${
-        (err as Error).message
-      }`,
-      { cause: err },
-    );
-  }
-  if (!Array.isArray(payload)) {
-    throw new Error(
-      `best-practices: open AWS Emulator issue list for ${repo} is not an array`,
-    );
-  }
-  const rows: AwsEmulatorTitleRow[] = [];
-  for (const row of payload) {
-    const record = row as Record<string, unknown> | null;
-    if (
-      record === null || typeof record !== "object" ||
-      typeof record.number !== "number" || typeof record.title !== "string"
-    ) {
-      throw new Error(
-        `best-practices: open AWS Emulator issue list for ${repo} has a row without a number and title`,
-      );
-    }
-    rows.push(record as unknown as AwsEmulatorTitleRow);
-  }
-  const titled = rows.filter((row) =>
-    row.title.toLowerCase().includes("aws emulator")
-  );
-  const fleet = await selectFleetAuthoredMatches(
-    titled,
-    `AWS Emulator issue lookup ${repo}`,
-    dedupAuthors,
-    (message) => defaultLogger.warn(message),
-    "the finding is still filed",
-  );
-  return fleet[0]?.number ?? null;
+  return matches[0]?.number ?? null;
 }
 
 /** The repo-relative candidate file's text and relative path for the AWS-emulator waiver scan. */

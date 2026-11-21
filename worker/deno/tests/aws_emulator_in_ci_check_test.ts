@@ -2321,3 +2321,138 @@ Deno.test("checkAwsEmulatorInCI - a Terraform file counts only when it names AWS
     await Deno.remove(aws, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Errexit-aware failure propagation (Issue #5112 review): whether a runner's
+// failure fails the step depends on what runs after it and on `set -e`.
+// ---------------------------------------------------------------------------
+
+Deno.test("checkAwsEmulatorInCI - a runner followed by && and another line is refused; as the last && link it is credited", async () => {
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${RUNNER_STEP} && echo ok\necho after`),
+    ),
+  });
+  assertEquals(refused.wiring, "missing");
+  assertDiagnostic(refused, "is not status-preserving");
+  const last = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${RUNNER_STEP} && echo ok`),
+    ),
+  });
+  assertEquals(last.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - a repository script without set -e that runs the runner then more lines is refused; with set -euo pipefail it is credited", async () => {
+  const body = `aws-emulator-run -- ./t.sh\necho done\n`;
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\n${body}`,
+  });
+  assertEquals(refused.wiring, "missing");
+  assertDiagnostic(refused, "whose emulator run is not status-preserving");
+  for (
+    const errexit of [
+      "set -euo pipefail",
+      "set -eo pipefail",
+      "set -o errexit",
+    ]
+  ) {
+    const credited = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${errexit}\n${body}`,
+    });
+    assertEquals(credited.wiring, "official-server", errexit);
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - a runner started with exec is credited even when more lines follow it in the script", async () => {
+  const result = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      "#!/usr/bin/env bash\nexec aws-emulator-run -- ./t.sh\necho never-reached\n",
+  });
+  assertEquals(result.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - set +e before the runner refuses it when another command follows; set -e or the default shell keeps it", async () => {
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`set +e\n${RUNNER_STEP}\necho after`),
+    ),
+  });
+  assertEquals(refused.wiring, "missing");
+  const explicit = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`set -e\n${RUNNER_STEP}\necho after`),
+    ),
+  });
+  assertEquals(explicit.wiring, "official-server");
+  const defaultShell = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${RUNNER_STEP}\necho after`),
+    ),
+  });
+  assertEquals(defaultShell.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - a step shell of bash {0} with a later command refuses the runner; exactly bash keeps errexit and credits it", async () => {
+  const body = `${RUNNER_STEP}\necho after`;
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(body, ["shell: bash {0}"]),
+    ),
+  });
+  assertEquals(refused.wiring, "missing");
+  const credited = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(body, ["shell: bash"])),
+  });
+  assertEquals(credited.wiring, "official-server");
+});
+
+// ---------------------------------------------------------------------------
+// Floci gap credit (Issue #5112 review): a gap credits floci-gap only in an
+// applicable workflow with an enabled Floci job that is not continue-on-error.
+// ---------------------------------------------------------------------------
+
+Deno.test("checkAwsEmulatorInCI - a valid Floci gap in a disabled Floci job is floci-only, with the reason; the enabled job is floci-gap", async () => {
+  const disabled = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml("echo hi"), "    if: false\n" + FLOCI_SERVICE),
+  });
+  assertEquals(disabled.wiring, "floci-only");
+  assertDiagnostic(
+    disabled,
+    "every Floci job is disabled by if: or sets continue-on-error",
+  );
+  const continued = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(
+        stepYaml("echo hi"),
+        "    continue-on-error: true\n" + FLOCI_SERVICE,
+      ),
+  });
+  assertEquals(continued.wiring, "floci-only");
+  const control = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE),
+  });
+  assertEquals(control.wiring, "floci-gap");
+});
+
+Deno.test("checkAwsEmulatorInCI - a valid Floci gap in a push-only workflow is floci-only, with the reason; on pull_request it is floci-gap", async () => {
+  const pushOnly = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE, "on: push\n"),
+  });
+  assertEquals(pushOnly.wiring, "floci-only");
+  assertDiagnostic(
+    pushOnly,
+    "aws-emulator-gap record is not credited: the workflow does not run on pull_request",
+  );
+  const control = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE),
+  });
+  assertEquals(control.wiring, "floci-gap");
+});

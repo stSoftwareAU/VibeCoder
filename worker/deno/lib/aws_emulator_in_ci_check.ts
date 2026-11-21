@@ -14,8 +14,9 @@
  *     `cargo nextest` step with an `aws-emulator-embedded:` marker that pins
  *     the version and gives a justification.
  * Floci (`floci/floci`) is never official. A workflow that runs Floci counts
- * only with a recorded gap (`aws-emulator-gap:`), otherwise the result is
- * floci-only. Installing the emulator (`container/toolchains/aws-emulator.sh`)
+ * only with a valid recorded gap (`aws-emulator-gap:`) in an applicable workflow
+ * that has an enabled Floci job without `continue-on-error`; otherwise the
+ * result is floci-only, with a diagnostic saying why the gap is not credited. Installing the emulator (`container/toolchains/aws-emulator.sh`)
  * and an emulator service image with no runner step are not coverage, and a
  * `continue-on-error`, `|| true`, `!`, pipe, or `if` condition around the runner
  * stops the credit. The check reads workflow and script text only: it reports
@@ -57,7 +58,10 @@ export interface AwsEmulatorCheckResult {
   usesAws: boolean;
   /** Repo-relative paths ("/"-separated) of every file that triggered, sorted and deduplicated. */
   awsEvidence: string[];
-  /** The wiring found, by precedence (see {@link AwsEmulatorWiring}). Computed independently of `usesAws`. */
+  /**
+   * The wiring found, by precedence (see {@link AwsEmulatorWiring}). official-embedded
+   * is only credited when a `Cargo.toml` is among the AWS evidence (`awsEvidence`).
+   */
   wiring: AwsEmulatorWiring;
   /** Static evidence for the credited wiring: "`<workflow file>` job `<id>`: `<the command words joined by space>`"; for floci-gap the gap record line; empty for missing and floci-only. */
   wiringEvidence: string[];
@@ -682,14 +686,70 @@ function applicableWorkflowFiles(docs: WorkflowDoc[]): Set<string> {
 }
 
 /**
- * True when a command is status-preserving: it runs (not in a condition),
- * no word in front of it inverts or ignores its status (`!`, `then`, ...),
- * and the next separator does not swallow its failure (`||`, `|`, `&`).
+ * True when a command's failure is not swallowed or inverted where it stands:
+ * it runs (not in a condition), no word in front of it inverts or ignores its
+ * status (`!`, `then`, ...), and the next separator does not swallow its failure
+ * (`||`, `|`, `&`).
  */
-function isStatusPreserving(cmd: ReachableCommand): boolean {
+function commandStatusNotSwallowed(cmd: ReachableCommand): boolean {
   return !cmd.condition &&
     statusPreservingCommandIndex(cmd.words) !== -1 &&
     cmd.next !== "||" && cmd.next !== "|" && cmd.next !== "&";
+}
+
+/** A reachable command and whether its failure fails the body (see {@link keptCommands}). */
+interface KeptCommand {
+  cmd: ReachableCommand;
+  kept: boolean;
+}
+
+/**
+ * The reachable commands of a `run:` body, in order, each with whether its
+ * failure fails the body ("kept").
+ *
+ * `initialErrexit` says whether the body runs with `-e`; a reachable `set`
+ * then updates it (`set -e`, `set -o errexit` on; `set +e`, `set +o errexit`
+ * off). A command is kept when its failure is not swallowed (see
+ * {@link commandStatusNotSwallowed}) and one of these holds: it runs via `exec`;
+ * every later reachable command is joined by `&&` (it is last, or the rest is an
+ * `&&` chain to the end); or errexit is on and it is not followed by `&&`.
+ */
+function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
+  const cmds = reachableCommands(body);
+  // restAllAnd[k]: every reachable command after k is joined by `&&`.
+  const restAllAnd: boolean[] = [];
+  let allAnd = true;
+  for (let k = cmds.length - 1; k >= 0; k--) {
+    restAllAnd[k] = allAnd;
+    allAnd = allAnd && cmds[k]?.sep === "&&";
+  }
+  const out: KeptCommand[] = [];
+  let errexit = initialErrexit;
+  for (const [k, cmd] of cmds.entries()) {
+    const at = commandIndex(cmd.words);
+    const viaExec = cmd.words.slice(0, at).includes("exec");
+    const kept = commandStatusNotSwallowed(cmd) &&
+      (viaExec || restAllAnd[k] === true || (errexit && cmd.next !== "&&"));
+    out.push({ cmd, kept });
+    if (stripQuotes(cmd.words[at] ?? "") === "set") {
+      const option = readShellOptions(cmd.words.slice(at + 1)).errexit;
+      if (option !== null) errexit = option;
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether GitHub runs a step's `run:` body with `-e`: an undefined shell (the
+ * default), exactly `bash` or `sh`, or a shell string whose options turn errexit
+ * on. Any other shell starts with errexit off.
+ */
+function stepStartsErrexit(shell: unknown): boolean {
+  if (shell === undefined) return true;
+  if (typeof shell !== "string") return false;
+  const text = shell.trim();
+  if (text === "bash" || text === "sh") return true;
+  return readShellOptions(text.split(/\s+/).slice(1)).errexit === true;
 }
 
 /** True when the command is `cargo test` or `cargo nextest`, skipping a `+toolchain` word. */
@@ -777,17 +837,18 @@ interface RunnerHit {
 function serverHits(
   where: string,
   run: string,
+  initialErrexit: boolean,
   readScript: ScriptReader | undefined,
 ): RunnerHit[] {
   const hits: RunnerHit[] = [];
-  for (const cmd of reachableCommands(run)) {
+  for (const { cmd, kept } of keptCommands(run, initialErrexit)) {
     const label = cmd.words.join(" ");
     if (segmentInvokesEmulatorRunner(cmd.words)) {
       hits.push({
         label,
-        ok: isStatusPreserving(cmd),
+        ok: kept,
         reason:
-          `${where}: step running \`${label}\` is not status-preserving (\`!\`, \`||\`, \`|\`, \`&\` or a condition)`,
+          `${where}: step running \`${label}\` is not status-preserving: a failure would not fail the step`,
       });
       continue;
     }
@@ -796,17 +857,17 @@ function serverHits(
     if (path === null) continue;
     const text = readScript(path);
     if (text === null) continue;
-    const inner = reachableCommands(text).filter((c) =>
-      segmentInvokesEmulatorRunner(c.words)
+    // A repository script starts without errexit, whatever the caller's shell.
+    const inner = keptCommands(text, false).filter((k) =>
+      segmentInvokesEmulatorRunner(k.cmd.words)
     );
     if (inner.length === 0) continue;
-    const callOk = isStatusPreserving(cmd);
     hits.push({
       label,
-      ok: callOk && inner.some(isStatusPreserving),
-      reason: callOk
+      ok: kept && inner.some((k) => k.kept),
+      reason: kept
         ? `${where}: step running \`${label}\` runs \`${path}\`, whose emulator run is not status-preserving`
-        : `${where}: step running \`${label}\` is not status-preserving`,
+        : `${where}: step running \`${label}\` is not status-preserving: a failure would not fail the step`,
     });
   }
   return hits;
@@ -888,7 +949,8 @@ function scanWorkflowDoc(
         }
       };
 
-      for (const hit of serverHits(where, step.run, opts.readScript)) {
+      const errexit = stepStartsErrexit(shell);
+      for (const hit of serverHits(where, step.run, errexit, opts.readScript)) {
         const reasons = hit.ok ? [] : [hit.reason];
         reasons.push(...refusals(hit.label));
         grant("official-server", `${where}: \`${hit.label}\``, reasons);
@@ -896,10 +958,10 @@ function scanWorkflowDoc(
 
       const marker = embeddedMarker(step.run);
       if (marker !== null) {
-        const cargo = reachableCommands(step.run).find((c) =>
-          isStatusPreserving(c) && isCargoTestCommand(c.words)
+        const cargo = keptCommands(step.run, errexit).find((k) =>
+          k.kept && isCargoTestCommand(k.cmd.words)
         );
-        const label = cargo?.words.join(" ") ?? "cargo test";
+        const label = cargo?.cmd.words.join(" ") ?? "cargo test";
         const reasons: string[] = [];
         if (!opts.rust) {
           reasons.push(
@@ -982,6 +1044,37 @@ function gapRecords(raw: string): GapRecord[] {
     out.push({ line: line.trim(), missing });
   }
   return out;
+}
+
+/**
+ * The ids of the jobs that run Floci and could carry a gap: not statically
+ * disabled by `if:`, and not `continue-on-error`.
+ */
+function creditableFlociJobIds(parsedYaml: unknown): string[] {
+  if (!isRecord(parsedYaml) || !isRecord(parsedYaml.jobs)) return [];
+  return Object.entries(parsedYaml.jobs)
+    .filter(([, job]) =>
+      isRecord(job) && jobRunsFloci(job) && !ifIsStaticallyFalse(job.if) &&
+      !continueOnErrorSet(job["continue-on-error"])
+    )
+    .map(([id]) => id);
+}
+
+/**
+ * Why a workflow's valid gap record cannot credit `floci-gap`, or null when it
+ * can: the workflow must be applicable (it runs on pull_request, or a
+ * pull_request workflow calls it), and it must have a Floci job that is not
+ * disabled and does not set `continue-on-error`.
+ */
+function gapRecordRefusal(d: WorkflowDoc, applicable: boolean): string | null {
+  const prefix = `\`${d.file}\`: aws-emulator-gap record is not credited:`;
+  if (!applicable) {
+    return `${prefix} the workflow does not run on pull_request and no pull_request workflow calls it`;
+  }
+  if (creditableFlociJobIds(d.doc).length === 0) {
+    return `${prefix} every Floci job is disabled by if: or sets continue-on-error`;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1156,11 +1249,15 @@ export async function checkAwsEmulatorInCI(
     const floci = docs.filter((d) => workflowRunsFloci(d.doc));
     if (floci.length > 0) {
       let gap: { file: string; line: string } | null = null;
+      const refusals: string[] = [];
       for (const d of floci) {
         const valid = gapRecords(d.raw).find((r) => r.missing.length === 0);
-        if (valid !== undefined) {
+        if (valid === undefined) continue;
+        const refusal = gapRecordRefusal(d, applicable.has(d.file));
+        if (refusal !== null) {
+          refusals.push(refusal);
+        } else if (gap === null) {
           gap = { file: d.file, line: valid.line };
-          break;
         }
       }
       if (gap !== null) {
@@ -1168,6 +1265,7 @@ export async function checkAwsEmulatorInCI(
         wiringEvidence = [`\`${gap.file}\`: \`${gap.line}\``];
       } else {
         wiring = "floci-only";
+        diagnostics.push(...refusals);
         for (const d of floci) {
           for (const id of flociJobIds(d.doc)) {
             diagnostics.push(`\`${d.file}\` job \`${id}\` runs floci/floci`);
