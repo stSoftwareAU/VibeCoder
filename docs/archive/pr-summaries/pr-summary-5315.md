@@ -2,8 +2,8 @@
 
 ## Summary
 
-`retryUnfinishedIssue` in `worker/deno/lib/unfinished_issue_retry.ts` returned
-a failure reason ending `retrying the approved issue (Issue #4227)`. That reason
+`retryUnfinishedIssue` in `worker/deno/lib/unfinished_issue_retry.ts` returned a
+failure reason ending `retrying the approved issue (Issue #4227)`. That reason
 is posted in the target repository's failure comment, where GitHub links `#4227`
 to an unrelated issue there. The reason now ends `retrying the approved issue`.
 The provenance stays in the code comment beside it. Closes #5315.
@@ -57,3 +57,8 @@ outside `docs/archive/` found no hits. The module doc of
 - No existing assertion was edited or removed.
 - `deno fmt --check`, `deno lint` and `deno check` on the two changed files
   passed.
+- `./quality.sh < /dev/null` on head `fd6c5ab0c`:
+  `Result: PASSED (with skipped checks)`. Skipped: checkov (not on PATH) and
+  config integration (no `.config.json`).
+- `deno task pr-summary-check`: 0 gates blocked, 0 not checked.
+- Not done or not checked: none.
