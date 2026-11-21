@@ -136,8 +136,9 @@ flowchart LR
   `_json_structure_` and `_prose_heading_5253_` siblings,
   `fleet_telemetry_redaction_test.ts` and `run_stats_redaction_test.ts`. That
   includes the Issue #1727 Markdown and YAML mapping cases.
-- **Full gate:** `./quality.sh < /dev/null` result is recorded in the commit
-  that follows this summary's last edit; see Merge verification.
+- **Full gate:** `./quality.sh < /dev/null` on this head gave
+  `Result: PASSED (with skipped checks)`. The gate itself skipped
+  `config integration` (no `.config.json`) and `checkov` (no checkov on PATH).
 - **Gitleaks exemption:**
   - The first commit carrying the literal YAML fixture was already pushed. CI
     scans every commit in the PR range, so `.github/gitleaks.toml` exempts that
