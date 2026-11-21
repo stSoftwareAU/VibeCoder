@@ -730,8 +730,11 @@ cd "${BASE_DIR}"
 
 # --frozen + --lock fail closed on dependency drift (Issue #2896). The driver
 # needs env/read/write/run plus --allow-net (GitHub API, webhooks, callbacks)
-# and --allow-sys=hostname (worker identity); the container boundary, not this
-# permission set, is what keeps the worker off the host.
+# and --allow-sys=hostname,systemMemoryInfo (worker identity, plus the
+# memory-pressure probes: WIP pre-OOM checkpoint, slot governor, AGENT_KILLED
+# memory fields; Deno refuses /proc/meminfo short of --allow-all, Issue #5319);
+# the container boundary, not this permission set, is what keeps the worker
+# off the host.
 #
 # The driver runs as a CHILD, never via exec (Issue #4239): this script is
 # the container's PID 1, and PID 1 must reap the orphans that reparent to
@@ -765,7 +768,7 @@ fi
 deno run \
   --frozen --lock="${LOCKFILE}" \
   --allow-env --allow-read --allow-write --allow-run \
-  --allow-net --allow-sys=hostname \
+  --allow-net --allow-sys=hostname,systemMemoryInfo \
   "${DRIVER}" "${DRIVER_COMMAND[@]}" "$@" < /dev/null &
 driver_pid=$!
 trap 'kill -TERM "${driver_pid}" 2>/dev/null' TERM INT
