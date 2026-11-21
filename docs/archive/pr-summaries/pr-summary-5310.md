@@ -183,11 +183,12 @@ flowchart LR
   `_bounds_`, `_boolean_setting_`, `_json_structure_` and `_prose_heading_5253_`
   siblings, `fleet_telemetry_redaction_test.ts` and
   `run_stats_redaction_test.ts`.
-- **Full gate:** `./quality.sh < /dev/null` passed on the previous head with
-  `Result: PASSED (with skipped checks)`. The gate itself skipped
+- **Full gate:** `./quality.sh < /dev/null` passed on this head (`be3317ae0`)
+  with `Result: PASSED (with skipped checks)`. The gate itself skipped
   `config integration` (no `.config.json`) and `checkov` (no checkov on PATH).
-  The worker re-runs it on this head. Here, `deno fmt`, `deno lint` and
-  `deno check` pass on the changed library and test file.
+  `deno task test:unit` over every unit test file also passed on this head
+  (parallel and serial passes, 0 failed), so the earlier pre-push block no
+  longer reproduces.
 - **Gitleaks exemption:**
   - The first commit carrying the literal YAML fixture was already pushed. CI
     scans every commit in the PR range, so `.github/gitleaks.toml` exempts that
