@@ -15,7 +15,11 @@ import { containsSecret, redactSecrets } from "../lib/secret_redaction.ts";
 const V = "q7Lm2Xv9Rk4Tz8Pw1Hn6Bc3Df5Gj0Ys2Ua7Ne4Mi";
 const R = "***REDACTED***";
 
+/** Every leak fixture, so the idempotence check covers each one. */
+const LEAKS: string[] = [];
+
 function leak(name: string, input: string, expected: string): void {
+  LEAKS.push(input);
   Deno.test(`#5310 masks: ${name}`, () => {
     assertEquals(redactSecrets(input), expected);
     assertEquals(containsSecret(input), true);
@@ -106,12 +110,6 @@ keep(
   true,
 );
 
-Deno.test("#5310 idempotent on the same-line case", () => {
-  const once = redactSecrets(`Rotate these credentials: DEPLOY_TOKEN = ${V}`);
-  assertEquals(once, `Rotate these credentials: DEPLOY_TOKEN = ${R}`);
-  assertEquals(redactSecrets(once), once);
-});
-
 Deno.test("#5310 hostile: long run before a label stays linear and publishes nothing", () => {
   const input = "credentials: " + "x".repeat(200_000) + "_TOKEN" +
     " ".repeat(40) + "!";
@@ -133,6 +131,22 @@ Deno.test("#5310 hostile: many TOKEN words then a rejected character", () => {
   const expected = "credentials: " + R;
   assertEquals(redactSecrets(input), expected);
 });
+
+// The inner-label probe must stay linear on a labelled run of repeated
+// keywords (pre-PR verifier; the Issue #3942 linearity rule). The pattern's
+// key group is quadratic on such a run, so a probe that re-scanned it as a
+// key took ~26 s here; the bounded probe never does. No stopwatch, as in
+// `secret_redaction_redos_test.ts`: the hostile size is the detector. A run
+// this long is no label (longer than `INNER_LABEL_MAX`), so the base output
+// applies: the run is masked as the outer value and the scan resumes after it.
+for (
+  const [tail, rest] of [["!", ""], ["", ""], [": x", " x"], [" = x", " = x"]]
+) {
+  Deno.test(`#5310 hostile: 500 kB labelled TOKEN run is linear (tail ${JSON.stringify(tail)})`, () => {
+    const input = "credentials: " + "TOKEN".repeat(100_000) + tail;
+    assertEquals(redactSecrets(input), "credentials: " + R + rest);
+  });
+}
 
 // Inner labels that do not open with a plain word run (pre-PR verifier):
 // a hyphen, a dot or an opening quote before the keyword.
@@ -162,6 +176,12 @@ leak(
   `credentials: DEPLOY-TOKEN:\n  ${R}`,
 );
 
+leak(
+  "single-quoted inner value holding a space",
+  "credentials: DEPLOY_TOKEN='q7Lm2Xv9 Rk4Tz8Pw1Hn6'",
+  `credentials: DEPLOY_TOKEN='${R}'`,
+);
+
 // A real value that merely contains a keyword keeps the base's mask when no
 // inner assignment masks a value (pre-PR verifier).
 for (
@@ -187,3 +207,53 @@ keep(
   `password: ${R}\nThe next line text`,
   true,
 );
+
+// A keyword elsewhere in the value is not a label (pre-PR verifier). A
+// signature rule masks the token first, so the value after the separator is
+// already the placeholder; the outer value must keep its own mask.
+const GHP = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+keep(
+  "keyword mid-value before a masked token: equals",
+  `password: TOKENab#c1 = ${GHP}`,
+  `password: ${R} = ${R}`,
+  true,
+);
+keep(
+  "keyword mid-value before a masked token: spaced colon",
+  `password: abc-TOKEN.x9 : ${GHP}`,
+  `password: ${R} : ${R}`,
+  true,
+);
+keep(
+  "keyword mid-value before a masked token: quoted",
+  `password: "a TOKEN b" = "${GHP}"`,
+  `password: "${R}" = "${R}"`,
+  true,
+);
+
+// Redaction is idempotent on every leak form, and its output reads clean
+// (pre-PR verifier): `api_key: pw42` once lost its label on a second pass.
+for (const input of LEAKS) {
+  Deno.test(`#5310 idempotent: ${JSON.stringify(input.slice(0, 40))}`, () => {
+    const once = redactSecrets(input);
+    assertEquals(redactSecrets(once), once);
+    assertEquals(containsSecret(once), false);
+  });
+}
+
+// The decode-then-rescan pass uses the same detection (Issue #188): an
+// encoded label-as-value text is masked whole. On base the detection loop
+// read `API_TOKEN:` and `api_key:` as the parent's value and never saw the
+// credential, so the blob was published.
+for (
+  const [name, plain] of [
+    ["YAML child", `secrets:\n  API_TOKEN: ${V}`],
+    ["next-line colon", `The secret:\napi_key: ${V}`],
+  ] as const
+) {
+  Deno.test(`#5310 masks base64 of the ${name} form`, () => {
+    const input = `blob ${btoa(plain)} end`;
+    assertEquals(redactSecrets(input), `blob ${R} end`);
+    assertEquals(containsSecret(input), true);
+  });
+}

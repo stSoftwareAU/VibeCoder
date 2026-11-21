@@ -547,11 +547,13 @@ and, apart from that check, **only when the separator crossed a line break**:
 - A credential label is never taken as an earlier label's value. In
   `credentials: DEPLOY_TOKEN = <value>`, on one line or across two, the earlier
   match used to mask only `DEPLOY_TOKEN` and publish `<value>` (Issue #5310).
-  When an assignment that starts inside a value, and runs past its end, is
-  itself masked, the outer value is given up and the inner value is masked
-  instead. That covers hyphenated, dotted and quoted inner labels. A value that
-  merely contains a credential word, with no masked assignment inside it, is
-  masked whole as before.
+  When a value ends in a credential label (a key-shaped run of at most 128
+  characters, allowing a closing quote or the swallowed `=`/`:`, or just before
+  a single-quoted inner value such as `DEPLOY_TOKEN='a b'`) whose own
+  assignment runs past the value and is masked, the outer value is given up
+  and the inner value is masked instead. That covers hyphenated, dotted and
+  quoted inner labels. A value with a credential word anywhere else in it is
+  masked whole as before, even when an already-masked value follows it.
 
 `containsSecret()` asks the value predicate the same question the replacement
 does, so detection and redaction cannot drift apart — a body that redacts to
