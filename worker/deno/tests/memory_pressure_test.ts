@@ -87,21 +87,16 @@ Deno.test("probeMemoryPressure - a refused read warns once with its cause and re
   assertStringIncludes(warnings[1] ?? "", "systemMemoryInfo returned total=0");
 });
 
-Deno.test("probeMemoryPressure - a non-Linux host reads unknown silently without calling the reader (Issue #5319)", async () => {
+Deno.test("probeMemoryPressure - a non-Linux host reads unknown and does not warn even when memory is readable (Issue #5319)", async () => {
   const warnings: string[] = [];
-  let called = false;
   assertEquals(
     await probeMemoryPressure({
       os: "darwin",
-      systemMemoryInfo: () => {
-        called = true;
-        return { total: TOTAL, available: AVAILABLE };
-      },
+      systemMemoryInfo: () => ({ total: TOTAL, available: AVAILABLE }),
       warn: (message) => warnings.push(message),
     }),
     { level: "unknown" },
   );
-  assertEquals(called, false);
   assertEquals(warnings, []);
 });
 

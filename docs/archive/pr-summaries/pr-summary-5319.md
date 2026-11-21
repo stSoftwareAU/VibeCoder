@@ -109,8 +109,8 @@ flowchart LR
   - New test, "probeMemoryPressure - a refused read warns once with its cause
     and reads unknown". The same `NotCapable` cause twice gives one warning
     containing the cause. A second cause (`total=0`) gives a second warning.
-  - New test for the non-Linux path: it reads `unknown`, never calls the reader
-    and does not warn.
+  - New test for the non-Linux path: even with a reader that would report
+    high pressure, it reads `unknown` and does not warn.
   - The injected-reader test now injects `systemMemoryInfo` instead of
     `readMemInfo` and keeps its high / ok (threshold 0.01) / unknown cases with
     the same byte counts.
