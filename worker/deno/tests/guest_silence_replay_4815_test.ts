@@ -63,6 +63,8 @@ function replaySeams(
       Promise.resolve([{ name: "worker.log", mtimeMs: lastLogMs }]),
     readTail: () => Promise.resolve(""),
     writeFile: () => Promise.resolve(),
+    diskReading: () => Promise.resolve(null),
+    memoryReading: () => Promise.resolve({ level: "unknown" }),
     hostname: () => "GRQ-3",
     timeout: () => ({ promise: new Promise<void>(() => {}), cancel: () => {} }),
   };

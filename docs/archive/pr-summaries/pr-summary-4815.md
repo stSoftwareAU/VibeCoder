@@ -139,14 +139,15 @@ run that delivers nothing is retried, not labelled needs-human as
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — no source-text gate — evidence:
+- **fixed** — no source-text gate — evidence:
   `worker/deno/tests/guest_silence_replay_4815_test.ts` (scraped `run.sh` for
-  the check cadence) — fixed by keeping the simulated cadence in the fixture.
-- **violation** — retyped constant — evidence:
-  `worker/deno/tests/time_deferral_test.ts:370` — reason: not changed, and
-  disputed. The assertions check the public comment text a reader sees.
-  Importing the phrase from the code under test would make the test agree with
-  itself and miss a wording regression.
+  the check cadence) — reason: fixed in this diff, by keeping the simulated
+  cadence in the fixture.
+- **clean** — retyped constant (checked, not a breach) — evidence:
+  `worker/deno/tests/time_deferral_test.ts:370` — reason: the literal is the
+  contract, not a copy of one. The assertions check the public comment text a
+  reader sees. Importing the phrase from the code under test would make the test
+  agree with itself and miss a wording regression.
 - **clean** — Australian English spelling, `deno fmt`, `deno lint`, KISS/DRY,
   and test fakes (no sleeps or real signals; the runtime is faked through
   `EvidenceSeams`).
@@ -175,6 +176,13 @@ run that delivers nothing is retried, not labelled needs-human as
   tests/guest_silence_replay_4815_test.ts < /dev/null`
   passed: 43 passed, 0 failed. `deno lint` and `deno check` on the new file are
   clean.
+- **Merge with `main` (#5308):** `EvidenceSeams` gained `diskReading` and
+  `memoryReading`, so the replay test's fake seams gained both as inert stubs
+  (`null` and `level: "unknown"`), as in `guest_silence_watch_test.ts`. The
+  replay never captures evidence, so no assertion changed. After it,
+  `tests/guest_silence_replay_4815_test.ts`, `tests/guest_silence_watch_test.ts`
+  and `tests/time_deferral_test.ts` passed: 43 passed, 0 failed, and
+  `deno check` on the replay test is clean.
 - **Ran** `./quality.sh < /dev/null` on the earlier head (before the replay
   test): `Result: PASSED (with skipped checks)`; the gate skipped
   `config integration` and `checkov`.
