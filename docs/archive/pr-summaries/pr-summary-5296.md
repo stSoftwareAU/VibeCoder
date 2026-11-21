@@ -2,10 +2,10 @@
 
 ## Summary
 
-Routed idle-task runs now publish the telemetry of the agent their template
-ran, or a reason that is true for that run. Thrown and abandoned runs no longer
-claim `agent_not_invoked`. `runIdleTaskClaude` records each scan invocation into
-an `AsyncLocalStorage` collector (`collectIdleTaskInvocations` in
+Routed idle-task runs now publish the telemetry of the agent their template ran,
+or a reason that is true for that run. Thrown and abandoned runs no longer claim
+`agent_not_invoked`. `runIdleTaskClaude` records each scan invocation into an
+`AsyncLocalStorage` collector (`collectIdleTaskInvocations` in
 `worker/deno/lib/idle_task_claude_budget.ts`). `runRoutedScan` in
 `worker/deno/lib/idle_task_process_issue_route.ts` turns those invocations into
 `telemetry` or a `telemetryAbsentReason`, and `routeRunResult` in
@@ -21,8 +21,8 @@ reason `run_unreported`. Closes #5296.
 - The routed path returned only `success` and `skipped`, so
   `withProcessCallbackFacts` filled in `agent_not_invoked` for every idle scan,
   and idle-task spend was invisible to archive readers
-- The invocations are recorded at `runIdleTaskClaude`, the runner the
-  idle-task templates launch through (a grep found no template that calls
+- The invocations are recorded at `runIdleTaskClaude`, the runner the idle-task
+  templates launch through (a grep found no template that calls
   `runClaudeWithRetry` directly), so no template needed an edit
 - Classification reuses `summariseCallbackTelemetry` and
   `callbackTelemetryAbsenceReason` from `lib/run_callback_telemetry.ts`, the
@@ -99,11 +99,11 @@ flowchart LR
   `telemetry` and `telemetryAbsentReason`, and a lost claim carries neither.
 - Added to `worker/deno/tests/run_core_callbacks_test.ts`: the serial throw,
   slot throw and slot abandoned at the shutdown grace each dispatch
-  `telemetryAbsentReason: "run_unreported"` with no `telemetry`. An ordinary
-  run with no usage still reports `agent_not_invoked`. The finish-deadline
-  release shares the abandoned-slot release call and has no separate test.
-- Edited expectations, where the route now correctly adds a reason. Every
-  other assertion is unchanged, and the new value is what the issue asks for:
+  `telemetryAbsentReason: "run_unreported"` with no `telemetry`. An ordinary run
+  with no usage still reports `agent_not_invoked`. The finish-deadline release
+  shares the abandoned-slot release call and has no separate test.
+- Edited expectations, where the route now correctly adds a reason. Every other
+  assertion is unchanged, and the new value is what the issue asks for:
   - Five assertions in `worker/deno/tests/idle_task_process_issue_route_test.ts`
     and one in `worker/deno/tests/idle_task_cross_host_claim_1139_test.ts` now
     expect `telemetryAbsentReason: "agent_not_invoked"`, because their fakes
@@ -113,11 +113,11 @@ flowchart LR
     test-audit template ran its fake runner, which reports no stats.
   - The refused-wrapper expectation in that file is unchanged: no agent ran.
 - Red on base:
-  - With `lib/idle_task_claude_budget.ts`, `lib/idle_task_process_issue_route.ts`
-    and `lib/route_claim.ts` restored from `origin/main`,
-    `deno test -A --no-check` on the three idle and route test files gave
-    `FAILED | 19 passed | 10 failed`, and the budget test file failed to load
-    because `collectIdleTaskInvocations` did not exist.
+  - With `lib/idle_task_claude_budget.ts`,
+    `lib/idle_task_process_issue_route.ts` and `lib/route_claim.ts` restored
+    from `origin/main`, `deno test -A --no-check` on the three idle and route
+    test files gave `FAILED | 19 passed | 10 failed`, and the budget test file
+    failed to load because `collectIdleTaskInvocations` did not exist.
   - Against the unchanged `run_core.ts`, the serial throw, slot throw and
     abandoned-slot tests failed with `agent_not_invoked`.
 - `./quality.sh < /dev/null` on head `e867197f1`:
