@@ -9,9 +9,8 @@ one agent provider.
 
 ## This attempt
 
-- 2026-11-21T03:48:13Z — execute was released on schedule (cycle ended, finish
-  deadline reached, or run hard cap reached) after 6567s; 0 uncommitted file(s)
-  preserved; 7 commit(s) added to the branch
+- 2026-11-21T04:18:28Z — execute was killed by an external SIGTERM after 699s; 0
+  uncommitted file(s) preserved; 1 commit(s) added to the branch
 - Branch: `issue-5310-secret-assignment-rule-publishes-a-credential-when`
 - Wind-down notice: not delivered — the interruption arrived without warning
 
@@ -19,27 +18,18 @@ one agent provider.
 
 Commits this run added to the branch, newest first:
 
-- Decide inner-label refusal where the value is judged (Issue #5310)
-- Merge remote-tracking branch 'origin/main' into
-  issue-5310-secret-assignment-rule-publishes-a-credential-when
-- style: apply repository formatters
-- Exempt the summary's quoted fixture mention (Issue #5310)
-- Secret redaction masks ordinary prose after a word containing "Token":
-  ***REDACTED*** 5251's title reads "TokenEconomizer: ***REDACTED*** the agreed
-  trial" (Issue #5253) (#5303)
-- Interpolate the YAML fixture and exempt its first literal (Issue #5310)
-- Refuse a credential label as an earlier label's value (Issue #5310)
+- WIP checkpoint: periodic agent progress snapshot
 
 The working tree was clean at the interruption — the work above is already
 committed on this branch.
 
 ## What remains
 
-The run was interrupted after 6567s, so it never reported completion: whatever
+The run was interrupted after 699s, so it never reported completion: whatever
 the issue still asks for beyond the changes above is outstanding.
 
 Diff `issue-5310-secret-assignment-rule-publishes-a-credential-when` against its
-base branch to see the 7 commit(s) and 0 preserved file(s) named above, continue
+base branch to see the 1 commit(s) and 0 preserved file(s) named above, continue
 from them, and do not revert them unless they are wrong.
 
 The closing deliverables are outstanding too unless the list above names them:
@@ -51,3 +41,11 @@ run that finishes without it fails at the gate however complete the code is.
 
 None were recorded. The run was stopped by the interruption named above, not by
 a blocker it reported.
+
+## Previous attempts
+
+Earlier runs on this issue were interrupted too:
+
+- 2026-11-21T03:48:13Z — execute was released on schedule (cycle ended, finish
+  deadline reached, or run hard cap reached) after 6567s; 0 uncommitted file(s)
+  preserved; 7 commit(s) added to the branch
