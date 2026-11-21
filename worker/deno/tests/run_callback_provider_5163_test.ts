@@ -6,6 +6,10 @@
  * its result, the production `processIssue` and `runIssueCallbacks` carrying
  * it, and the published document.
  *
+ * It also covers the run's `telemetryAbsentReason` being judged from the
+ * provider the invocations reported, not the host's configured one (Issue
+ * #5295).
+ *
  * Uses Australian English throughout (behaviour, colour).
  */
 
@@ -164,15 +168,16 @@ Deno.test("trackAgentLaunches - other deps pass through unchanged", () => {
   assert(t.deps.github === t.input.github);
 });
 
-/** Run one issue on a Claude host; `pin` is the repo's agent provider. */
+/** Run one issue on a host (Claude by default); `pin` is the repo's agent provider. */
 async function runIssue(
   pin: string | undefined,
   invoked: unknown[],
   runner?: Runner,
   extra?: Parameters<typeof createMockDeps>[0],
+  hostProvider = "claude",
 ): Promise<WorkOnIssueResult> {
   const config = buildDefaultWorkerConfig();
-  config.agentProvider = "claude";
+  config.agentProvider = hostProvider;
   if (pin) config.repoConfig = { [REPO]: { agentProvider: pin } };
   const deps = createMockDeps({
     ...extra,
@@ -259,6 +264,50 @@ for (
         assert(invoked.length >= 1, "the runner must be invoked");
         assertEquals(result.provider, expected);
         assertEquals(publishedProvider(result), expected);
+      } finally {
+        setConfiguredAgentProviderId(undefined);
+        setConfiguredEnabledAgentProviderIds(undefined);
+      }
+    },
+  });
+}
+
+for (
+  const [label, host, pin, expected] of [
+    [
+      "a deepseek pin on a claude host",
+      "claude",
+      "deepseek",
+      "provider_unsupported",
+    ],
+    [
+      "an unpinned repo on a claude host",
+      "claude",
+      undefined,
+      "usage_not_reported",
+    ],
+    [
+      "a claude pin on a deepseek host",
+      "deepseek",
+      "claude",
+      "usage_not_reported",
+    ],
+  ] as const
+) {
+  Deno.test({
+    name:
+      `#5295 - workOnIssue: telemetryAbsentReason follows the served provider (${label})`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      setConfiguredAgentProviderId(host);
+      setConfiguredEnabledAgentProviderIds(["claude", "deepseek"]);
+      try {
+        const invoked: unknown[] = [];
+        const result = await runIssue(pin, invoked, undefined, undefined, host);
+        assert(invoked.length >= 1, "the runner must be invoked");
+        assertEquals(result.telemetry, undefined);
+        assertEquals(result.telemetryAbsentReason, expected);
       } finally {
         setConfiguredAgentProviderId(undefined);
         setConfiguredEnabledAgentProviderIds(undefined);
