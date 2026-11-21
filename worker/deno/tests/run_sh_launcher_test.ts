@@ -707,26 +707,7 @@ Deno.test("run.sh - reaps a container that outlives the watchdog deadline", asyn
       `the reaper could not read the host: ${host}`,
     );
     assert(host !== "unknown", "the record must not fall back to 'unknown'");
-    // The host facts (Issue #5250) come from the production `df` and memory
-    // seams; a narrowed permission or a wrong path records "unavailable:".
-    const hostState = (evidence.evidence as Record<string, unknown>)
-      ?.hostState as
-        | { disk: string; memory: string }
-        | undefined;
-    assert(hostState, "the hard-kill record lacks hostState");
-    assert(
-      /^available=\d+ total=\d+$/.test(hostState.disk),
-      `the reaper could not read the host disk: ${hostState.disk}`,
-    );
-    // "level=unknown" is what a refused or failed read records and the issue
-    // renders as "not available", so only "ok" and "high" count as read. This
-    // goes red if run.sh drops systemMemoryInfo from the reap's --allow-sys.
-    assert(
-      /^level=(?:ok|high)(?: available=\d+ total=\d+)?$/.test(
-        hostState.memory,
-      ),
-      `the reaper could not read the host memory: ${hostState.memory}`,
-    );
+    assertHostStateRead(evidence);
     for (
       const field of [
         "host",
@@ -750,6 +731,34 @@ Deno.test("run.sh - reaps a container that outlives the watchdog deadline", asyn
     await harness.cleanup();
   }
 });
+
+/**
+ * Assert that a hard-kill record carries host disk and memory facts that the
+ * reaper actually read (Issue #5250). They come from the production `df` and
+ * memory seams; a narrowed permission or a wrong path records "unavailable:".
+ * "level=unknown" is what a refused or failed memory read records and the
+ * issue renders as "not available", so only "ok" and "high" count as read.
+ * Each `container-reap` invocation in run.sh that writes evidence needs its
+ * own test calling this, so dropping systemMemoryInfo from that invocation's
+ * --allow-sys goes red.
+ */
+function assertHostStateRead(evidence: Record<string, unknown>): void {
+  const hostState = (evidence.evidence as Record<string, unknown>)
+    ?.hostState as
+      | { disk: string; memory: string }
+      | undefined;
+  assert(hostState, "the hard-kill record lacks hostState");
+  assert(
+    /^available=\d+ total=\d+$/.test(hostState.disk),
+    `the reaper could not read the host disk: ${hostState.disk}`,
+  );
+  assert(
+    /^level=(?:ok|high)(?: available=\d+ total=\d+)?$/.test(
+      hostState.memory,
+    ),
+    `the reaper could not read the host memory: ${hostState.memory}`,
+  );
+}
 
 Deno.test("run.sh - reaps a silent guest that stops answering before the watchdog deadline (Issue #5161)", async () => {
   const harness = await setupHarness({
@@ -802,6 +811,9 @@ Deno.test("run.sh - reaps a silent guest that stops answering before the watchdo
       `unexpected reason: ${String(evidence.reason)}`,
     );
     assertEquals(evidence.trigger, "watchdog");
+    // The early `--if-silent` reap is a separate container-reap invocation
+    // with its own --allow-sys grant, so its record is checked on its own.
+    assertHostStateRead(evidence);
   } finally {
     await harness.cleanup();
   }

@@ -129,30 +129,37 @@ flowchart LR
 
 - **fixed** — every changed call site needs a test that goes red without it —
   evidence: `worker/deno/tests/run_sh_launcher_test.ts`
-  (`run.sh - reaps a
-  container that outlives the watchdog deadline`) — reason:
-  the test runs the real `container-reap`, so the production `diskReading` and
-  `memoryReading` defaults in `createEvidenceSeams` run, and it asserts the
-  written `evidence.hostState.disk` matches `^available=\d+ total=\d+$` and
+  (`run.sh - reaps a container that outlives the watchdog deadline` for the
+  deadline reap at `run.sh:2291`, and
+  `run.sh - reaps a silent guest that stops answering before the watchdog deadline (Issue #5161)`
+  for the early `--if-silent` reap at `run.sh:2229`) — reason: each test runs
+  the real `container-reap` through its own invocation, so the production
+  `diskReading` and `memoryReading` defaults in `createEvidenceSeams` run, and
+  each calls `assertHostStateRead`, which asserts the written
+  `evidence.hostState.disk` matches `^available=\d+ total=\d+$` and
   `evidence.hostState.memory` matches
   `^level=(?:ok|high)(?: available=\d+ total=\d+)?$` (`level=unknown` fails).
-  With `systemMemoryInfo` removed from `run.sh`'s `--allow-sys` the test goes
-  red with `unavailable: Requires sys access to "systemMemoryInfo"`.
+  With `systemMemoryInfo` removed from the early invocation's `--allow-sys`
+  alone, the silent-guest test goes red with
+  `unavailable: Requires sys access to "systemMemoryInfo"` and the deadline test
+  stays green; before this change the silent-guest test stayed green too.
 - **fixed** — capture tests assert disk rejection, per-probe timeout, branch
   failure and total-cap causes in the persisted host fields.
 - **fixed** — parser tests assert the specific object and member validation
   errors and parse each repaired record.
-- **violation** — DRY (in-repo helper re-implemented) — evidence:
-  `worker/deno/lib/hard_kill_guest_facts.ts:58,197-199` — reason: open, not
-  fixed in this run. `GIB` and `gib()` duplicate `formatMemoryBytes`
-  (`lib/memory_pressure.ts`) and the private `GIB` in `lib/host_disk.ts`. The
-  output wording differs (always GiB).
-- **violation** — names that count members kept in step — evidence:
-  `worker/deno/tests/hard_kill_report_test.ts:1315`, `:1388`,
-  `worker/deno/lib/hard_kill_guest_facts.ts:2` — reason: open, not fixed in this
-  run. The test titles still say "four guest figures" and "the silent time and
-  the guest probe". The module summary still says the figures are "derived from
-  the guest evidence".
+- **fixed** — DRY (in-repo helper re-implemented) — evidence:
+  `worker/deno/lib/hard_kill_guest_facts.ts`, `worker/deno/lib/host_disk.ts` —
+  reason: fixed in this diff. `hard_kill_guest_facts.ts` no longer defines its
+  own `GIB`; it imports the one `host_disk.ts` now exports. `gib()` stays,
+  documented: `formatMemoryBytes` (`lib/memory_pressure.ts`) switches to MiB
+  below 1 GiB, and the public issue keeps one fixed GiB shape for both host
+  figures.
+- **fixed** — names that count members kept in step — evidence:
+  `worker/deno/tests/hard_kill_report_test.ts:1350`, `:1423`,
+  `worker/deno/lib/hard_kill_guest_facts.ts:2` — reason: fixed in this diff. The
+  test titles now say "the guest and host figures" in place of "the four guest
+  figures" and "the silent time and the guest probe", and the module summary
+  says the figures come from "the guest and host evidence".
 - **clean** — Australian English spelling; reading the old persisted shape
   (`hostState` optional, with an old-shape test); what reaches the public issue
   (anchored, bounded patterns, hostile inputs give `not available`); failing
@@ -202,14 +209,25 @@ Edited existing tests:
   `^available=\d+ total=\d+$` and `hostState.memory` matches
   `^level=(?:ok|high)(?: available=\d+ total=\d+)?$`, so the production `df` and
   memory seams are covered (observed passing at head).
+- `run_sh_launcher_test.ts::run.sh - reaps a silent guest that stops answering before the watchdog deadline (Issue #5161)`
+  now makes the same two assertions on the early `--if-silent` reap's record,
+  through the shared `assertHostStateRead` helper the deadline test also calls.
+  Its `reason` and `trigger` assertions are unchanged. Red without it, observed:
+  with `systemMemoryInfo` dropped from `run.sh:2229` only, this test failed with
+  `the reaper could not read the host memory: unavailable: Requires sys access
+  to "systemMemoryInfo"`
+  and the deadline test passed; the test as it was before passed under the same
+  mutation.
 
-- `hard_kill_report_test.ts::the body carries the four guest figures under the last log time (Issue #5062)`:
-  the four guest-figure lines are still asserted with the same values. The
-  "blank line after the four figures" expectation now sits after the two new
-  host lines, which the test also asserts (literal values). Nothing was dropped.
-- `hard_kill_report_test.ts::a recurrence's follow-up line carries the silent time and the guest probe (Issue #5062)`:
-  the existing silence and guest-probe assertion is kept, and a host disk and
-  host memory assertion is added.
+- `hard_kill_report_test.ts::the body carries the guest and host figures under the last log time (Issue #5062)`
+  (renamed from "the four guest figures"): the four guest-figure lines are still
+  asserted with the same values. The "blank line after the four figures"
+  expectation now sits after the two new host lines, which the test also asserts
+  (literal values). Nothing was dropped.
+- `hard_kill_report_test.ts::a recurrence's follow-up line carries the guest and host figures (Issue #5062)`
+  (renamed from "the silent time and the guest probe"): the existing silence and
+  guest-probe assertion is kept, and a host disk and host memory assertion is
+  added.
 - `hard_kill_evidence_test.ts::captureHardKillEvidence - writes one file holding every field with its expected value`
   and the key list in `container_watchdog_test.ts` now include `hostState`.
   Every other field's expectation is unchanged.
@@ -232,8 +250,12 @@ Results:
   `hard_kill_guest_facts`, `container_reap_command`, `container_watchdog`,
   `guest_silence_watch`, `spawn_timeout_callers_4251`,
   `run_core_production_deps_hard_kill`, `run_core_hard_kill`, `setup_step_log`):
-  241 passed, 0 failed (34, 74, 32, 10, 37, 10, 34, 4, 3 and 3, in that order).
-  `run_failure_issue_test.ts`: 26 passed, 0 failed.
+  244 passed, 0 failed (35, 76, 32, 10, 37, 10, 34, 4, 3 and 3, in that order),
+  run on the final commit after merging `main` at `4cdc138af`.
+  `run_failure_issue_test.ts`: 26 passed, 0 failed. `run_sh_launcher_test.ts`:
+  124 passed, 0 failed. These runs used a scratch import map in place of the
+  `jsr:@std/*` imports, since jsr.io was unreachable from the host; CI runs the
+  suites as written.
 - `./quality.sh` on `0b8314542`: `Result: PASSED (with skipped checks)`. Config
   integration was skipped (`deno or .config.json not available`) and so was
   checkov (no checkov on PATH).
@@ -254,7 +276,8 @@ Results:
   argument for what reaches the public repository) and the `formatHardKillBody`
   doc comment now name the two host figures beside the four guest figures. These
   are comment-only edits. After them, the 10 hard-kill test files above gave 241
-  passed and 0 failed.
+  passed and 0 failed (before the last three host-state tests were added; the
+  final count is under Head above).
 - Merge with `main` (Issue #4815 facts backfill): the host disk and host memory
   lines now sit in the shared `hardKillFactLines`, so the issue body and the
   backfill comment carry the same fixed-shape facts. The backfill test fixture
@@ -266,5 +289,5 @@ Not done:
 - The wedge's cause, as stated above.
 - I did not check whether `GRQ-25` runs the #5266 early reap; merge time alone
   does not prove deployment.
-- The four open standards findings above are recorded but not fixed in this run;
-  the first (the untested `diskReading` and `memoryReading` defaults) is fixed.
+- No standards finding above is left open; every `violation` is fixed in this
+  diff.

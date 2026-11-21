@@ -1,6 +1,6 @@
 /**
- * Fixed words and digits derived from the guest evidence of a hard kill
- * (Issue #5062).
+ * Fixed words and digits derived from the guest and host evidence of a hard
+ * kill (Issues #5062, #5250).
  *
  * The auto-filed hard-kill issue is public, and the killed run may have been
  * working a private repository. A later recurrence still has to tell a frozen
@@ -26,6 +26,7 @@ import {
   NOT_COLLECTED_CAUSE,
   UNAVAILABLE_PREFIX,
 } from "./hard_kill_evidence.ts";
+import { GIB } from "./host_disk.ts";
 
 /** Cap on each evidence string scanned (cost and ReDoS guard). */
 const SCAN_CHARS = 4000;
@@ -55,7 +56,6 @@ const HOST_DISK_RE = /^available=(\d{1,16}) total=(\d{1,16})$/;
 /** The host memory field: a level, then optionally the byte figures. */
 const HOST_MEMORY_RE =
   /^level=(ok|high|unknown)(?: available=(\d{1,16}) total=(\d{1,16}))?$/;
-const GIB = 1024 ** 3;
 
 /** Evidence text, cut to the scan cap. */
 function scanned(text: string): string {
@@ -193,7 +193,11 @@ export function hardKillGuestPressure(evidence: HardKillEvidence): string {
   return segments.length > 0 ? segments.join("; ") : "not available";
 }
 
-/** Bytes as GiB to one decimal. */
+/**
+ * Bytes as GiB to one decimal. Unlike `formatMemoryBytes`, which switches to
+ * MiB below 1 GiB, the public issue keeps one fixed GiB shape for both host
+ * figures.
+ */
 function gib(bytes: number): string {
   return (bytes / GIB).toFixed(1);
 }

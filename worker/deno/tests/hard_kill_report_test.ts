@@ -1347,7 +1347,7 @@ Deno.test("a repeat kill's follow-up occurrence line names its last step (Issue 
   );
 });
 
-Deno.test("the body carries the four guest figures under the last log time (Issue #5062)", () => {
+Deno.test("the body carries the guest and host figures under the last log time (Issue #5062)", () => {
   const failed =
     "unavailable: container exec did not answer: exit 1: OCI runtime exec failed";
   const ev = makeEvidence({
@@ -1420,7 +1420,7 @@ Deno.test("guest free text never reaches the body (Issue #5062)", () => {
   assertStringIncludes(body, "**Guest pressure:** cpu some avg10=1.00");
 });
 
-Deno.test("a recurrence's follow-up line carries the silent time and the guest probe (Issue #5062)", async () => {
+Deno.test("a recurrence's follow-up line carries the guest and host figures (Issue #5062)", async () => {
   const fs = fakeFs({
     [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
     [evidenceName("vibe-coder-s1-4255", 1761355900)]: json(
