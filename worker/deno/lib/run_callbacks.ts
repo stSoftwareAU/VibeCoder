@@ -427,11 +427,21 @@ export interface CallbackRunOutcome {
   prNumber?: number;
 }
 
-/** Why the callback context carries no token/cost telemetry (Issue #1948). */
+/**
+ * Why the callback context carries no token/cost telemetry (Issue #1948).
+ *
+ * - `agent_not_invoked`: the run invoked no agent.
+ * - `usage_not_reported`: an agent ran but reported no parseable usage.
+ * - `provider_unsupported`: the provider does not report usage.
+ * - `run_unreported`: the run threw, or its slot was abandoned at shutdown or
+ *   the finish deadline, before it reported its usage, so whether an agent ran
+ *   is unknown (Issue #5296).
+ */
 export type TelemetryAbsentReason =
   | "agent_not_invoked"
   | "usage_not_reported"
-  | "provider_unsupported";
+  | "provider_unsupported"
+  | "run_unreported";
 
 /** Why the callback context carries no session transcript path (Issue #1948). */
 export type SessionLogAbsentReason =
@@ -550,8 +560,9 @@ export interface TerminalIssueRun {
   /** Terminating phase name, when known (setup, execute, completion, …). */
   phase?: string;
   /**
-   * Why telemetry is absent, when the run invoked no agent or the
-   * provider reported no usage (Issue #1948).
+   * Why telemetry is absent: the run invoked no agent, the provider
+   * reported no usage (Issue #1948), or the run never reported so whether an
+   * agent ran is unknown (Issue #5296).
    */
   telemetryAbsentReason?: TelemetryAbsentReason;
   /**

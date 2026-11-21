@@ -18,6 +18,7 @@ import {
   claimRoutedIssue,
   isRouteClaimUnavailable,
   ROUTE_CLAIM_REFUSED_MESSAGE,
+  routeRunResult,
 } from "../lib/route_claim.ts";
 import type { Logger } from "../types.ts";
 
@@ -290,4 +291,40 @@ Deno.test("isRouteClaimUnavailable - held-or-unclaimable versus fault", () => {
   ) {
     assertEquals(isRouteClaimUnavailable(reason), false, reason);
   }
+});
+
+Deno.test("routeRunResult forwards a routed run's telemetry (Issue #5296)", () => {
+  const telemetry = { inputTokens: 10, outputTokens: 2, turns: 3 };
+  assertEquals(routeRunResult({ success: true, telemetry }, "claude"), {
+    success: true,
+    skipped: false,
+    provider: "claude",
+    telemetry,
+  });
+  assertEquals(
+    routeRunResult({
+      success: true,
+      telemetryAbsentReason: "agent_not_invoked",
+    }),
+    {
+      success: true,
+      skipped: false,
+      telemetryAbsentReason: "agent_not_invoked",
+    },
+  );
+  assertEquals(routeRunResult({ success: true }), {
+    success: true,
+    skipped: false,
+  });
+});
+
+Deno.test("routeRunResult claimLost carries no telemetry (Issue #5296)", () => {
+  const result = routeRunResult({
+    success: false,
+    claimLost: true,
+    claimReason: "race_lost",
+    claimDetail: "x",
+  });
+  assertEquals("telemetry" in result, false);
+  assertEquals("telemetryAbsentReason" in result, false);
 });
