@@ -342,6 +342,8 @@ interface Frame {
   sub: boolean;
   /** Identity of this compound, for {@link ReachableCommand.groupSwallowed}. */
   id: number;
+  /** A `for`, `select`, `while` or `until` loop. */
+  iterates: boolean;
 }
 
 function frameLive(f: Frame): boolean {
@@ -401,6 +403,12 @@ export interface ReachableCommand {
    * compound's own status (PR #5332 review).
    */
   errexitIgnored: boolean;
+  /**
+   * True when the command sits in a `for`, `select`, `while` or `until` body:
+   * the loop returns the status of the last command it ran, so a failure in an
+   * earlier pass is lost when a later one succeeds (PR #5332 review).
+   */
+  inLoop: boolean;
 }
 
 /** Separators after a compound's closing word that can swallow its status. */
@@ -477,17 +485,16 @@ function failureExits(listed: ShellCommand[], index: number): boolean {
 }
 
 /**
- * Whether a word ends in a `)` outside its quotes that no `(` in the word,
- * outside quotes, opens: `done)`, `"done")`, `'done')` close a subshell, while
- * `$(date)` and `"a)"` do not (PR #5332 review).
+ * The unquoted parenthesis balance of a word (`(` +1, `)` -1), and whether its
+ * last character is an unquoted `)`.
  */
-function endsWithUnquotedCloseParen(word: string): boolean {
+function parenBalance(word: string): { delta: number; endsClose: boolean } {
   let quote = "";
-  let depth = 0;
-  let lastWasClose = false;
+  let delta = 0;
+  let endsClose = false;
   for (let i = 0; i < word.length; i++) {
     const ch = word[i];
-    lastWasClose = false;
+    endsClose = false;
     if (quote !== "") {
       if (ch === "\\" && quote === '"') i++;
       else if (ch === quote) quote = "";
@@ -498,13 +505,26 @@ function endsWithUnquotedCloseParen(word: string): boolean {
     } else if (ch === "'" || ch === '"') {
       quote = ch;
     } else if (ch === "(") {
-      depth++;
+      delta++;
     } else if (ch === ")") {
-      depth--;
-      lastWasClose = true;
+      delta--;
+      endsClose = true;
     }
   }
-  return quote === "" && lastWasClose && depth < 0;
+  return { delta, endsClose: quote === "" && endsClose };
+}
+
+/**
+ * Whether a command's last word closes the open subshell: it ends in an
+ * unquoted `)`, and across all the command's words, outside quotes, there is
+ * one more `)` than `(` (PR #5332 review). So `done)`, `"done")` and
+ * `echo 'a')` close it, while `cd $(git rev-parse --show-toplevel)`,
+ * `args=(--foo bar)` and `$(date)` do not.
+ */
+function closesSubshell(words: string[]): boolean {
+  let depth = 0;
+  for (const word of words) depth += parenBalance(word).delta;
+  return depth < 0 && parenBalance(words.at(-1) ?? "").endsClose;
 }
 
 /**
@@ -557,6 +577,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
       awaitBrace: false,
       brace: false,
       sub: false,
+      iterates: false,
       ...partial,
       id: nextFrameId++,
     });
@@ -633,6 +654,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
         push({
           branch: "cond",
           loop: w === "if" ? null : w,
+          iterates: w !== "if",
         });
       } else if (w === "elif" && top) {
         top.earlierTrue = top.earlierTrue || top.truth === true;
@@ -643,7 +665,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
       } else if (w === "else") {
         if (top) top.branch = "else";
       } else if (w === "for" || w === "case" || w === "select") {
-        push({});
+        push({ iterates: w !== "case" });
         words = [];
         break;
       } else if (w === "{") {
@@ -683,7 +705,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
     // an unbalanced `)` counts, so `$(date)` or a quoted `)` does not.
     if (!closeAfter && stack.at(-1)?.sub && words.length > 0) {
       const last = words.at(-1) ?? "";
-      if (endsWithUnquotedCloseParen(last)) {
+      if (closesSubshell(words)) {
         closeAfter = true;
         const trimmed = last.slice(0, -1);
         words = trimmed === "" ? words.slice(0, -1) : [
@@ -717,10 +739,13 @@ export function reachableCommands(script: string): ReachableCommand[] {
         words,
         sep,
         next: listed[index + 1]?.sep ?? (trailing === "\n" ? "" : trailing),
-        condition: frameOpen?.branch === "cond",
+        // A group or subshell inside an `if`/`while` test is a condition
+        // too: its status is the test's (PR #5332 review).
+        condition: stack.some((frame) => frame.branch === "cond"),
         failureExits: failureExits(listed, index),
         groupSwallowed: false,
         errexitIgnored: false,
+        inLoop: stack.some((frame) => frame.iterates),
       });
       enclosing.push(stack.map((frame) => frame.id));
       const at = commandIndex(words);

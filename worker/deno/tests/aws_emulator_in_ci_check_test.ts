@@ -2733,6 +2733,38 @@ Deno.test("checkAwsEmulatorInCI - a runner whose group or compound is swallowed 
       "an if/fi whose runner is not last && echo ok",
       `if true; then ${RUNNER_STEP}; echo done; fi && echo ok`,
     ],
+    // A group or subshell inside an `if` test is a condition (PR #5332
+    // review round 5).
+    [
+      "a subshell as an if condition",
+      `if ( ${RUNNER_STEP} ); then echo ok; fi\necho more`,
+    ],
+    [
+      "a brace group as an if condition",
+      `if { ${RUNNER_STEP}; }; then echo ok; fi\necho more`,
+    ],
+    [
+      "a multi-line subshell as an if condition",
+      `if (\n  cd infra\n  ${RUNNER_STEP}\n); then echo ok; else echo failed; fi`,
+    ],
+    // A `)` closing a `$(` or an array literal opened earlier in the same
+    // command does not close the subshell.
+    [
+      "a swallowed subshell after cd $(git rev-parse --show-toplevel)",
+      `(\n  cd $(git rev-parse --show-toplevel)\n  ${RUNNER_STEP}\n) || true`,
+    ],
+    [
+      "a swallowed subshell after ROOT=$(git rev-parse --show-toplevel)",
+      `(\n  ROOT=$(git rev-parse --show-toplevel)\n  ${RUNNER_STEP}\n) || true`,
+    ],
+    [
+      "a swallowed subshell after an array literal",
+      `(\n  args=(--foo bar)\n  ${RUNNER_STEP}\n) || true`,
+    ],
+    [
+      "a subshell after echo started at $(date +%s) piped to tee",
+      `(\n  echo started at $(date +%s)\n  ${RUNNER_STEP}\n) | tee log`,
+    ],
     // A subshell that closes before an unconditional exit leaves the runner
     // after it unreachable.
     [
@@ -2764,6 +2796,11 @@ Deno.test("checkAwsEmulatorInCI - a runner whose group or compound is swallowed 
       "a multi-command subshell with attached parens",
       `(cd infra; ${RUNNER_STEP})`,
     ],
+    [
+      "a subshell after cd $(git rev-parse --show-toplevel), not swallowed",
+      `(\n  cd $(git rev-parse --show-toplevel)\n  ${RUNNER_STEP}\n)\necho after`,
+    ],
+    ["a for loop under errexit", `for t in a b; do ${RUNNER_STEP}; done`],
     ["runner || exit 1, then more", `${RUNNER_STEP} || exit 1\necho after`],
     [
       "if ! runner; then exit 1; fi, then more",
@@ -2780,6 +2817,33 @@ Deno.test("checkAwsEmulatorInCI - a runner whose group or compound is swallowed 
       "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
     });
     assertEquals(inScript.wiring, "official-server", `script: ${label}`);
+  }
+});
+
+// PR #5332 review round 5: a loop returns its last pass's status, so with
+// errexit off a runner in a loop body is not kept by being the last command.
+Deno.test("checkAwsEmulatorInCI - a runner in a loop body in a script without set -e earns no credit; with set -e or in a default workflow shell it does", async () => {
+  for (
+    const body of [
+      `for t in a b; do ${RUNNER_STEP}; done`,
+      `for t in a b\ndo\n  ${RUNNER_STEP}\ndone`,
+      `while read -r t; do ${RUNNER_STEP}; done < list`,
+    ]
+  ) {
+    const refused = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(refused.wiring, "missing", `no set -e: ${body}`);
+    const withErrexit = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(withErrexit.wiring, "official-server", `set -e: ${body}`);
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "official-server", `workflow: ${body}`);
   }
 });
 

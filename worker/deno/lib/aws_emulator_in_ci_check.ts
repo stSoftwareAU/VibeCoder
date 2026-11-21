@@ -849,7 +849,9 @@ interface KeptCommand {
  * off). A command inside a group or compound swallowed one level out
  * (`ReachableCommand.groupSwallowed`) is never kept, and one inside a
  * compound followed by `&&` is judged with errexit off
- * (`ReachableCommand.errexitIgnored`). Otherwise a command is
+ * (`ReachableCommand.errexitIgnored`). A command in a loop body is never
+ * kept by being last (`ReachableCommand.inLoop`): the loop's status is its
+ * last pass's. Otherwise a command is
  * kept when a failure always reaches an explicit failing
  * exit (`cmd || exit 1`, `if ! cmd; then ...; exit 1; fi`), or when its failure
  * is not swallowed (see {@link commandStatusNotSwallowed}) and one of these holds: it runs via `exec`;
@@ -874,7 +876,7 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
     // the group is a subshell, so it is never credited (fails closed).
     const kept = !cmd.groupSwallowed && (cmd.failureExits ||
       (commandStatusNotSwallowed(cmd) &&
-        (viaExec || restAllAnd[k] === true ||
+        (viaExec || (!cmd.inLoop && restAllAnd[k] === true) ||
           (errexit && !cmd.errexitIgnored && cmd.next !== "&&"))));
     out.push({ cmd, kept });
     if (stripQuotes(cmd.words[at] ?? "") === "set") {

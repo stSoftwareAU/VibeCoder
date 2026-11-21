@@ -385,11 +385,17 @@ Official server mode needs all of the following:
   (`if`/`fi`, a loop, `case`) whose closing word is followed by `||`, `|` or
   `&` (`{ runner; } || true`, `if x; then runner; fi || true`,
   `( cd infra; runner; cd .. ) | tee log`; a `)` attached to a word, quoted
-  or not, closes a subshell), nor by `&&` with more of the body after that
+  or not, closes a subshell when the command holds one more unquoted `)` than
+  `(`, so `cd $(git rev-parse --show-toplevel)` or `args=(--foo bar)` does
+  not), not in a group or subshell that is itself an `if` or `while` test
+  (`if ( runner ); then …`), nor by `&&` with more of the body after that
   chain, and one of the following. Bash ignores errexit inside a compound on
   the left of `&&`, so a command there is judged with errexit off:
   `{ runner; } && echo ok` at the end of the body is credited, but
-  `{ runner; echo done; } && echo ok` is not. The rules are: it runs via `exec`; it is the last command
+  `{ runner; echo done; } && echo ok` is not. A runner in a `for`, `while`,
+  `until` or `select` body is never kept by being the last command, because
+  the loop returns its last pass's status; it needs errexit, `exec` or an
+  explicit failing exit. The rules are: it runs via `exec`; it is the last command
   (or the rest of the body is an `&&` chain to the end); or errexit is on
   at that point and it is not followed by `&&`. Two explicit-exit idioms
   are also preserved, whatever errexit is: `runner || exit N` (N not 0, or

@@ -188,9 +188,12 @@ emulator test.
   `! runner || exit 1` are refused too, in the workflow and in a repository
   script, each with a credited control:
   `…::a runner whose group or compound is swallowed one level out, or a negated runner before || exit 1, earns no credit`
-  (after the third and fourth reviews it also covers multi-command subshells,
-  attached and quoted closing parentheses, a compound followed by `&&` with
-  more after it, and a runner that is not last in a compound left of `&&`).
+  (after the third to fifth reviews it also covers multi-command subshells,
+  attached and quoted closing parentheses, a `$(…)` or array literal inside a
+  subshell, a group or subshell as an `if` condition, a compound followed by
+  `&&` with more after it, and a runner that is not last in a compound left
+  of `&&`), and
+  `…::a runner in a loop body in a script without set -e earns no credit; with set -e or in a default workflow shell it does`.
   The Floci test-step matcher reads whole command words, so an install-only
   step beside a gap record earns nothing:
   `…::a gap record whose Floci job only installs a test tool is floci-only; common test runners are floci-gap`.
@@ -361,6 +364,17 @@ emulator test.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
+- After the fifth review (of `8654e2f9`): the swallow test adds a subshell, a
+  brace group and a multi-line subshell as an `if` condition; swallowed
+  multi-line subshells after `cd $(git rev-parse --show-toplevel)`,
+  `ROOT=$(…)` and an array literal, and one after `echo started at
+  $(date +%s)` piped to `tee`; and credited controls for the `$(…)` subshell
+  not swallowed and a `for` loop under errexit. A new test refuses a runner in
+  a `for` or `while` body in a script without `set -e` and credits it with
+  `set -euo pipefail` and in a default workflow shell. A command is a
+  condition when any enclosing frame is in its test, a subshell closes only
+  when the command holds one more unquoted `)` than `(`, and a loop body is
+  never kept by being last. Each new case fails at `8654e2f9`.
 - After the fourth review (of `1367ed64`): the swallow test adds a subshell
   closed by a quoted word's `)` (`echo "done")`, `echo 'done')`, the same
   piped to `tee`, and the unreachable runner after `( cd infra; echo
