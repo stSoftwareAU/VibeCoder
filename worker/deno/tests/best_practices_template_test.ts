@@ -219,7 +219,7 @@ function stubNoAws(): Promise<AwsEmulatorCheckResult> {
   return Promise.resolve({
     usesAws: false,
     awsEvidence: [],
-    emulatorConfigured: false,
+    wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
     workflowsLoaded: true,
   });
 }
@@ -1547,7 +1547,7 @@ function stubAwsNoFloci(
   return Promise.resolve({
     usesAws: true,
     awsEvidence: [...evidence],
-    emulatorConfigured: false,
+    wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
     workflowsLoaded: true,
   });
 }
@@ -1692,7 +1692,7 @@ Deno.test(
           Promise.resolve({
             usesAws: true,
             awsEvidence: ["Cargo.toml"],
-            emulatorConfigured: false,
+            wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
             workflowsLoaded: false,
           }),
         "no workflow",
@@ -2342,7 +2342,7 @@ Deno.test(
     const finding = buildAwsEmulatorFinding({
       usesAws: true,
       awsEvidence,
-      emulatorConfigured: false,
+      wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
       workflowsLoaded: true,
     });
     assertStringIncludes(finding.body, "`a49.tf`");
@@ -2361,7 +2361,7 @@ Deno.test(
     const finding = buildAwsEmulatorFinding({
       usesAws: true,
       awsEvidence,
-      emulatorConfigured: false,
+      wiring: "missing", wiringEvidence: [], wiringDiagnostics: [], unreadableWorkflows: [],
       workflowsLoaded: true,
     });
     assert(!/- … and \d+ more/.test(finding.body));

@@ -202,9 +202,15 @@ interface CheckContext {
 // Loaders
 // ---------------------------------------------------------------------------
 
-/** Load every workflow under `.github/workflows/`. Empty when missing. */
+/**
+ * Load every workflow under `.github/workflows/`. Empty when missing.
+ * `opts.onUnparseable` is called with the filename and parser message for each
+ * workflow that fails YAML parse; that workflow is still skipped from the
+ * result, exactly as without the option.
+ */
 export async function loadWorkflows(
   repoPath: string,
+  opts?: { onUnparseable?: (filename: string, message: string) => void },
 ): Promise<LoadedWorkflow[]> {
   const dir = `${repoPath}/.github/workflows`;
   const out: LoadedWorkflow[] = [];
@@ -220,9 +226,13 @@ export async function loadWorkflows(
       let parsed: unknown = null;
       try {
         parsed = parseYaml(rawContent);
-      } catch {
+      } catch (err) {
         // Unparseable workflows are skipped — we cannot reliably
         // enumerate steps without a parsed structure.
+        opts?.onUnparseable?.(
+          entry.name,
+          err instanceof Error ? err.message : String(err),
+        );
         continue;
       }
       out.push({

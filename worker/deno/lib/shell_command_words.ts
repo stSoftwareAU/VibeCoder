@@ -4,11 +4,14 @@
  *
  * These find command words in a GitHub Actions `run:` body; they are not a
  * shell parser. `shellSegments` splits a body into commands, `commandIndex`
- * finds a command's word, and `reachableSegments` drops commands that cannot
+ * finds a command's word, and `reachableCommands` drops commands that cannot
  * run (after an unconditional `exit` or `set -n`, behind `false &&`, in a branch or loop
  * whose condition is statically false, in any function body, or inside
- * a here-document). A construct it cannot judge counts as reachable only when
- * a runtime value decides it, so an unknown condition keeps its commands.
+ * a here-document). It also reports each reachable command's separators and
+ * whether it is an `if`/`elif`/`while`/`until` condition. `reachableSegments`
+ * is the words-only view of the same list. A construct it cannot judge counts
+ * as reachable only when a runtime value decides it, so an unknown condition
+ * keeps its commands.
  *
  * Used by aws_emulator_in_ci_check.ts and aws_emulator_workflow_check.ts.
  *
@@ -344,6 +347,21 @@ function frameCertain(f: Frame): boolean {
 const FUNCTION_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*\(\)$/;
 
 /**
+ * A reachable command (see {@link reachableCommands}): its words, the separator
+ * before it, the separator after it (`next`, `""` when it is the last command
+ * of the body) and whether it sits in an `if`/`elif`/`while`/`until` condition.
+ */
+export interface ReachableCommand {
+  words: string[];
+  /** Separator before this command, as in {@link shellCommands}. */
+  sep: string;
+  /** Separator of the following command in the {@link shellCommands} list; `""` when last. */
+  next: string;
+  /** True when the command sits in an `if`/`elif`/`while`/`until` condition. */
+  condition: boolean;
+}
+
+/**
  * The commands of a `run:` body that can run: it drops commands after an
  * unconditional `exit` or `set -n` / `set -o noexec`, behind `false &&` or `true ||`, in an `if`/`elif`/
  * `else` branch or a `while`/`until` body whose condition is statically false
@@ -355,10 +373,13 @@ const FUNCTION_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*\(\)$/;
  * unknown `if`) does not end the script here, so later commands still count;
  * one a static chain always reaches (`true && exit 0`, `false || exit 0`)
  * does.
- * Returns each reachable command's words, keywords such as `then` included.
+ * Returns each reachable command with its words (keywords such as `then`
+ * stripped), the separators around it and whether it is a condition. The
+ * separators and `condition` come from the same `shellCommands` list the
+ * reachability walk reads, so a caller can tell `cmd || true` from `cmd`.
  */
-export function reachableSegments(script: string): string[][] {
-  const out: string[][] = [];
+export function reachableCommands(script: string): ReachableCommand[] {
+  const out: ReachableCommand[] = [];
   const stack: Frame[] = [];
   let exited = false;
   let prev: boolean | null = null; // static status of the previous command
@@ -385,7 +406,8 @@ export function reachableSegments(script: string): string[][] {
       ...partial,
     });
 
-  for (const { words: all, sep } of shellCommands(stripHeredocBodies(script))) {
+  const listed = shellCommands(stripHeredocBodies(script));
+  for (const [index, { words: all, sep }] of listed.entries()) {
     let words = all;
     // Short-circuit chains: `false && x` and `true || x` skip x, while
     // `true && x` and `false || x` always run it. `runs` is null when a
@@ -497,7 +519,12 @@ export function reachableSegments(script: string): string[][] {
         : !prev;
     }
     if (reached) {
-      out.push(words);
+      out.push({
+        words,
+        sep,
+        next: listed[index + 1]?.sep ?? "",
+        condition: frameOpen?.branch === "cond",
+      });
       const at = commandIndex(words);
       const head = stripQuotes(words[at] ?? "");
       const certain = runs === true && sep !== "|" && sep !== "&" &&
@@ -509,4 +536,12 @@ export function reachableSegments(script: string): string[][] {
     if (closeAfter) prev = stack.pop()?.skippedStatus ?? prev;
   }
   return out;
+}
+
+/**
+ * The words of each reachable command, keywords such as `then` included (see
+ * {@link reachableCommands} for what is dropped and why).
+ */
+export function reachableSegments(script: string): string[][] {
+  return reachableCommands(script).map((c) => c.words);
 }
