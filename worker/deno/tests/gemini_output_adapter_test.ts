@@ -155,9 +155,10 @@ Deno.test("gemini output adapter - a TerminalQuotaError with a stated reset is q
   assertEquals(failure?.quota?.scope, "unknown");
   // "Your quota will reset after 2h30m15s." is 9 015 seconds from now.
   assertEquals(failure?.quota?.resetEpochMs, NOW_MS + 9_015_000);
-  assertEquals(failure?.httpStatus, 429);
-  // Negative control: the preceding 429 retry warning is present in the
-  // stream, and it did not make the run a transient rate limit.
+  // Negative control: the preceding 429 retry warning is decoded, but the
+  // terminal result is the verdict, so the warning supplies no status and
+  // cannot make the run a transient rate limit.
+  assertEquals(failure?.httpStatus, undefined);
   const decoded = geminiAdapter().decode(stdout);
   assert(
     decoded.errors.some((e) =>
@@ -166,7 +167,6 @@ Deno.test("gemini output adapter - a TerminalQuotaError with a stated reset is q
     ),
     "the 429 warning is in the decoded errors",
   );
-  assert(failure?.category !== "rate-limit");
 });
 
 Deno.test("gemini output adapter - a TerminalQuotaError with no stated reset reports no reset (Issue #5340)", () => {
@@ -291,7 +291,7 @@ Deno.test("gemini output adapter - a FatalTurnLimitedError at exit 53 is turn-li
   assertEquals(failure?.evidence, "structured");
 });
 
-Deno.test("gemini output adapter - an HTTP 503 is a network failure, not a credential or model one (Issue #5340)", () => {
+Deno.test("gemini output adapter - a terminal result carrying HTTP 503 is network, with httpStatus 503 (Issue #5340)", () => {
   const stdout = streamOf(
     initEvent(),
     errorResult("Error", "[API Error: 503 Service Unavailable]"),
@@ -412,6 +412,193 @@ Deno.test("gemini output adapter - a hostile retry phrase with a 50 000-digit ru
 
   assertEquals(failure?.category, "quota-exhausted");
   assertEquals(failure?.quota?.resetEpochMs, undefined);
+});
+
+Deno.test("gemini output adapter - out-of-memory in stderr is out-of-memory, read before anything else (Issue #5340)", () => {
+  const failure = classifyRun(
+    "",
+    134,
+    "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+  );
+
+  assertEquals(failure?.category, "out-of-memory");
+  assertEquals(failure?.evidence, "prose");
+});
+
+Deno.test("gemini output adapter - a structured 401 status in the result is authentication (Issue #5340)", () => {
+  const stdout = streamOf(
+    initEvent(),
+    errorResult("Error", "[API Error: Request failed (Status: 401)]"),
+  );
+  const failure = classifyRun(stdout, 1);
+
+  assertEquals(failure?.category, "authentication");
+  assertEquals(failure?.evidence, "structured");
+  assertEquals(failure?.httpStatus, 401);
+});
+
+Deno.test("gemini output adapter - a terminal 402 Insufficient Balance is quota-exhausted (Issue #5340)", () => {
+  const stdout = streamOf(
+    initEvent(),
+    errorResult("Error", "[API Error: 402 Insufficient Balance]"),
+  );
+  const failure = classifyRun(stdout, 1);
+
+  assertEquals(failure?.category, "quota-exhausted");
+  assertEquals(failure?.evidence, "structured");
+  assertEquals(failure?.quota, { scope: "unknown" });
+});
+
+Deno.test("gemini output adapter - a quota stated only in stderr, with no stdout, is quota-exhausted from prose (Issue #5340)", () => {
+  const failure = classifyRun(
+    "",
+    1,
+    "You have exhausted your daily quota on this model.",
+  );
+
+  assertEquals(failure?.category, "quota-exhausted");
+  assertEquals(failure?.evidence, "prose");
+  assertEquals(failure?.quota, { scope: "unknown" });
+});
+
+Deno.test("gemini output adapter - an authentication refusal stated only in stderr is authentication from prose (Issue #5340)", () => {
+  const failure = classifyRun(
+    "",
+    1,
+    "Not logged in. Please log in to continue.",
+  );
+
+  assertEquals(failure?.category, "authentication");
+  assertEquals(failure?.evidence, "prose");
+});
+
+Deno.test("gemini output adapter - a model refusal stated only in stderr is model-unavailable from prose (Issue #5340)", () => {
+  const failure = classifyRun("", 1, "The model gemini-9x is not found.");
+
+  assertEquals(failure?.category, "model-unavailable");
+  assertEquals(failure?.evidence, "prose");
+});
+
+Deno.test("gemini output adapter - a dropped connection stated only in stderr is network from prose (Issue #5340)", () => {
+  const failure = classifyRun("", 1, "request failed: ECONNRESET");
+
+  assertEquals(failure?.category, "network");
+  assertEquals(failure?.evidence, "prose");
+});
+
+Deno.test("gemini output adapter - a rate limit in stderr takes its delay from the retry-after fallback (Issue #5340)", () => {
+  const failure = classifyRun("", 1, "Too Many Requests, retry-after: 20");
+
+  assertEquals(failure?.category, "rate-limit");
+  assertEquals(failure?.evidence, "prose");
+  assertEquals(failure?.retryAfterSeconds, 20);
+});
+
+Deno.test("gemini output adapter - an unexplained exit with empty streams is task-failure from the process (Issue #5340)", () => {
+  const failure = classifyRun("", 2);
+
+  assertEquals(failure?.category, "task-failure");
+  assertEquals(failure?.evidence, "process");
+  assertEquals(failure?.message, "The Gemini CLI exited 2");
+});
+
+Deno.test("gemini output adapter - a retry delay in milliseconds is read as a fraction of a second (Issue #5340)", () => {
+  const stdout = streamOf(
+    initEvent(),
+    errorResult(
+      "RetryableQuotaError",
+      "[API Error: 429 Too Many Requests. Please retry in 500ms.]",
+    ),
+  );
+  const failure = classifyRun(stdout, 1);
+
+  assertEquals(failure?.category, "rate-limit");
+  assertEquals(failure?.retryAfterSeconds, 0.5);
+});
+
+Deno.test("gemini output adapter - a result whose status is neither success nor error stays incomplete (Issue #5340)", () => {
+  const stdout = streamOf(
+    initEvent(),
+    { type: "result", timestamp: TS, status: "interrupted" },
+  );
+  const decoded = geminiAdapter().decode(stdout);
+
+  assertEquals(decoded.status, "incomplete");
+  assertEquals(decoded.errors, []);
+});
+
+Deno.test("gemini output adapter - exit 53 alone, with empty stdout, is turn-limit from the process (Issue #5340)", () => {
+  const failure = classifyRun("", 53);
+
+  assertEquals(failure?.category, "turn-limit");
+  assertEquals(failure?.evidence, "process");
+});
+
+Deno.test("gemini output adapter - a RetryableQuotaError quoting an exceeded quota is rate-limit with its 39s delay, never quota (Issue #5340)", () => {
+  const stdout = streamOf(
+    initEvent(),
+    errorResult(
+      "RetryableQuotaError",
+      "[API Error: You exceeded your current quota. Please retry in 39s.]",
+    ),
+  );
+  const failure = classifyRun(stdout, 1);
+
+  assertEquals(failure?.category, "rate-limit");
+  assertEquals(failure?.retryAfterSeconds, 39);
+  assertEquals(failure?.quota, undefined);
+});
+
+Deno.test("gemini output adapter - a quota warning before an unrelated terminal error is task-failure (Issue #5340)", () => {
+  const stdout = streamOf(
+    initEvent(),
+    {
+      type: "error",
+      timestamp: TS,
+      severity: "warning",
+      message: "You have exhausted your daily quota on this model.",
+    },
+    errorResult("Error", "[API Error: something broke]"),
+  );
+  const failure = classifyRun(stdout, 1);
+
+  assertEquals(failure?.category, "task-failure");
+  assertEquals(failure?.evidence, "structured");
+});
+
+Deno.test("gemini output adapter - a terminal 503 with a GEMINI_API_KEY warning on stderr is network (Issue #5340)", () => {
+  const stdout = streamOf(
+    initEvent(),
+    errorResult("Error", "[API Error: Service Unavailable (Status: 503)]"),
+  );
+  const failure = classifyRun(
+    stdout,
+    1,
+    "Warning: GEMINI_API_KEY is set; using it for this run.",
+  );
+
+  assertEquals(failure?.category, "network");
+  assertEquals(failure?.httpStatus, 503);
+});
+
+Deno.test("gemini output adapter - a retry delay of 400 digits gives no finite delay on the rate-limit path (Issue #5340)", () => {
+  const hostile = `[API Error: 429 Too Many Requests. Please retry in ${
+    "9".repeat(400)
+  }s.]`;
+  const stdout = streamOf(
+    initEvent(),
+    errorResult("RetryableQuotaError", hostile),
+  );
+  const failure = classifyRun(stdout, 1);
+
+  assertEquals(failure?.category, "rate-limit");
+  assertEquals(failure?.retryAfterSeconds, undefined);
+});
+
+Deno.test("gemini output adapter - a model phrase followed by 50 000 spaces returns task-failure (Issue #5340)", () => {
+  const failure = classifyRun("", 1, `model${" ".repeat(50_000)}x`);
+
+  assertEquals(failure?.category, "task-failure");
 });
 
 /**

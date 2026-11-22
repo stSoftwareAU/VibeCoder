@@ -82,7 +82,7 @@ carries a `stats` object shaped as `gemini_token_usage.ts` documents.
 | `gemini-0.68.0-success.jsonl`        | 0    | `init` → the echoed user `message` → assistant deltas → `tool_use` / `tool_result` → the final turn in two delta chunks → `result` `success`. The final turn quotes quota and login text; it is still a success.                |
 | `gemini-0.68.0-quota-reset.jsonl`    | 173  | A `warning` `error` event (HTTP 429, retried) then a `result` `error` of class `TerminalQuotaError`: "exhausted your capacity", reset after `2h30m15s`. 173 is a 429 on Linux. The retry warning must not make it a rate limit. |
 | `gemini-0.68.0-quota-no-reset.jsonl` | 173  | A `result` `error` of class `TerminalQuotaError` for an exhausted daily quota, with no reset stated. The reset is never invented.                                                                                               |
-| `gemini-0.68.0-auth-rejected.jsonl`  | 1    | A `result` `error` of class `UnauthorizedError` (HTTP 401) with Google's "invalid authentication credentials" text: authentication, not an unavailable model.                                                                   |
+| `gemini-0.68.0-auth-rejected.jsonl`  | 1    | A `result` `error` of class `UnauthorizedError`, the CLI's class for Google's 401; the message carries no numeric status. Google's "invalid authentication credentials" text makes it authentication, not an unavailable model. |
 
 When a Gemini CLI becomes runnable here, replace the derived files with
 recordings and move their rows into a "Recorded" section — the tests read the

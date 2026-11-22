@@ -1078,7 +1078,8 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
   },
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/gemini.sh` },
   promptTransport: "argv",
-  // The stream-json decoder and failure classifier (Issue #5340), deferred for the same import cycle as Claude's above.
+  // The stream-json decoder and failure classifier (Issue #5340), deferred
+  // for the same import cycle as Claude's above.
   get output(): AgentOutputAdapter {
     return GEMINI_OUTPUT_ADAPTER;
   },

@@ -25,11 +25,25 @@
  *
  * Classification order, after the process facts (a cancellation or a watchdog
  * kill outranks everything) and a success (never a failure, however much of
- * its text quotes a limit): out-of-memory; authentication from structured
- * evidence; quota from structured evidence; authentication from prose; quota
- * from prose; model unavailable; turn limit; network; rate limit; then
- * task failure. The assistant's own text is never classified, except for the
- * out-of-memory check, exactly as Codex does it.
+ * its text quotes a limit):
+ *
+ * 1. Out-of-memory, first, read from the assistant text and stderr as Codex
+ *    does it.
+ * 2. The verdict. When the run has a terminal `result` error, that error alone
+ *    is the structured evidence and stderr is not read: Gemini's stderr
+ *    routinely carries advisory warnings (naming GEMINI_API_KEY, quoting a
+ *    limit) that are not the verdict. Only when there is no terminal error are
+ *    the non-terminal `error` events and stderr read.
+ * 3. Authentication: a structured class or phrase, exit 41, or a structured
+ *    401/403. Then quota-exhausted, from a terminal error only and never from
+ *    a `RetryableQuotaError`. A 401/403 read from text, and any prose from
+ *    stderr, come after the quota verdict, so a `TerminalQuotaError` quoting
+ *    403 stays a quota.
+ * 4. Then, in order: model unavailable; turn limit; network; rate limit; and
+ *    task failure as the fallback.
+ *
+ * The assistant's own text is never classified, except for the out-of-memory
+ * check in step 1.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
@@ -52,6 +66,7 @@ import {
   extractRetryAfterSeconds,
   failureMessage,
   isNetworkStatus,
+  NETWORK_PROSE_RE,
   parseJsonlEvents,
   readNumber,
   readObject,
@@ -72,10 +87,6 @@ const AUTH_EXIT_CODE = 41;
 
 /** The CLI's exit code for the turn cap (`FatalTurnLimitedError`). */
 const TURN_LIMIT_EXIT_CODE = 53;
-
-/** Transport failures the CLI reports in prose (as Codex's adapter reads them). */
-const NETWORK_RE =
-  /overloaded|high demand|econnreset|econnrefused|etimedout|enotfound|socket hang up|stream disconnected|connection (?:reset|refused|closed)/i;
 
 /**
  * A refusal about the model rather than the credential or the window. The
@@ -121,14 +132,16 @@ const RETRY_IN_RE = /\bretry in (\d+(?:\.\d+)?)(ms|s)\b/i;
  * The delay a message states, in milliseconds.
  *
  * @param text - The message to read.
- * @returns The delay, or undefined when none was stated. Never a default: an
- *   invented delay is indistinguishable from a measured one.
+ * @returns The delay, or undefined when none was stated or it is not a finite
+ *   number (a 400-digit run parses to Infinity, which is not a delay). Never a
+ *   default: an invented delay is indistinguishable from a measured one.
  */
 function retryInMs(text: string): number | undefined {
   const match = RETRY_IN_RE.exec(text);
   if (!match) return undefined;
   const value = Number(match[1]);
-  return match[2]?.toLowerCase() === "ms" ? value : value * 1000;
+  const ms = match[2]?.toLowerCase() === "ms" ? value : value * 1000;
+  return Number.isFinite(ms) ? ms : undefined;
 }
 
 /**
@@ -138,7 +151,7 @@ function retryInMs(text: string): number | undefined {
  * a "retry in" delay is the reset.
  *
  * @param text - The refusal text.
- * @returns The delay, or undefined when none was stated.
+ * @returns The delay, or undefined when none was stated or it is not finite.
  */
 function resetDelayMs(text: string): number | undefined {
   const after = RESET_AFTER_RE.exec(text);
@@ -146,9 +159,23 @@ function resetDelayMs(text: string): number | undefined {
     const seconds = (after[1] ? parseFloat(after[1]) * 3600 : 0) +
       (after[2] ? parseFloat(after[2]) * 60 : 0) +
       (after[3] ? parseFloat(after[3]) : 0);
-    return seconds * 1000;
+    const ms = seconds * 1000;
+    return Number.isFinite(ms) ? ms : undefined;
   }
   return retryInMs(text);
+}
+
+/**
+ * The retry delay a failure states, in seconds, and only when it is finite.
+ *
+ * @param text - The text the failure was classified on.
+ * @returns The delay, or undefined when none was stated.
+ */
+function retryDelaySeconds(text: string): number | undefined {
+  const delayMs = retryInMs(text);
+  if (delayMs !== undefined) return delayMs / 1000;
+  const stated = extractRetryAfterSeconds(text);
+  return stated !== undefined && Number.isFinite(stated) ? stated : undefined;
 }
 
 /**
@@ -318,19 +345,32 @@ function decodeGeminiOutput(stdout: string): AgentDecodedOutput {
 }
 
 /**
- * The evidence a structured-or-process authentication failure rests on.
+ * One structured error as the text the patterns are matched against.
  *
- * @param structured - Whether a structured error matched.
- * @param exitCode - The child's exit code.
- * @returns Structured first, then the process's own fatal code, then prose.
+ * @param error - The structured error.
+ * @returns Its class and its message.
  */
-function authEvidence(
-  structured: boolean,
-  exitCode: number,
-): AgentEvidenceKind {
-  if (structured) return "structured";
-  if (exitCode === AUTH_EXIT_CODE) return "process";
-  return "prose";
+function errorLine(error: AgentStructuredError): string {
+  return `${error.code ?? ""} ${error.message}`;
+}
+
+/**
+ * Whether one terminal error is the CLI's verdict that the quota is spent.
+ *
+ * A `TerminalQuotaError` is that verdict by its class. Any other terminal
+ * error counts when its wording says the window or the balance is spent, but
+ * never a `RetryableQuotaError`: that is a transient class which can quote the
+ * same words ("You exceeded your current quota … Please retry in 39s").
+ *
+ * @param error - A terminal (`result`) structured error.
+ * @returns True when the error is a spent-quota verdict.
+ */
+function isQuotaVerdict(error: AgentStructuredError): boolean {
+  const code = error.code ?? "";
+  if (TERMINAL_QUOTA_RE.test(code)) return true;
+  if (RETRYABLE_QUOTA_RE.test(code)) return false;
+  const line = errorLine(error);
+  return QUOTA_RE.test(line) || BALANCE_EXHAUSTED_RE.test(line);
 }
 
 /**
@@ -352,23 +392,23 @@ function classifyGeminiFailure(
 
   const { stderr, exitCode } = streams;
   const { errors } = decoded;
-  const surface = `${
-    errors.map((e) => `${e.code ?? ""} ${e.message}`).join("\n")
-  }\n${stderr}`;
+  // The evidence excerpt carries every error and the stderr, so the operator
+  // sees all of it. The verdict below reads less than that (see `verdict`).
+  const surface = `${errors.map(errorLine).join("\n")}\n${stderr}`;
   const evidence = redactedEvidence(surface);
   const say = (headline: string) => failureMessage(headline, evidence);
   const nowMs = streams.nowMs ?? Date.now();
 
-  // Result errors are searched first (they are the CLI's verdict), then the
-  // rest, in the order they were emitted.
-  const ordered = [
-    ...errors.filter((e) => e.source === "result"),
-    ...errors.filter((e) => e.source !== "result"),
-  ];
-  const match = (test: RegExp) =>
-    ordered.find((e) => test.test(`${e.code ?? ""} ${e.message}`));
-  const httpStatus = ordered.find((e) => e.httpStatus !== undefined)
-    ?.httpStatus ?? extractHttpStatus(surface);
+  // The terminal `result` error is the CLI's verdict. When it exists it alone
+  // is the structured evidence, and stderr is not read as prose. Only with no
+  // terminal error are the non-terminal `error` events and stderr read.
+  const terminal = errors.filter((e) => e.source === "result");
+  const verdict = terminal.length > 0 ? terminal : errors;
+  const prose = terminal.length > 0 ? "" : stderr;
+  const readText = `${verdict.map(errorLine).join("\n")}\n${prose}`;
+  const match = (test: RegExp) => verdict.find((e) => test.test(errorLine(e)));
+  const httpStatus = verdict.find((e) => e.httpStatus !== undefined)
+    ?.httpStatus ?? extractHttpStatus(readText);
 
   if (detectOutOfMemory(`${decoded.text}\n${stderr}`)) {
     return agentFailure({
@@ -379,27 +419,22 @@ function classifyGeminiFailure(
     });
   }
 
-  // Authentication before any status code is read as a quota or a model
-  // problem: a rejected credential answers 401/403 and must never walk the
-  // model ladder.
-  const authError = match(AUTH_RE);
-  if (
-    authError || exitCode === AUTH_EXIT_CODE || httpStatus === 401 ||
-    httpStatus === 403
-  ) {
-    return agentFailure({
+  const authentication = (kind: AgentEvidenceKind) =>
+    agentFailure({
       category: "authentication",
       message: say("Gemini refused the credential"),
-      evidence: authEvidence(authError !== undefined, exitCode),
+      evidence: kind,
       httpStatus,
       errors,
     });
-  }
 
-  // A spent window, read from the CLI's own verdict or the API's wording.
-  // Issue #2613: a spent balance (HTTP 402) is the same account-wide refusal.
-  const quotaError = match(TERMINAL_QUOTA_RE) ?? match(QUOTA_RE) ??
-    match(BALANCE_EXHAUSTED_RE);
+  // A structured class or phrase for a rejected credential, then the CLI's
+  // own fatal authentication exit code.
+  if (match(AUTH_RE)) return authentication("structured");
+  if (exitCode === AUTH_EXIT_CODE) return authentication("process");
+
+  // The CLI's verdict that the window is spent: a terminal error only.
+  const quotaError = terminal.find(isQuotaVerdict);
   if (quotaError) {
     return agentFailure({
       category: "quota-exhausted",
@@ -411,33 +446,32 @@ function classifyGeminiFailure(
     });
   }
 
-  // Prose authentication comes after the structured quota verdict on purpose:
-  // Gemini's stderr routinely names GEMINI_API_KEY in an advisory warning,
-  // which isGeminiAuthError reads as an auth failure. A structured quota must
-  // win over that.
-  if (isGeminiAuthError(stderr)) {
-    return agentFailure({
-      category: "authentication",
-      message: say("Gemini refused the credential"),
-      evidence: "prose",
-      httpStatus,
-      errors,
-    });
+  // A status code that names the credential. It is read after the quota
+  // verdict, so a `TerminalQuotaError` quoting 403 stays a quota.
+  if (httpStatus === 401 || httpStatus === 403) {
+    return authentication(
+      verdict.some((e) => e.httpStatus !== undefined) ? "structured" : "prose",
+    );
   }
 
-  if (QUOTA_RE.test(stderr) || BALANCE_EXHAUSTED_RE.test(stderr)) {
+  // Prose from stderr, only when there is no terminal error. Gemini's stderr
+  // names GEMINI_API_KEY in advisory warnings, which isGeminiAuthError reads as
+  // an auth failure; that is why stderr is never read once a verdict exists.
+  if (isGeminiAuthError(prose)) return authentication("prose");
+
+  if (QUOTA_RE.test(prose) || BALANCE_EXHAUSTED_RE.test(prose)) {
     return agentFailure({
       category: "quota-exhausted",
       message: say("Gemini's quota is exhausted"),
       evidence: "prose",
-      quota: geminiQuota(stderr, nowMs),
+      quota: geminiQuota(prose, nowMs),
       httpStatus,
       errors,
     });
   }
 
   const modelError = match(MODEL_UNAVAILABLE_RE);
-  if (modelError || MODEL_UNAVAILABLE_RE.test(stderr)) {
+  if (modelError || MODEL_UNAVAILABLE_RE.test(prose)) {
     return agentFailure({
       category: "model-unavailable",
       message: say("Gemini refused the requested model"),
@@ -459,30 +493,26 @@ function classifyGeminiFailure(
 
   if (
     isNetworkStatus(httpStatus) ||
-    (NETWORK_RE.test(surface) && !RATE_LIMIT_RE.test(surface))
+    (NETWORK_PROSE_RE.test(readText) && !RATE_LIMIT_RE.test(readText))
   ) {
     return agentFailure({
       category: "network",
       message: say("The Gemini CLI could not reach the API"),
-      evidence: "prose",
+      evidence: terminal.length > 0 ? "structured" : "prose",
       httpStatus,
       errors,
     });
   }
 
   // A transient limit: the CLI's retryable class, a 429, or its wording. The
-  // retry delay is read from the same text it was classified on.
+  // delay is read from the same text the failure was classified on.
   const rateError = match(RETRYABLE_QUOTA_RE) ?? match(RATE_LIMIT_RE);
-  if (rateError || httpStatus === 429 || RATE_LIMIT_RE.test(stderr)) {
-    const delayMs = retryInMs(surface);
-    const retryAfterSeconds = delayMs !== undefined
-      ? delayMs / 1000
-      : extractRetryAfterSeconds(surface);
+  if (rateError || httpStatus === 429 || RATE_LIMIT_RE.test(prose)) {
     return agentFailure({
       category: "rate-limit",
       message: say("Gemini rate-limited this request"),
       evidence: rateError ? "structured" : "prose",
-      retryAfterSeconds,
+      retryAfterSeconds: retryDelaySeconds(readText),
       httpStatus,
       errors,
     });
