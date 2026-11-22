@@ -175,4 +175,7 @@ Issues cited as provenance:
   few fixtures, an explicit `init -b main` or identity. No assertion or expected
   value was removed or changed.
 
-QUALITY_RESULT
+- `./quality.sh < /dev/null` on commit `497b57208`: `Result: PASSED (with
+  skipped checks)`, exit 0. Deno tests, lint, type check, fmt, semgrep,
+  gitleaks, markdownlint and mermaid all passed. Config integration and
+  checkov were skipped.
