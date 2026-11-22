@@ -486,6 +486,26 @@ Deno.test("gemini output adapter - a dropped connection stated only in stderr is
   assertEquals(failure?.evidence, "prose");
 });
 
+Deno.test("gemini output adapter - an advisory GEMINI_API_KEY warning on stderr does not hide a dropped connection (Issue #5340)", () => {
+  const failure = classifyRun(
+    "",
+    1,
+    "Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.\nError: read ECONNRESET",
+  );
+
+  assertEquals(failure?.category, "network");
+});
+
+Deno.test("gemini output adapter - an advisory GEMINI_API_KEY warning on stderr does not hide a quota (Issue #5340)", () => {
+  const failure = classifyRun(
+    "",
+    1,
+    "Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.\nYou have exhausted your daily quota on this model.",
+  );
+
+  assertEquals(failure?.category, "quota-exhausted");
+});
+
 Deno.test("gemini output adapter - a rate limit in stderr takes its delay from the retry-after fallback (Issue #5340)", () => {
   const failure = classifyRun("", 1, "Too Many Requests, retry-after: 20");
 
@@ -599,6 +619,35 @@ Deno.test("gemini output adapter - a model phrase followed by 50 000 spaces retu
   const failure = classifyRun("", 1, `model${" ".repeat(50_000)}x`);
 
   assertEquals(failure?.category, "task-failure");
+});
+
+Deno.test("gemini output adapter - a 50 000-character near miss of each pattern returns task-failure (Issue #5340)", () => {
+  // Each message is a long run of a prefix that almost matches one pattern,
+  // ending in a character the pattern rejects. Each must return task-failure.
+  const nearMisses: { pattern: string; message: string }[] = [
+    { pattern: "AUTH_RE", message: "FatalAuthentication".repeat(3000) + "x" },
+    {
+      pattern: "TERMINAL_QUOTA_RE",
+      message: "TerminalQuota".repeat(4000) + "x",
+    },
+    { pattern: "QUOTA_RE", message: "exhausted your ".repeat(4000) + "x" },
+    {
+      pattern: "RETRYABLE_QUOTA_RE",
+      message: "RetryableQuota".repeat(4000) + "x",
+    },
+    { pattern: "RATE_LIMIT_RE", message: "rate ".repeat(10000) + "x" },
+    {
+      pattern: "TURN_LIMIT_RE",
+      message: "FatalTurnLimited".repeat(3000) + "x",
+    },
+  ];
+  for (const { pattern, message } of nearMisses) {
+    const failure = classifyRun(
+      streamOf(initEvent(), errorResult("Error", message)),
+      1,
+    );
+    assertEquals(failure?.category, "task-failure", `pattern ${pattern}`);
+  }
 });
 
 /**

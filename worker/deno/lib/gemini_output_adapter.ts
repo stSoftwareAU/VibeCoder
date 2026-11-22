@@ -38,9 +38,10 @@
  *    quota-exhausted, from a terminal error only and never from a
  *    `RetryableQuotaError`. Only then a 401/403 status, so a
  *    `TerminalQuotaError` quoting 403 stays a quota, and then (with no
- *    terminal error) authentication and quota read from stderr prose.
- * 4. Then, in order: model unavailable; turn limit; network; rate limit; and
- *    task failure as the fallback.
+ *    terminal error) quota-exhausted read from stderr prose.
+ * 4. Then, in order: model unavailable; turn limit; network; rate limit;
+ *    authentication read from stderr prose (with no terminal error), which is
+ *    the last category before task failure; and task failure as the fallback.
  *
  * The assistant's own text is never classified, except for the out-of-memory
  * check in step 1.
@@ -454,11 +455,7 @@ function classifyGeminiFailure(
     );
   }
 
-  // Prose from stderr, only when there is no terminal error. Gemini's stderr
-  // names GEMINI_API_KEY in advisory warnings, which isGeminiAuthError reads as
-  // an auth failure; that is why stderr is never read once a verdict exists.
-  if (isGeminiAuthError(prose)) return authentication("prose");
-
+  // Prose from stderr, only when there is no terminal error.
   if (QUOTA_RE.test(prose) || BALANCE_EXHAUSTED_RE.test(prose)) {
     return agentFailure({
       category: "quota-exhausted",
@@ -517,6 +514,12 @@ function classifyGeminiFailure(
       errors,
     });
   }
+
+  // Authentication from stderr prose is the last category before task failure,
+  // so it cannot shadow a stderr-only network, quota or rate limit. Gemini's
+  // stderr names GEMINI_API_KEY in advisory warnings, which isGeminiAuthError
+  // reads as an auth failure.
+  if (isGeminiAuthError(prose)) return authentication("prose");
 
   return agentFailure({
     category: "task-failure",
