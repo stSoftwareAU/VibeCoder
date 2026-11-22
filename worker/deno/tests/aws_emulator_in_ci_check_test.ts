@@ -3621,6 +3621,74 @@ Deno.test("checkAwsEmulatorInCI - a runner that is the first command inside an u
   assertEquals(balanced.wiring, "official-server", "balanced substitutions");
 });
 
+// PR #5332 review round 13: a multi-line `$(` whose opening line ends in a
+// keyword opens a frame, a backtick substitution is read in the `then` branch
+// and across lines, and a `done)` closing a `$( … )` opened earlier on the
+// line does not close the tracked subshell around it.
+Deno.test("checkAwsEmulatorInCI - a runner inside a multi-line substitution or backtick earns no credit", async () => {
+  const R = RUNNER_STEP;
+  const refused: Array<[string, string]> = [
+    ["$(for … do", `PKGS=$(for d in a b; do\n  ${R}\ndone)\necho "$PKGS"`],
+    ["$(if … then", `X=$(if true; then\n  ${R}\nfi)\necho "$X"`],
+    ["$(case", `MODE=$(case "$X" in\n  a) ${R} ;;\nesac)\necho "$MODE"`],
+    ["multi-line backticks", `X=\`\n${R}\necho done\n\`\necho "$X"`],
+    [
+      "backtick exit in the then branch",
+      `if ! ${R}; then echo \`echo bad; exit 1; echo x\`; fi\necho after`,
+    ],
+    [
+      "backtick assignment exit in the then branch",
+      `if ! ${R}; then\n  X=\`echo bad; exit 1; echo x\`\nfi\necho after`,
+    ],
+    [
+      "backtick exit across lines in the then branch",
+      `if ! ${R}; then\n  X=\`\n  exit 1\n  \`\nfi\necho after`,
+    ],
+  ];
+  for (const [label, body] of refused) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "missing", `default-shell step: ${label}`);
+    const strict = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(strict.wiring, "missing", `set -euo pipefail: ${label}`);
+    const afterSetPlusE = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    });
+    assertEquals(afterSetPlusE.wiring, "missing", `after set +e: ${label}`);
+  }
+  // Controls: the same constructs, balanced and not holding the runner, keep a
+  // plain runner after them credited, as does a backtick in the then branch
+  // that closes before the exit.
+  const credited = [
+    `PKGS=$(for d in a b; do\n  basename "$d"\ndone)\n${R}`,
+    `X=$(if true; then\n  echo a\nfi)\n${R}`,
+    `X=\`\ndate\n\`\n${R}`,
+    `if ! ${R}; then echo \`date\`; exit 1; fi\necho after`,
+    `( for d in a; do X=$(for e in b; do echo $e; done); ${R}; done )`,
+    `( if true; then X=$(if true; then echo a; fi); ${R} || exit 1; fi )`,
+  ];
+  for (const body of credited) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "official-server", `credited: ${body}`);
+  }
+  // A `done)` that closes a `$( … )` opened earlier on the line must not close
+  // the tracked subshell: the loop is judged like the same loop without it.
+  const swallowed = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(
+        `( for d in a; do X=$(for e in b; do echo $e; done); ${R}; done ) || true`,
+      ),
+    ),
+  });
+  assertEquals(swallowed.wiring, "missing", "swallowed subshell with a $( )");
+});
+
 // PR #5332 review round 7: a one-line `$( … )` holding `|`, `;` or `&&`, with
 // more words after it, opens no frame, so later commands are still judged.
 Deno.test("checkAwsEmulatorInCI - a one-line substitution with a separator inside it does not hide a later runner", async () => {

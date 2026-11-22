@@ -948,8 +948,10 @@ function applyTrap(
  * - it sits inside a parenthesis or backtick substitution with no tracked
  *   frame, whether opened earlier on its line or by its own words before the
  *   command word (`ReachableCommand.inUntrackedParen`: `time ( … )`,
- *   `! ( … )`, `X=$( cmd; … )`, `echo $(cmd)`); a `set` in one changes no
- *   errexit outside it;
+ *   `! ( … )`, `X=$( cmd; … )`, `echo $(cmd)`), or inside a multi-line
+ *   `$(` whose opening line ends in a keyword (`X=$(for d in a; do`) or a
+ *   backtick substitution that spans lines; a `set` in one changes no errexit
+ *   outside it;
  * - it sits in a group or compound swallowed one level out
  *   (`ReachableCommand.groupSwallowed`);
  * - it sits in a `( )` subshell whose own failure does not fail the body:

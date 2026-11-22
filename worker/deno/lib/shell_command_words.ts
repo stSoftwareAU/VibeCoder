@@ -570,6 +570,9 @@ function failureExits(
   // parenthesis that closes inside its own word or command (`"$(date)"`,
   // `$(pwd)/log`, `$((n / 60))`) leaves the balance at zero (round 12).
   let open = 0;
+  // Backticks seen in the branch, modulo 2: an exit read while one is open
+  // ends only the backtick substitution (round 13).
+  let ticks = 0;
   for (let j = index + 1; j < listed.length; j++) {
     const entry = listed[j];
     if (entry === undefined) break;
@@ -585,11 +588,12 @@ function failureExits(
       isFailingExit(words, false) && !CHAINING_SEPARATORS.has(entry.sep) &&
       (next === undefined || !CHAINING_SEPARATORS.has(next.sep))
     ) {
-      if (open > 0) return false;
+      if (open > 0 || ticks % 2 === 1) return false;
       exits = true;
     }
     for (const word of words) {
       open = Math.max(0, open + parenBalance(word).delta);
+      ticks += backtickCount(word);
     }
   }
   return false;
@@ -805,8 +809,8 @@ export function reachableCommands(script: string): ReachableCommand[] {
   // Parentheses opened by earlier commands of the current line and not yet
   // closed (a `$(` split by the command list at a `|`, `;` or `&&`).
   let linePending = 0;
-  // Backticks of the current line's earlier commands, modulo 2: odd while a
-  // backtick substitution is open.
+  // Backticks of the earlier commands, modulo 2: odd while a backtick
+  // substitution is open, across lines.
   let lineTicks = 0;
   for (const [index, { words: all, sep }] of listed.entries()) {
     let words = all;
@@ -855,10 +859,14 @@ export function reachableCommands(script: string): ReachableCommand[] {
       // is the compound the keyword closes and a tracked `( )` subshell is
       // open around it for each `)`. Otherwise the `)` closes a `$( ... )`
       // the walk tracks no frame for (`X=$(for d in a b; do echo $d; done)`),
-      // and the word stays whole so the parenthesis balance closes it (PR
-      // #5332 review rounds 11 and 12).
+      // or one opened earlier on this line (`linePending`, as in `( for …; do
+      // X=$(for …; done); …`), and the word stays whole so the parenthesis
+      // balance closes it (PR #5332 review rounds 11 to 13).
       const closing = /^(fi|done|esac|\})(\)+)$/.exec(words[0] ?? "");
-      if (closing && closesInsideSubshell(closing[1] ?? "", closing[2] ?? "")) {
+      if (
+        closing && linePending === 0 &&
+        closesInsideSubshell(closing[1] ?? "", closing[2] ?? "")
+      ) {
         words = [
           closing[1] ?? "",
           ...Array.from({ length: closing[2]?.length ?? 0 }, () => ")"),
@@ -977,13 +985,10 @@ export function reachableCommands(script: string): ReachableCommand[] {
       ticksAtCommand += backtickCount(word);
     }
     const inUntrackedParen = openAtCommand > 0 || ticksAtCommand % 2 === 1;
-    {
-      const ends = listed[index + 1]?.sep ??
-        (trailing === "\n" ? "" : trailing);
-      let ticks = lineTicks;
-      for (const word of words) ticks += backtickCount(word);
-      lineTicks = ends === "\n" || ends === "" ? 0 : ticks % 2;
-    }
+    // A backtick substitution may span lines, so the parity is carried to the
+    // closing backtick, and every command up to it is untracked (round 13).
+    for (const word of words) lineTicks += backtickCount(word);
+    lineTicks %= 2;
     let opensSubst = false;
     if (closeAfter) {
       linePending = 0;
@@ -999,16 +1004,19 @@ export function reachableCommands(script: string): ReachableCommand[] {
         linePending = Math.max(0, depth);
       }
     }
-    if (words.length === 0) {
-      prev = closeAfter ? pop()?.skippedStatus ?? null : closedStatus;
-      continue;
-    }
     const pushSubst = () => {
       if (!opensSubst) return;
       push({ truth: true, sub: true, subst: true });
       const frame = stack.at(-1);
       if (frame) swallowedFrames.add(frame.id);
     };
+    // A command that is only a keyword (`do`, `then`, `{`) can still end the
+    // line with a `$(` open (`X=$(for d in a; do`), so open its frame too.
+    if (words.length === 0) {
+      prev = closeAfter ? pop()?.skippedStatus ?? null : closedStatus;
+      pushSubst();
+      continue;
+    }
 
     const frameOpen = stack.at(-1);
     if (!skipped) {
