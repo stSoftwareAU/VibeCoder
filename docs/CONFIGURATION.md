@@ -5333,8 +5333,8 @@ formatters over the same changed files and commits the result as one
 `style: apply repository formatters` commit (`formatBeforeGate` in
 `repo_formatters.ts`, part of #2932). A formatting-only miss is fixed there
 rather than failing the gate, or reaching review and CI and costing another
-round. The formatters cover exactly what the gate's format checks would flag:
-`deno fmt` on the changed code files (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
+round. The formatters cover what the gate's format checks would flag, except an
+archive file with uncommitted changes (described below): `deno fmt` on the changed code files (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
 `.cjs`, `.mts`, `.cts`, `.json`, `.jsonc`) that the deno root's own fmt
 `include`/`exclude` covers, and `cargo fmt --all` for a cargo root whose `.rs`
 files changed. Markdown outside `docs/archive/pr-summaries/` and

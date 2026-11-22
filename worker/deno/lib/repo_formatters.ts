@@ -10,8 +10,10 @@
  * fmt --check` would flag (`planFormatterFixes` in `pre_push_gate.ts`): `deno
  * fmt` on the changed code files under each outermost tracked `deno.json` /
  * `deno.jsonc` that its fmt scope covers, and `cargo fmt --all` in each
- * outermost tracked `Cargo.toml` directory whose `.rs` files changed. If any
- * tracked file differs afterwards, the formatted paths, and only those, are
+ * outermost tracked `Cargo.toml` directory whose `.rs` files changed. The one
+ * exception: a worker-owned archive file with uncommitted changes is left out
+ * of `deno fmt` even when its Deno root covers it (Issue #5328), so the gate's
+ * check could still flag it. If any tracked file differs afterwards, the formatted paths, and only those, are
  * committed as one `style: apply repository formatters` commit.
  *
  * Markdown outside the worker's own archive is never handed to `deno fmt`:
