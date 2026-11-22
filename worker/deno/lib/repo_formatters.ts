@@ -326,14 +326,15 @@ export function isolateLinkageLines(text: string): string {
  * tree copy of every branch-changed archive file, so an unformatted edit that
  * is not in the push would block it, and the recovery turn would commit it.
  * Stashing keeps the edit recoverable (`git stash list`) while the gate and
- * the PR body both see the committed copy. A failed stash is logged; the gate
- * then reports whatever it finds.
+ * the PR body both see the committed copy. A failed stash is logged and
+ * returns false; the gate then reports whatever it finds. Returns true when
+ * the paths now hold exactly their committed copy.
  */
 async function stashUncommittedArchive(
   repoPath: string,
   deps: RepoFormatterDeps,
   paths: string[],
-): Promise<void> {
+): Promise<boolean> {
   const stash = await deps.runGitCommand(
     [
       "stash",
@@ -351,13 +352,14 @@ async function stashUncommittedArchive(
         gitStepError("stash push", stash)
       }`,
     );
-    return;
+    return false;
   }
   deps.logger.info(
     `repo formatters: set aside uncommitted ${
       paths.join(", ")
     } in a git stash; the gate judges the committed copy (Issue #5328)`,
   );
+  return true;
 }
 
 /**
@@ -372,8 +374,10 @@ async function stashUncommittedArchive(
  * MAX_ARCHIVE_REWRITE_BYTES are skipped with a warning and left for the gate
  * to report. An archive file with uncommitted changes is left out, neither
  * formatted nor committed, and a failed check skips the step (Issue #5328).
- * With `setAsideUncommitted`, that edit is also moved into a git stash, so a
- * gate that judges the working tree sees the committed copy instead. A missing
+ * With `setAsideUncommitted`, that edit is instead moved into a git stash, so a
+ * gate that judges the working tree sees the committed copy; the file then
+ * holds exactly its committed copy and is formatted and committed like any
+ * other (a failed stash leaves it out). A missing
  * formatter, a write failure, or a formatter that exits non-zero is logged.
  * This function never throws, so the gate still runs.
  */
@@ -452,6 +456,7 @@ export async function formatWorkerOwnedArchive(
     }
     const dirtyPaths = new Set(dirty.value.stdout.split("\0"));
     const leftOut = archiveFiles.filter((path) => dirtyPaths.has(path));
+    let stashed = false;
     if (leftOut.length > 0) {
       deps.logger.warn(
         `repo formatters: left ${
@@ -459,10 +464,14 @@ export async function formatWorkerOwnedArchive(
         } out of the archive formatting: uncommitted changes stay uncommitted (Issue #5328)`,
       );
       if (options.setAsideUncommitted) {
-        await stashUncommittedArchive(repoPath, deps, leftOut);
+        // A stashed file now equals HEAD, so it is formatted and committed
+        // like any clean file; the gate must not meet an unformatted copy.
+        stashed = await stashUncommittedArchive(repoPath, deps, leftOut);
       }
     }
-    const cleanFiles = archiveFiles.filter((path) => !dirtyPaths.has(path));
+    const cleanFiles = archiveFiles.filter((path) =>
+      stashed || !dirtyPaths.has(path)
+    );
     if (cleanFiles.length === 0) return;
 
     const skipped = new Set<string>();
@@ -758,7 +767,8 @@ export async function formatBranchChanges(
  * the worker's own archive Markdown and JSON are formatted the same way
  * (Issue #4129). `options.setAsideUncommittedArchive` is for a caller whose
  * gate judges the working tree but whose push carries commits only: an archive
- * file with uncommitted edits is then stashed rather than left in place.
+ * file with uncommitted edits is then stashed rather than left in place, and
+ * its committed copy is formatted and committed like any other archive file.
  */
 export async function formatBeforeGate(
   deps: {

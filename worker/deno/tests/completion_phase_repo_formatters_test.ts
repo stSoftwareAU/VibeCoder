@@ -579,6 +579,60 @@ Deno.test({
 
 Deno.test({
   name:
+    "completion - a committed archive summary that is not fmt-clean is still formatted and committed when it also carries an uncommitted edit (Issue #5328)",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const summary = "docs/archive/pr-summaries/pr-summary-10.md";
+    // Committed over 80 columns: `deno fmt` re-wraps it, so only a formatted
+    // committed copy passes the first gate without a recovery turn.
+    const committed = "# Summary\n\nDelivered, and the committed paragraph " +
+      "is deliberately far beyond eighty columns so deno fmt has to re-wrap it.\n";
+    const interrupted = `${committed}\nAn interrupted recovery turn added ` +
+      "this line and never committed it.\n";
+    const { tmp, repo } = await makeRepo({
+      "deno.json": "{}\n",
+      [summary]: committed,
+    });
+    try {
+      await Deno.writeTextFile(`${repo}/${summary}`, interrupted);
+      // Positive control: the committed copy alone is not fmt-clean.
+      await git(["stash", "push", "--", summary], repo);
+      const bare = await gateUnpushedCommits(
+        BRANCH,
+        { cwd: repo, env: NO_HOST_GIT_CONFIG },
+        { commands: [] },
+        false,
+        "origin/main",
+      );
+      assert(!bare.ok, "the committed copy must fail the bare gate");
+      await git(["stash", "pop"], repo);
+      assertEquals(await Deno.readTextFile(`${repo}/${summary}`), interrupted);
+
+      const o = await runCompletion(repo, real);
+      // No recovery turn: the formatter fixed the committed copy up front.
+      assertEquals(o.order, ["format", "gate"]);
+      assertEquals(o.pushes, 1, `gate should pass: ${o.reason ?? ""}`);
+
+      const published = await git(["show", `HEAD:${summary}`], repo);
+      assert(!published.includes("interrupted recovery turn"));
+      assert(published.includes("Delivered"));
+      assertEquals(await Deno.readTextFile(`${repo}/${summary}`), published);
+      assertEquals(
+        (await git(["status", "--porcelain", "--", summary], repo)).trim(),
+        "",
+      );
+      assertStringIncludes(
+        await git(["show", "stash@{0}:" + summary], repo),
+        "interrupted recovery turn",
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
     "completion - an unformatted nested-Deno JSON change is formatted and committed, then passes the gate",
   permissions: { read: true, write: true, run: true, env: true },
   async fn() {

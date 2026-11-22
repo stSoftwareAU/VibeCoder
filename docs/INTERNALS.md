@@ -129,8 +129,9 @@ under `docs/archive/pr-summaries/` and `docs/archive/handover/` are formatted
 afterwards, except a file there that already differs from HEAD, staged or
 unstaged: that one is left out of the rewrite and the commit, so its
 uncommitted edit stays uncommitted (Issue #5328). The completion phase's call
-also stashes it, because its pre-push gate judges the working tree and its push
-carries commits only; the other callers only leave it out of the rewrite and the
+instead stashes it, because its pre-push gate judges the working tree and its
+push carries commits only; the file then holds its committed copy and is
+formatted and committed like any other archive file; the other callers only leave it out of the rewrite and the
 commit. If that check fails, the
 archive step is skipped with a warning. Before `deno fmt`, each linkage-only
 line in archive Markdown is put in a paragraph of its own (Issue #4802). An

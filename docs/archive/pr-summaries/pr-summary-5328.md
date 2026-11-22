@@ -52,7 +52,12 @@ Closes #5328.
   `git stash push --
   <paths>` (recoverable with `git stash list`), so the gate
   sees the committed copy and the recovery turn has no edit to commit. A failed
-  stash is logged and the gate reports what it finds. The other callers (the
+  stash is logged and the gate reports what it finds. A stashed file holds
+  exactly its committed copy, so it stays in the set that is rewritten,
+  `deno fmt`-ed and committed (`stashUncommittedArchive` returns whether the
+  stash worked); only a file whose stash failed, or one no set-aside was asked
+  for, is left out. This keeps a committed summary that is not fmt-clean from
+  reaching the gate and spending the recovery turn. The other callers (the
   quality-gate loop and the `commitAndPushPending` hook) do not set it, so they
   only leave the edit out of the formatting and the commit.
 - A left-out archive file is logged with a warning naming it, so the uncommitted
@@ -142,11 +147,23 @@ deno fmt --check ... pr-summary-10.md`. New tests:
   `formatBeforeGate logs a stash that fails and leaves the uncommitted summary
   in place (Issue #5328)`.
 
+Second review round (verifier): the stash left a committed, not fmt-clean
+summary unformatted, so the first gate blocked and used the recovery turn. New
+test
+`completion - a committed archive summary that is not fmt-clean is still
+formatted and committed when it also carries an uncommitted edit (Issue #5328)`
+in `worker/deno/tests/completion_phase_repo_formatters_test.ts`: real completion
+and gate; a bare-gate positive control fails on the committed copy, then the
+run's order is exactly `["format", "gate"]`, one push, HEAD holds the formatted
+copy without the edit, and the stash holds the edit. Observed red with
+`stashed ||` removed from the `cleanFiles` filter (order assertion failed),
+green with it.
+
 Results on the final head:
 
 - `deno test -A tests/repo_formatters_4129_test.ts
   tests/completion_phase_repo_formatters_test.ts`
-  (from `worker/deno`) — 33 passed, 0 failed.
+  (from `worker/deno`) — 34 passed, 0 failed.
 - `deno lint`, `deno check` on the changed library files and `deno fmt` on the
   changed TypeScript — clean. Full `./quality.sh` was not re-run after the
   review round.

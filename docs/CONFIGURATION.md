@@ -5349,9 +5349,10 @@ committed (for example an interrupted recovery turn's rewrite of the PR summary)
 stays uncommitted and the completion phase publishes the copy committed at HEAD
 (Issue #4764). The pre-push gate judges the working tree, so the completion
 phase's own call also stashes that edit (`git stash push`, with a message that
-names Issue 5328): the gate then checks the committed copy, no recovery commit
-can pick the edit up, and the stash keeps it recoverable. If the stash fails the edit stays
-in place, a warning is logged and the gate reports what it finds. The other
+names Issue 5328): the file then holds exactly its committed copy, so it is
+formatted and committed like any other archive file, the gate checks that
+copy, no recovery commit can pick the edit up, and the stash keeps it
+recoverable. If the stash fails the edit stays in place, unformatted, a warning is logged and the gate reports what it finds. The other
 callers (the quality-gate loop and the PR-feedback, CI-fix and spelling
 processors) do not set the edit aside; they only leave it out of the formatting and the commit.
 Only archive files are left out this way: an uncommitted edit
