@@ -16,6 +16,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createRepoFormatterDeps,
   formatBeforeGate,
+  formatBranchChanges,
   FORMATTER_COMMIT_MESSAGE,
   isolateLinkageLines,
   MAX_ARCHIVE_REWRITE_BYTES,
@@ -92,6 +93,7 @@ async function writeFile(
 function fakeGit(
   tracked: readonly string[],
   diffNames: readonly string[],
+  options: { dirtyCheckFails?: boolean } = {},
 ): RepoFormatterDeps["runGitCommand"] {
   const names = [
     ...ARCHIVE,
@@ -101,11 +103,19 @@ function fakeGit(
     "src/main.ts",
   ];
   return (args) => {
+    // The uncommitted-changes check diffs against HEAD (Issue #5328).
+    const dirtyCheck = args[0] === "diff" && args.includes("HEAD");
+    if (dirtyCheck && options.dirtyCheckFails) {
+      return Promise.resolve({
+        ok: true,
+        value: { code: 128, stdout: "", stderr: "fatal: bad revision 'HEAD'" },
+      });
+    }
     const stdout = args[0] === "log"
       ? `${names.join("\0")}\0`
       : args[0] === "ls-files"
       ? `${tracked.join("\0")}\0`
-      : args[0] === "diff"
+      : args[0] === "diff" && !dirtyCheck
       ? `${diffNames.join("\0")}${diffNames.length > 0 ? "\0" : ""}`
       : "";
     const code = args[0] === "log" || args[0] === "ls-files" ||
@@ -444,14 +454,10 @@ const FENCED_SUMMARY = "# Summary\n\n" +
   "```\n";
 
 /**
- * Seed a repository whose only archive file is `summary`, in the seed commit,
- * then run the production runner over it. The seed commit is the branch's
- * change, as in the test above.
+ * Init an empty repository at `${root}/repo` with the fixture identity and
+ * hooks kept out of the host's config, and return its path.
  */
-async function formatSeededSummary(
-  root: string,
-  summary: string,
-): Promise<{ repo: string; logger: Logger & { lines: string[] } }> {
+async function initRepo(root: string): Promise<string> {
   const repo = `${root}/repo`;
   await new Deno.Command("git", {
     args: [...NO_HOST_HOOKS_ARGS, "init", "-b", "main", repo],
@@ -470,6 +476,19 @@ async function formatSeededSummary(
   ) {
     await git(repo, ["config", key, value]);
   }
+  return repo;
+}
+
+/**
+ * Seed a repository whose only archive file is `summary`, in the seed commit,
+ * then run the production runner over it. The seed commit is the branch's
+ * change, as in the test above.
+ */
+async function formatSeededSummary(
+  root: string,
+  summary: string,
+): Promise<{ repo: string; logger: Logger & { lines: string[] } }> {
+  const repo = await initRepo(root);
   await writeFile(repo, "worker/deno/deno.json", "{}\n");
   await writeFile(repo, ARCHIVE[2], summary);
   await git(repo, ["add", "."]);
@@ -540,27 +559,17 @@ async function formatSeededFiles(
   options: {
     links?: Record<string, string>;
     beforeFormat?: (repo: string) => Promise<void>;
+    setAsideUncommittedArchive?: boolean;
+    /** Where the Deno config sits; the default keeps it under `worker/deno`. */
+    denoConfig?: string;
+    /** Run the production `formatBranchChanges` rather than a stub. */
+    realBranchFormatter?: boolean;
+    /** Replaces the production git runner, to stage a failing command. */
+    runGitCommand?: RepoFormatterDeps["runGitCommand"];
   } = {},
 ): Promise<{ repo: string; logger: Logger & { lines: string[] } }> {
-  const repo = `${root}/repo`;
-  await new Deno.Command("git", {
-    args: [...NO_HOST_HOOKS_ARGS, "init", "-b", "main", repo],
-    stdout: "null",
-    stderr: "piped",
-    env: NO_HOST_GIT_CONFIG,
-  }).output();
-  await Deno.mkdir(`${root}/hooks`);
-  for (
-    const [key, value] of [
-      ["user.useConfigOnly", "true"],
-      ["user.name", "Fixture"],
-      ["user.email", "fixture@example.com"],
-      ["core.hooksPath", `${root}/hooks`],
-    ] as const
-  ) {
-    await git(repo, ["config", key, value]);
-  }
-  await writeFile(repo, "worker/deno/deno.json", "{}\n");
+  const repo = await initRepo(root);
+  await writeFile(repo, options.denoConfig ?? "worker/deno/deno.json", "{}\n");
   for (const [path, body] of Object.entries(files)) {
     await writeFile(repo, path, body);
   }
@@ -576,17 +585,24 @@ async function formatSeededFiles(
   await options.beforeFormat?.(repo);
 
   const logger = recordingLogger();
+  const formatterDeps = {
+    ...createRepoFormatterDeps(),
+    logger,
+    ...(options.runGitCommand ? { runGitCommand: options.runGitCommand } : {}),
+  };
   await formatBeforeGate(
     {
       git: {
-        formatBranchChanges: () =>
-          Promise.resolve({ runs: [], failures: [], committed: false }),
+        formatBranchChanges: options.realBranchFormatter
+          ? (path, baseRef) => formatBranchChanges(path, baseRef, formatterDeps)
+          : () => Promise.resolve({ runs: [], failures: [], committed: false }),
       },
       logger,
-      formatterDeps: { ...createRepoFormatterDeps(), logger },
+      formatterDeps,
     },
     repo,
     undefined,
+    { setAsideUncommittedArchive: options.setAsideUncommittedArchive },
   );
   return { repo, logger };
 }
@@ -826,6 +842,326 @@ Deno.test("formatBeforeGate still formats the other archive files when one is ov
     );
     assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`), big);
     assertEquals(await git(repo, ["status", "--porcelain"]), "");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate leaves an archive summary with an uncommitted edit uncommitted and unformatted (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-dirty-" });
+  try {
+    const seed = "# Summary\n\nNot delivered.\n";
+    const edit = `# Summary\n\nEdited after the seed.\n\n${LONG_PARAGRAPH}\n`;
+    const { repo, logger } = await formatSeededFiles(root, {
+      [ARCHIVE[2]]: seed,
+    }, {
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[2], edit),
+    });
+    assertEquals(
+      (await git(repo, ["log", "-1", "--format=%s"])).trim(),
+      "seed",
+    );
+    assertEquals(await git(repo, ["show", `HEAD:${ARCHIVE[2]}`]), seed);
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`), edit);
+    assertEquals(
+      await git(repo, ["status", "--porcelain"]),
+      ` M ${ARCHIVE[2]}\n`,
+    );
+    const joined = logger.lines.join("\n");
+    assertStringIncludes(joined, ARCHIVE[2]);
+    assertStringIncludes(joined, "uncommitted");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate commits a clean archive file and leaves a summary staged outside the commit (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-staged-" });
+  try {
+    const seed = "# Summary\n\nNot delivered.\n";
+    const staged = "# Summary\n\nStaged after the seed.\n";
+    const { repo } = await formatSeededFiles(root, {
+      [ARCHIVE[0]]: LONG_LINE,
+      [ARCHIVE[2]]: seed,
+    }, {
+      beforeFormat: async (repo) => {
+        await writeFile(repo, ARCHIVE[2], staged);
+        await git(repo, ["add", ARCHIVE[2]]);
+      },
+    });
+    assertEquals(
+      (await git(repo, ["log", "-1", "--format=%s"])).trim(),
+      FORMATTER_COMMIT_MESSAGE,
+    );
+    assertEquals(
+      (await git(repo, ["show", "--name-only", "--format=", "HEAD"])).trim(),
+      ARCHIVE[0],
+    );
+    assertEquals(await git(repo, ["show", `HEAD:${ARCHIVE[2]}`]), seed);
+    assertEquals(
+      (await git(repo, ["diff", "--cached", "--name-only"])).trim(),
+      ARCHIVE[2],
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate stashes an uncommitted archive summary when asked, and still formats and commits the clean files (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-stash-" });
+  try {
+    const seed = "# Summary\n\nNot delivered.\n";
+    const edit = `# Summary\n\nEdited after the seed.\n\n${LONG_PARAGRAPH}\n`;
+    const { repo, logger } = await formatSeededFiles(root, {
+      [ARCHIVE[0]]: LONG_LINE,
+      [ARCHIVE[2]]: seed,
+    }, {
+      setAsideUncommittedArchive: true,
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[2], edit),
+    });
+    assertEquals(
+      (await git(repo, ["log", "-1", "--format=%s"])).trim(),
+      FORMATTER_COMMIT_MESSAGE,
+    );
+    assertEquals(
+      (await git(repo, ["show", "--name-only", "--format=", "HEAD"])).trim(),
+      ARCHIVE[0],
+    );
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`), seed);
+    assertEquals(await git(repo, ["status", "--porcelain"]), "");
+    assertEquals(await git(repo, ["show", `stash@{0}:${ARCHIVE[2]}`]), edit);
+    assertStringIncludes(logger.lines.join("\n"), "set aside");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate logs a stash that fails and leaves the uncommitted summary in place (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-stashfail-" });
+  try {
+    const seed = "# Summary\n\nNot delivered.\n";
+    const edit = `# Summary\n\nEdited after the seed.\n\n${LONG_PARAGRAPH}\n`;
+    const real = createRepoFormatterDeps().runGitCommand;
+    const { repo, logger } = await formatSeededFiles(root, {
+      [ARCHIVE[2]]: seed,
+    }, {
+      setAsideUncommittedArchive: true,
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[2], edit),
+      runGitCommand: (args, options) =>
+        args[0] === "stash"
+          ? Promise.resolve({
+            ok: true as const,
+            value: { code: 128, stdout: "", stderr: "fatal: stash refused" },
+          })
+          : real(args, options),
+    });
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`), edit);
+    assertEquals(
+      (await git(repo, ["log", "-1", "--format=%s"])).trim(),
+      "seed",
+    );
+    const joined = logger.lines.join("\n");
+    assertStringIncludes(joined, "could not set aside");
+    assertStringIncludes(joined, "stash refused");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate skips the archive step when the uncommitted-changes check fails (Issue #5328)", async () => {
+  const repo = await Deno.makeTempDir({ prefix: "fmt5328-check-" });
+  try {
+    await fixtureTree(repo);
+    const jsonPath =
+      `${repo}/docs/archive/pr-summaries/pr-summary-1.facts.json`;
+    const commands: string[][] = [];
+    const gitArgs: string[][] = [];
+    const inner = fakeGit(
+      ["worker/deno/deno.json", ...ARCHIVE],
+      [...ARCHIVE],
+      { dirtyCheckFails: true },
+    );
+    const logger = recordingLogger();
+    await formatBeforeGate(
+      {
+        git: {
+          formatBranchChanges: () =>
+            Promise.resolve({ runs: [], failures: [], committed: false }),
+        },
+        logger,
+        formatterDeps: {
+          runCommand: (cmd) => {
+            commands.push(cmd);
+            return Promise.resolve({ exitCode: 0, output: "" });
+          },
+          runGitCommand: (args, options) => {
+            gitArgs.push(args);
+            return inner(args, options);
+          },
+          logger,
+          runId: () => "test-run",
+        },
+      },
+      repo,
+      undefined,
+    );
+    assert(
+      gitArgs.some((args) => args[0] === "diff" && args.includes("HEAD")),
+      JSON.stringify(gitArgs),
+    );
+    assertEquals(commands, []);
+    assertEquals(
+      gitArgs.filter((args) => args[0] === "add" || args[0] === "commit"),
+      [],
+    );
+    assertEquals(await Deno.readTextFile(jsonPath), UNSORTED_JSON);
+    const joined = logger.lines.join("\n");
+    assertStringIncludes(joined, "worker-owned archive skipped");
+    assertStringIncludes(joined, "bad revision");
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("formatBranchChanges commit leaves a file staged outside the formatted paths staged and out of the formatter commit (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-commit-" });
+  try {
+    const repo = await initRepo(root);
+    await writeFile(repo, "deno.json", "{}\n");
+    await writeFile(repo, "bad.ts", "export const x   =  1\n");
+    await writeFile(repo, "notes.md", "# Notes\n\nFirst draft.\n");
+    await git(repo, ["add", "."]);
+    await git(repo, ["commit", "-m", "seed"]);
+    await writeFile(repo, "notes.md", "# Notes\n\nSecond draft.\n");
+    await git(repo, ["add", "notes.md"]);
+
+    const logger = recordingLogger();
+    const result = await formatBranchChanges(repo, undefined, {
+      ...createRepoFormatterDeps(),
+      logger,
+    });
+    assertEquals(result.committed, true);
+    assertEquals(
+      (await git(repo, ["log", "-1", "--format=%s"])).trim(),
+      FORMATTER_COMMIT_MESSAGE,
+    );
+    assertEquals(
+      (await git(repo, ["show", "--name-only", "--format=", "HEAD"])).trim(),
+      "bad.ts",
+    );
+    assertEquals(
+      (await git(repo, ["diff", "--cached", "--name-only"])).trim(),
+      "notes.md",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+const EDITED_JSON = '{"z":2,   "a":{"y":true,"b":3}}';
+
+Deno.test("formatBeforeGate keeps an archive JSON file with an uncommitted edit out of the formatter commit under a root Deno config (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-json-" });
+  try {
+    const { repo, logger } = await formatSeededFiles(root, {
+      [ARCHIVE[1]]: UNSORTED_JSON,
+    }, {
+      denoConfig: "deno.json",
+      realBranchFormatter: true,
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[1], EDITED_JSON),
+    });
+    assertEquals(
+      (await git(repo, ["log", "--format=%s"])).trim(),
+      "seed",
+    );
+    assertEquals(
+      await git(repo, ["show", `HEAD:${ARCHIVE[1]}`]),
+      UNSORTED_JSON,
+    );
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[1]}`), EDITED_JSON);
+    assertEquals(
+      await git(repo, ["status", "--porcelain"]),
+      ` M ${ARCHIVE[1]}\n`,
+    );
+    assertEquals(await git(repo, ["stash", "list"]), "");
+    assertStringIncludes(logger.lines.join("\n"), "uncommitted");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate stashes an archive JSON edit and formats the committed copy under a root Deno config (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-json-stash-" });
+  try {
+    const { repo } = await formatSeededFiles(root, {
+      [ARCHIVE[1]]: UNSORTED_JSON,
+    }, {
+      denoConfig: "deno.json",
+      realBranchFormatter: true,
+      setAsideUncommittedArchive: true,
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[1], EDITED_JSON),
+    });
+    assertEquals(
+      (await git(repo, ["log", "-1", "--format=%s"])).trim(),
+      FORMATTER_COMMIT_MESSAGE,
+    );
+    assertEquals(
+      await git(repo, ["show", `HEAD:${ARCHIVE[1]}`]),
+      CANONICAL_JSON,
+    );
+    assertEquals(
+      await Deno.readTextFile(`${repo}/${ARCHIVE[1]}`),
+      CANONICAL_JSON,
+    );
+    assertEquals(await git(repo, ["status", "--porcelain"]), "");
+    assertEquals(
+      await git(repo, ["show", `stash@{0}:${ARCHIVE[1]}`]),
+      EDITED_JSON,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBranchChanges still formats and commits an archive JSON file with no uncommitted edit under a root Deno config (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-json-clean-" });
+  try {
+    const { repo } = await formatSeededFiles(root, {
+      [ARCHIVE[1]]: UNSORTED_JSON,
+    }, { denoConfig: "deno.json", realBranchFormatter: true });
+    assertEquals(
+      await git(repo, ["show", `HEAD:${ARCHIVE[1]}`]),
+      CANONICAL_JSON,
+    );
+    assertEquals(await git(repo, ["status", "--porcelain"]), "");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBranchChanges leaves every archive file out when the uncommitted-changes check fails (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-json-check-" });
+  try {
+    const { repo, logger } = await formatSeededFiles(root, {
+      [ARCHIVE[1]]: UNSORTED_JSON,
+    }, {
+      denoConfig: "deno.json",
+      realBranchFormatter: true,
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[1], EDITED_JSON),
+      runGitCommand: (args, options) =>
+        args[0] === "diff" && args.includes("HEAD")
+          ? Promise.resolve({
+            ok: true as const,
+            value: { code: 128, stdout: "", stderr: "fatal: bad revision" },
+          })
+          : createRepoFormatterDeps().runGitCommand(args, options),
+    });
+    assertEquals(
+      (await git(repo, ["log", "--format=%s"])).trim(),
+      "seed",
+    );
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[1]}`), EDITED_JSON);
+    assertStringIncludes(logger.lines.join("\n"), "left out of the formatters");
   } finally {
     await Deno.remove(root, { recursive: true });
   }

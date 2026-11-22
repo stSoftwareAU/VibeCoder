@@ -2019,6 +2019,11 @@ async function completionBody(
         deps,
         state.repoPath,
         comparableBase.ok ? comparableBase.value : undefined,
+        // The gate judges the working tree but the push carries commits only,
+        // and the PR body is read from HEAD: an uncommitted archive edit is
+        // set aside so it neither blocks the gate nor reaches a recovery
+        // commit (Issue #5328).
+        { setAsideUncommittedArchive: true },
       );
       return await deps.git.gateUnpushedCommits(
         state.branchName,
