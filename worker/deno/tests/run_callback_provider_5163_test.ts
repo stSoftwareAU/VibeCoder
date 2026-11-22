@@ -273,16 +273,25 @@ for (
 }
 
 for (
-  const [label, host, pin, expected] of [
+  const [label, host, pin, runner, expected] of [
     [
-      "a deepseek pin on a claude host",
+      "an adapter-less provider served on a claude host",
       "claude",
-      "deepseek",
+      undefined,
+      () => okWith({ provider: "other" }),
       "provider_unsupported",
     ],
     [
       "an unpinned repo on a claude host",
       "claude",
+      undefined,
+      undefined,
+      "usage_not_reported",
+    ],
+    [
+      "a deepseek pin on a claude host (Issue #5334)",
+      "claude",
+      "deepseek",
       undefined,
       "usage_not_reported",
     ],
@@ -290,6 +299,7 @@ for (
       "a claude pin on a deepseek host",
       "deepseek",
       "claude",
+      undefined,
       "usage_not_reported",
     ],
   ] as const
@@ -304,7 +314,7 @@ for (
       setConfiguredEnabledAgentProviderIds(["claude", "deepseek"]);
       try {
         const invoked: unknown[] = [];
-        const result = await runIssue(pin, invoked, undefined, undefined, host);
+        const result = await runIssue(pin, invoked, runner, undefined, host);
         assert(invoked.length >= 1, "the runner must be invoked");
         assertEquals(result.telemetry, undefined);
         assertEquals(result.telemetryAbsentReason, expected);
