@@ -26,6 +26,10 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import type { BumpInfo } from "../lib/bump_deps.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const BRANCH = "issue-1714-bump-audit";
 
@@ -38,11 +42,11 @@ const GIT_ENV = {
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
-    env: GIT_ENV,
+    env: { ...GIT_ENV, ...NO_HOST_GIT_CONFIG },
   }).output();
   const stdout = new TextDecoder().decode(out.stdout);
   const stderr = new TextDecoder().decode(out.stderr);
@@ -85,10 +89,17 @@ async function isAncestor(
   descendant: string,
 ): Promise<boolean> {
   const out = await new Deno.Command("git", {
-    args: ["merge-base", "--is-ancestor", ancestor, descendant],
+    args: [
+      ...NO_HOST_HOOKS_ARGS,
+      "merge-base",
+      "--is-ancestor",
+      ancestor,
+      descendant,
+    ],
     cwd,
     stdout: "null",
     stderr: "null",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   return out.code === 0;
 }

@@ -35,6 +35,10 @@ import {
   commitAndPushPending,
   PrePushGateBlockedError,
 } from "../lib/git_push.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type {
   IssueContext,
@@ -206,8 +210,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let originBefore: string | undefined;
   const realGit = async (args: string[], cwd = repoPath): Promise<string> => {
     const output = await new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd,
+      env: NO_HOST_GIT_CONFIG,
       stdin: "null",
       stdout: "piped",
       stderr: "piped",

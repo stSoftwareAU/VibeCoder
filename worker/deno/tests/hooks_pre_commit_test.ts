@@ -12,6 +12,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { NO_HOST_GIT_CONFIG } from "./support/no_host_git_config.ts";
 
 const HOOK_PATH =
   new URL("../../../hooks/pre-commit", import.meta.url).pathname;
@@ -33,7 +34,7 @@ async function runGit(args: string[], cwd: string): Promise<number> {
     cwd,
     stdout: "piped",
     stderr: "piped",
-    env: GIT_ENV,
+    env: { ...GIT_ENV, ...NO_HOST_GIT_CONFIG },
   }).output();
   return out.code;
 }

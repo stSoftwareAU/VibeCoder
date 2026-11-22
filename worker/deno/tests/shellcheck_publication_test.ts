@@ -9,6 +9,10 @@ import {
   resolveRepairPreFlightSpec,
 } from "../lib/git_push.ts";
 import { requireRealShellcheck } from "./support/shellcheck_support.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const REAL_SHELLCHECK = await requireRealShellcheck();
 
@@ -21,13 +25,18 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
     cwd,
     args: [
+      ...NO_HOST_HOOKS_ARGS,
       "-c",
       "user.name=Test",
       "-c",
       "user.email=test@example.invalid",
       ...args,
     ],
-    env: { PATH: Deno.env.get("PATH") ?? "", HOME: cwd, GIT_CONFIG_COUNT: "0" },
+    env: {
+      PATH: Deno.env.get("PATH") ?? "",
+      HOME: cwd,
+      ...NO_HOST_GIT_CONFIG,
+    },
     clearEnv: true,
     stdout: "piped",
     stderr: "piped",
@@ -112,7 +121,8 @@ Deno.test(
       await git(dir, "checkout", "-q", "repair");
       const merge = await new Deno.Command("git", {
         cwd: dir,
-        args: ["merge", "--no-commit", "main"],
+        args: [...NO_HOST_HOOKS_ARGS, "merge", "--no-commit", "main"],
+        env: NO_HOST_GIT_CONFIG,
         stdout: "null",
         stderr: "null",
       }).output();

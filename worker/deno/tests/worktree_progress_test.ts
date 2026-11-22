@@ -11,13 +11,21 @@
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   compareWorktreeFingerprints,
   probeWorktreeFingerprint,
 } from "../lib/worktree_progress.ts";
 
 /** Run a git command in `cwd`, failing loudly when it does not succeed. */
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  const result = await runWithTimeout("git", args, { cwd, timeoutMs: 20_000 });
+  const result = await runWithTimeout("git", [...NO_HOST_HOOKS_ARGS, ...args], {
+    cwd,
+    env: { ...NO_HOST_GIT_CONFIG },
+    timeoutMs: 20_000,
+  });
   if (!result.ok) {
     throw new Error(`git ${args.join(" ")} failed: ${result.error.message}`);
   }

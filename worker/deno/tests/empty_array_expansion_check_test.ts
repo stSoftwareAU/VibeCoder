@@ -17,6 +17,10 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const SCRIPT_PATH = new URL(
   "../../../.github/scripts/check-empty-array-expansions.sh",
@@ -35,12 +39,13 @@ interface Run {
 /** Run `git` in `dir`, failing loud on a non-zero exit. */
 async function git(dir: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args: ["-C", dir, ...args],
+    args: [...NO_HOST_HOOKS_ARGS, "-C", dir, ...args],
     env: {
       GIT_AUTHOR_NAME: "Test",
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "Test",
       GIT_COMMITTER_EMAIL: "test@example.com",
+      ...NO_HOST_GIT_CONFIG,
     },
     stdout: "piped",
     stderr: "piped",

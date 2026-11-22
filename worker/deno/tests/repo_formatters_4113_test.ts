@@ -76,6 +76,11 @@ async function runProductionFormatter(): Promise<ProbeResult> {
     script,
     `
 import { assertEquals } from "@std/assert";
+import { NO_HOST_GIT_CONFIG, NO_HOST_HOOKS_ARGS } from ${
+      JSON.stringify(
+        new URL("./support/no_host_git_config.ts", import.meta.url).href,
+      )
+    };
 import { createDefaultDeps } from ${
       JSON.stringify(
         new URL("../lib/quality_gate_phase.ts", import.meta.url).href,
@@ -89,13 +94,14 @@ import {
 
 const repo = ${JSON.stringify(repo)};
 const sudoLog = ${JSON.stringify(sudoLog)};
-await new Deno.Command("git", { args: ["init", "-b", "main", repo], stdout: "null", stderr: "piped" }).output();
+await new Deno.Command("git", { args: [...NO_HOST_HOOKS_ARGS, "init", "-b", "main", repo], stdout: "null", stderr: "piped", env: NO_HOST_GIT_CONFIG }).output();
 const git = (args: string[]) =>
   new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd: repo,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
 const config = async (key: string, value: string) => {
   const out = await git(["config", key, value]);

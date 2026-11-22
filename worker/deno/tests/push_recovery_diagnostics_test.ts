@@ -12,7 +12,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { recoverFromPushRejection } from "../lib/git_push_recovery.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 import {
   type CiFixInput,
   type CiProcessorDeps,
@@ -34,7 +34,7 @@ const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 /** Run a git command in a repo, failing loudly on a non-zero exit. */
 async function git(args: string[], cwd: string): Promise<void> {
-  const result = await runGitCommand(args, { cwd });
+  const result = await runFixtureGit(args, { cwd });
   if (!result.ok) throw result.error;
   if (result.value.code !== 0) {
     throw new Error(
