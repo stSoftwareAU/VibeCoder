@@ -5352,8 +5352,8 @@ phase's own call also stashes that edit (`git stash push`, with a message that
 names Issue 5328): the gate then checks the committed copy, no recovery commit
 can pick the edit up, and the stash keeps it recoverable. If the stash fails the edit stays
 in place, a warning is logged and the gate reports what it finds. The other
-callers (the quality-gate loop, the PR-feedback and CI-fix processors) do not
-set the edit aside; they only leave it out of the formatting and the commit.
+callers (the quality-gate loop and the PR-feedback, CI-fix and spelling
+processors) do not set the edit aside; they only leave it out of the formatting and the commit.
 Only archive files are left out this way: an uncommitted edit
 already in a formatted code file is still formatted and committed with it,
 because the gate judges that code as it stands. If that check itself fails, the
