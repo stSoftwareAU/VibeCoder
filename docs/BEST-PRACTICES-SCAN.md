@@ -404,7 +404,9 @@ Official server mode needs all of the following:
   (or the rest of the body is an `&&` chain to the end); or errexit is on
   at that point and it is not followed by `&&`. Two explicit-exit idioms
   are also preserved, whatever errexit is (inside a `( )` subshell they end
-  only the subshell, so the Errexit rule below must also hold): `runner || exit N` (N not 0, or
+  only the subshell, so the Errexit rule below must also hold; a one-line
+  subshell's own `(` and `)`, as in `( cd infra; runner || exit 1 )` or
+  `(cd infra && runner || exit 1)`, are not part of the idiom's words): `runner || exit N` (N not 0, or
   a bare `exit`; not after a negated `! runner`, whose `!` turns a failure
   into success before the `||`) and `if ! runner; then ...; exit N; fi` (N
   not 0, in a flat `then` branch). Neither counts inside a group swallowed
@@ -431,7 +433,12 @@ it. A command inside a `( )` subshell is kept, by whatever route fails the
 subshell (errexit inside it, `runner || exit 1`, `if ! runner; then …; exit 1;
 fi` or `exec`), only when the subshell's own failure fails the body: errexit
 is on outside it, or the subshell is the last command or has an `&&` chain to
-the end after it and does not itself sit in a loop body. So
+the end after it and does not itself sit in a loop body. A subshell opened
+as an `if`, `elif`, `while` or `until` test is never kept, whatever errexit is
+outside it, because its exit only makes the test false and errexit is ignored
+in a test: `if ( cd infra && runner || exit 1 ); then …` earns no credit,
+while `if { runner || exit 1; }; then …` does, since that exit ends the shell,
+and so does a test inside the subshell, `( if ! runner; then exit 1; fi )`. So
 `( set -e; runner; echo done )` then `echo after`, `( cd infra && exec runner )`
 then `echo after`, and `for d in a b; do ( set -e; cd "$d"; runner ); done`, in
 a script without a top-level `set -e`, earn no credit. A loop inside the

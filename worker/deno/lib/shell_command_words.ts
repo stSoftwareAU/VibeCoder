@@ -400,6 +400,17 @@ function subshellsInsideLoops(stack: Frame[]): number[] {
   return ids;
 }
 
+/** Ids of the subshell frames in `stack` that are opened inside a test. */
+function subshellsInsideConditions(stack: Frame[]): number[] {
+  const ids: number[] = [];
+  let inTest = false;
+  for (const frame of stack) {
+    if (frame.sub && inTest) ids.push(frame.id);
+    if (!frame.sub && frame.branch === "cond") inTest = true;
+  }
+  return ids;
+}
+
 const FUNCTION_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*\(\)$/;
 
 /**
@@ -454,6 +465,15 @@ export interface ReachableCommand {
    */
   subshellsInLoop: number[];
   /**
+   * Ids of the `( )` subshells and substitutions around the command that are
+   * opened inside an `if`, `elif`, `while` or `until` test
+   * (`if ( cmd || exit 1 ); then …`): such a subshell's failure only makes
+   * the test false, and errexit is ignored in a test (PR #5332 review round
+   * 10). A test inside the subshell (`( if ! cmd; then exit 1; fi )`) does
+   * not list it.
+   */
+  subshellsInCondition: number[];
+  /**
    * Ids of the `( )` subshells and substitutions open around the command,
    * innermost last: a `set` inside one changes the options only until it
    * closes (PR #5332 review).
@@ -498,9 +518,17 @@ function isFailingExit(words: string[], bare: boolean): boolean {
  * Any other form is false, so the caller falls back to its own rules.
  */
 function failureExits(listed: ShellCommand[], index: number): boolean {
-  const here = listed[index];
-  const after = listed[index + 1];
-  if (here === undefined || after === undefined) return false;
+  const listedHere = listed[index];
+  const listedAfter = listed[index + 1];
+  if (listedHere === undefined || listedAfter === undefined) return false;
+  // A one-line subshell's `(` and `)` sit in the listed words
+  // (`( if ! cmd; …`, `cmd || exit 1 )`, `exit 1)`); they are not part of
+  // the command or the exit (PR #5332 review round 10).
+  const here = { ...listedHere, words: withoutSubshellOpen(listedHere.words) };
+  const after = {
+    ...listedAfter,
+    words: withoutSubshellClose(listedAfter.words),
+  };
   if (after.sep === "||" && isFailingExit(after.words, true)) {
     // `! cmd || exit 1` inverts the status first: a failing cmd makes `!`
     // succeed, so the exit never runs.
@@ -518,7 +546,8 @@ function failureExits(listed: ShellCommand[], index: number): boolean {
   for (let j = index + 1; j < listed.length; j++) {
     const entry = listed[j];
     if (entry === undefined) break;
-    const words = j === index + 1 ? entry.words.slice(1) : entry.words;
+    const own = withoutSubshellClose(entry.words);
+    const words = j === index + 1 ? own.slice(1) : own;
     const head = words[0];
     if (head === undefined) continue;
     if (head === "fi" || head === "else" || head === "elif") return exits;
@@ -532,6 +561,34 @@ function failureExits(listed: ShellCommand[], index: number): boolean {
     }
   }
   return false;
+}
+
+/**
+ * `words` without the leading `(` of a subshell opened on the same line
+ * (`(`, `( (`, or a `(` glued to the first word, as in `(if`).
+ */
+function withoutSubshellOpen(words: string[]): string[] {
+  const out = [...words];
+  while (
+    out.length > 0 && out[0]?.startsWith("(") && !out[0].startsWith("((")
+  ) {
+    const rest = (out[0] ?? "").slice(1);
+    if (rest === "") out.shift();
+    else out[0] = rest;
+  }
+  return out;
+}
+
+/**
+ * `words` without a closing `)` that ends a subshell opened before them, and
+ * any redirections after it (`exit 1 )`, `exit 1)`, `fi ) >log`), as
+ * {@link subshellCloseIndex} reads it.
+ */
+function withoutSubshellClose(words: string[]): string[] {
+  const at = subshellCloseIndex(words);
+  if (at === -1) return words;
+  const word = (words[at] ?? "").replace(/\)+$/, "");
+  return word === "" ? words.slice(0, at) : [...words.slice(0, at), word];
 }
 
 /**
@@ -870,6 +927,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
         errexitIgnored: false,
         inLoop: stack.some((frame) => frame.iterates),
         subshellsInLoop: subshellsInsideLoops(stack),
+        subshellsInCondition: subshellsInsideConditions(stack),
         subshells: stack.filter((frame) => frame.sub).map((frame) => frame.id),
       });
       enclosing.push(stack.map((frame) => frame.id));

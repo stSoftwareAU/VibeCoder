@@ -384,6 +384,23 @@ emulator test.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
+- After the tenth review (of `9d7c2e54`): a `( )` subshell opened as an `if`,
+  `elif`, `while` or `until` test is never kept, whatever errexit is outside
+  it (`ReachableCommand.subshellsInCondition`). So `if ( cd infra && runner ||
+  exit 1; ); then …`, the multi-line form, `if ! runner; then exit 1; fi`
+  inside the test subshell, and the `while`, `until` and `elif` forms are
+  refused, in a default-shell step and in a `set -e` script. The brace-group
+  test `if { runner || exit 1; }; then …` and `( if ! runner; then exit 1; fi )`
+  stay credited. The explicit-exit idiom now reads past a one-line subshell's
+  own `(` and `)`: `( cd infra; runner || exit 1 )`,
+  `(cd infra && runner || exit 1)` and the same with `2>&1` are credited as a
+  script's last line, in a default-shell step, and under `set -e` followed
+  by a line, and refused when followed by a line without `set -e`. The
+  one-line `( if ! runner; then echo bad; exit 1; fi )` is credited too.
+  `docs/BEST-PRACTICES-SCAN.md` and the `keptCommands` comment state both
+  rules. Both new tests fail at `9d7c2e54`. The related test files give
+  `803 passed | 1 failed | 1 ignored` (the root-only unreadable-directory
+  test).
 - After the ninth review (of `c4c8839a`): the wiring diagnostics and evidence
   paths in the finding body have HTML-comment delimiters neutralised
   (`neutraliseHtmlComments`), so a `<!-- finding-id: … -->` comment read from

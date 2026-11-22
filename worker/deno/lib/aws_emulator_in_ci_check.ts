@@ -951,7 +951,9 @@ function applyTrap(
  *   errexit is off outside the subshell (or ignored there), and the subshell
  *   is not the body's last command or followed by an `&&` chain to the end, or
  *   the subshell is itself inside a loop body
- *   (`ReachableCommand.subshellsInLoop`). Every enclosing subshell is checked,
+ *   (`ReachableCommand.subshellsInLoop`), or the subshell is opened inside an
+ *   `if`, `elif`, `while` or `until` test, whatever errexit is
+ *   (`ReachableCommand.subshellsInCondition`). Every enclosing subshell is checked,
  *   whichever route (explicit exit, `exec` or errexit) fails the innermost;
  * - a reachable `trap` whose `EXIT` or `ERR` handler may `exit 0` came before
  *   it, unless it runs via `exec`, which replaces the shell before the handler
@@ -1003,6 +1005,9 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
       if (!entryErrexit.has(id)) entryErrexit.set(id, errexit);
     }
     const subshellFailsBody = cmd.subshells.every((id) => {
+      // A subshell that is an `if`/`while` test never fails the body: its
+      // failure only makes the test false (PR #5332 review round 10).
+      if (cmd.subshellsInCondition.includes(id)) return false;
       const outside = saved.find((entry) => entry.id === id)?.errexit ??
         entryErrexit.get(id) ?? errexit;
       if (outside && !cmd.errexitIgnored) return true;

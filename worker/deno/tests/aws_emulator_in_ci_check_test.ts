@@ -3208,6 +3208,115 @@ Deno.test("checkAwsEmulatorInCI - a loop inside a set -e subshell that is the la
   }
 });
 
+// PR #5332 review round 10: a `( )` subshell that is an `if`, `elif`,
+// `while` or `until` test never fails the body, whatever errexit is outside
+// it: its exit only makes the test false. A brace group as the test, and a
+// test inside the subshell, are still read as before.
+Deno.test("checkAwsEmulatorInCI - an explicit exit in a subshell that is an if or while test earns no credit", async () => {
+  const refused: Array<[string, string]> = [
+    [
+      "one-line if test",
+      `if ( cd infra && ${RUNNER_STEP} || exit 1; ); then echo ok; else echo failed; fi`,
+    ],
+    [
+      "multi-line if test",
+      `if (\n  cd infra\n  ${RUNNER_STEP} || exit 1\n); then echo passed; else echo failed; fi`,
+    ],
+    [
+      "if ! runner inside the test subshell",
+      `if (\n  if ! ${RUNNER_STEP}; then exit 1; fi\n); then echo ok; fi`,
+    ],
+    [
+      "while test",
+      `while (\n  cd infra\n  ${RUNNER_STEP} || exit 1\n); do break; done`,
+    ],
+    [
+      "until test",
+      `until (\n  cd infra\n  ${RUNNER_STEP} || exit 1\n); do break; done`,
+    ],
+    [
+      "elif test",
+      `if false; then echo no\nelif (\n  cd infra\n  ${RUNNER_STEP} || exit 1\n); then echo ok; fi`,
+    ],
+  ];
+  for (const [label, body] of refused) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "missing", `default-shell step: ${label}`);
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -e\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `set -e script: ${label}`);
+  }
+  const credited: Array<[string, string]> = [
+    [
+      "a brace group as the test",
+      `if { ${RUNNER_STEP} || exit 1; }; then echo ok; fi`,
+    ],
+    [
+      "a test inside the subshell",
+      `( if ! ${RUNNER_STEP}; then exit 1; fi )`,
+    ],
+  ];
+  for (const [label, body] of credited) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(
+      step.wiring,
+      "official-server",
+      `default-shell step: ${label}`,
+    );
+  }
+});
+
+// PR #5332 review round 10: the one-line `( …; runner || exit 1 )`, with the
+// closing `)` spaced or attached, is the explicit-exit idiom.
+Deno.test("checkAwsEmulatorInCI - a one-line subshell ending in runner || exit 1 is read as an explicit exit", async () => {
+  const forms = [
+    `( cd infra; ${RUNNER_STEP} || exit 1 )`,
+    `(cd infra && ${RUNNER_STEP} || exit 1)`,
+    `( cd infra; ${RUNNER_STEP} || exit 1 ) 2>&1`,
+  ];
+  for (const form of forms) {
+    const last = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${form}\n`,
+    });
+    assertEquals(last.wiring, "official-server", `script's last line: ${form}`);
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`${form}\necho after`)),
+    });
+    assertEquals(step.wiring, "official-server", `default-shell step: ${form}`);
+    const underSetE = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -e\n${form}\necho after\n`,
+    });
+    assertEquals(
+      underSetE.wiring,
+      "official-server",
+      `set -e then a line: ${form}`,
+    );
+    const noSetE = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${form}\necho after\n`,
+    });
+    assertEquals(noSetE.wiring, "missing", `no set -e, then a line: ${form}`);
+  }
+  const ifForm = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      `#!/usr/bin/env bash\n( if ! ${RUNNER_STEP}; then echo bad; exit 1; fi )\n`,
+  });
+  assertEquals(
+    ifForm.wiring,
+    "official-server",
+    "one-line if ! runner subshell",
+  );
+});
+
 // PR #5332 review round 7: a one-line `$( … )` holding `|`, `;` or `&&`, with
 // more words after it, opens no frame, so later commands are still judged.
 Deno.test("checkAwsEmulatorInCI - a one-line substitution with a separator inside it does not hide a later runner", async () => {
