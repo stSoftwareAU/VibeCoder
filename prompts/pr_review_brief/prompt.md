@@ -223,9 +223,11 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    only its title (as described above, where you can). If an open issue
    already covers the same defect class, including an umbrella issue for
    it, set `existingIssue` to that issue's number: the new instance is added
-   there as a comment instead of filed again. Leave out an instance that
-   issue already describes. Write each as a standalone issue: a title that names the defect, and a
-   body saying what is wrong, the failure scenario and a suggested fix.
+   there as a comment instead of filed again. Never set it to an issue this PR
+   closes: that issue closes when this PR merges, and the comment goes with it.
+   Leave out an instance the issue you name already describes. Write each
+   as a standalone issue: a title that names the defect, and a body saying
+   what is wrong, the failure scenario and a suggested fix.
    Describe a security gap by class and location only (for example "the
    query is written into the page unescaped"), never with a working
    exploit or payload: some repos are public.
