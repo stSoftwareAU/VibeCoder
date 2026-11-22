@@ -320,6 +320,37 @@ export function isolateLinkageLines(text: string): string {
 }
 
 /**
+ * Which of `archiveFiles` differ from HEAD in the index or the working tree,
+ * or the git error when that could not be read (Issue #5328).
+ *
+ * Shared by {@link runRepoFormatters}, which keeps such a file out of
+ * `deno fmt` and its commit, and {@link formatWorkerOwnedArchive}.
+ */
+async function uncommittedArchivePaths(
+  repoPath: string,
+  deps: RepoFormatterDeps,
+  archiveFiles: readonly string[],
+): Promise<Result<Set<string>>> {
+  const dirty = await deps.runGitCommand(
+    [
+      "diff",
+      "--name-only",
+      "-z",
+      "HEAD",
+      "--",
+      ...archiveFiles.map((path) => `:(literal)${path}`),
+    ],
+    { cwd: repoPath },
+  );
+  const error = gitStepError("diff --name-only HEAD", dirty);
+  if (error !== undefined) return { ok: false, error: new Error(error) };
+  return {
+    ok: true,
+    value: new Set(dirty.ok ? dirty.value.stdout.split("\0") : []),
+  };
+}
+
+/**
  * Move uncommitted edits to archive files into a git stash (Issue #5328).
  *
  * The completion phase's pre-push gate runs `deno fmt --check` on the working
@@ -435,26 +466,14 @@ export async function formatWorkerOwnedArchive(
 
     // Uncommitted edits stay out (Issue #5328): the formatter's commit must not
     // publish them. loadSummaryForPublication uses the committed copy (#4764).
-    const dirty = await deps.runGitCommand(
-      [
-        "diff",
-        "--name-only",
-        "-z",
-        "HEAD",
-        "--",
-        ...archiveFiles.map((path) => `:(literal)${path}`),
-      ],
-      { cwd: repoPath },
-    );
-    if (!dirty.ok || dirty.value.code !== 0) {
+    const dirty = await uncommittedArchivePaths(repoPath, deps, archiveFiles);
+    if (!dirty.ok) {
       deps.logger.warn(
-        `repo formatters: worker-owned archive skipped: ${
-          gitStepError("diff --name-only HEAD", dirty)
-        }`,
+        `repo formatters: worker-owned archive skipped: ${dirty.error.message}`,
       );
       return;
     }
-    const dirtyPaths = new Set(dirty.value.stdout.split("\0"));
+    const dirtyPaths = dirty.value;
     const leftOut = archiveFiles.filter((path) => dirtyPaths.has(path));
     let stashed = false;
     if (leftOut.length > 0) {
@@ -574,6 +593,40 @@ export async function formatWorkerOwnedArchive(
 }
 
 /**
+ * `changed` without the worker-owned archive files that hold uncommitted
+ * changes (Issue #5328).
+ *
+ * The formatters' commit stages whole files, so an archive file with an edit
+ * nobody committed would be published under the formatter's message. A failed
+ * check leaves every archive file out: it cannot be told apart, and
+ * {@link formatWorkerOwnedArchive} still handles them.
+ */
+async function withoutUncommittedArchive(
+  repoPath: string,
+  changed: readonly string[],
+  deps: RepoFormatterDeps,
+): Promise<string[]> {
+  const archiveFiles = changed.filter(isWorkerOwnedArchiveFile);
+  if (archiveFiles.length === 0) return [...changed];
+  const dirty = await uncommittedArchivePaths(repoPath, deps, archiveFiles);
+  if (!dirty.ok) {
+    deps.logger.warn(
+      `repo formatters: worker-owned archive left out of the formatters: ${dirty.error.message}`,
+    );
+    return changed.filter((path) => !isWorkerOwnedArchiveFile(path));
+  }
+  const leftOut = archiveFiles.filter((path) => dirty.value.has(path));
+  if (leftOut.length > 0) {
+    deps.logger.warn(
+      `repo formatters: left ${
+        leftOut.join(", ")
+      } out of the formatters: uncommitted changes stay uncommitted (Issue #5328)`,
+    );
+  }
+  return changed.filter((path) => !dirty.value.has(path));
+}
+
+/**
  * Run the repository's formatters over `changed` and commit the result.
  *
  * Only the files a changed-file check (`planChangedFileChecks`) would flag
@@ -586,8 +639,10 @@ export async function formatWorkerOwnedArchive(
  * it: the quality-gate loop leaves the fix agent's code edits uncommitted for
  * `./quality.sh` to judge, so formatting and committing them puts on the branch
  * the same code the gate checks. An archive summary describes the branch, so
- * one with uncommitted changes is left out instead: not formatted and not
- * committed (see {@link formatWorkerOwnedArchive}). A gate that judges the
+ * a worker-owned archive file (Markdown or JSON under `docs/archive/pr-summaries/`
+ * or `docs/archive/handover/`) with uncommitted changes is dropped from
+ * `changed` first: not formatted and not committed here, whatever Deno config
+ * covers it (see {@link formatWorkerOwnedArchive}). A gate that judges the
  * working tree still sees that edit unless the caller asks for it to be set
  * aside (the completion phase does).
  * Never throws: any unexpected failure is logged and reported via `gitError`
@@ -614,7 +669,7 @@ export async function runRepoFormatters(
     const paths = lsFiles.value.stdout.split("\0").filter((p) => p.length > 0);
 
     const steps = planFormatterFixes(
-      changed,
+      await withoutUncommittedArchive(repoPath, changed, deps),
       paths,
       await loadDenoScopes(repoPath, paths),
     );

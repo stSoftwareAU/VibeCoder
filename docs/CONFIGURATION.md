@@ -5341,10 +5341,14 @@ files changed. Markdown outside `docs/archive/pr-summaries/` and
 `docs/archive/handover/` is never formatted: `deno fmt` re-wraps whole documents
 and trips markdownlint MD018, so a Markdown miss there is left to the check to
 report. Those two directories are the worker's own notes, and `docs/archive/`
-is excluded from the markdownlint globs. After the repository formatters,
-`formatBeforeGate` first checks which archive Markdown and JSON under those two
-directories already differ from HEAD, staged or unstaged. Such a file is left
-out: it is neither rewritten, formatted nor committed, so an edit nobody
+is excluded from the markdownlint globs. Both the repository formatters and the
+archive step first check which archive Markdown and JSON under those two
+directories already differ from HEAD, staged or unstaged. The repository
+formatters drop such a file from the files they hand to `deno fmt`, so a Deno
+config at any level (such as a root `deno.json` covering `.facts.json`) cannot
+format or commit it; if their check fails they leave every archive file out.
+The archive step then leaves it out too: it is neither rewritten, formatted nor
+committed, so an edit nobody
 committed (for example an interrupted recovery turn's rewrite of the PR summary)
 stays uncommitted and the completion phase publishes the copy committed at HEAD
 (Issue #4764). The pre-push gate judges the working tree, so the completion

@@ -3,13 +3,16 @@
 ## Summary
 
 The worker's archive formatter no longer commits an edit nobody committed.
-`formatWorkerOwnedArchive` now asks git which branch-changed files under
-`docs/archive/pr-summaries/` and `docs/archive/handover/` already differ from
-HEAD (staged or unstaged) and leaves those out of the rewrite, `deno fmt` and
-the commit. An interrupted recovery turn's rewrite of the PR summary therefore
-stays uncommitted, and `loadSummaryForPublication` publishes the copy committed
-at HEAD, as #4764 intended. The completion phase's own call also stashes that
-edit before its pre-push gate, because that gate runs `deno fmt --check` on the
+`formatWorkerOwnedArchive` and `runRepoFormatters` now ask git which
+branch-changed files under `docs/archive/pr-summaries/` and
+`docs/archive/handover/` already differ from HEAD (staged or unstaged) and leave
+those out of the rewrite, `deno fmt` and the commit. `runRepoFormatters` drops
+them from the changed files it plans, so a Deno config at the repository root
+cannot format and commit an archive `.facts.json` with an uncommitted edit
+either. An interrupted recovery turn's rewrite of the PR summary therefore stays
+uncommitted, and `loadSummaryForPublication` publishes the copy committed at
+HEAD, as #4764 intended. The completion phase's own call also stashes that edit
+before its pre-push gate, because that gate runs `deno fmt --check` on the
 working-tree copy of every branch-changed archive file: left in place, an
 unformatted edit would block the gate on content that is not in the push, and
 the one pre-push recovery turn would commit it. The formatters' shared commit
@@ -41,10 +44,13 @@ Closes #5328.
   formatted code file (the issue allowed either, if the comment says why). The
   quality-gate loop leaves the fix agent's code edits uncommitted for
   `./quality.sh` to judge, so formatting them puts on the branch the same code
-  the gate checks. An archive summary describes the branch, so it is left out of
-  the formatter's commit. The pre-push gate does judge the working tree, so the
-  completion phase sets the edit aside (next point); the doc comment now says
-  this.
+  the gate checks. An archive summary describes the branch, so a worker-owned
+  archive file (Markdown or JSON) with an uncommitted edit is dropped from
+  `runRepoFormatters`'s changed files and left out of the formatter's commit,
+  whichever Deno config covers it; if that check fails every archive file is
+  dropped (`withoutUncommittedArchive`). The pre-push gate does judge the
+  working tree, so the completion phase sets the edit aside (next point); the
+  doc comment now says this.
 - `formatBeforeGate` takes `{ setAsideUncommittedArchive: true }` from the
   completion phase's `gateBeforePush` only: its gate judges the working tree
   while its push (`pushUnpushedCommits`) carries commits only and the PR body is
@@ -80,6 +86,7 @@ flowchart TD
     A[formatWorkerOwnedArchive] --> B[branch-changed archive files]
     B --> C{git diff --name-only HEAD}
     C -- fails --> D[warn and skip the archive step]
+    R[runRepoFormatters] --> C
     C -- lists file --> E[left out: not formatted, not committed]
     E --> I["completion phase: git stash push"]
     I --> J[pre-push gate sees the committed copy]
@@ -159,11 +166,33 @@ copy without the edit, and the stash holds the edit. Observed red with
 `stashed ||` removed from the `cleanFiles` filter (order assertion failed),
 green with it.
 
+Third review round: under a root `deno.json`, `runRepoFormatters` handed an
+archive `.facts.json` with an uncommitted edit to `deno fmt` and committed it as
+`style: apply repository formatters`. New tests in
+`worker/deno/tests/repo_formatters_4129_test.ts`, with `deno.json` at the
+repository root and the real `formatBranchChanges`:
+
+- `formatBeforeGate keeps an archive JSON file with an uncommitted edit out of
+  the formatter commit under a root Deno config (Issue #5328)`
+- `formatBeforeGate stashes an archive JSON edit and formats the committed copy
+  under a root Deno config (Issue #5328)`
+- `formatBranchChanges leaves every archive file out when the
+  uncommitted-changes check fails (Issue #5328)`
+- `formatBranchChanges still formats and commits an archive JSON file with no
+  uncommitted edit under a root Deno config (Issue #5328)`
+  — the allowed control, green on both the unfixed and the fixed code.
+
+The three non-control tests were observed failing against the previous head's
+`repo_formatters.ts` (3 failed, 1 passed) and pass now. Branch outcomes of
+`withoutUncommittedArchive`: no archive file changed (no git call; the existing
+`formatBranchChanges` tests), a dirty file dropped (first two tests), a clean
+file kept (control), check failed (third test).
+
 Results on the final head:
 
 - `deno test -A tests/repo_formatters_4129_test.ts
   tests/completion_phase_repo_formatters_test.ts`
-  (from `worker/deno`) — 34 passed, 0 failed.
+  (from `worker/deno`) — 38 passed, 0 failed.
 - `deno lint`, `deno check` on the changed library files and `deno fmt` on the
   changed TypeScript — clean. Full `./quality.sh` was not re-run after the
   review round.

@@ -560,12 +560,16 @@ async function formatSeededFiles(
     links?: Record<string, string>;
     beforeFormat?: (repo: string) => Promise<void>;
     setAsideUncommittedArchive?: boolean;
+    /** Where the Deno config sits; the default keeps it under `worker/deno`. */
+    denoConfig?: string;
+    /** Run the production `formatBranchChanges` rather than a stub. */
+    realBranchFormatter?: boolean;
     /** Replaces the production git runner, to stage a failing command. */
     runGitCommand?: RepoFormatterDeps["runGitCommand"];
   } = {},
 ): Promise<{ repo: string; logger: Logger & { lines: string[] } }> {
   const repo = await initRepo(root);
-  await writeFile(repo, "worker/deno/deno.json", "{}\n");
+  await writeFile(repo, options.denoConfig ?? "worker/deno/deno.json", "{}\n");
   for (const [path, body] of Object.entries(files)) {
     await writeFile(repo, path, body);
   }
@@ -581,20 +585,20 @@ async function formatSeededFiles(
   await options.beforeFormat?.(repo);
 
   const logger = recordingLogger();
+  const formatterDeps = {
+    ...createRepoFormatterDeps(),
+    logger,
+    ...(options.runGitCommand ? { runGitCommand: options.runGitCommand } : {}),
+  };
   await formatBeforeGate(
     {
       git: {
-        formatBranchChanges: () =>
-          Promise.resolve({ runs: [], failures: [], committed: false }),
+        formatBranchChanges: options.realBranchFormatter
+          ? (path, baseRef) => formatBranchChanges(path, baseRef, formatterDeps)
+          : () => Promise.resolve({ runs: [], failures: [], committed: false }),
       },
       logger,
-      formatterDeps: {
-        ...createRepoFormatterDeps(),
-        logger,
-        ...(options.runGitCommand
-          ? { runGitCommand: options.runGitCommand }
-          : {}),
-      },
+      formatterDeps,
     },
     repo,
     undefined,
@@ -1049,6 +1053,115 @@ Deno.test("formatBranchChanges commit leaves a file staged outside the formatted
       (await git(repo, ["diff", "--cached", "--name-only"])).trim(),
       "notes.md",
     );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+const EDITED_JSON = '{"z":2,   "a":{"y":true,"b":3}}';
+
+Deno.test("formatBeforeGate keeps an archive JSON file with an uncommitted edit out of the formatter commit under a root Deno config (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-json-" });
+  try {
+    const { repo, logger } = await formatSeededFiles(root, {
+      [ARCHIVE[1]]: UNSORTED_JSON,
+    }, {
+      denoConfig: "deno.json",
+      realBranchFormatter: true,
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[1], EDITED_JSON),
+    });
+    assertEquals(
+      (await git(repo, ["log", "--format=%s"])).trim(),
+      "seed",
+    );
+    assertEquals(
+      await git(repo, ["show", `HEAD:${ARCHIVE[1]}`]),
+      UNSORTED_JSON,
+    );
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[1]}`), EDITED_JSON);
+    assertEquals(
+      await git(repo, ["status", "--porcelain"]),
+      ` M ${ARCHIVE[1]}\n`,
+    );
+    assertEquals(await git(repo, ["stash", "list"]), "");
+    assertStringIncludes(logger.lines.join("\n"), "uncommitted");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate stashes an archive JSON edit and formats the committed copy under a root Deno config (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-json-stash-" });
+  try {
+    const { repo } = await formatSeededFiles(root, {
+      [ARCHIVE[1]]: UNSORTED_JSON,
+    }, {
+      denoConfig: "deno.json",
+      realBranchFormatter: true,
+      setAsideUncommittedArchive: true,
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[1], EDITED_JSON),
+    });
+    assertEquals(
+      (await git(repo, ["log", "-1", "--format=%s"])).trim(),
+      FORMATTER_COMMIT_MESSAGE,
+    );
+    assertEquals(
+      await git(repo, ["show", `HEAD:${ARCHIVE[1]}`]),
+      CANONICAL_JSON,
+    );
+    assertEquals(
+      await Deno.readTextFile(`${repo}/${ARCHIVE[1]}`),
+      CANONICAL_JSON,
+    );
+    assertEquals(await git(repo, ["status", "--porcelain"]), "");
+    assertEquals(
+      await git(repo, ["show", `stash@{0}:${ARCHIVE[1]}`]),
+      EDITED_JSON,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBranchChanges still formats and commits an archive JSON file with no uncommitted edit under a root Deno config (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-json-clean-" });
+  try {
+    const { repo } = await formatSeededFiles(root, {
+      [ARCHIVE[1]]: UNSORTED_JSON,
+    }, { denoConfig: "deno.json", realBranchFormatter: true });
+    assertEquals(
+      await git(repo, ["show", `HEAD:${ARCHIVE[1]}`]),
+      CANONICAL_JSON,
+    );
+    assertEquals(await git(repo, ["status", "--porcelain"]), "");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBranchChanges leaves every archive file out when the uncommitted-changes check fails (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-json-check-" });
+  try {
+    const { repo, logger } = await formatSeededFiles(root, {
+      [ARCHIVE[1]]: UNSORTED_JSON,
+    }, {
+      denoConfig: "deno.json",
+      realBranchFormatter: true,
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[1], EDITED_JSON),
+      runGitCommand: (args, options) =>
+        args[0] === "diff" && args.includes("HEAD")
+          ? Promise.resolve({
+            ok: true as const,
+            value: { code: 128, stdout: "", stderr: "fatal: bad revision" },
+          })
+          : createRepoFormatterDeps().runGitCommand(args, options),
+    });
+    assertEquals(
+      (await git(repo, ["log", "--format=%s"])).trim(),
+      "seed",
+    );
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[1]}`), EDITED_JSON);
+    assertStringIncludes(logger.lines.join("\n"), "left out of the formatters");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
