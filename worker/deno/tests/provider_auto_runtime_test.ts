@@ -594,3 +594,17 @@ Deno.test("auto Codex status never probes an API-key account", async () => {
     await Deno.remove(home, { recursive: true });
   }
 });
+
+Deno.test("Gemini counts as a subscription for the absent-mode default (Issue #5339)", () => {
+  assertEquals(
+    resolveAutomaticProviderConfig({
+      configuredProviders: ["claude", "gemini"],
+    }),
+    { mode: "auto", preference: [], reason: "default-auto" },
+  );
+  const pinned = resolveAutomaticProviderConfig({
+    configuredProviders: ["gemini", "deepseek"],
+  });
+  assertEquals(pinned.mode, "pinned");
+  assertEquals(pinned.reason, "default-pinned");
+});

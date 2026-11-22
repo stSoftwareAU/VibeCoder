@@ -81,8 +81,29 @@ path. Nothing is inferred from a provider id.
 | -------- | ------------------------ | ------- |
 | Claude | `CLAUDE_CODE_OAUTH_TOKEN` | `ANTHROPIC_API_KEY` |
 | Codex | a ChatGPT login persisted under `CODEX_HOME` | `OPENAI_API_KEY`, `CODEX_API_KEY` |
-| Gemini | none | `GEMINI_API_KEY` |
+| Gemini | a Google-account login persisted under `GEMINI_CLI_HOME` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
 | DeepSeek | none | `DEEPSEEK_API_KEY` |
+
+A Gemini Google-account login proves a fixed-price subscription
+(`gemini-google-login`) when an explicit `GEMINI_CLI_HOME` holds
+`.gemini/oauth_creds.json` with a `refresh_token` and `.gemini/settings.json`
+selects no other auth type; free-tier and paid logins classify the same. A
+`settings.json` selecting `gemini-api-key` is `metered`
+(`gemini-settings-api-key`), and a corrupt or unreadable login is `unknown`
+(`gemini-login-unreadable (<fault>)`). With no `GEMINI_CLI_HOME`,
+`GEMINI_API_KEY` / `GOOGLE_API_KEY` stay `metered`. `GEMINI_CLI_HOME` is a
+non-secret state selector in `gemini/provider.env`, so `setup.sh` provisioning
+is unchanged. At startup the worker seeds
+`<GEMINI_CLI_HOME>/.gemini/oauth_creds.json` once from
+`<credential dir>/gemini/oauth_creds.json` (owner-only `0600`, with a
+`refresh_token`) and never overwrites an existing, refreshed login; with
+neither file present worker startup fails with an error naming both paths. The
+Gemini child then gets that home plus `GOOGLE_GENAI_USE_GCA=true` and neither
+`GEMINI_API_KEY` nor `GOOGLE_API_KEY`, so an expired login fails
+authentication instead of becoming metered spend (mirroring Codex's
+`CODEX_HOME` guard); `GEMINI_CLI_HOME` is denied by name to the Claude, Codex
+and DeepSeek children. Encrypted credential storage
+(`GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=true`) is not supported.
 
 Three rules follow, and they are separate:
 
@@ -133,7 +154,7 @@ flowchart TD
 | --- | ------- | ------- |
 | `agent_provider` | `claude` | Preferred provider |
 | `repo_config.<repo>.agent_provider` | unset | Per-repo provider pin (Issue #2048); binds when no per-invocation selection names one, and beats both the global `agent_provider` and `auto` ranking for that repo |
-| `agent_provider_mode` | `auto` with two or more subscription providers enabled, else `pinned` | `pinned` preserves the existing provider choice; `auto` ranks eligible fixed-price subscriptions (default since #5089) |
+| `agent_provider_mode` | `auto` with two or more subscription-capable providers (Claude, Codex, Gemini) enabled, else `pinned` | `pinned` preserves the existing provider choice; `auto` ranks eligible fixed-price subscriptions (default since #5089) |
 | `agent_providers` | preferred alone | Enabled set (credentials mounted) |
 | `agent_provider_fallback` | `[]` | Ordered alternatives; empty **pins** the preferred provider |
 
@@ -210,8 +231,8 @@ its own provider (Issue #4986). The fallback is not restricted to fixed-price
 subscriptions — see [Subscription-only billing
 policy](#subscription-only-billing-policy) for what it logs when the
 alternative is metered. Quota-aware auto selection is the default on a host
-with two or more subscription providers enabled (#5089); a host with one stays
-pinned.
+with two or more subscription-capable providers (Claude, Codex, Gemini)
+enabled (#5089); a host with fewer stays pinned.
 
 ## Staged rollout
 
@@ -253,8 +274,11 @@ WIP branches are untouched.
   (Issue #2337). A Codex or Gemini run carries the stream's full transcript and
   logs `compaction unavailable` naming the provider.
 - Automatic selection currently supports Claude OAuth and Codex ChatGPT
-  subscriptions. Gemini, DeepSeek and every unknown or metered billing mode are
-  ineligible. The shipped default remains pinned.
+  subscriptions. A Gemini Google-account login classifies as a fixed-price
+  subscription, but `resolveAutomaticProviderStatus` has no Gemini status
+  adapter yet and answers `fixed-subscription-status-not-supported` (not yet:
+  #5344), so `auto` cannot pick Gemini. DeepSeek and every unknown or metered
+  billing mode are ineligible. The shipped default remains pinned.
 - Quota *probing* is still per provider (`provider_auto_runtime.ts`), even
   though billing classification is now descriptor-declared. Adding a
   subscription provider means writing its status adapter as well as its

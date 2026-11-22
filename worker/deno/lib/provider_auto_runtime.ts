@@ -340,8 +340,9 @@ function subscriptionAuthEvidence(
   const billing = classifyProviderBilling(providerId, { workDir, env });
   if (billing.billingMode === "fixed-subscription") {
     // A proved subscription is a durable login by construction: it is either
-    // the OAuth token mounted from the credential volume or the auth state
-    // persisted under CODEX_HOME, both of which outlive the container.
+    // the OAuth token mounted from the credential volume, the auth state
+    // persisted under CODEX_HOME, or the Gemini login persisted under
+    // GEMINI_CLI_HOME, all of which outlive the container.
     return { kind: "subscription-login", persistedDurably: true };
   }
   return {

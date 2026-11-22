@@ -18,6 +18,7 @@ import {
   agentProviderIds,
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
+  DEEPSEEK_PROVIDER_ID,
   GEMINI_PROVIDER_ID,
   PROVIDER_FRAGMENT_DIR,
   resolveAgentProvider,
@@ -27,6 +28,9 @@ import {
   classifyCredentialFailure,
   type CredentialFailure,
 } from "../lib/credential_preflight.ts";
+import { CLAUDE_ENV_DENYLIST } from "../lib/claude_env.ts";
+import { CODEX_ENV_DENYLIST } from "../lib/codex_env.ts";
+import { DEEPSEEK_ENV_DENYLIST } from "../lib/deepseek_env.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { CONTAINER_IMAGE_INPUTS } from "../lib/container_image_hash.ts";
 
@@ -261,6 +265,35 @@ Deno.test("gemini provider - and neither the Claude nor the Codex child gets a G
         provider.environment.denylist.includes(name),
         `${name} must be denied by name from the ${id} child`,
       );
+    }
+  }
+});
+
+Deno.test("gemini provider - the Gemini login home is denied by name to the Claude, Codex and DeepSeek children", () => {
+  for (
+    const list of [
+      CLAUDE_ENV_DENYLIST,
+      CODEX_ENV_DENYLIST,
+      DEEPSEEK_ENV_DENYLIST,
+    ]
+  ) {
+    assert(list.includes("GEMINI_CLI_HOME"));
+  }
+  const parents: Record<string, string>[] = [
+    { PATH: "/usr/bin", GEMINI_CLI_HOME: "/state/gemini" },
+    {
+      PATH: "/usr/bin",
+      GEMINI_CLI_HOME: "/state/gemini",
+      CODEX_HOME: "/state/codex",
+    },
+  ];
+  for (
+    const id of [CLAUDE_PROVIDER_ID, CODEX_PROVIDER_ID, DEEPSEEK_PROVIDER_ID]
+  ) {
+    for (const parent of parents) {
+      const env = resolveAgentProvider(id).buildChildEnv(parent);
+      assertEquals(env.GEMINI_CLI_HOME, undefined, `${id} child`);
+      assertEquals(env.PATH, "/usr/bin", `${id} child keeps PATH`);
     }
   }
 });
