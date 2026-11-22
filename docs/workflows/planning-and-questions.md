@@ -341,13 +341,13 @@ in `worker/deno/lib/failure_detection_repair_label.ts`.
 The **loud failure path is unchanged for genuine planning failures** — a prompt
 failure, a timeout, or a publish failure still drives `handlePlanningFailure()`,
 which records the failure under `failed-once` through `handleIssueFailure` and
-leaves the issue claimable after the escalating cooldown (Issue #4158). This
+unassigns the issue; the worker never applies `failed` (Issue #4158). This
 change narrows *when* the gate fails a run, not the failure machinery itself.
 
 ```mermaid
 flowchart TD
     A[Planning run] --> B{Publish succeeded?}
-    B -->|no — prompt/publish failure| C["handlePlanningFailure()<br/>failed-once + escalating cooldown"]
+    B -->|no — prompt/publish failure| C["handlePlanningFailure()<br/>failed-once kept, never failed"]
     B -->|yes| D[Gate + self-repair]
     D --> E{Every sub-issue compliant?}
     E -->|yes| F[Close parent as completed]

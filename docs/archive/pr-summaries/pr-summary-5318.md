@@ -4,8 +4,10 @@
 
 The operator manuals still described a two-step failure ladder (`failed-once`,
 then `failed`). That ladder was removed by Issue #4158. Every failure is now
-recorded under `failed-once`, and the issue stays claimable once the escalating
-cooldown ends. This PR rewrites each stale passage to match. Docs only.
+recorded under `failed-once` and the worker never applies `failed`. On the
+coding path the issue stays claimable once the escalating cooldown ends; the
+planning path records no cooldown. This PR rewrites each stale passage to match.
+Docs only.
 
 Closes #5318.
 
@@ -24,7 +26,9 @@ Closes #5318.
 
 - `docs/workflows/planning-and-questions.md` is included because
   `handlePlanningFailure()` in `worker/deno/lib/planning_processor.ts` calls
-  `deps.github.handleIssueFailure`, the same never-terminal handler.
+  `deps.github.handleIssueFailure`, the same never-terminal handler. The
+  planning route records and checks no cooldown, so its passage states only
+  `failed-once` kept, unassign, never `failed`.
 - Historical prose is left as written. `docs/INTERNALS.md` around line 5856
   ("Until #2220 it was … six went on to `failed`") describes what happened
   before #2220, so it is still true. The dated audit record
@@ -47,8 +51,9 @@ claims were checked against the code:
   `worker/deno/tests/prompt_too_long_2682_test.ts` ("a repeat refusal after
   failed-once is recorded again, never parked (Issue #4158)") and
   `worker/deno/tests/never_park_4158_test.ts`.
-- `worker/deno/lib/planning_processor.ts`: `handlePlanningFailure` routes
-  through `handleIssueFailure`.
+- `worker/deno/lib/planning_processor.ts:3185-3244`: `handlePlanningFailure`
+  routes through `handleIssueFailure`, then `releaseClaim`. Neither records a
+  cooldown (no cooldown reference in `planning_processor.ts`).
 
 Passages rewritten:
 
@@ -60,10 +65,11 @@ Passages rewritten:
 
 ```mermaid
 flowchart LR
-  F["Failure (coding, planning,<br/>prompt-too-long)"] --> R["Record + keep failed-once,<br/>unassign"]
+  F["Coding failure<br/>(incl. prompt-too-long)"] --> R["Record + keep failed-once,<br/>unassign"]
   R --> C["Escalating cooldown<br/>2 h → 6 h → 24 h"]
   C --> Claim["Claimable again"]
   Claim --> F
+  P["Planning failure"] --> PR["handlePlanningFailure():<br/>keep failed-once, unassign,<br/>no cooldown"]
 ```
 
 Issue numbers cited: #4158: Never park an assigned issue: drop the terminal
