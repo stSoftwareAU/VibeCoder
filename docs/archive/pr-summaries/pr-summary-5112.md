@@ -484,8 +484,7 @@ emulator test.
   `set -e`. `docs/BEST-PRACTICES-SCAN.md` and the `keptCommands` comment state
   the rules. Both new tests fail at `d5338565`. The seven related test files
   (listed in the twelfth-review entry) give `670 passed | 0 failed` at that
-  round; the earlier `805 passed | 1 failed` figure counted a wider file set
-  that included the root-only unreadable-directory test.
+  round.
 - After the tenth review (of `9d7c2e54`): a `( )` subshell opened as an `if`,
   `elif`, `while` or `until` test is never kept, whatever errexit is outside it
   (`ReachableCommand.subshellsInCondition`). So
@@ -503,9 +502,7 @@ emulator test.
   `( if ! runner; then echo bad; exit 1; fi )` is credited too.
   `docs/BEST-PRACTICES-SCAN.md` and the `keptCommands` comment state both rules.
   Both new tests fail at `9d7c2e54`. The seven related test files give
-  `670 passed | 0 failed` at that round (the earlier `803 passed | 1 failed`
-  figure counted a wider file set that included the root-only
-  unreadable-directory test).
+  `670 passed | 0 failed` at that round.
 - After the ninth review (of `c4c8839a`): the wiring diagnostics and evidence
   paths in the finding body have HTML-comment delimiters neutralised
   (`neutraliseHtmlComments`), so a `<!-- finding-id: … -->` comment read from a
@@ -523,9 +520,7 @@ emulator test.
   explicit-exit rules also need the subshell rule inside a `( )` subshell, and
   the `keptCommands` doc comment sits on `keptCommands` again and lists the
   subshell rule. Both new tests fail at `c4c8839a`. The seven related test files
-  give `670 passed | 0 failed` at that round (the earlier
-  `801 passed | 1 failed` figure counted a wider file set that included the
-  root-only unreadable-directory test).
+  give `670 passed | 0 failed` at that round.
 - After the eighth review (of `8f32e27a`): every `( )` subshell around a command
   is judged on all three routes, explicit exit, `exec` and errexit: the command
   is kept only when errexit is on outside the subshell and not ignored, or the
@@ -536,9 +531,7 @@ emulator test.
   then a line), each in a script without `set -e` and in a step after `set +e`,
   and credits four controls (the subshell last, under a top-level `set -e`, and
   in a default-shell step). It fails at `8f32e27a`. The seven related test files
-  give `670 passed | 0 failed` at that round (the earlier
-  `799 passed | 1 failed` figure counted a wider file set that included the
-  root-only unreadable-directory test).
+  give `670 passed | 0 failed` at that round.
 - After the seventh review (of `926c2539`): the parenthesis balance is carried
   across the commands of one line, since the command list splits at a `|`, `;`
   or `&&` inside `$( … )`, and only a parenthesis still open at the line's end
@@ -553,9 +546,7 @@ emulator test.
   more lines in a script without `set -e`, and the subshell after `set +e` in a
   step, are refused; the subshell as the last command and under a top-level
   `set -e` stay credited. Each new case fails at `926c2539`. The seven related
-  test files give `670 passed | 0 failed` at that round; the earlier
-  `798 passed | 1 failed` figure counted a wider file set that included the
-  root-only unreadable-directory test.
+  test files give `670 passed | 0 failed` at that round.
 - After the sixth review (of `83013b2f`), in the same push as the owner fix: `&`
   inside a redirection (`2>&1`, `>&2`, `<&3`, `&>`) is part of the word, not a
   background `&`, and `|&` is a pipe. A subshell closes on its last unquoted `)`
@@ -568,11 +559,10 @@ emulator test.
   script, five workflow-only refusals (including both backstops), eight credited
   controls (four redirected runners, a redirected subshell followed by a line, a
   multi-line `$(` and array before the runner, and a spaced `case` pattern), and
-  the subshell `set -e` test with its top-level control. Every test file
-  importing `shell_command_words.ts`, `aws_emulator_in_ci_check.ts`,
-  `aws_emulator_workflow_check.ts` or `best_practices_template.ts` (13 files)
-  gave 796 passed, 1 failed at that commit (the root-only unreadable-directory
-  case); the seven related files give `670 passed | 0 failed` at that round. The
+  the subshell `set -e` test with its top-level control. The seven related
+  files give `670 passed | 0 failed` at that round (a wider run of the 13 test
+  files importing the scanned modules also hit the root-only unreadable-directory
+  case, which fails when run as root). The
   new refusals fail at `83013b2f`.
 - Owner review of `83013b2f`: a `trap 'exit 0' EXIT` (or `ERR`) before the
   runner was credited, but bash then exits 0 when the tests fail (checked with
