@@ -47,15 +47,15 @@ comments. Closes #5348.
   literal.
 - `quoteStateAfter` is renamed `scanLine`. It returns `{ open, comment }`, so
   `codeOf` and `codeLines` use the scan that already decides quoting to also
-  find a trailing comment. When quoting is `"unknown"` (a backtick or a `<<`
-  on the line), `codeOf` still joins a continuation, as the base did. A `#`
-  inside a backtick substitution does not hide the line end from Bash. The
-  joined text keeps every word, so the regex readers (`stepMayRetagImage` and
-  the `GITHUB_ENV`/`GITHUB_PATH` check in `checkContainerBuildRunsAwsEmulator`)
+  find a trailing comment. When quoting is `"unknown"` (a backtick or a `<<` on
+  the line), `codeOf` still joins a continuation, as the base did. A `#` inside
+  a backtick substitution does not hide the line end from Bash. The joined text
+  keeps every word, so the regex readers (`stepMayRetagImage` and the
+  `GITHUB_ENV`/`GITHUB_PATH` check in `checkContainerBuildRunsAwsEmulator`)
   still see a split `docker \` / `tag` or `$GITHUB_\` / `ENV`. The exact
-  allowlists behind `segmentsOf` refuse the joined segment, because it holds
-  the backtick or `<<`. An earlier revision of this branch did not join there.
-  The pre-PR verifier showed that hid a `docker tag` the base caught, so that
+  allowlists behind `segmentsOf` refuse the joined segment, because it holds the
+  backtick or `<<`. An earlier revision of this branch did not join there. The
+  pre-PR verifier showed that hid a `docker tag` the base caught, so that
   fallback is removed.
 
 ### Undiscoverable Facts
@@ -98,7 +98,8 @@ Issue numbers cited as provenance:
 
 ## Test Plan
 
-Every new test name ends in `(Issue #5348)`, except the two table cases noted below.
+Every new test name ends in `(Issue #5348)`, except the two table cases noted
+below.
 
 - `worker/deno/tests/aws_emulator_in_ci_check_test.ts`:
   - `shellSegments` cases with exact expected arrays:
@@ -121,8 +122,8 @@ Every new test name ends in `(Issue #5348)`, except the two table cases noted be
   - A gate-script refusal: `[gate-script] … no gate step runs`.
   - Two container-agent refusals for an inserted step under unknown quoting:
     ``X=`echo #` docker \`` then `tag busybox vibe-coder:ci`, and
-    ``X=`echo #` echo IMAGE=busybox >> $GITHUB_\`` then `ENV`. Each expects
-    the `[container-agent-run]` finding. These two are in the existing
+    ``X=`echo #` echo IMAGE=busybox >> $GITHUB_\`` then `ENV`. Each expects the
+    `[container-agent-run]` finding. These two are in the existing
     container-agent-run refusal table and do not carry the `(Issue #5348)`
     suffix.
 - Red on base: I ran the two test files with the new tests before the fix.
@@ -165,8 +166,8 @@ Every new test name ends in `(Issue #5348)`, except the two table cases noted be
 
 ## What was not checked
 
-- Unknown-quoting fix (verifier follow-up): the two backtick `#` tests failed
-  at the earlier head (`FAILED | 279 passed | 2 failed` on
+- Unknown-quoting fix (verifier follow-up): the two backtick `#` tests failed at
+  the earlier head (`FAILED | 279 passed | 2 failed` on
   `issue_5110_aws_emulator_workflow_test.ts`) and pass with the fallback
   removed. They were not run against the milestone base, which the verifier
   reports already caught the retag.
