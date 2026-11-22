@@ -11,7 +11,13 @@
  *
  * This module gives the signal a memory. It counts consecutive **cycles** in
  * which a repo raises the inversion, and at
- * {@link IDLE_INVERSION_THRESHOLD} files one issue naming that repo.
+ * {@link IDLE_INVERSION_THRESHOLD} files one issue about that repo.
+ *
+ * A private fleet repository is never named on the public issue (Issue #5354,
+ * mirroring #4780): its title is an opaque digest, its body carries only the
+ * counts and the generic guidance, and the full report goes to the host log
+ * instead. {@link isRepoPublic} decides, and a failed lookup counts as private.
+ * The dedup marker still carries the real name; it is not rendered.
  *
  * **Filed here, about them (Issue #459).** The issue lands in
  * {@link IDLE_INVERSION_TARGET_REPO} — the worker's own repo — because the
@@ -65,6 +71,8 @@ import {
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
 import { atomicWrite } from "./file_utils.ts";
+import { privateRepoDigest } from "./private_repo_pseudonym.ts";
+import { isRepoPublic } from "./repo_visibility.ts";
 import { withStateLock } from "./state_mutex.ts";
 import {
   recordSelfDiagnosticFiling,
@@ -97,6 +105,9 @@ export const IDLE_INVERSION_FAMILY_ID = "idle-inversion";
  *
  * The dedup marker stays keyed on the **subject** repo, so two hosts
  * watching the same repo still converge on one issue.
+ *
+ * This repo is public, so the issue may name a public subject. A private
+ * subject is never named on it (Issue #5354).
  */
 export const IDLE_INVERSION_TARGET_REPO = "stSoftwareAU/VibeCoder";
 
@@ -189,9 +200,28 @@ export function isIdleInversionIssue(body: string, repo: string): boolean {
  * `repo` is the **subject** — the monitored repo that raised the inversion.
  * The issue itself is filed in {@link IDLE_INVERSION_TARGET_REPO}, so the
  * title leads with the defect and names the subject as the evidence.
+ *
+ * For a public subject only. A private one is titled by
+ * {@link formatPrivateIdleInversionTitle}, which names nothing (Issue #5354).
  */
 export function formatIdleInversionTitle(repo: string): string {
   return `fix: idle-inversion on ${repo} — claimable work the claim scan ` +
+    `keeps refusing, sustained across cycles`;
+}
+
+/**
+ * The title for a private subject (Issue #5354).
+ *
+ * The digest is stable per subject, so a human can find and tell apart the
+ * issues, and it is distinct across subjects. Dedup never uses the title: it
+ * reads the body marker ({@link formatIdleInversionMarker}), found by
+ * {@link findOpenEscalationIssue}.
+ */
+export async function formatPrivateIdleInversionTitle(
+  repo: string,
+): Promise<string> {
+  return `fix: idle-inversion on a private fleet repo ` +
+    `(${await privateRepoDigest(repo)}) — claimable work the claim scan ` +
     `keeps refusing, sustained across cycles`;
 }
 
@@ -280,6 +310,68 @@ function formatScanSkips(
   ];
 }
 
+// Paragraphs both bodies share (Issue #5354).
+//
+// The public body and the private body say the same generic things. Keeping
+// them here, not inline in each body, is what stops the two drifting apart.
+
+/** The two sides disagree — and until resolved, the work is not being done. */
+const IDLE_INVERSION_DISAGREE =
+  "The two disagree. One of them is wrong, and until this is resolved that " +
+  "work is not being done by anyone.";
+
+/**
+ * Why the defect is here, not in the subject (Issue #459). `subject` is how
+ * the body names the subject: the repo in backticks when it is public, or a
+ * generic phrase when it is not (Issue #5354).
+ */
+function formatWorkerCodeParagraph(subject: string): string {
+  // Issue #459: this issue lives in the worker's repo because that is the
+  // only place its cause can be fixed. Say so, so nobody moves it back.
+  return `The subject is ${subject}; the defect is here. The census ` +
+    "(`idle_decision_census.ts`), the claim scan " +
+    "(`collect_*_candidates.ts`) and this filer " +
+    "(`idle_inversion_streak.ts`) are all worker code, so no change in the " +
+    "subject repo can resolve it.";
+}
+
+/** What a counted cycle means: a completed refusal, never a deadline. */
+const IDLE_INVERSION_COUNTING =
+  "Every cycle counted here is one in which the claim scan **completed an " +
+  "eligibility pass** and still claimed nothing — a cycle that ended on the " +
+  "deadline (or drained) before the scan looked is not counted, because " +
+  "nothing refused the work (Issue #437). A repo the scan **did** claim " +
+  "from this cycle is not counted either (Issue #460).";
+
+/** What to check, in the worker log and the census. */
+const IDLE_INVERSION_WHAT_TO_CHECK = [
+  "## What to check",
+  "",
+  "1. `[idle-detect] ... ALERT mis_classification ...` and " +
+  "`[idle-census] ... ALERT inversion ...` in the worker log for the " +
+  "cycle — both name the subject repo on every affected cycle.",
+  "2. Whether the census models every gate the claim scan applies. Each " +
+  "gate present in one and missing from the other manufactures this " +
+  "alert (Issue #460).",
+  "3. Issue #319 was one instance: a merged PR's title mentioning `#N` " +
+  "blocked those issue numbers for ever, under a skip reason that read as " +
+  "a passing cooldown.",
+];
+
+/** Why the worker schedules this itself (Issue #505). */
+const IDLE_INVERSION_SCHEDULING =
+  "The worker schedules this diagnostic itself (Issue #505): the marker " +
+  "above is recognised provenance, so it is claimed without waiting for a " +
+  "label — capped, recorded in the audit chain, and announced in a comment " +
+  "below when it happens. Apply `work-on` to schedule it sooner; that " +
+  "outranks self-scheduling and is still the only way to raise its " +
+  "priority.";
+
+/** The filing cadence. */
+const IDLE_INVERSION_ONCE_PER_STREAK =
+  "The worker files this once per streak and stops reporting as soon as " +
+  "the repo has a clean cycle.";
+
 /** Issue body: marker first, then the diagnosis and what to do. */
 export function formatIdleInversionBody(
   report: IdleInversionReport,
@@ -293,22 +385,11 @@ export function formatIdleInversionBody(
     `on **${report.consecutiveCycles} consecutive cycles**, while the claim ` +
     `scan claimed nothing from it.`,
     "",
-    "The two disagree. One of them is wrong, and until this is resolved that " +
-    "work is not being done by anyone.",
+    IDLE_INVERSION_DISAGREE,
     "",
-    // Issue #459: this issue lives in the worker's repo because that is the
-    // only place its cause can be fixed. Say so, so nobody moves it back.
-    `The subject is \`${report.repo}\`; the defect is here. The census ` +
-    "(`idle_decision_census.ts`), the claim scan " +
-    "(`collect_*_candidates.ts`) and this filer " +
-    "(`idle_inversion_streak.ts`) are all worker code, so no change in the " +
-    "subject repo can resolve it.",
+    formatWorkerCodeParagraph(`\`${report.repo}\``),
     "",
-    "Every cycle counted here is one in which the claim scan **completed an " +
-    "eligibility pass** and still claimed nothing — a cycle that ended on the " +
-    "deadline (or drained) before the scan looked is not counted, because " +
-    "nothing refused the work (Issue #437). A repo the scan **did** claim " +
-    "from this cycle is not counted either (Issue #460).",
+    IDLE_INVERSION_COUNTING,
     "",
     ...(issueList === "" ? [] : [
       "## The issues the census counted",
@@ -323,27 +404,51 @@ export function formatIdleInversionBody(
     bodySafe(report.detail),
     "```",
     "",
-    "## What to check",
+    ...IDLE_INVERSION_WHAT_TO_CHECK,
     "",
-    "1. `[idle-detect] ... ALERT mis_classification ...` and " +
-    "`[idle-census] ... ALERT inversion ...` in the worker log for the " +
-    "cycle — both name the subject repo on every affected cycle.",
-    "2. Whether the census models every gate the claim scan applies. Each " +
-    "gate present in one and missing from the other manufactures this " +
-    "alert (Issue #460).",
-    "3. Issue #319 was one instance: a merged PR's title mentioning `#N` " +
-    "blocked those issue numbers for ever, under a skip reason that read as " +
-    "a passing cooldown.",
+    IDLE_INVERSION_SCHEDULING,
     "",
-    "The worker schedules this diagnostic itself (Issue #505): the marker " +
-    "above is recognised provenance, so it is claimed without waiting for a " +
-    "label — capped, recorded in the audit chain, and announced in a comment " +
-    "below when it happens. Apply `work-on` to schedule it sooner; that " +
-    "outranks self-scheduling and is still the only way to raise its " +
-    "priority.",
+    IDLE_INVERSION_ONCE_PER_STREAK,
+  ].join("\n");
+}
+
+/**
+ * Issue body for a private subject (Issue #5354).
+ *
+ * Renders no repository name, no claimable issue numbers, no scan-skip reasons
+ * and no census detail: the detail is census lines that contain the repo.
+ * The marker is the first line. It is an HTML comment, not rendered, and it
+ * keeps the real name because dedup ({@link isIdleInversionIssue}) and the
+ * tier-2b provenance check both read it; that is the one place the name
+ * appears on the public issue. Everything else the operator needs is on the
+ * host log, which {@link recordIdleInversion} writes in full.
+ */
+export function formatPrivateIdleInversionBody(
+  report: IdleInversionReport,
+): string {
+  return [
+    formatIdleInversionMarker(report.repo),
     "",
-    "The worker files this once per streak and stops reporting as soon as " +
-    "the repo has a clean cycle.",
+    `Auto-filed by the Vibe Coder (Issue #321): the idle-decision census has ` +
+    `reported **${report.claimable} claimable issue(s)** in a private fleet ` +
+    `repository on **${report.consecutiveCycles} consecutive cycles**, while ` +
+    `the claim scan claimed nothing from it.`,
+    "",
+    IDLE_INVERSION_DISAGREE,
+    "",
+    formatWorkerCodeParagraph("a private fleet repository"),
+    "",
+    IDLE_INVERSION_COUNTING,
+    "",
+    "The repository, the issues the census counted, the claim scan's reasons " +
+    "and the census lines are withheld from this public issue (Issue #5354). " +
+    "The operator's host log keeps them.",
+    "",
+    ...IDLE_INVERSION_WHAT_TO_CHECK,
+    "",
+    IDLE_INVERSION_SCHEDULING,
+    "",
+    IDLE_INVERSION_ONCE_PER_STREAK,
   ].join("\n");
 }
 
@@ -520,11 +625,24 @@ async function decide(
     };
   }
 
-  const body = formatIdleInversionBody({
-    ...opts.report,
-    consecutiveCycles: entry.count,
-  });
-  const title = formatIdleInversionTitle(repo);
+  // Issue #5354: looked up only here, on the path that files. A failed lookup
+  // is unknown, and unknown is private (`isRepoPublic`).
+  const isPublic = await isRepoPublic(repo, opts.ghFn);
+  const report = { ...opts.report, consecutiveCycles: entry.count };
+  const publicBody = formatIdleInversionBody(report);
+  const title = isPublic
+    ? formatIdleInversionTitle(repo)
+    : await formatPrivateIdleInversionTitle(repo);
+  const body = isPublic ? publicBody : formatPrivateIdleInversionBody(report);
+  if (!isPublic) {
+    // The operator keeps the full report here, on the host log.
+    log(
+      `[idle-inversion] ${repo} is not public, so ` +
+        `${IDLE_INVERSION_TARGET_REPO} gets only the opaque form of this ` +
+        `issue (Issue #5354); the full report follows`,
+    );
+    log(publicBody);
+  }
   try {
     const created = await opts.ghFn([
       "issue",

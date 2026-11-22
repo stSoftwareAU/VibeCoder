@@ -14,7 +14,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertMatch,
+  assertStringIncludes,
+} from "@std/assert";
 import type { SelfDiagnosticFiling } from "../lib/self_diagnostic_attestation.ts";
 import {
   clearIdleInversion,
@@ -59,6 +64,9 @@ function gh(replies: { match: RegExp; reply: string | Error }[]) {
 }
 
 const NO_EXISTING = { match: /issue list/, reply: "[]" };
+/** The visibility lookup `isRepoPublic` makes: `gh api repos/<repo> --jq .visibility`. */
+const PUBLIC_VISIBILITY = { match: /^api repos\//, reply: "public" };
+const PRIVATE_VISIBILITY = { match: /^api repos\//, reply: "private" };
 const CREATE_OK = {
   match: /issue create/,
   reply: "https://github.com/stSoftwareAU/VibeCoder/issues/999\n",
@@ -367,9 +375,9 @@ Deno.test("#459 - the issue is filed in VibeCoder, not the subject repo", async 
   });
 });
 
-Deno.test("#459 - the title and body still name the subject repo", async () => {
+Deno.test("#459 - the title and body still name a public subject repo", async () => {
   await withState(async (statePath) => {
-    const { fn, calls } = gh([NO_EXISTING, CREATE_OK]);
+    const { fn, calls } = gh([PUBLIC_VISIBILITY, NO_EXISTING, CREATE_OK]);
     for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
       await recordIdleInversion({
         recordFiling: () => Promise.resolve(true),
@@ -383,6 +391,12 @@ Deno.test("#459 - the title and body still name the subject repo", async () => {
     if (!create) throw new Error("an issue is filed at the threshold");
     const title = argAfter(create, "--title");
     const body = argAfter(create, "--body");
+    assertEquals(
+      title,
+      "fix: idle-inversion on stSoftwareAU/GRQ — claimable work the claim " +
+        "scan keeps refusing, sustained across cycles",
+      "a public subject keeps today's title, byte for byte (Issue #5354)",
+    );
     assertStringIncludes(title, SUBJECT);
     assertStringIncludes(body, SUBJECT);
     assertStringIncludes(
@@ -438,6 +452,214 @@ Deno.test("#459 - two subject repos file two issues, one each", async () => {
 });
 
 // ===========================================================================
+// Issue #5354 — a private fleet repo is never named on the public issue
+// ===========================================================================
+
+/** The subject's census-style report, with the lists a body would name. */
+const PRIVATE_REPORT = {
+  repo: SUBJECT,
+  claimable: 2,
+  claimableIssues: [4326, 4376],
+  scanSkips: [
+    { issue: 4326, reason: "dependency-blocked" },
+    { issue: 4376, reason: "milestone-occupied" },
+  ],
+  detail: "[idle-census] repo=stSoftwareAU/GRQ work_on=2",
+};
+
+/** Run the threshold's worth of cycles; return the last decision and the calls. */
+async function fileAtThreshold(
+  statePath: string,
+  routes: Parameters<typeof gh>[0],
+  subjectReport: Parameters<typeof recordIdleInversion>[0]["report"],
+  extra: { fleetAuthors?: readonly string[] } = {},
+) {
+  const { fn, calls } = gh(routes);
+  const logs: string[] = [];
+  let last;
+  for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
+    last = await recordIdleInversion({
+      recordFiling: () => Promise.resolve(true),
+      statePath,
+      cycleId: `run-${cycle}`,
+      report: subjectReport,
+      ghFn: fn,
+      log: (m) => logs.push(m),
+      ...extra,
+    });
+  }
+  return { last, calls, logs };
+}
+
+/** Assert the filed title and body carry nothing that names the subject. */
+function assertOpaqueFiling(title: string, body: string): void {
+  assert(!title.includes(SUBJECT), "the title must not name the subject");
+  assert(!title.includes("GRQ"), "nor the subject's short name");
+  assertMatch(
+    title,
+    /^fix: idle-inversion on a private fleet repo \([0-9a-f]{12}\) — claimable work the claim scan keeps refusing, sustained across cycles$/,
+  );
+  const marker = formatIdleInversionMarker(SUBJECT);
+  assert(body.startsWith(marker), "the marker leads, so dedup still finds it");
+  const rendered = body.slice(marker.length);
+  for (
+    const withheld of [
+      SUBJECT,
+      "GRQ",
+      "4326",
+      "4376",
+      "dependency-blocked",
+      "milestone-occupied",
+      "repo=stSoftwareAU/GRQ",
+      "work_on=2",
+    ]
+  ) {
+    assert(
+      !rendered.includes(withheld),
+      `the public body must not carry ${withheld}`,
+    );
+  }
+}
+
+Deno.test("#5354 - a private subject is filed under an opaque title and body", async () => {
+  await withState(async (statePath) => {
+    const { calls, logs } = await fileAtThreshold(
+      statePath,
+      [PRIVATE_VISIBILITY, NO_EXISTING, CREATE_OK],
+      PRIVATE_REPORT,
+    );
+    const create = calls.find((c) => c[1] === "create");
+    if (!create) throw new Error("an issue is filed at the threshold");
+    const title = argAfter(create, "--title");
+    const body = argAfter(create, "--body");
+    assertOpaqueFiling(title, body);
+    assertStringIncludes(body, "2 claimable");
+    assertStringIncludes(body, "3 consecutive cycles");
+    assertStringIncludes(body, "in a private fleet repository");
+
+    // The operator's host log keeps the report in full.
+    assert(
+      logs.some((l) => l.includes(SUBJECT) && l.includes("not public")),
+      "the host log names the subject and says it is not public",
+    );
+    assert(
+      logs.some((l) => l.includes(PRIVATE_REPORT.detail)),
+      "the host log keeps the census detail",
+    );
+    assert(
+      logs.some((l) => l.includes("4326") && l.includes("dependency-blocked")),
+      "the host log keeps the claim scan's reasons",
+    );
+  });
+});
+
+Deno.test("#5354 - a failed visibility lookup is treated as private", async () => {
+  await withState(async (statePath) => {
+    const { calls } = await fileAtThreshold(
+      statePath,
+      [
+        { match: /^api repos\//, reply: new Error("HTTP 503") },
+        NO_EXISTING,
+        CREATE_OK,
+      ],
+      PRIVATE_REPORT,
+    );
+    const create = calls.find((c) => c[1] === "create");
+    if (!create) throw new Error("an issue is filed at the threshold");
+    assertOpaqueFiling(
+      argAfter(create, "--title"),
+      argAfter(create, "--body"),
+    );
+  });
+});
+
+Deno.test("#5354 - an open fleet-authored issue for a private subject is reused, not duplicated", async () => {
+  await withState(async (statePath) => {
+    const { last, calls } = await fileAtThreshold(
+      statePath,
+      [
+        PRIVATE_VISIBILITY,
+        {
+          match: /issue list/,
+          reply: JSON.stringify([{
+            number: 777,
+            body: `${formatIdleInversionMarker(SUBJECT)}\nolder`,
+            author: { login: FLEET_LOGIN },
+          }]),
+        },
+        CREATE_OK,
+      ],
+      PRIVATE_REPORT,
+      { fleetAuthors: FLEET },
+    );
+    assertEquals(last?.action, "already-open");
+    if (last?.action === "already-open") assertEquals(last.issueNumber, 777);
+    assertEquals(calls.filter((c) => c[1] === "create").length, 0);
+    assertEquals(
+      calls.filter((c) => c[0] === "api").length,
+      0,
+      "visibility is looked up only on the path that files a new issue",
+    );
+  });
+});
+
+Deno.test("#5354 - the private title is a stable digest, distinct per subject", async () => {
+  const titleFor = async (repo: string): Promise<string> => {
+    let title = "";
+    await withState(async (statePath) => {
+      const { calls } = await fileAtThreshold(
+        statePath,
+        [PRIVATE_VISIBILITY, NO_EXISTING, CREATE_OK],
+        { ...PRIVATE_REPORT, repo },
+      );
+      const create = calls.find((c) => c[1] === "create");
+      if (!create) throw new Error("an issue is filed at the threshold");
+      title = argAfter(create, "--title");
+    });
+    return title;
+  };
+  const first = await titleFor(SUBJECT);
+  assertEquals(await titleFor(SUBJECT), first, "same repo, same title");
+  assert(
+    first !== await titleFor("stSoftwareAU/NEAT-AI"),
+    "a different repo gets a different title",
+  );
+});
+
+Deno.test("#5354 - the private filing attests the opaque title and body it posted", async () => {
+  await withState(async (statePath) => {
+    const { fn } = gh([PRIVATE_VISIBILITY, NO_EXISTING, CREATE_OK]);
+    const filings: SelfDiagnosticFiling[] = [];
+    let createdBody = "";
+    let createdTitle = "";
+    const recordingGh = (args: string[]): Promise<string> => {
+      if (args[1] === "create") {
+        createdBody = args[args.indexOf("--body") + 1]!;
+        createdTitle = args[args.indexOf("--title") + 1]!;
+      }
+      return fn(args);
+    };
+    for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
+      await recordIdleInversion({
+        recordFiling: (filing) => {
+          filings.push(filing);
+          return Promise.resolve(true);
+        },
+        statePath,
+        cycleId: `run-${cycle}`,
+        report: PRIVATE_REPORT,
+        ghFn: recordingGh,
+        log: () => {},
+      });
+    }
+    assertEquals(filings.length, 1);
+    assertEquals(filings[0]!.body, createdBody, "the body that was posted");
+    assertEquals(filings[0]!.title, createdTitle, "and the title");
+    assertOpaqueFiling(createdTitle, createdBody);
+  });
+});
+
+// ===========================================================================
 // Issue #460 — the body must name the issues it is talking about
 // ===========================================================================
 
@@ -483,7 +705,8 @@ Deno.test("#460 - the body names the per-issue skip reasons when known", () => {
 
 Deno.test("#1277 - filing records an attestation carrying the posted body", async () => {
   await withState(async (statePath) => {
-    const { fn } = gh([NO_EXISTING, CREATE_OK]);
+    // VibeCoder is public, so this attests the public title and body (Issue #5354).
+    const { fn } = gh([PUBLIC_VISIBILITY, NO_EXISTING, CREATE_OK]);
     const filings: SelfDiagnosticFiling[] = [];
     let createdBody = "";
     let createdTitle = "";

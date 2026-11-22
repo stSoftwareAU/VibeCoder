@@ -84,6 +84,7 @@ import {
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
 import { atomicWrite } from "./file_utils.ts";
+import { isRepoPublic } from "./repo_visibility.ts";
 import { withStateLock } from "./state_mutex.ts";
 
 /**
@@ -395,6 +396,12 @@ function formatSlotSeconds(seconds: number): string {
  * see which repos were available and which were busy without going to the
  * log — but an unbounded paste is not, so the tail is summarised rather than
  * dropped silently.
+ *
+ * The issue is public, so a line naming a repository that is not positively
+ * public is withheld before it reaches here (Issue #5354, see
+ * {@link withholdPrivateCensusLines}). The reader sees every public repo's
+ * line; a private repo appears only as a placeholder, and the host log keeps
+ * the original.
  */
 function formatCensus(lines: readonly string[]): string[] {
   const limit = 40;
@@ -412,7 +419,12 @@ function formatCensus(lines: readonly string[]): string[] {
   ];
 }
 
-/** Issue body: marker first, then the measurement, the evidence, the fix. */
+/**
+ * Issue body: marker first, then the measurement, the evidence, the fix.
+ *
+ * The census lines are rendered verbatim, so the caller passes them already
+ * filtered by {@link withholdPrivateCensusLines} (Issue #5354).
+ */
 export function formatIdleStarvationBody(
   report: IdleStarvationReport,
 ): string {
@@ -701,6 +713,28 @@ async function decide(
     return { action: "already-open", hours, issue: existing };
   }
 
+  // Issue #5354: the issue is public, so census lines naming a repository
+  // that is not positively public are withheld from the posted copy only.
+  // The episode keeps the originals; the caller logs them every cycle.
+  const evidence = episode.evidence ?? {
+    slotUtilisation: "",
+    refusalReason: "unknown",
+    claimableTotal: 0,
+    censusLines: [],
+  };
+  const censusLines = await withholdPrivateCensusLines(
+    evidence.censusLines,
+    opts.ghFn,
+  );
+  const withheld =
+    censusLines.filter((line, i) => line !== evidence.censusLines[i]).length;
+  if (withheld > 0) {
+    log(
+      `[idle-starvation] withheld ${withheld} census line(s) naming a ` +
+        `repository that is not public from the public issue`,
+    );
+  }
+
   try {
     const created = await opts.ghFn([
       "issue",
@@ -716,12 +750,7 @@ async function decide(
         idleSlotSeconds: episode.idleSlotSeconds,
         thresholdHours,
         thresholdIdleSlotSeconds: thresholdSeconds,
-        evidence: episode.evidence ?? {
-          slotUtilisation: "",
-          refusalReason: "unknown",
-          claimableTotal: 0,
-          censusLines: [],
-        },
+        evidence: { ...evidence, censusLines },
       }),
     ]);
     const issue = parseCreatedIssueNumber(created);
@@ -737,4 +766,70 @@ async function decide(
     log(`[idle-starvation] could not file the issue: ${reason}`);
     return { action: "gh-failed", hours, reason };
   }
+}
+
+/** Placeholder for a census line the public issue must not show (Issue #5354). */
+const CENSUS_LINE_WITHHELD =
+  "(census line withheld: it names a repository that is not public; the host log has it)";
+
+/** An `owner/name` token, anchored so a longer path is never read as one. */
+const REPO_TOKEN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/**
+ * Splits a line on every character outside the repository-name alphabet, so
+ * quotes, brackets, colons and backticks never hide a name from the tokeniser.
+ * Linear: a single pass with no nested quantifiers.
+ */
+const TOKEN_SPLIT = /[^A-Za-z0-9_./-]+/;
+
+/**
+ * Withhold each census line that names a repository not positively public
+ * (Issue #5354).
+ *
+ * The VibeCoder issue is public, and its census lines name every monitored
+ * repository, private ones included. The tokeniser fails closed: each line is
+ * split on every character outside `[A-Za-z0-9_./-]`, and then:
+ *
+ * - a token matching `owner/name` ({@link REPO_TOKEN}) is a repository, and
+ *   the line is kept only if {@link isRepoPublic} confirms it public, where a
+ *   failed lookup counts as private;
+ * - any other token containing `/` (for example `a/b/c`, `/x` or `a/`) cannot
+ *   be confirmed public, so the line is withheld.
+ *
+ * A line with no `/` token names no repository and is kept. The result has one
+ * entry per input line, in order.
+ *
+ * Each distinct repository is looked up once per call, however many lines
+ * name it.
+ *
+ * @param lines - The census lines, as logged.
+ * @param ghFn - The `gh` runner: resolves stdout, rejects on failure.
+ * @returns The lines to post, with withheld lines replaced by the placeholder.
+ */
+export async function withholdPrivateCensusLines(
+  lines: readonly string[],
+  ghFn: (args: string[]) => Promise<string>,
+): Promise<string[]> {
+  const known = new Map<string, boolean>();
+  const isPublicOnce = async (repo: string): Promise<boolean> => {
+    const hit = known.get(repo);
+    if (hit !== undefined) return hit;
+    const verdict = await isRepoPublic(repo, ghFn);
+    known.set(repo, verdict);
+    return verdict;
+  };
+
+  const out: string[] = [];
+  for (const line of lines) {
+    let publicOnly = true;
+    for (const token of line.split(TOKEN_SPLIT)) {
+      if (!token.includes("/")) continue;
+      if (!REPO_TOKEN.test(token) || !(await isPublicOnce(token))) {
+        publicOnly = false;
+        break;
+      }
+    }
+    out.push(publicOnly ? line : CENSUS_LINE_WITHHELD);
+  }
+  return out;
 }
