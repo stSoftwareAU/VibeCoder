@@ -1093,3 +1093,76 @@ for (
     assertFinal(input, expected, values);
   });
 }
+
+// PR #5322 review round 12: the label-`=`-line-break forms, the unclosed quote
+// with `=`, `:`, `*` or the other quote before the flag, and a chain longer
+// than the look-ahead after an earlier wrapped run.
+for (
+  const [input, expected, values] of [
+    [`The secret:\napi_key=\n${V}`, `The secret:\napi_key=\n${R}`, [V]],
+    [`secrets:\n  API_TOKEN=\n${V}`, `secrets:\n  API_TOKEN=\n${R}`, [V]],
+    [`credentials: DEPLOY_TOKEN\n=${V}`, `credentials: DEPLOY_TOKEN\n=${R}`, [
+      V,
+    ]],
+    [`credentials=\nDEPLOY_TOKEN = ${V}`, `${R} = ${R}`, [V]],
+    ["credentials: token=\nabcdefgh1", `credentials: token=\n${R}`, [
+      "abcdefgh1",
+    ]],
+    ["credentials: token=\nabcdefgh12", `credentials: token=\n${R}`, [
+      "abcdefgh12",
+    ]],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'curl https://example.test --token '${V}`,
+      `secrets:\n  DEPLOY_TOKEN: 'curl https://example.test --token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'deploy --env=prod --token '${V}`,
+      `secrets:\n  DEPLOY_TOKEN: 'deploy --env=prod --token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'deploy k=v --token '${V}`,
+      `secrets:\n  DEPLOY_TOKEN: 'deploy k=v --token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'deploy a:b --token '${V}`,
+      `secrets:\n  DEPLOY_TOKEN: 'deploy a:b --token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'deploy *.txt --token '${V}`,
+      `secrets:\n  DEPLOY_TOKEN: 'deploy *.txt --token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'deploy "x" --token '${V}`,
+      `secrets:\n  DEPLOY_TOKEN: 'deploy "x" --token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: '"--token '${V}`,
+      `secrets:\n  DEPLOY_TOKEN: '"--token ${R}`,
+      [V],
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 round 12: ${JSON.stringify(input.slice(0, 52))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}
+
+Deno.test("#5310 a chain longer than the look-ahead gives the same output after an earlier wrapped run", () => {
+  const prefix = "secrets:\n  token=\nabcdefgh1234\nZk4Qw8Rt2Lm6Xv0B\n\n";
+  for (const links of [18, 30]) {
+    const chain = "credentials: " +
+      Array.from({ length: links }, (_, i) => `k${i}_token: `).join("") + V;
+    const alone = redactSecrets(chain);
+    const after = redactSecrets(prefix + chain);
+    assertEquals(after, redactSecrets(prefix) + alone, `${links} links`);
+    assertEquals(redactSecrets(alone), alone);
+    assertEquals(containsSecret(alone), false);
+    assertEquals(alone.includes(V), false);
+  }
+});

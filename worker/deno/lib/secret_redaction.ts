@@ -887,13 +887,18 @@ function verdictOf(text: string, match: RegExpExecArray): AssignmentVerdict {
  * mask.
  */
 function walkAssignments(text: string): AssignmentVerdict[] {
+  // A nested walk (the decode-then-rescan check runs one on a joined run)
+  // gets its own memo, and the outer walk's is put back after it, so the
+  // memo always belongs to one walk (PR #5322 review round 12).
+  const outerText = INNER_MEMO.text;
+  const outerResults = INNER_MEMO.results;
   INNER_MEMO.text = text;
   INNER_MEMO.results = new Map();
   try {
     return walkAssignmentsMemoised(text);
   } finally {
-    INNER_MEMO.text = null;
-    INNER_MEMO.results = new Map();
+    INNER_MEMO.text = outerText;
+    INNER_MEMO.results = outerResults;
   }
 }
 
@@ -1478,8 +1483,13 @@ function mainReadsPastInnerValue(
       at = after.indexOf("--", at + 1)
     ) {
       // Only text that could have sat inside the original quoted run lies
-      // between: no quote, separator or earlier placeholder.
-      if (/['"=:*]/.test(after.slice(0, at))) break;
+      // between: no closing quote of the same kind and no earlier
+      // placeholder. Any other character (`=`, `:`, `*`, the other quote) may
+      // sit inside the run (PR #5322 review round 12).
+      const between = after.slice(0, at);
+      if (between.includes(opener) || between.includes(REDACTION_PLACEHOLDER)) {
+        break;
+      }
       CLI_FLAG_AT.lastIndex = inner.end + at;
       const flag = CLI_FLAG_AT.exec(text);
       if (flag !== null && flag[0].endsWith(REDACTION_PLACEHOLDER)) return true;

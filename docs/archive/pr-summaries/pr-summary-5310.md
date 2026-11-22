@@ -218,7 +218,7 @@ flowchart LR
 
 ## Test Plan
 
-- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 225
+- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 239
   tests**, all through `redactSecrets` and `containsSecret`:
   - **Leak cases** must mask the inner value and keep both labels:
     - `DEPLOY_TOKEN = <40-char value>` on the same line and the next line;
@@ -316,6 +316,29 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
+- **Review round 12** — three items:
+  - **The memo belongs to one walk.** The decode-then-rescan check runs a
+    nested walk on a joined run; that walk now saves and restores the outer
+    walk's memo instead of clearing it. A chain of 18 or 30 labels gives the
+    same output with and without an earlier wrapped run (new test), and
+    `secrets:\n  DEPLOY_TOKEN: 'a --token ` repeated takes the same time
+    with that prefix as without (about 1 s at 1.1 MB here).
+  - **Unclosed quote.** The second-pass flag search stops only at a closing
+    quote of the same kind or an earlier placeholder, so `=`, `:`, `*`, a URL
+    or the other quote before the flag (`'deploy --env=prod --token `,
+    `'curl https://example.test --token `, `'deploy "x" --token `) stays
+    final.
+  - **Tests** for the remaining label-`=`-line-break inputs
+    (`The secret:\napi_key=`, `secrets:\n  API_TOKEN=`,
+    `credentials: DEPLOY_TOKEN\n=`, `credentials=\nDEPLOY_TOKEN = `, and the
+    15- and 16-character joined values).
+  - 14 more tests (225 → 239). Every test file importing
+    `secret_redaction.ts`: `1280 passed | 0 failed`. Sweeps of 450,000
+    general and 450,000 quote-and-flag-weighted inputs (the latter now with
+    `k=v`, `a:b`, `*.txt` and a URL) found no head-only change on a second
+    pass, no head-only `containsSecret` and no published value main masked,
+    other than values joined to a label by `.` or `-`, which `SECURITY.md`
+    documents. The round-11 sweep claim missed the `=`/`:`/`*` shapes.
 - **Review round 11** — the four partial items:
   - **The #5310 leak across `=` and a line break.** A run covering the inner
     label counts only when the inner value stays visible (a chained label);
