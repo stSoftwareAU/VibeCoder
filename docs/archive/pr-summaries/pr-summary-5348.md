@@ -138,6 +138,8 @@ Every new test name ends in `(Issue #5348)`.
   `idle_task_scan_dedup_conformance_test.ts`) gave `ok | 173 passed | 0 failed`.
 - `deno fmt --check`, `deno lint` and `deno check` on the changed files were
   clean.
+- `./quality.sh < /dev/null` on the final code: `Result: PASSED (with skipped
+  checks)` (config integration and checkov skipped by the gate itself).
 - No existing test was edited or removed. The existing Issue #5304 escaped-
   backslash and comment-continuation tests still pass unchanged.
 - Corpus: the real `aws-emulator.yml`, `quality.yml` and `container-build.yml`
