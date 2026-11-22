@@ -334,53 +334,269 @@ scan, whatever bucket the SLOC-weighted draw picked, before Claude
 runs. It calls `checkAwsEmulatorInCI()` in
 [`worker/deno/lib/aws_emulator_in_ci_check.ts`](../worker/deno/lib/aws_emulator_in_ci_check.ts)
 against the repo's checkout — mirroring the linter-in-CI pre-filer
-below rather than the LLM-only checks above.
+below rather than the LLM-only checks above. It checks the static test
+wiring of the repo's CI and files a migration finding where that wiring
+is missing.
 
 **Trigger.** The repo uses AWS: an `aws-sdk`/`@aws-sdk/*` dependency in
 `package.json`, `aws-config`/`aws-sdk-*` in `Cargo.toml`,
 `software.amazon.awssdk`/`com.amazonaws` in `pom.xml`,
-`boto3`/`botocore`/`aiobotocore` in `requirements*.txt`, a
-CloudFormation template, or any `.tf` file.
+`boto3`/`botocore`/`aiobotocore` in `requirements*.txt`, or a
+CloudFormation template. Terraform counts only with AWS evidence: a
+`provider "aws"` block, a `resource` or `data` block whose type is
+`"aws_…"`, a `required_providers` entry `aws = {`, a provider source
+ending `/aws`, or a module source `<namespace>/<name>/aws` or one
+containing `terraform-aws-modules/`. Comments are ignored, and Terraform
+for other providers does not trigger the check. The walk skips `.git`,
+`node_modules`, `target`, `vendor`, `.terraform`, `.terragrunt-cache`,
+`cdk.out` and `.aws-sam`.
 
-**Pass condition.** Any GitHub Actions workflow runs an emulator: the
-`floci/floci` image — as a service container, a job container, a
-`docker://` step, or a `docker run` step — or the official AWS Emulator,
-via a `run:` step that invokes `aws-emulator-run` (the command word, once
-shell reserved words, `sudo`/`env`/`exec`, `VAR=value` and the
-`time`/`nice`/`timeout`/`command` wrappers are skipped and quotes are
-stripped, is `aws-emulator-run` or a path ending `/aws-emulator-run`)
-in the helper's test form —
-`aws-emulator-run [--ready-timeout N] [--timeout N] -- COMMAND` with a
-non-empty COMMAND that is not a no-op (`true`, `:`, `/bin/true`,
-`/usr/bin/true`) — or
-that runs a repository script (a relative path, or the first argument of
-`bash`/`sh`) which itself invokes `aws-emulator-run` the same way — one
-level of indirection, with the script read from the checkout and confined
-to it (absolute paths, `..`, `$` expansions and symlinks out of the repo
-do not count). The invocation must also be able to run: a job or step
-whose `if:` is statically false (`false`, `${{ false }}`, `0`) earns no
-credit, nor does a command after an unconditional `exit`, behind
-`false &&` or `true ||`, in an `if`/`elif`/`else` branch or `while`/`until`
-body whose condition is statically false (`false`, `! true`, `:`, `true`),
-in a function body, or in a here-document — in the workflow and in the
-repository script alike (the helpers are in
+**Pass condition.** The check is static: it reads workflow and script
+text and credits a repo whose CI is wired to run the official AWS
+Emulator, or a documented Floci gap. It does not observe a CI run.
+Official server mode needs all of the following:
+
+- a reachable `run:` command in the helper's test form,
+  `aws-emulator-run [--ready-timeout N] [--timeout N] -- COMMAND`, with
+  a non-empty COMMAND that is not a no-op (`true`, `:`, `/bin/true`,
+  `/usr/bin/true`). The step may run the command directly, or run a
+  repository script that invokes it: one level of indirection, with the
+  script read from the checkout and confined to it (absolute paths,
+  `..`, `$` expansions and symlinks out of the repo do not count);
+- the workflow runs on `pull_request`, or it is a `workflow_call`
+  workflow that a `pull_request` workflow calls via
+  `uses: ./.github/workflows/<file>`, transitively;
+- neither the job nor the step sets `continue-on-error` (other than
+  `false`), and neither `if:` excludes pull requests: an `if:` that reads
+  `github.event_name`, `github.ref`, `github.ref_name` or `github.ref_type`
+  is read as an `||` of `&&` terms of the form `github.event_name == 'E'` /
+  `!= 'E'`, `github.ref` or `github.ref_name` `==` / `!=` a literal,
+  `github.ref_type == 'tag'` / `'branch'`, or `startsWith(github.ref, '…')`
+  (optionally negated). It earns no credit when every term group is false
+  on a pull request (`github.event_name == 'push'`,
+  `github.ref == 'refs/heads/main'`, `startsWith(github.ref, 'refs/tags/')`:
+  on a pull request the ref is `refs/pull/<n>/merge`), or when it reads
+  them in any other form (other parentheses, `contains(...)`);
+- the step's shell runs the body; and
+- the invocation's failure is preserved, in the workflow and in the
+  script. A runner command, or the call to the script that runs it, is
+  preserved when it is not in a condition, not behind `!`, not followed by
+  `||`, `|` or `&`, not inside a `{ }` group, `( )` subshell or compound
+  (`if`/`fi`, a loop, `case`) whose closing word is followed by `||`, `|` or
+  `&` (`{ runner; } || true`, `if x; then runner; fi || true`,
+  `( cd infra; runner; cd .. ) | tee log`; a `)` attached to a word, quoted
+  or not, closes a subshell when the command holds one more unquoted `)` than
+  `(`, so `cd $(git rev-parse --show-toplevel)` or `args=(--foo bar)` does
+  not; redirections after the `)` belong to the subshell, so
+  `( runner; echo done ) 2>&1 | tee log` is swallowed too; a `$(` or `(`
+  left open at a line end, such as `VERSION=$(`, is closed by the `)` that
+  balances it, not by the subshell's, even when the line ends in a keyword
+  (`X=$(for d in a b; do`); the balance is carried across one line,
+  so a one-line `$(ls | wc -l)` opens nothing; a backtick substitution may
+  span lines, and every command up to its closing backtick is inside it; a
+  command inside such a
+  one-line parenthesis or backtick substitution, the first one included
+  (`X=$( runner; echo done )`, `time ( runner )`, `! ( runner )`), or after
+  `time (`, `! (` or `X=$(` on its line, is never credited, because its
+  status is an argument, a negation or the substitution's, and a `set -e`
+  inside one does not turn errexit on outside it; `fi)`, `done)`, `esac)` and
+  `})` close the compound and then a `( )` subshell, as `fi )` does, only
+  when that compound is the innermost one open, a tracked subshell is open
+  around it and no parenthesis opened earlier on the line is still open. A
+  compound inside a `$( … )` the walk tracks no frame for
+  (`X=$(for d in a b; do echo $d; done)`, `X=$( for …; done )`,
+  `OUT=$( { echo a; echo b; } )`, `X=$(cd a; if true; then echo y; fi )`) has
+  no effect on what the walk tracks: its `if`, `for`, `{` and `do` open
+  nothing, and its `fi`, `done`, `esac` and `}` close only a compound of their
+  own kind that the walk opened, so the `)` after one, attached or spaced,
+  closes the substitution and the line leaves the runner's credit alone,
+  whether the runner comes after it, in the same group or after an `exit`; a
+  `$(` or backtick in a `for` or `select` header (`for f in $(ls | sort)`,
+  `for ((i=0; i<3; i++))`) still counts for the substitution's parenthesis
+  balance, a `case` arm's pattern `)` does not, and an `exit` or `set -n`
+  inside the substitution ends only that substitution, not the body),
+  not in a group or subshell that is itself an `if` or `while` test
+  (`if ( runner ); then …`), nor by `&&` with more of the body after that
+  chain, and one of the following. Bash ignores errexit inside a compound on
+  the left of `&&`, so a command there is judged with errexit off:
+  `{ runner; } && echo ok` at the end of the body is credited, but
+  `{ runner; echo done; } && echo ok` is not. A runner in a `for`, `while`,
+  `until` or `select` body is never kept by being the last command, because
+  the loop returns its last pass's status; it needs errexit, `exec` or an
+  explicit failing exit (inside a `( )` subshell, the subshell must also
+  fail the body: see Errexit below). The rules are: it runs via `exec`; it is the last command
+  (or the rest of the body is an `&&` chain to the end); or errexit is on
+  at that point and it is not followed by `&&`. Two explicit-exit idioms
+  are also preserved, whatever errexit is (inside a `( )` subshell they end
+  only the subshell, so the Errexit rule below must also hold; a one-line
+  subshell's own `(` and `)`, as in `( cd infra; runner || exit 1 )` or
+  `(cd infra && runner || exit 1)`, are not part of the idiom's words, but
+  only when that `)` closes the `( )` subshell around the runner: an exit
+  whose `)` ends a nested `( … )` or `$( … )`, or a `(` or `$(` opened in the
+  `then` branch that is still open when the `exit` is read, as in
+  `then (echo bad; exit 1)` or `then MSG=$(echo bad; exit 1)`, or a backtick
+  substitution still open then, as in ``then echo `echo bad; exit 1; echo x` ``,
+  is not the idiom; a parenthesis that closes before the `exit`, as in
+  `then echo "failed at $(date)"; exit 1`, leaves it intact): `runner || exit N` (N not 0, or
+  a bare `exit`; not after a negated `! runner`, whose `!` turns a failure
+  into success before the `||`) and `if ! runner; then ...; exit N; fi` (N
+  not 0, in a flat `then` branch). Neither counts inside a group swallowed
+  one level out. After a `trap` whose `EXIT` (or `0`) or `ERR` handler may
+  run `exit 0` (in the handler itself, or in a function the body defines and
+  the handler calls), only a runner run via `exec` is preserved: the
+  handler's `exit 0` replaces the failing status, `runner || exit 1`
+  included, while `exec` replaces the shell before the handler runs. A
+  handler that tidies up, or exits bare, with `$?` or with a saved status
+  (`exit $rc`), keeps the failure, and `trap - EXIT` or `trap '' EXIT`
+  clears the condition it names. An `&` inside a redirection (`2>&1`, `>&2`,
+  `&>log`) is not a background `&`, so `runner > log 2>&1` is preserved,
+  while `runner |& tee log` is a pipe. As a backstop, nothing inside a
+  subshell that never closes is credited, and nothing in a body with a `)`
+  that closes no subshell or `case` pattern.
+
+**Errexit.** Errexit is on for a workflow step whose shell is unset or
+exactly `bash` or `sh` (GitHub adds `-e`), or whose custom shell sets `-e`
+or `-o errexit`, and off at the start of a repository script. `set -e` or
+`set -o errexit` turn it on only when it is certain to run, and `set +e` turns
+it off wherever it is reachable, at the point each appears. A `set -e` in an
+`if`/`elif`/`else` branch or loop body decided at run time, or behind a
+run-time `&&` or `||` (`[ -n "$STRICT" ] && set -e`), is not certain, because
+errexit is still off when the condition is false; neither is a `set -e` on
+either side of a `|` or before a `&` (`set -e | cat`, `set -e &`), which runs in
+a subshell, nor an `elif` or `else` branch after an earlier test decided at run
+time (`if [ -n "$A" ]; then …; elif true; then set -e; fi`); a `set -e` after a
+backgrounded command (`sleep 30 & set -e`) runs in the current shell and is
+certain, as are `if true; then set -e; fi` and an `else` after a test that is
+statically false; inside a `( )` subshell the change lasts only until the subshell
+closes, so `( set -e; make build )` leaves errexit off for the lines after
+it. A command inside a `( )` subshell is kept, by whatever route fails the
+subshell (errexit inside it, `runner || exit 1`, `if ! runner; then …; exit 1;
+fi` or `exec`), only when the subshell's own failure fails the body: errexit
+is on outside it, or the subshell is the last command or has an `&&` chain to
+the end after it and does not itself sit in a loop body. A subshell opened
+as an `if`, `elif`, `while` or `until` test is never kept, whatever errexit is
+outside it, because its exit only makes the test false and errexit is ignored
+in a test: `if ( cd infra && runner || exit 1 ); then …` earns no credit,
+while `if { runner || exit 1; }; then …` does, since that exit ends the shell,
+and so does a test inside the subshell, `( if ! runner; then exit 1; fi )`. So
+`( set -e; runner; echo done )` then `echo after`, `( cd infra && exec runner )`
+then `echo after`, and `for d in a b; do ( set -e; cd "$d"; runner ); done`, in
+a script without a top-level `set -e`, earn no credit. A loop inside the
+subshell is judged by the rules above, so `( set -e; for d in a b; do runner;
+done )` as the last command is credited: errexit inside the subshell ends it
+on the first failing pass.
+
+The command word, once shell reserved words, `sudo`/`env`/`exec`,
+`VAR=value` and the `time`/`nice`/`timeout`/`command` wrappers are
+skipped and quotes are stripped, must be `aws-emulator-run` or a path
+ending `/aws-emulator-run`. The invocation must also be able to run: a
+job or step whose `if:` is statically false (`false`, `${{ false }}`,
+`0`) earns no credit, nor does a command after an unconditional `exit`,
+behind `false &&` or `true ||`, in an `if`/`elif`/`else` branch or
+`while`/`until` body whose condition is statically false (`false`,
+`! true`, `:`, `true`), in a function body, or in a here-document. This
+applies in the workflow and in the repository script alike (the helpers
+are in
 [`worker/deno/lib/shell_command_words.ts`](../worker/deno/lib/shell_command_words.ts)).
-A condition decided at run time (`[ -n "$X" ]`, `github.event_name == 'push'`)
-keeps its credit. Merely installing the emulator
-(`container/toolchains/aws-emulator.sh`, or
+A condition decided at run time (`[ -n "$X" ]`,
+`github.actor != 'dependabot[bot]'`) keeps its credit. Merely installing the
+emulator (`container/toolchains/aws-emulator.sh`, or
 `install ... /usr/local/bin/aws-emulator-run`) is not coverage. An
 `echo aws-emulator-run`, `command -v aws-emulator-run`, a comment, or a
 mention in a string does not count. Nor does an invocation that runs no
 repository test: the helper's own `--smoke` self-check, `--smoke-client`,
-`-h`/`--help`, a bare `--`, `-- true`, or a COMMAND without `--` (which the
-helper rejects).
+`-h`/`--help`, a bare `--`, `-- true`, or a COMMAND without `--` (which
+the helper rejects).
 
-**No finding is filed** when the repo does not use AWS, when no
-workflow loaded (status unknown — the same fail-safe reasoning as the
-[zero-workflows rule](#fail-safe--zero-workflows-loaded) for
-`BP-LINTER-<bucket>`), when an emulator (Floci or the official AWS
-Emulator) already runs in CI, or when a valid waiver exists; each skip
-is logged with its reason.
+**Embedded mode (Rust only).** Where `Cargo.toml` is AWS evidence, a
+credited step may instead use the embedded emulator. Its `run:` carries
+a comment `# aws-emulator-embedded: version=<X.Y.Z>; justification=<text>`
+(an exact version pin and a non-empty justification) and a
+status-preserving `cargo test` or `cargo nextest` command. Installation
+alone, an `echo`, a comment, a health or version probe, an unused
+service image, a disabled job and an ignored failure do not count.
+
+**Floci.** Floci never counts as the official emulator. A workflow that
+runs `floci/floci` (as a service container, a job container, a
+`docker://` step or a `docker run` step) passes only with a documented
+gap record: a YAML comment line in that workflow of the form
+
+`# aws-emulator-gap: version=<v>; behaviour=<…>; evidence=<…>; alternative=<…>; recheck=<…>`
+
+All five keys must be non-empty, and the version must contain a digit.
+A gap record counts only in a workflow that applies to `pull_request`
+(by the same rule as official wiring) whose Floci job is not statically
+disabled, has no `continue-on-error`, has no `if:` that excludes pull
+requests, and runs a test step: an enabled `run:` step without
+`continue-on-error` whose reachable, failure-preserving commands include a
+test run, read on whole command words and subcommands, never substrings: a
+test runner (`pytest`, `jest`, `mocha`, `vitest`, `tox`, `nox`, `ctest`,
+`phpunit`, `rspec`, `bats`); a tool's test subcommand (`cargo test`, a
+`+toolchain` word skipped, `go test`, `deno test`, `deno task <name>` naming
+a test, `python -m pytest`, `npx jest`); a Maven goal list or Gradle task list
+holding a phase or task that runs the tests (`mvn -B clean verify`,
+`mvn package`, `./gradlew build`), unless it skips them (`-DskipTests`,
+`-x test`); `npm test` / `yarn test` / `pnpm test` (options with values such
+as `--prefix app` skipped), or `npm run <script>` whose script names a test
+(`test:aws`); `make <target>` naming a test (`make check`,
+`make -C infra test`); a repository script whose file name names a test
+(`./scripts/run-tests.sh`); or any of these behind `poetry run`, `uv run`,
+`pipenv run`, `pdm run`, `hatch run` or `bundle exec`. A name that also says
+install, setup, deps or bootstrap (`make install-test-deps`,
+`./scripts/check-install.sh`), a version or help probe (`--version`,
+`--help`, or a short option where the tool reads it as one: `pytest -V`, but
+not Maven's `-V`, which is `--show-version`, or CTest's `-V`, `--verbose`),
+and an install step (`pip install pytest`, `npm install --save-dev jest`,
+`npm install typescript@latest`) are not test runs. An unused Floci image beside a gap record earns nothing. Floci without a valid record
+("Floci-only") gets the migration finding.
+
+**What the scan establishes.** This scan records *static wiring
+evidence*: the configured execution in workflow and script text. It does
+not establish CI test results, which come from the repository's own CI
+run. It does not establish reviewed behavioural coverage either, which
+comes from code review against the canonical policy in
+[`CODING-STANDARDS.md`](../CODING-STANDARDS.md#aws-integration-testing).
+A credited repo therefore gets no finding, but the scan has not seen its
+tests pass and has not judged whether they cover the behaviour that
+matters.
+
+**No finding is filed** when:
+
+- the repo does not use AWS;
+- no workflow loaded (status unknown, the same fail-safe reasoning as the
+  [zero-workflows rule](#fail-safe--zero-workflows-loaded) for
+  `BP-LINTER-<bucket>`);
+- any workflow failed to parse (status unknown, not a missing-gate
+  claim; the next scheduled scan retries it, the same fail-safe spirit as
+  Issue #5009's incomplete-read handling);
+- official server or embedded wiring is found, or a Floci documented gap
+  is found (logged as static wiring evidence, with no CI result
+  observed);
+- a valid waiver exists;
+- an open fleet-authored issue already carries the finding id, through
+  the `fileFindingOnce` dedup; or
+- an open fleet-authored issue has a title containing "AWS Emulator", a
+  hand-written equivalent. Only fleet-authored issues count, because
+  titles are attacker-writable (Issue #1243). When that issue's body opens
+  with this finding's `finding-id` marker on its first line (an older
+  finding such as "No AWS emulator (Floci) in CI") and the body, with its
+  machine-owned worker record block set aside, differs from the current
+  finding, the current finding is posted on it as **one comment**, so an
+  old body that still says to run Floci is answered rather than left
+  standing. The title and body are never edited: an edit would replace an
+  owner's added text and the `Deferred until` / `Depends on` record that
+  discovery reads, and on an issue already approved with `work-on` it
+  would be a service-account change to approved content, which the
+  content-integrity gate escalates to `needs-human`. The comment opens with
+  a `finding-update` marker holding the finding body's SHA-256, so the same
+  finding is commented once; it carries no `finding-id` marker, so it is
+  never read as a second finding. An issue whose marker is anywhere but the
+  first line (quoted in a code span, or under an owner's paragraph) is left
+  alone.
+
+A `gh` failure in that lookup, or in reading the issue's comments or
+posting that comment, fails the scan run rather than filing.
+Each skip is logged with its reason.
 
 **Otherwise** the template files **one** issue with the fixed id
 `BP-AWS-EMULATOR-MISSING` at `severity:medium`, labelled
@@ -388,21 +604,36 @@ is logged with its reason.
 through the same open-issue finding-id dedup (`fileFindingOnce`) that
 `BP-LINTER-<bucket>` uses, so an already-open issue is not filed again.
 The id joins the known-open list passed to Claude so the LLM does not
-re-file it.
+re-file it. The title is "🟡 No AWS Emulator test wiring in CI", or
+"🟡 Migrate Floci-only AWS tests to AWS Emulator" for a Floci-only repo.
 
-The issue body lists the evidence files the walk collected and a
-Suggested fix spelling out the per-repo CI contract: run
-`floci/floci@sha256:<digest>` as a CI service container (mounting
-`/var/run/docker.sock` for Docker-backed services) or via `docker run`;
-a CloudFormation repo deploys every template to Floci and fails unless
-each stack reaches `CREATE_COMPLETE`, with stubbed resource types (via
-`FLOCI_SERVICES_CLOUDFORMATION_ALLOW_STUB_UNSUPPORTED_RESOURCE_TYPES`)
-passing with one `::warning::` per stubbed type; an SDK repo has at
-least one Floci test per AWS service called (the audit checks
-presence only); test scripts start `floci` on demand, printing
-`SKIPPED (needs Docker): <name>` for Docker-backed items in the
-worker, and CI fails when no Docker socket is present. The fix is each
-repo's own workflow — never a shared reusable Action.
+The issue body lists the AWS evidence files the walk collected and the
+scan's diagnostics, for example a step with `continue-on-error`, a
+workflow not run on `pull_request`, or a gap record missing a key. It
+states that the scan checked configured execution from workflow and
+script text only: not an observed green CI run, and not a review of test
+adequacy. Its Suggested fix gives the per-repo contract:
+
+- install the pinned emulator without starting it;
+- run the repository's own test command so that its AWS integration
+  tests go through `aws-emulator-run … -- <test command>` from a
+  `pull_request` job, with failures propagated;
+- drive the repo's own production AWS code with deterministic fixtures,
+  unique per-run resources and supported error cases, for new or changed
+  AWS components (not a rewrite of the whole suite);
+- Rust may use embedded mode with the `aws-emulator-embedded` marker;
+- record unsupported operations (HTTP 501), skips and stubbed resources
+  as gaps, never passes;
+- keep IAM, security and deployment checks on the authorised real-AWS
+  path; and
+- link the canonical
+  [`CODING-STANDARDS.md#aws-integration-testing`](../CODING-STANDARDS.md#aws-integration-testing).
+
+The fix is each repo's own workflow, never a shared reusable Action.
+
+Migration happens through the ordinary scheduled best-practices scan:
+one finding per repo, fixed by per-repo pull requests under the existing
+caps and WIP limits. There is no separate campaign.
 
 **Waiver.** A
 `best-practice-ignore: BP-AWS-EMULATOR-MISSING — author=<login> expires=<YYYY-MM-DD> <reason>`
@@ -423,13 +654,13 @@ A throw from the detector **fails the scan run** — it is never read as
 
 ```mermaid
 flowchart TD
-    A[Every best-practices scan] --> B{Repo uses AWS?}
+    A[Every best-practices scan] --> B{Repo uses AWS?<br/>Terraform: AWS provider only}
     B -- no --> Z[No finding]
-    B -- yes --> C{Workflows loaded?}
-    C -- zero loaded --> Z
-    C -- loaded --> D{An emulator runs in CI?}
+    B -- yes --> C{All workflows loaded and parsed?}
+    C -- zero loaded or a parse failure --> Z
+    C -- yes --> D{Official wiring or<br/>documented Floci gap?}
     D -- yes --> Z
-    D -- no --> E{Valid waiver?}
+    D -- no --> E{Valid waiver, or open finding<br/>or AWS Emulator issue?}
     E -- yes --> Z
     E -- no --> F[File once:<br/>BP-AWS-EMULATOR-MISSING,<br/>severity:medium]
 ```
@@ -466,7 +697,7 @@ sequenceDiagram
         end
     end
     Template->>Template: checkAwsEmulatorInCI(repo)<br/>(every bucket, before Claude)
-    opt uses AWS AND no emulator in CI AND no waiver
+    opt uses AWS AND no official wiring or Floci gap AND no waiver
         Template->>GH: file BP-AWS-EMULATOR-MISSING issue<br/>(`severity:medium`, counts toward 6-cap)
     end
     Template->>Claude: invoke with prompt + bucket guide<br/>(known-open ids include any pre-filed linter<br/>or AWS-emulator id)
@@ -495,7 +726,7 @@ flowchart TD
     Claim --> Before[Snapshot 1 — list open<br/>`best-practices` issues BEFORE]:::phase
     Before --> Lang{bucket is a language?}
     class Pick,Lang,CIGate,AwsCheck gate;
-    Lang -- general / design --> AwsCheck{AWS emulator check:<br/>uses AWS AND no emulator<br/>in CI AND no waiver?<br/>runs every bucket}
+    Lang -- general / design --> AwsCheck{AWS emulator check:<br/>uses AWS AND no official wiring<br/>or Floci gap AND no waiver?<br/>runs every bucket}
     Lang -- language --> CIGate{CI-gate check:<br/>linter AND compile gates<br/>both invoked in CI?}
     CIGate -- both present --> AwsCheck
     CIGate -- either missing --> FileLinter[File missing-CI-gate issue<br/>severity:high — names which gate(s)<br/>missing — counts to 6-cap]:::output
