@@ -1207,6 +1207,26 @@ for (
         insertedStep("docker pull busybox && docker tag busybox vibe-coder:ci"),
       ]],
     ],
+    // Unknown quoting (a backtick) with a `#` in it: Bash still joins the
+    // continuation, so codeOf must too (Issue #5348).
+    [
+      "a later step retagging across a continuation after a backtick #",
+      [[
+        AGENT_STEP_NAME,
+        insertedStep(
+          "X=`echo #` docker \\\n          tag busybox vibe-coder:ci",
+        ),
+      ]],
+    ],
+    [
+      "a later step writing GITHUB_ENV across a continuation after a backtick #",
+      [[
+        AGENT_STEP_NAME,
+        insertedStep(
+          "X=`echo #` echo IMAGE=busybox >> $GITHUB_\\\n          ENV",
+        ),
+      ]],
+    ],
     [
       "a later step writing GITHUB_ENV",
       [[

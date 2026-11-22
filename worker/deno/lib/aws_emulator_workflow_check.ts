@@ -276,8 +276,11 @@ function scanLine(
  * A line is a comment only outside a quoted word: the quoting open at each
  * kept line's end is tracked with {@link scanLine}, so a `#` line inside a
  * quoted word opened on an earlier line is kept as code. Unknown quoting keeps
- * the line too, and counts a `#` that could start a comment as one, which fails
- * closed (Issue #5353).
+ * the line too (Issue #5353), and still joins a continuation: a `#` inside a
+ * backtick substitution does not hide the line end from Bash, and the joined
+ * text keeps every word for the regex readers (`stepMayRetagImage`, the
+ * `GITHUB_ENV`/`GITHUB_PATH` check) while the exact allowlists refuse a
+ * segment holding the backtick or `<<` (Issue #5348).
  */
 function codeOf(step: unknown): string {
   const lines: string[] = [];
@@ -298,9 +301,7 @@ function codeOf(step: unknown): string {
     }
     const scan = scanLine(quote, physical, continued);
     quote = scan.open;
-    const comment = scan.comment ||
-      (scan.open === "unknown" && /(^|[ \t;&|()<>])#/.test(physical));
-    if (endsInContinuation(line) && !comment) {
+    if (endsInContinuation(line) && !scan.comment) {
       continued = line.slice(0, -1);
       continue;
     }

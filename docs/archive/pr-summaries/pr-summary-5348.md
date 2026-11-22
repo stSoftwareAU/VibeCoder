@@ -47,9 +47,16 @@ comments. Closes #5348.
   literal.
 - `quoteStateAfter` is renamed `scanLine`. It returns `{ open, comment }`, so
   `codeOf` and `codeLines` use the scan that already decides quoting to also
-  find a trailing comment. When quoting is `"unknown"`, `codeOf` treats a `#` at
-  the start of the line or after a blank or operator as a possible comment and
-  does not join. That fails closed and leaves the decision to `shellCommands`.
+  find a trailing comment. When quoting is `"unknown"` (a backtick or a `<<`
+  on the line), `codeOf` still joins a continuation, as the base did. A `#`
+  inside a backtick substitution does not hide the line end from Bash. The
+  joined text keeps every word, so the regex readers (`stepMayRetagImage` and
+  the `GITHUB_ENV`/`GITHUB_PATH` check in `checkContainerBuildRunsAwsEmulator`)
+  still see a split `docker \` / `tag` or `$GITHUB_\` / `ENV`. The exact
+  allowlists behind `segmentsOf` refuse the joined segment, because it holds
+  the backtick or `<<`. An earlier revision of this branch did not join there.
+  The pre-PR verifier showed that hid a `docker tag` the base caught, so that
+  fallback is removed.
 
 ### Undiscoverable Facts
 
@@ -91,7 +98,7 @@ Issue numbers cited as provenance:
 
 ## Test Plan
 
-Every new test name ends in `(Issue #5348)`.
+Every new test name ends in `(Issue #5348)`, except the two table cases noted below.
 
 - `worker/deno/tests/aws_emulator_in_ci_check_test.ts`:
   - `shellSegments` cases with exact expected arrays:
@@ -112,6 +119,12 @@ Every new test name ends in `(Issue #5348)`.
   - An accept control: a comment without a backslash gives `[]`.
   - A container-agent refusal: exactly one `[container-agent-run]` finding.
   - A gate-script refusal: `[gate-script] … no gate step runs`.
+  - Two container-agent refusals for an inserted step under unknown quoting:
+    ``X=`echo #` docker \`` then `tag busybox vibe-coder:ci`, and
+    ``X=`echo #` echo IMAGE=busybox >> $GITHUB_\`` then `ENV`. Each expects
+    the `[container-agent-run]` finding. These two are in the existing
+    container-agent-run refusal table and do not carry the `(Issue #5348)`
+    suffix.
 - Red on base: I ran the two test files with the new tests before the fix.
   Result: `FAILED | 495 passed | 12 failed`. The 12 failures are:
   - six `shellSegments` cases;
@@ -130,7 +143,7 @@ Every new test name ends in `(Issue #5348)`.
   tests/issue_5110_aws_emulator_workflow_test.ts
   tests/aws_emulator_cloudformation_5110_test.ts
   tests/quality_gate_script_5110_test.ts`
-  gave `ok | 534 passed | 0 failed | 1 ignored`. The ignored test is the
+  gave `ok | 536 passed | 0 failed | 1 ignored`. The ignored test is the
   root-sandbox case that already existed.
 - Test files that import the dependent modules
   (`best_practices_template_test.ts`, `capability_coverage_scan_4367_test.ts`,
@@ -152,10 +165,11 @@ Every new test name ends in `(Issue #5348)`.
 
 ## What was not checked
 
-- The unknown-quoting `#` fallback in `codeOf` has no test that tells the two
-  outcomes apart. Every reader of `codeOf` today either compares against an
-  exact allowlist or refuses any `|`, `;` or `&` in the text, so an extra line
-  changes no finding. It is defence in depth.
+- Unknown-quoting fix (verifier follow-up): the two backtick `#` tests failed
+  at the earlier head (`FAILED | 279 passed | 2 failed` on
+  `issue_5110_aws_emulator_workflow_test.ts`) and pass with the fallback
+  removed. They were not run against the milestone base, which the verifier
+  reports already caught the retag.
 - The install steps accept an extra command such as `exit 0` before the
   toolchain call even without any hiding. That is a separate gap, not changed
   here.
