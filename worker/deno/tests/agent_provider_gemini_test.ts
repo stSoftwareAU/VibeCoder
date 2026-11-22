@@ -13,7 +13,13 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertMatch,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   agentProviderIds,
   CLAUDE_PROVIDER_ID,
@@ -173,27 +179,105 @@ Deno.test("gemini provider - a disallowed-tools list is carried into the prompt,
   assertStringIncludes(prompt, "ExitPlanMode");
 });
 
-Deno.test("gemini provider - a later phase resumes the previous session", () => {
-  const first = gemini.buildInvocation({
-    prompt: "phase one",
-    sessionResumeState: { sessionId: "owner-repo-42-7", phaseCount: 0 },
-  });
-  assertEquals(
-    first.includes("--resume"),
-    false,
-    "the first phase starts a session rather than resuming one",
-  );
+const SESSION_UUID = "3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b";
 
-  const later = gemini.buildInvocation({
-    prompt: "phase two",
-    sessionResumeState: { sessionId: "owner-repo-42-7", phaseCount: 1 },
+Deno.test("gemini provider - the first phase starts a session under the worker-generated id", () => {
+  const args = gemini.buildInvocation({
+    prompt: "phase one",
+    sessionResumeState: { sessionId: SESSION_UUID, phaseCount: 0 },
   });
-  assertEquals(later.slice(-4), [
-    "--resume",
-    "latest",
-    "--prompt",
-    "phase two",
-  ]);
+  assertEquals(args[args.indexOf("--session-id") + 1], SESSION_UUID);
+  assertEquals(args.includes("--resume"), false);
+  assertEquals(args.slice(-2), ["--prompt", "phase one"]);
+});
+
+Deno.test("gemini provider - a later phase resumes the session Gemini reported", () => {
+  const args = gemini.buildInvocation({
+    prompt: "phase three",
+    sessionResumeState: {
+      sessionId: SESSION_UUID,
+      phaseCount: 2,
+      providerId: "gemini",
+    },
+  });
+  assertEquals(args[args.indexOf("--resume") + 1], SESSION_UUID);
+  assertEquals(args.includes("--session-id"), false);
+  assertEquals(args.slice(-2), ["--prompt", "phase three"]);
+});
+
+Deno.test("gemini provider - a later phase recorded by another provider starts a session", () => {
+  const claude = gemini.buildInvocation({
+    prompt: "p",
+    sessionResumeState: {
+      sessionId: SESSION_UUID,
+      phaseCount: 2,
+      providerId: "claude",
+    },
+  });
+  assertEquals(claude.includes("--resume"), false);
+  assertEquals(claude[claude.indexOf("--session-id") + 1], SESSION_UUID);
+
+  const codex = gemini.buildInvocation({
+    prompt: "p",
+    sessionResumeState: {
+      sessionId: "thread-abc",
+      phaseCount: 2,
+      providerId: "codex",
+    },
+  });
+  assertEquals(codex.includes("--resume"), false);
+  const codexId = codex[codex.indexOf("--session-id") + 1];
+  assertMatch(
+    codexId!,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+  assertNotEquals(codexId, "thread-abc");
+
+  const legacy = gemini.buildInvocation({
+    prompt: "p",
+    sessionResumeState: { sessionId: SESSION_UUID, phaseCount: 3 },
+  });
+  assertEquals(legacy.includes("--resume"), false);
+  assertEquals(legacy[legacy.indexOf("--session-id") + 1], SESSION_UUID);
+});
+
+Deno.test("gemini provider - every state carries exactly one session flag and never resumes latest", () => {
+  for (const phaseCount of [0, 1, 5]) {
+    for (
+      const providerId of [
+        undefined,
+        "claude",
+        "codex",
+        "deepseek",
+        "gemini",
+      ]
+    ) {
+      for (const sessionId of [SESSION_UUID, "thread-abc"]) {
+        const args = gemini.buildInvocation({
+          prompt: "p",
+          sessionResumeState: { sessionId, phaseCount, providerId },
+        });
+        const label = `${phaseCount}/${providerId}/${sessionId}`;
+        const resumes = args.includes("--resume");
+        const starts = args.includes("--session-id");
+        assertEquals(resumes !== starts, true, label);
+        if (resumes) {
+          assertNotEquals(args[args.indexOf("--resume") + 1], "latest", label);
+        }
+        assertEquals(
+          resumes,
+          phaseCount > 0 && providerId === "gemini",
+          label,
+        );
+      }
+    }
+  }
+});
+
+Deno.test("gemini provider - a sessionless Quorum judge call carries neither session flag", () => {
+  const args = gemini.buildInvocation({ prompt: "Judge these two plans" });
+  assertEquals(args.includes("--session-id"), false);
+  assertEquals(args.includes("--resume"), false);
 });
 
 // ---------------------------------------------------------------------------

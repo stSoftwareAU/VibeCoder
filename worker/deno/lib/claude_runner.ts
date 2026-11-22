@@ -4005,8 +4005,12 @@ async function runRetryLadder(
         detectResumedSessionUnusable(bothStreams, errorScanTailLines)
       ) {
         const rejectedId = currentOptions.sessionResumeState.sessionId;
+        const rejectingProviderName = selectAgentProvider(
+          currentOptions.agentProvider,
+          currentOptions.env ? { env: currentOptions.env } : {},
+        ).displayName;
         currentOptions.logger?.warn(
-          `Claude CLI rejected the session flags for "${rejectedId}" ` +
+          `${rejectingProviderName} rejected the session flags for "${rejectedId}" ` +
             `and exited ${exitCode} without running. ` +
             `Retrying once without --session-id/--resume — this run loses CLI ` +
             `session continuity (Issues #204, #1580).`,

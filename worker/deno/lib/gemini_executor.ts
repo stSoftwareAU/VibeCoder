@@ -64,9 +64,6 @@ const STANDARD_FLAGS: readonly string[] = [
   "--skip-trust",
 ];
 
-/** Resume the most recent recorded session (`--resume latest`). */
-const RESUME_LATEST: readonly string[] = ["--resume", "latest"];
-
 // ---------------------------------------------------------------------------
 // Per-phase model routing (Issue #364, parent #357)
 // ---------------------------------------------------------------------------
@@ -230,17 +227,19 @@ export interface GeminiInvocation extends AgentPromptParts {
   effort?: string;
   /** The phase the effort was requested for, named in that warning. */
   phase?: string;
-  /** Continue the previous run of this issue rather than starting fresh. */
-  resumeSession?: boolean;
+  /** Start a new session under this id (`--session-id`). */
+  sessionId?: string;
+  /** Continue this session (`--resume`). */
+  resumeSessionId?: string;
 }
 
 /**
  * Build the Gemini CLI argument list for one non-interactive run.
  *
- * Session continuity uses `--resume latest`: Gemini names sessions with its
- * own identifiers, so the worker resumes the most recent recorded session —
- * which, within a run, is the previous phase of the same issue — rather than
- * inventing an id Gemini would reject.
+ * Session continuity uses explicit ids (Issue #5342): Gemini CLI 0.68.0
+ * accepts `--session-id <id>` and `--resume <id>` and rejects the two together.
+ * The worker-generated UUID opens the session, and later phases resume it by
+ * id, so concurrent slots never resume each other's session.
  *
  * A requested reasoning effort adds no argument — the CLI has no such option —
  * but it does emit one warning naming the phase and the effort (Issue #364), so
@@ -256,7 +255,24 @@ export function buildGeminiArgs(invocation: GeminiInvocation): string[] {
     warnEffortUnsupported(invocation.effort, invocation.phase);
   }
   if (invocation.model) args.push("--model", invocation.model);
-  if (invocation.resumeSession) args.push(...RESUME_LATEST);
+  if (invocation.sessionId && invocation.resumeSessionId) {
+    throw new Error(
+      `Gemini invocation sets both sessionId (${invocation.sessionId}) and ` +
+        `resumeSessionId (${invocation.resumeSessionId}): the Gemini CLI ` +
+        "rejects --session-id together with --resume",
+    );
+  }
+  if (invocation.resumeSessionId === "latest") {
+    throw new Error(
+      "Gemini --resume latest is refused: it would resume whichever session " +
+        "ran last, possibly another issue's",
+    );
+  }
+  if (invocation.sessionId) {
+    args.push("--session-id", invocation.sessionId);
+  } else if (invocation.resumeSessionId) {
+    args.push("--resume", invocation.resumeSessionId);
+  }
 
   args.push("--prompt", composeAgentPrompt(invocation));
   return args;
