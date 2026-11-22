@@ -391,16 +391,18 @@ emulator test.
   `else` and `{` are dropped, `for`, `case` and `select` drop the rest of the
   command, and `(`, `fi`, `done`, `esac`, `}` and `)` stay plain words for the
   parenthesis balance. Outside that case `fi`, `done`, `esac` and `}` close only
-  the frame of their own kind, so a `subst` frame innermost leaves `done )` plain
-  and the `)` closes the substitution. This credits `PKGS=$( for …; done )`,
-  `OUT=$( { echo a; echo b; } )`, `X=$(cd a; if …; fi )` and the multi-line
-  `done )` form, and stops `X=$(cd a; for f in *; do …; done)` leaking a loop
-  frame, so `{ …; runner; } || true`, its `| while`, `; if` and `| tee log`
-  forms and a runner after `exit 0` are refused. The new test `…::a compound
-  inside an untracked substitution leaves the runner's credit alone` fails at
-  `90b04627` and passes at the head; the round-11 to round-13 fixtures are
-  unchanged and pass. The manual sentence on `fi)`/`done)` states the rule. The
-  seven related test files give `672 passed | 0 failed` through
+  the frame of their own kind, so a `subst` frame innermost leaves `done )`
+  plain and the `)` closes the substitution. This credits
+  `PKGS=$( for …; done )`, `OUT=$( { echo a; echo b; } )`,
+  `X=$(cd a; if …; fi )` and the multi-line `done )` form, and stops
+  `X=$(cd a; for f in *; do …; done)` leaking a loop frame, so
+  `{ …; runner; } || true`, its `| while`, `; if` and `| tee log` forms and a
+  runner after `exit 0` are refused. The new test
+  `…::a compound
+  inside an untracked substitution leaves the runner's credit alone`
+  fails at `90b04627` and passes at the head; the round-11 to round-13 fixtures
+  are unchanged and pass. The manual sentence on `fi)`/`done)` states the rule.
+  The seven related test files give `672 passed | 0 failed` through
   `deno task test:unit`; `deno lint`, `deno check` and `deno fmt --check` on the
   changed source and test files are clean. The full `./quality.sh` was not run
   in this round. The `VAR=$(cmd arg) runner` form is filed separately as #5378.
@@ -559,11 +561,10 @@ emulator test.
   script, five workflow-only refusals (including both backstops), eight credited
   controls (four redirected runners, a redirected subshell followed by a line, a
   multi-line `$(` and array before the runner, and a spaced `case` pattern), and
-  the subshell `set -e` test with its top-level control. The seven related
-  files give `670 passed | 0 failed` at that round (a wider run of the 13 test
-  files importing the scanned modules also hit the root-only unreadable-directory
-  case, which fails when run as root). The
-  new refusals fail at `83013b2f`.
+  the subshell `set -e` test with its top-level control. The seven related files
+  give `670 passed | 0 failed` at that round (a wider run of the 13 test files
+  importing the scanned modules also hit the root-only unreadable-directory
+  case, which fails when run as root). The new refusals fail at `83013b2f`.
 - Owner review of `83013b2f`: a `trap 'exit 0' EXIT` (or `ERR`) before the
   runner was credited, but bash then exits 0 when the tests fail (checked with
   `bash -e -c "trap 'exit 0' EXIT; false"`, which exits 0). A new test refuses
