@@ -97,7 +97,7 @@ is unchanged. At startup the worker seeds
 `<GEMINI_CLI_HOME>/.gemini/oauth_creds.json` once from
 `<credential dir>/gemini/oauth_creds.json` (owner-only `0600`, with a
 `refresh_token`) and never overwrites an existing, refreshed login; with
-neither file present the credential preflight fails naming both paths. The
+neither file present worker startup fails with an error naming both paths. The
 Gemini child then gets that home plus `GOOGLE_GENAI_USE_GCA=true` and neither
 `GEMINI_API_KEY` nor `GOOGLE_API_KEY`, so an expired login fails
 authentication instead of becoming metered spend (mirroring Codex's
@@ -231,8 +231,8 @@ its own provider (Issue #4986). The fallback is not restricted to fixed-price
 subscriptions — see [Subscription-only billing
 policy](#subscription-only-billing-policy) for what it logs when the
 alternative is metered. Quota-aware auto selection is the default on a host
-with two or more subscription providers enabled (#5089); a host with one stays
-pinned.
+with two or more subscription-capable providers (Claude, Codex, Gemini)
+enabled (#5089); a host with fewer stays pinned.
 
 ## Staged rollout
 

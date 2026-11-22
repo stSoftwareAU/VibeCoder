@@ -83,6 +83,42 @@ Deno.test("redactSecrets - masks a bare Google/Gemini AIzaSy API key (Issue #36)
   assertStringIncludes(out, "API key not valid");
 });
 
+Deno.test("redactSecrets - masks a Google OAuth access token (Issue #5339)", () => {
+  const token = "ya29." + "a0AfH6SMB-x_Q7".repeat(6);
+  const out = redactSecrets(
+    `gemini: request failed with Bearer-less ${token} expired`,
+  );
+  assertEquals(out.includes(token), false);
+  assertEquals(placeholderCount(out), 1);
+  assertStringIncludes(out, "gemini: request failed with Bearer-less");
+  assertStringIncludes(out, "expired");
+});
+
+Deno.test("redactSecrets - masks a Google OAuth refresh token (Issue #5339)", () => {
+  const token = "1//0" + "gZx9-_Qd7Lm".repeat(5);
+  const out = redactSecrets(
+    `gemini: refresh rejected for ${token} (invalid_grant)`,
+  );
+  assertEquals(out.includes(token), false);
+  assertEquals(placeholderCount(out), 1);
+  assertStringIncludes(out, "gemini: refresh rejected for");
+  assertStringIncludes(out, "(invalid_grant)");
+});
+
+Deno.test("redactSecrets - leaves short ya29. and 1//0 look-alikes untouched (Issue #5339)", () => {
+  for (
+    const text of [
+      "ya29.short",
+      "ya29.",
+      "1//0abc",
+      "see https://example.com/1//0abc for details",
+      "path a1//0" + "b".repeat(30),
+    ]
+  ) {
+    assertEquals(redactSecrets(text), text, `should be unchanged: ${text}`);
+  }
+});
+
 Deno.test("redactSecrets - masks OpenAI and Google keys inside an assignment exactly once (Issue #36)", () => {
   for (
     const [name, key] of [

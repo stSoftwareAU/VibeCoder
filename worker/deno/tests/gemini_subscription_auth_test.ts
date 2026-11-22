@@ -9,7 +9,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   agentProviderById,
   isSubscriptionCapable,
@@ -304,4 +304,45 @@ Deno.test("resolveGeminiAuthMode - outcomes, never leaking the refresh token", a
       );
     }
   });
+});
+
+Deno.test("resolveGeminiAuthMode - oauth-personal selection needs a login; malformed shapes are read errors", async () => {
+  await withRoot(async (root) => {
+    const settings = JSON.stringify({
+      security: { auth: { selectedType: "oauth-personal" } },
+    });
+    const withLogin = await plant(`${root}/a`, "settings.json", settings);
+    await plant(
+      withLogin,
+      "oauth_creds.json",
+      JSON.stringify({ refresh_token: REFRESH }),
+    );
+    assertEquals(resolveGeminiAuthMode(withLogin).mode, "login");
+    assertEquals(
+      classify({ GEMINI_CLI_HOME: withLogin }, root).billingMode,
+      "fixed-subscription",
+    );
+
+    const noLogin = await plant(`${root}/b`, "settings.json", settings);
+    assertEquals(resolveGeminiAuthMode(noLogin).mode, "unknown");
+
+    const arraySettings = await plant(`${root}/c`, "settings.json", "[]");
+    assertEquals(resolveGeminiAuthMode(arraySettings), {
+      mode: "read-error",
+      detail: "settings.json is not an object",
+    });
+
+    const arrayCreds = await plant(`${root}/d`, "oauth_creds.json", "[]");
+    assertEquals(resolveGeminiAuthMode(arrayCreds), {
+      mode: "read-error",
+      detail: "oauth_creds.json is not an object",
+    });
+  });
+});
+
+Deno.test("Gemini login - the actionable message names the login path and the API key", () => {
+  const message = resolveAgentProvider("gemini").authActionableMessage();
+  assertStringIncludes(message, "GEMINI_CLI_HOME");
+  assertStringIncludes(message, "oauth_creds.json");
+  assertStringIncludes(message, "GEMINI_API_KEY");
 });
