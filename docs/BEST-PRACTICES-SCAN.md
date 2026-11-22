@@ -402,8 +402,16 @@ Official server mode needs all of the following:
   inside one does not turn errexit on outside it; `fi)`, `done)`, `esac)` and
   `})` close the compound and then a `( )` subshell, as `fi )` does, only
   when that compound is the innermost one open, a tracked subshell is open
-  around it and no parenthesis opened earlier on the line is still open: in `X=$(for d in a b; do echo $d; done)` the `)` closes the
-  substitution and the line leaves the runner's credit alone), not in a group or subshell that is itself an `if` or `while` test
+  around it and no parenthesis opened earlier on the line is still open. A
+  compound inside a `$( … )` the walk tracks no frame for
+  (`X=$(for d in a b; do echo $d; done)`, `X=$( for …; done )`,
+  `OUT=$( { echo a; echo b; } )`, `X=$(cd a; if true; then echo y; fi )`) has
+  no effect on what the walk tracks: its `if`, `for`, `{` and `do` open
+  nothing, and its `fi`, `done`, `esac` and `}` close only a compound of their
+  own kind that the walk opened, so the `)` after one, attached or spaced,
+  closes the substitution and the line leaves the runner's credit alone,
+  whether the runner comes after it, in the same group or after an `exit`),
+  not in a group or subshell that is itself an `if` or `while` test
   (`if ( runner ); then …`), nor by `&&` with more of the body after that
   chain, and one of the following. Bash ignores errexit inside a compound on
   the left of `&&`, so a command there is judged with errexit off:

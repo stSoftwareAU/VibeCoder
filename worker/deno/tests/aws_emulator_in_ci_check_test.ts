@@ -3689,6 +3689,97 @@ Deno.test("checkAwsEmulatorInCI - a runner inside a multi-line substitution or b
   assertEquals(swallowed.wiring, "missing", "swallowed subshell with a $( )");
 });
 
+// PR #5332 review round 14: a compound inside a `$( … )` the walk tracks no
+// frame for does not touch the frame stack, and its closer, attached or
+// spaced, goes to the parenthesis balance.
+Deno.test("checkAwsEmulatorInCI - a compound inside an untracked substitution leaves the runner's credit alone", async () => {
+  const R = RUNNER_STEP;
+  // Credited: the runner is the last command, so its status is the body's.
+  const credited = [
+    'PKGS=$( for d in services/*; do basename "$d"; done )',
+    'PKGS=$(for d in services/*; do basename "$d"; done )',
+    "OUT=$( { echo a; echo b; } )",
+    'PKGS=$(for d in a b; do\n  basename "$d"\ndone )',
+    "X=$(cd a; if [ -f x ]; then echo y; fi )",
+    "X=$(cd a; for f in *; do echo $f; done)",
+    "X=$(cd a; ls | while read l; do echo $l; done)",
+    "X=$(cd a; if true; then echo y; fi)",
+    'MODE=$(cd a; case "$X" in a) echo 1 ;; esac )',
+    "X=$( ls )",
+  ];
+  for (const line of credited) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`${line}\n${R}`)),
+    });
+    assertEquals(step.wiring, "official-server", `default step: ${line}`);
+    const afterSetPlusE = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(`set +e\n${line}\n${R}`),
+      ),
+    });
+    assertEquals(afterSetPlusE.wiring, "official-server", `set +e: ${line}`);
+    for (const header of ["", "set -euo pipefail\n"]) {
+      const script = await checkRepoWith({
+        ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+        "ci/t.sh": `#!/usr/bin/env bash\n${header}${line}\n${R}\n`,
+      });
+      assertEquals(
+        script.wiring,
+        "official-server",
+        `script (${header.trim() || "no set -e"}): ${line}`,
+      );
+    }
+  }
+  // Refused: the line leaks no frame, so a swallowed or never-reached runner
+  // is still judged as such.
+  const subst = "X=$(cd a; for f in *; do echo $f; done)";
+  const refused: Array<[string, string]> = [
+    ["swallowed by || true", `{ ${subst}; ${R}; } || true`],
+    [
+      "| while form",
+      `{ X=$(cd a; ls | while read l; do echo $l; done); ${R}; } || true`,
+    ],
+    [
+      "; if form",
+      `{ X=$(cd a; if true; then echo y; fi); ${R}; } || true`,
+    ],
+    ["| tee log", `{ ${subst}; ${R}; } | tee log`],
+    ["group on several lines", `{\n  ${subst}\n  ${R}\n} || true`],
+    ["never reached", `${subst}\nexit 0\n${R}`],
+    [
+      "never reached after | while",
+      `X=$(cd a; ls | while read l; do echo $l; done)\nexit 0\n${R}`,
+    ],
+    [
+      "never reached after &&",
+      `${subst} && for f in a; do :; done\nexit 0\n${R}`,
+    ],
+  ];
+  for (const [label, body] of refused) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "missing", `default step: ${label}`);
+    const strict = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(strict.wiring, "missing", `set -euo pipefail: ${label}`);
+  }
+  // Controls: the same group without a compound in the substitution.
+  for (
+    const body of [
+      `{ X=$(cd a; ls); ${R}; } || true`,
+      `{ X=$(for f in *; do echo $f; done); ${R}; } || true`,
+    ]
+  ) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "missing", `control: ${body}`);
+  }
+});
+
 // PR #5332 review round 7: a one-line `$( … )` holding `|`, `;` or `&&`, with
 // more words after it, opens no frame, so later commands are still judged.
 Deno.test("checkAwsEmulatorInCI - a one-line substitution with a separator inside it does not hide a later runner", async () => {

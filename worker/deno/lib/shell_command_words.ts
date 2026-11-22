@@ -724,6 +724,20 @@ function subshellCloseIndex(words: string[], pending = 0): number {
   return -1;
 }
 
+/** Words that open or continue a compound; dropped inside an untracked `$( )`. */
+const UNTRACKED_HEAD_KEYWORDS = new Set([
+  "if",
+  "elif",
+  "while",
+  "until",
+  "then",
+  "do",
+  "else",
+  "{",
+]);
+/** Words that open a compound whose header takes the rest of the command. */
+const UNTRACKED_HEADER_KEYWORDS = new Set(["for", "case", "select"]);
+
 /**
  * The commands of a `run:` body that can run: it drops commands after an
  * unconditional `exit` or `set -n` / `set -o noexec`, behind `false &&` or `true ||`, in an `if`/`elif`/
@@ -782,12 +796,14 @@ export function reachableCommands(script: string): ReachableCommand[] {
       id: nextFrameId++,
     });
 
-  // Whether `keyword` closes the innermost frame and each of `parens` then
-  // closes a tracked `( )` subshell frame beneath it.
-  const closesInsideSubshell = (keyword: string, parens: string): boolean => {
+  // Whether the closing word `keyword` closes the innermost frame: `fi` an
+  // `if`, `done` a loop, `esac` a `case`, `}` a brace group or function body.
+  // A closer with no frame of its own kind open (a `subst` frame innermost, or
+  // none) is a plain word and ends nothing (PR #5332 review round 14).
+  const closesInnermost = (keyword: string): boolean => {
     const innermost = stack.at(-1);
     if (!innermost) return false;
-    const closesIt = keyword === "fi"
+    return keyword === "fi"
       ? !innermost.sub && !innermost.brace && !innermost.iterates &&
         !innermost.kase
       : keyword === "done"
@@ -795,7 +811,11 @@ export function reachableCommands(script: string): ReachableCommand[] {
       : keyword === "esac"
       ? innermost.kase
       : innermost.brace && !innermost.sub;
-    if (!closesIt) return false;
+  };
+  // Whether `keyword` closes the innermost frame and each of `parens` then
+  // closes a tracked `( )` subshell frame beneath it.
+  const closesInsideSubshell = (keyword: string, parens: string): boolean => {
+    if (!closesInnermost(keyword)) return false;
     for (let depth = 1; depth <= parens.length; depth++) {
       const frame = stack.at(-1 - depth);
       if (!frame?.sub || frame.subst) return false;
@@ -847,7 +867,27 @@ export function reachableCommands(script: string): ReachableCommand[] {
     // contain further groups, so recover that status from the matching frame.
     let closedStatus: boolean | null = null;
     // Structural keywords first; what is left is a plain command.
+    // A command that starts inside a `$( … )`, `$(( … ))` or backtick
+    // substitution the walk tracks no frame for (an earlier command of the
+    // line left it open): none of its compounds is tracked, because their
+    // closers are not matched to them and the `)` after one belongs to the
+    // substitution. Its openers and branch words are dropped with no effect on
+    // the frame stack; a closer, `(` or `)` stays a plain word for the
+    // parenthesis balance (round 14).
+    const untrackedHere = pendingBefore > 0 || lineTicks % 2 === 1;
     while (words.length > 0) {
+      if (untrackedHere) {
+        const first = words[0] ?? "";
+        if (UNTRACKED_HEAD_KEYWORDS.has(first)) {
+          words = words.slice(1);
+          continue;
+        }
+        if (UNTRACKED_HEADER_KEYWORDS.has(first)) {
+          words = [];
+          break;
+        }
+        break;
+      }
       // `(cd infra` opens a subshell exactly as `( cd infra` does; `((` is
       // arithmetic and `$(` a substitution, neither a subshell.
       const lead = words[0] ?? "";
@@ -861,7 +901,9 @@ export function reachableCommands(script: string): ReachableCommand[] {
       // the walk tracks no frame for (`X=$(for d in a b; do echo $d; done)`),
       // or one opened earlier on this line (`linePending`, as in `( for …; do
       // X=$(for …; done); …`), and the word stays whole so the parenthesis
-      // balance closes it (PR #5332 review rounds 11 to 13).
+      // balance closes it (PR #5332 review rounds 11 to 14). Commands that
+      // start inside such a `$( … )` never reach this point: `untrackedHere`
+      // above leaves their compounds out of the frame stack.
       const closing = /^(fi|done|esac|\})(\)+)$/.exec(words[0] ?? "");
       if (
         closing && linePending === 0 &&
@@ -874,6 +916,13 @@ export function reachableCommands(script: string): ReachableCommand[] {
         ];
       }
       const w = words[0] ?? "";
+      // A closer with no open frame of its own kind is a plain word.
+      if (
+        (w === "fi" || w === "done" || w === "esac" || w === "}") &&
+        !closesInnermost(w)
+      ) {
+        break;
+      }
       const top = stack.at(-1);
       if (top && (w === "fi" || w === "elif" || w === "else")) {
         if (frameLive(top)) top.branchStatuses.add(prev);

@@ -384,6 +384,26 @@ emulator test.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
+- After the fourteenth review (of `90b04627`): a command that starts inside a
+  `$( … )` or backtick substitution the walk tracks no frame for
+  (`linePending > 0` or an odd backtick count at the command's start) no longer
+  touches the frame stack. Its `if`, `elif`, `while`, `until`, `then`, `do`,
+  `else` and `{` are dropped, `for`, `case` and `select` drop the rest of the
+  command, and `(`, `fi`, `done`, `esac`, `}` and `)` stay plain words for the
+  parenthesis balance. Outside that case `fi`, `done`, `esac` and `}` close only
+  the frame of their own kind, so a `subst` frame innermost leaves `done )` plain
+  and the `)` closes the substitution. This credits `PKGS=$( for …; done )`,
+  `OUT=$( { echo a; echo b; } )`, `X=$(cd a; if …; fi )` and the multi-line
+  `done )` form, and stops `X=$(cd a; for f in *; do …; done)` leaking a loop
+  frame, so `{ …; runner; } || true`, its `| while`, `; if` and `| tee log`
+  forms and a runner after `exit 0` are refused. The new test `…::a compound
+  inside an untracked substitution leaves the runner's credit alone` fails at
+  `90b04627` and passes at the head; the round-11 to round-13 fixtures are
+  unchanged and pass. The manual sentence on `fi)`/`done)` states the rule. The
+  seven related test files give `672 passed | 0 failed` through
+  `deno task test:unit`; `deno lint`, `deno check` and `deno fmt --check` on the
+  changed source and test files are clean. The full `./quality.sh` was not run
+  in this round. The `VAR=$(cmd arg) runner` form is filed separately as #5378.
 - After the thirteenth review (of `056c75f2`): (1) a `$(` left open at a line
   end opens its frame even when the line's last command is only a keyword
   (`PKGS=$(for d in a b; do`, `X=$(if …; then`, `MODE=$(case …`), so a runner
