@@ -24,6 +24,10 @@ import {
   formatWorkerStatsLine,
 } from "../lib/issue_run_stats_comment.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const RUN: TerminalIssueRun = {
   repo: "stSoftwareAU/VibeCoder",
@@ -37,7 +41,7 @@ const IDENTITY = { runId: "vibe-4120", host: "GRQ-23" };
 
 async function git(dir: string, args: string[]): Promise<string> {
   const cmd = new Deno.Command("git", {
-    args: ["-C", dir, ...args],
+    args: [...NO_HOST_HOOKS_ARGS, "-C", dir, ...args],
     stdout: "piped",
     stderr: "piped",
     env: {
@@ -47,6 +51,7 @@ async function git(dir: string, args: string[]): Promise<string> {
       GIT_COMMITTER_EMAIL: "fixture@example.com",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_SYSTEM: "/dev/null",
+      ...NO_HOST_GIT_CONFIG,
     },
   });
   const out = await cmd.output();

@@ -14,14 +14,20 @@
  */
 
 import { assertEquals, assertMatch } from "@std/assert";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 async function run(
   cmd: string[],
   cwd?: string,
+  env?: Record<string, string>,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const p = new Deno.Command(cmd[0]!, {
     args: cmd.slice(1),
     cwd,
+    env,
     stdout: "piped",
     stderr: "piped",
   });
@@ -34,7 +40,11 @@ async function run(
 }
 
 async function gitOk(cmd: string[], cwd: string) {
-  const r = await run(["git", ...cmd], cwd);
+  const r = await run(
+    ["git", ...NO_HOST_HOOKS_ARGS, ...cmd],
+    cwd,
+    NO_HOST_GIT_CONFIG,
+  );
   if (r.code !== 0) {
     throw new Error(`git ${cmd.join(" ")} failed in ${cwd}: ${r.stderr}`);
   }

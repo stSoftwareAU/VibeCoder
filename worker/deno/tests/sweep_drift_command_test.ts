@@ -9,6 +9,10 @@
  * Australian English spelling throughout.
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   collectSweepDrift,
@@ -111,10 +115,11 @@ Deno.test("sweepGitRunnerFor - resolves repo-relative pathspecs against --repo, 
   const repoRoot = await Deno.makeTempDir({ prefix: "sweep-drift-" });
   const git = async (...args: string[]) => {
     const { code, stderr } = await new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd: repoRoot,
       stdout: "null",
       stderr: "piped",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     // Carry git's own reason, never just the exit code: a fixture that fails
     // for an unrelated reason must say which one.

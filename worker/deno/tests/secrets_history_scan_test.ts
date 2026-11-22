@@ -16,6 +16,10 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { createDefaultRegistry } from "../mod.ts";
 import { secretsHistoryScanCommand } from "../commands/secrets_history_scan.ts";
@@ -51,7 +55,7 @@ const BENIGN_FILE = "docs/example.md";
 /** Run a real git command in `cwd`, throwing loudly on failure. */
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const output = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -62,6 +66,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
       GIT_COMMITTER_EMAIL: "fixture@example.com",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_SYSTEM: "/dev/null",
+      ...NO_HOST_GIT_CONFIG,
     },
   }).output();
   const stdout = new TextDecoder().decode(output.stdout);
@@ -668,6 +673,10 @@ Deno.test("parseGitleaksReport handles an empty report and rejects malformed JSO
 });
 
 Deno.test("parseTrufflehogOutput keeps the location and drops the raw value", () => {
+  // Fake AWS key, not a real credential — the parser test needs a key-shaped
+  // value to prove the raw secret is dropped from the findings. nosemgrep keeps
+  // the SAST stage on the finding it is for, following
+  // `handle_no_changes_phase_test.ts`.
   const stdout = [
     "2026-08-18 loading detectors",
     JSON.stringify({
@@ -675,7 +684,9 @@ Deno.test("parseTrufflehogOutput keeps the location and drops the raw value", ()
         Data: { Git: { commit: "def456", file: "cfg/prod.env", line: 3 } },
       },
       DetectorName: "AWS",
+      // nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
       Raw: "AKIAREALLOOKINGVALUE",
+      // nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
       RawV2: "AKIAREALLOOKINGVALUE:secret",
     }),
   ].join("\n");
@@ -685,6 +696,7 @@ Deno.test("parseTrufflehogOutput keeps the location and drops the raw value", ()
   assertEquals(findings[0]?.path, "cfg/prod.env");
   assertEquals(findings[0]?.rule, "AWS");
   assertEquals(
+    // nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
     JSON.stringify(findings).includes("AKIAREALLOOKINGVALUE"),
     false,
   );

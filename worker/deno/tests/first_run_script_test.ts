@@ -24,6 +24,10 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { pathStyleFor } from "../lib/host_path_style.ts";
 import { resolveLogDir } from "../lib/log_dir.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 /** tests/ → worker/deno/ → worker/ → repository root. */
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
@@ -264,10 +268,13 @@ async function which(tool: string): Promise<string | null> {
 }
 
 async function run(cmd: [string, ...string[]], cwd: string): Promise<void> {
-  const [executable, ...args] = cmd;
+  const [executable, ...rest] = cmd;
+  const isGit = executable === "git";
+  const args = isGit ? [...NO_HOST_HOOKS_ARGS, ...rest] : rest;
   const { code, stderr } = await new Deno.Command(executable, {
     args,
     cwd,
+    ...(isGit ? { env: NO_HOST_GIT_CONFIG } : {}),
     stdout: "null",
     stderr: "piped",
   }).output();

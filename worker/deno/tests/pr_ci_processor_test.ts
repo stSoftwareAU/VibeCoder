@@ -7,6 +7,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CiFixInput,
@@ -1457,11 +1461,12 @@ async function initRepoWithStagedFile(
   const decoder = new TextDecoder();
   const run = async (args: string[]): Promise<string> => {
     const out = await new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd: dir,
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     if (!out.success) {
       throw new Error(
@@ -3483,10 +3488,18 @@ Deno.test("processCiFailure - refuses empty-email commits from real Git before r
       ]
     ) {
       const output = await new Deno.Command("git", {
-        args: ["-c", "user.name=Test", "-c", "commit.gpgsign=false", ...args],
+        args: [
+          ...NO_HOST_HOOKS_ARGS,
+          "-c",
+          "user.name=Test",
+          "-c",
+          "commit.gpgsign=false",
+          ...args,
+        ],
         cwd: dir,
         clearEnv: true,
         env: {
+          ...NO_HOST_GIT_CONFIG,
           PATH: Deno.env.get("PATH") ?? "",
           GIT_CONFIG_NOSYSTEM: "1",
           GIT_CONFIG_GLOBAL: `${dir}/absent-global-config`,

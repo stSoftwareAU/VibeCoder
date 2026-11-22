@@ -26,6 +26,7 @@ import {
   worktreeAddFailureDetail,
 } from "../lib/lane_worktree.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 import { isReservedWorkRootEntry } from "../lib/stale_workdir.ts";
 
 /** A clone with one commit on `main`, plus a feature branch on origin. */
@@ -36,23 +37,23 @@ async function setupClone(): Promise<{ workDir: string; repoPath: string }> {
   const repoPath = `${workDir}/demo`;
 
   await Deno.mkdir(remotePath, { recursive: true });
-  await runGitCommand(["init", "--bare"], { cwd: remotePath });
-  await runGitCommand(["symbolic-ref", "HEAD", "refs/heads/main"], {
+  await runFixtureGit(["init", "--bare"], { cwd: remotePath });
+  await runFixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
     cwd: remotePath,
   });
-  await runGitCommand(["clone", remotePath, repoPath], { cwd: workDir });
-  await runGitCommand(["config", "user.email", "test@example.com"], {
+  await runFixtureGit(["clone", remotePath, repoPath], { cwd: workDir });
+  await runFixtureGit(["config", "user.email", "test@example.com"], {
     cwd: repoPath,
   });
-  await runGitCommand(["config", "user.name", "Test User"], { cwd: repoPath });
+  await runFixtureGit(["config", "user.name", "Test User"], { cwd: repoPath });
   await Deno.writeTextFile(`${repoPath}/base.txt`, "base\n");
-  await runGitCommand(["add", "."], { cwd: repoPath });
-  await runGitCommand(["commit", "-m", "initial"], { cwd: repoPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: repoPath });
+  await runFixtureGit(["add", "."], { cwd: repoPath });
+  await runFixtureGit(["commit", "-m", "initial"], { cwd: repoPath });
+  await runFixtureGit(["push", "origin", "main"], { cwd: repoPath });
   // A clone of a non-empty remote gets `origin/HEAD` from `git clone`; this
   // fixture cloned while the remote was still empty, so set it the same way
   // a real clone has it — the default-branch resolver reads it (Issue #3630).
-  await runGitCommand(
+  await runFixtureGit(
     ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
     { cwd: repoPath },
   );
@@ -61,7 +62,7 @@ async function setupClone(): Promise<{ workDir: string; repoPath: string }> {
 }
 
 async function head(cwd: string): Promise<string> {
-  const result = await runGitCommand(["rev-parse", "HEAD"], { cwd });
+  const result = await runFixtureGit(["rev-parse", "HEAD"], { cwd });
   return result.ok ? result.value.stdout.trim() : "";
 }
 
@@ -111,7 +112,7 @@ Deno.test("ensureLaneWorktree - creates a detached worktree sharing the clone's 
     );
     // Same commit, own HEAD, and no branch claimed.
     assertEquals(await head(result.value), await head(repoPath));
-    const symbolic = await runGitCommand(
+    const symbolic = await runFixtureGit(
       ["symbolic-ref", "--quiet", "HEAD"],
       { cwd: result.value },
     );
@@ -120,7 +121,7 @@ Deno.test("ensureLaneWorktree - creates a detached worktree sharing the clone's 
       "the lane worktree must start detached",
     );
     // No second object store: the worktree links back to the clone.
-    const commonDir = await runGitCommand(
+    const commonDir = await runFixtureGit(
       ["rev-parse", "--path-format=absolute", "--git-common-dir"],
       { cwd: result.value },
     );
@@ -172,7 +173,7 @@ Deno.test("ensureLaneWorktree - the lane's checkout does not move the shared clo
   try {
     // The shared clone stands in for an issue slot mid-run: on its own
     // branch, with uncommitted work in the tree.
-    await runGitCommand(["checkout", "-b", "issue-1-slot-work"], {
+    await runFixtureGit(["checkout", "-b", "issue-1-slot-work"], {
       cwd: repoPath,
     });
     await Deno.writeTextFile(`${repoPath}/base.txt`, "slot edit in progress\n");
@@ -188,12 +189,12 @@ Deno.test("ensureLaneWorktree - the lane's checkout does not move the shared clo
 
     // The lane does what the branch-update pass does: create and check out a
     // PR branch, commit, and move on.
-    await runGitCommand(["checkout", "-b", "issue-2-pr-branch"], {
+    await runFixtureGit(["checkout", "-b", "issue-2-pr-branch"], {
       cwd: worktree.value,
     });
     await Deno.writeTextFile(`${worktree.value}/lane.txt`, "lane work\n");
-    await runGitCommand(["add", "."], { cwd: worktree.value });
-    await runGitCommand(
+    await runFixtureGit(["add", "."], { cwd: worktree.value });
+    await runFixtureGit(
       [
         "-c",
         "user.email=lane@example.com",
@@ -207,7 +208,7 @@ Deno.test("ensureLaneWorktree - the lane's checkout does not move the shared clo
     );
 
     // The slot's branch, HEAD and uncommitted edit are all untouched.
-    const branch = await runGitCommand(
+    const branch = await runFixtureGit(
       ["rev-parse", "--abbrev-ref", "HEAD"],
       { cwd: repoPath },
     );
@@ -242,18 +243,18 @@ Deno.test("detachLaneWorktreeHead - frees the branch the lane had checked out", 
     assert(worktree.ok);
     if (!worktree.ok) return;
 
-    await runGitCommand(["checkout", "-b", "issue-3-held"], {
+    await runFixtureGit(["checkout", "-b", "issue-3-held"], {
       cwd: worktree.value,
     });
     // While the lane holds it, the shared clone cannot check the branch out.
-    const blocked = await runGitCommand(["checkout", "issue-3-held"], {
+    const blocked = await runFixtureGit(["checkout", "issue-3-held"], {
       cwd: repoPath,
     });
     assert(blocked.ok && blocked.value.code !== 0);
 
     assertEquals(await detachLaneWorktreeHead(worktree.value), true);
 
-    const allowed = await runGitCommand(["checkout", "issue-3-held"], {
+    const allowed = await runFixtureGit(["checkout", "issue-3-held"], {
       cwd: repoPath,
     });
     assert(
@@ -322,7 +323,7 @@ Deno.test("ensureLaneWorktree - clears an orphaned directory at the target path 
     if (result.ok) {
       assertEquals(result.value, path);
       // A real, linked worktree — not the stale directory left in place.
-      const inside = await runGitCommand(
+      const inside = await runFixtureGit(
         ["rev-parse", "--is-inside-work-tree"],
         { cwd: path },
       );
@@ -362,7 +363,7 @@ Deno.test("ensureLaneWorktree - recovers when the shared clone was recreated und
 
     assertEquals(second.ok, true, JSON.stringify(second));
     if (second.ok) {
-      const inside = await runGitCommand(
+      const inside = await runFixtureGit(
         ["rev-parse", "--is-inside-work-tree"],
         { cwd: path },
       );
@@ -496,7 +497,7 @@ Deno.test("ensureLaneWorktree - heals a clone whose HEAD dangles and retries onc
   try {
     // Milestone sync leaves the clone's HEAD on a branch that later goes;
     // the symref then dangles and every worktree add fails permanently.
-    await runGitCommand(
+    await runFixtureGit(
       ["symbolic-ref", "HEAD", "refs/heads/gone-branch"],
       { cwd: repoPath },
     );
@@ -510,13 +511,13 @@ Deno.test("ensureLaneWorktree - heals a clone whose HEAD dangles and retries onc
 
     assertEquals(result.ok, true, JSON.stringify(result));
     if (result.ok) {
-      const inside = await runGitCommand(
+      const inside = await runFixtureGit(
         ["rev-parse", "--is-inside-work-tree"],
         { cwd: result.value },
       );
       assert(inside.ok && inside.value.stdout.trim() === "true");
       // The clone's HEAD is healed to the default branch, not left dangling.
-      const healed = await runGitCommand(["symbolic-ref", "HEAD"], {
+      const healed = await runFixtureGit(["symbolic-ref", "HEAD"], {
         cwd: repoPath,
       });
       assert(healed.ok);

@@ -11,6 +11,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { readLocalDefaultTip } from "../lib/milestone_default_tip.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 /** Run git in `cwd`, returning its exit code and stdout. */
 async function git(
@@ -18,11 +22,12 @@ async function git(
   cwd: string,
 ): Promise<{ code: number; stdout: string }> {
   const output = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
     env: {
+      ...NO_HOST_GIT_CONFIG,
       GIT_AUTHOR_NAME: "test",
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",

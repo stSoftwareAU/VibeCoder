@@ -10,11 +10,11 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { resumeFeatureBranchFromRemote } from "../lib/git_branch.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 
 /** Runs git in `cwd`, asserts it succeeded, and returns trimmed stdout. */
 async function git(cwd: string, args: string[]): Promise<string> {
-  const result = await runGitCommand(args, { cwd });
+  const result = await runFixtureGit(args, { cwd });
   assert(result.ok && result.value.code === 0, JSON.stringify(result));
   return result.value.stdout.trim();
 }
