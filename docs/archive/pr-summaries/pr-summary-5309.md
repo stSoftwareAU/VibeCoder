@@ -16,16 +16,17 @@ covers `git_branch_sync_test.ts`, `git_pull_conflict_test.ts`,
 `git_fixture.ts`, `drift_check_fixture.ts`, `babysitter_tree_fixture.ts`,
 `push_recovery_repos.ts`, `babysitter_container_fakes_4770.ts`). The five local
 copies of `NO_HOST_GIT_CONFIG` and the per-file wrappers now import the helper.
+
 Closes #5309.
 
 This redoes the abandoned PR #5364 and carries its conversion, with the four
 blocking review findings fixed:
 
 - The three calls that run git on the real checkout are back to their
-  base-branch form, so a `safe.directory` entry in the host's global config still
-  applies to them. They are `runGit` in `tests/support/markdown_docs.ts`,
-  `trackedPaths` in `token_economizer_trial_docs_test.ts` and the
-  `check-ignore` call in `next_release_tag_test.ts`.
+  base-branch form, so a `safe.directory` entry in the host's global config
+  still applies to them. They are `runGit` in `tests/support/markdown_docs.ts`,
+  `trackedPaths` in `token_economizer_trial_docs_test.ts` and the `check-ignore`
+  call in `next_release_tag_test.ts`.
 - The system-config control now pins the global scope.
 - `runFixtureGit` has tests that fail when either of its two layers regresses on
   its own.
@@ -41,9 +42,9 @@ blocking review findings fixed:
   outranks repository config, so a fixture can only escape it through its own
   git child's env or a `-c` flag. The helper sets both, as #5254 did.
 - Each layer covers a case the other misses. The env shield shuts out every
-  non-hook host setting (identity, `init.defaultBranch`, `commit.gpgsign`).
-  The `-c` flag also overrides a repository-local `core.hooksPath`, which the
-  env cannot reach.
+  non-hook host setting (identity, `init.defaultBranch`, `commit.gpgsign`). The
+  `-c` flag also overrides a repository-local `core.hooksPath`, which the env
+  cannot reach.
 
 ### Essential Design Decisions
 
@@ -54,10 +55,11 @@ blocking review findings fixed:
   `gh_spawn_chokepoint_check_test.ts`, `spawn_timeout_check_test.ts`), and the
   deliberately unshielded positive control in
   `fleet_pr_babysitter_git_hardening_test.ts`.
-- Tests that rely on their own hooks or config keep them. `hooks_pre_commit_test.ts`
-  gets only the env shield, and `pre_push_gate_retry_test.ts` keeps its own
-  `core.hooksPath`. In `milestone_rollback_test.ts` and `pr_ci_processor_test.ts`,
-  the test's own `GIT_CONFIG_*` entries are spread after the shield.
+- Tests that rely on their own hooks or config keep them.
+  `hooks_pre_commit_test.ts` gets only the env shield, and
+  `pre_push_gate_retry_test.ts` keeps its own `core.hooksPath`. In
+  `milestone_rollback_test.ts` and `pr_ci_processor_test.ts`, the test's own
+  `GIT_CONFIG_*` entries are spread after the shield.
 - Fixtures that relied on the global config now set what they need explicitly,
   such as `init -b main` or an identity. No production code under
   `worker/deno/lib/` changed. The fake AWS key in `secrets_history_scan_test.ts`
@@ -127,8 +129,8 @@ Issues cited as provenance:
   hooks and config.
 - #5309: Other test files run fixture `git push` under the host's git hooks and
   config (same leak as #5254).
-- #5371: Tests that push through production code still run `git push` under
-  the host's git hooks and config.
+- #5371: Tests that push through production code still run `git push` under the
+  host's git hooks and config.
 
 ## Test Plan
 
@@ -146,12 +148,11 @@ Issues cited as provenance:
   - `runFixtureGit: a hostile GIT_CONFIG_GLOBAL in the caller env cannot run the hook`
   - `runFixtureGit: the env layer alone shuts out a caller's injected GIT_CONFIG_COUNT entry`,
     plus the same for `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` files. Each
-    reads `init.defaultBranch`. A plain-git control reads the hostile value,
-    and `runFixtureGit` with the same caller env gets exit 1 and no output.
+    reads `init.defaultBranch`. A plain-git control reads the hostile value, and
+    `runFixtureGit` with the same caller env gets exit 1 and no output.
   - `runFixtureGit: the args layer alone shuts out a repo-local core.hooksPath`.
-    The hooks path set in the repository's own config runs the hook under
-    plain git, even with `NO_HOST_GIT_CONFIG`. `runFixtureGit` still pushes
-    cleanly.
+    The hooks path set in the repository's own config runs the hook under plain
+    git, even with `NO_HOST_GIT_CONFIG`. `runFixtureGit` still pushes cleanly.
 - Mutation checks on the helper, each reverted afterwards (the helper is
   unchanged by this round):
   - `env: options.env`: `FAILED | 8 passed | 3 failed`.
@@ -159,23 +160,27 @@ Issues cited as provenance:
     `FAILED | 8 passed | 3 failed`.
   - Hooks args dropped: `FAILED | 10 passed | 1 failed`. The failure is the
     args-layer test, with `HOSTILE_PRE_PUSH_HOOK_RAN`.
-- `deno task test:unit tests/no_host_git_config_test.ts`: `ok | 11 passed |
-  0 failed`. Plain `deno test --allow-all` with a refusing `pre-push` hook
-  injected through `GIT_CONFIG_COUNT=1`: `ok | 11 passed | 0 failed`.
+- `deno task test:unit tests/no_host_git_config_test.ts`:
+  `ok | 11 passed |
+  0 failed`. Plain `deno test --allow-all` with a refusing
+  `pre-push` hook injected through `GIT_CONFIG_COUNT=1`:
+  `ok | 11 passed | 0 failed`.
 - The three restored real-checkout calls:
   - `deno task test:unit tests/token_economizer_trial_docs_test.ts`:
     `ok | 31 passed | 0 failed`.
-  - `deno test --allow-all tests/next_release_tag_test.ts`, an integration
-    suite that `test:unit` skips: `ok | 29 passed | 0 failed`.
+  - `deno test --allow-all tests/next_release_tag_test.ts`, an integration suite
+    that `test:unit` skips: `ok | 29 passed | 0 failed`.
   - `deno task test:unit tests/drift_pins_on_base_3193_test.ts
-    tests/drift_pins_on_base_3238_test.ts` (the callers of `pinsAlreadyOnBase`,
-    which uses `runGit`): `ok | 17 passed | 0 failed`.
+    tests/drift_pins_on_base_3238_test.ts`
+    (the callers of `pinsAlreadyOnBase`, which uses `runGit`):
+    `ok | 17 passed | 0 failed`.
 - The existing test files only changed how their fixture git calls are spawned:
   an args prefix and env, a local wrapper switched to `runFixtureGit`, or, in a
   few fixtures, an explicit `init -b main` or identity. No assertion or expected
   value was removed or changed.
 
-- `./quality.sh < /dev/null` on commit `497b57208`: `Result: PASSED (with
-  skipped checks)`, exit 0. Deno tests, lint, type check, fmt, semgrep,
-  gitleaks, markdownlint and mermaid all passed. Config integration and
-  checkov were skipped.
+- `./quality.sh < /dev/null` on commit `497b57208`:
+  `Result: PASSED (with
+  skipped checks)`, exit 0. Deno tests, lint, type
+  check, fmt, semgrep, gitleaks, markdownlint and mermaid all passed. Config
+  integration and checkov were skipped.
