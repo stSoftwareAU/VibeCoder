@@ -179,7 +179,11 @@ Deno.test("entrypoint - execs the Deno driver with the worker permission set", a
  * Run a probe script under the given allow flags, with the same config and
  * lock as the worker, and return its last stdout line.
  */
-async function runDenoProbe(script: string, flags: string[]): Promise<string> {
+async function runDenoProbe(
+  script: string,
+  flags: string[],
+  env?: Record<string, string>,
+): Promise<string> {
   const out = await new Deno.Command(Deno.execPath(), {
     args: [
       "run",
@@ -189,6 +193,7 @@ async function runDenoProbe(script: string, flags: string[]): Promise<string> {
       ...flags,
       script,
     ],
+    env,
     stdin: "null",
     stdout: "piped",
     stderr: "piped",
@@ -289,7 +294,7 @@ Deno.test({
       const script = `${dir}/liveness_probe.ts`;
       await Deno.writeTextFile(
         script,
-        `import { formatLivenessPressureFields, readLivenessTickPressure, readProcFileWithCat } from "${livenessUrl}"; const line = formatLivenessPressureFields(await readLivenessTickPressure()); const cat = await readProcFileWithCat("/proc/loadavg"); let direct = "ok"; try { await Deno.readTextFile("/proc/loadavg"); } catch (e) { direct = e instanceof Error ? \`\${e.name}: \${e.message}\` : String(e); } let missing = "no error"; try { await readProcFileWithCat("/proc/vibe-5324-missing"); } catch (e) { missing = e instanceof Error ? e.message : String(e); } console.log(JSON.stringify({ line, cat, direct, missing }));\n`,
+        `import { formatLivenessPressureFields, readLivenessTickPressure, readProcFileWithCat } from "${livenessUrl}"; const line = formatLivenessPressureFields(await readLivenessTickPressure()); const cat = await readProcFileWithCat("/proc/loadavg"); let direct = "ok"; try { await Deno.readTextFile("/proc/loadavg"); } catch (e) { direct = e instanceof Error ? \`\${e.name}: \${e.message}\` : String(e); } let missing = "no error"; try { await readProcFileWithCat("/proc/vibe-5324-missing"); } catch (e) { missing = e instanceof Error ? e.message : String(e); } const psiReadable: Record<string, boolean> = {}; for (const p of ["/proc/pressure/memory", "/proc/pressure/cpu"]) { try { await readProcFileWithCat(p); psiReadable[p] = true; } catch { psiReadable[p] = false; } } console.log(JSON.stringify({ line, cat, direct, missing, psiReadable }));\n`,
       );
 
       const granted = JSON.parse(await runDenoProbe(script, allowFlags)) as {
@@ -297,6 +302,7 @@ Deno.test({
         cat: string;
         direct: string;
         missing: string;
+        psiReadable: Record<string, boolean>;
       };
       const linePattern =
         /^mem_available_mib=\d+ pressure_memory=(\S+) pressure_cpu=(\S+)$/;
@@ -316,12 +322,54 @@ Deno.test({
       // Positive control: the same flags refuse a direct /proc read, so the
       // cat route is what makes PSI readable.
       assertStringIncludes(granted.direct, "NotCapable");
-      for (const token of [match[1]!, match[2]!]) {
-        assert(
-          token === "unavailable" || token.startsWith("some,"),
-          `unexpected PSI token ${token}`,
-        );
+      // A PSI file that cat can read under these flags must reach the tick
+      // line as a reading; `unavailable` is allowed only when the host has no
+      // such file (Issue #5324).
+      const psiTokens: [string, string][] = [
+        ["/proc/pressure/memory", match[1]!],
+        ["/proc/pressure/cpu", match[2]!],
+      ];
+      for (const [path, token] of psiTokens) {
+        if (granted.psiReadable[path]) {
+          assert(
+            token.startsWith("some,"),
+            `${path} is readable through cat but the tick read ${token}`,
+          );
+        } else {
+          assertEquals(token, "unavailable", `${path}: ${token}`);
+        }
       }
+
+      // Host-independent check of the default PSI reader: a `cat` stub on PATH
+      // serves PSI text, so the tick's PSI tokens come from `cat` even on a
+      // host without /proc/pressure. A default reader that used
+      // Deno.readTextFile would be refused (NotCapable) and read
+      // `unavailable` here.
+      const stubBin = `${dir}/psi-bin`;
+      await Deno.mkdir(stubBin);
+      await Deno.writeTextFile(
+        `${stubBin}/cat`,
+        '#!/bin/sh\ncase "$1" in\n  /proc/pressure/memory) echo "some avg10=1.25 avg60=0.50 avg300=0.10 total=5324"; echo "full avg10=0.00 avg60=0.00 avg300=0.00 total=0" ;;\n  /proc/pressure/cpu) echo "some avg10=2.50 avg60=1.00 avg300=0.20 total=4225" ;;\n  *) exit 1 ;;\nesac\n',
+      );
+      await Deno.chmod(`${stubBin}/cat`, 0o755);
+      const stubScript = `${dir}/liveness_psi_probe.ts`;
+      await Deno.writeTextFile(
+        stubScript,
+        `import { formatLivenessPressureFields, readLivenessTickPressure } from "${livenessUrl}"; console.log(formatLivenessPressureFields(await readLivenessTickPressure()));\n`,
+      );
+      const stubLine = await runDenoProbe(stubScript, allowFlags, {
+        PATH: `${stubBin}:${Deno.env.get("PATH") ?? ""}`,
+      });
+      assertStringIncludes(
+        stubLine,
+        " pressure_memory=some,avg10=1.25,avg60=0.50,avg300=0.10,total=5324,full,avg10=0.00,avg60=0.00,avg300=0.00,total=0 ",
+      );
+      assert(
+        stubLine.endsWith(
+          " pressure_cpu=some,avg10=2.50,avg60=1.00,avg300=0.20,total=4225",
+        ),
+        stubLine,
+      );
 
       // Negative control: the pre-#5319 grant cannot read systemMemoryInfo.
       const preFix = JSON.parse(

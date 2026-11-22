@@ -104,7 +104,19 @@ cannot be read is `unavailable`") is still true and is unchanged. `git grep` for
   `--allow-*` flags and runs a probe in a real Deno subprocess under them. It
   asserts:
   - the tick line matches `mem_available_mib=\d+` and is not `unavailable`;
-  - each PSI token is `unavailable` or a `some,…` reading;
+  - for each PSI file, the probe also calls `readProcFileWithCat` on it under
+    the same flags. When that read succeeds, the tick's token for the file must
+    start with `some,`. `unavailable` is accepted only when the host has no such
+    file;
+  - with a `cat` stub first on `PATH` that serves fixed PSI text for
+    `/proc/pressure/memory` and `/proc/pressure/cpu`, a second probe under the
+    same flags must print those exact collapsed tokens
+    (`pressure_memory=some,avg10=1.25,…,total=0`,
+    `pressure_cpu=some,avg10=2.50,…,total=4225`). This pins the production
+    default `readers.readPressureFile ?? readProcFileWithCat` even on hosts
+    without `/proc/pressure`. Red-checked: with that default changed to
+    `(p) => Deno.readTextFile(p)`, the test fails on this host with
+    `pressure_memory=unavailable pressure_cpu=unavailable`;
   - `readProcFileWithCat("/proc/loadavg")` returns text, while
     `Deno.readTextFile("/proc/loadavg")` under the same flags fails with
     `NotCapable` (the control that shows the `cat` route is what reads `/proc`);
@@ -114,7 +126,8 @@ cannot be read is `unavailable`") is still true and is unchanged. `git grep` for
     starts `mem_available_mib=unavailable`.
 
   The #5319 test's subprocess runner was moved to a file-level `runDenoProbe`
-  helper that both tests call; its assertions are unchanged.
+  helper that both tests call; its assertions are unchanged. The helper takes an
+  optional `env`, which the `cat`-stub probe uses to set `PATH`.
 - Edited: `worker/deno/tests/liveness_pressure_4225_test.ts`.
   - The `memAvailableMibFromProcMeminfo` test is replaced by a
     `memAvailableMibFromBytes` test, because that function is gone. The
