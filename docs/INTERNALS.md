@@ -126,12 +126,20 @@ the result (`formatBeforeGate` in `worker/deno/lib/repo_formatters.ts`), so a
 formatting-only failure does not spend the agent's one remediation round. It
 leaves agent-authored Markdown unformatted. The worker's own Markdown and JSON
 under `docs/archive/pr-summaries/` and `docs/archive/handover/` are formatted
-afterwards. Before `deno fmt`, each linkage-only line in archive Markdown is
-put in a paragraph of its own (Issue #4802). An archive file over 1 MiB
-(`MAX_ARCHIVE_REWRITE_BYTES`) is skipped with a warning and left for the gate
-to report. A formatter that fails is only logged: the gate still runs and
-reports. The completion phase does the same before its pre-push
-gate; see "Agent pre-push hook and the changed-files check" in
+afterwards, except a file there that already differs from HEAD, staged or
+unstaged: that one is left out of the rewrite and the commit, by the repository
+formatters (even a `.json` file a Deno config covers) as well as the archive
+step, so its uncommitted edit stays uncommitted (Issue #5328). The completion phase's call
+instead stashes it, because its pre-push gate judges the working tree and its
+push carries commits only; the file then holds its committed copy and is
+formatted and committed like any other archive file; the other callers only leave it out of the rewrite and the
+commit. If that check fails, the
+archive step is skipped with a warning. Before `deno fmt`, each linkage-only
+line in archive Markdown is put in a paragraph of its own (Issue #4802). An
+archive file over 1 MiB (`MAX_ARCHIVE_REWRITE_BYTES`) is skipped with a warning
+and left for the gate to report. A formatter that fails is only logged: the
+gate still runs and reports. The completion phase does the same before its
+pre-push gate; see "Agent pre-push hook and the changed-files check" in
 [CONFIGURATION.md](CONFIGURATION.md).
 
 The **semgrep** stage (`worker/deno/lib/semgrep_check.ts`, Issue #559) closes
