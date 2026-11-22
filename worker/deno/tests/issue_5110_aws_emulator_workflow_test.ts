@@ -2120,3 +2120,67 @@ Deno.test("(container-agent-run) accepts the container job checkout gaining fetc
     [],
   );
 });
+
+// Issue #5348: a `#` comment ends at its physical newline, so a backslash at the
+// end of a comment is comment text and the next line is its own command.
+const HIDDEN_TEST_STEP_FINDING =
+  "[test-step] the infra/cloudformation/test-aws-emulator.sh step must run only";
+for (
+  const [label, line] of [
+    ["# note \\ then exit 0", "set -euo pipefail # note \\\n          exit 0"],
+    [
+      "# note \\ then exec true",
+      "set -euo pipefail # note \\\n          exec true",
+    ],
+    ["a bare #\\ then exit 0", "set -euo pipefail #\\\n          exit 0"],
+  ] as const
+) {
+  Deno.test(`(a) refuses ${label} before the script (Issue #5348)`, () => {
+    expectFindings(
+      mutate([
+        TEST_STEP_BLOCK,
+        "\n          " + line + "\n          " + SCRIPT_LINE + "\n",
+      ]),
+      [HIDDEN_TEST_STEP_FINDING],
+    );
+  });
+}
+
+Deno.test("(a) accepts a # comment without a backslash before the script (Issue #5348)", () => {
+  assertEquals(
+    problemsOf(mutate([
+      TEST_STEP_BLOCK,
+      "\n          set -euo pipefail # note\n          " + SCRIPT_LINE + "\n",
+    ])),
+    [],
+  );
+});
+
+Deno.test("(container-agent-run) refuses a # comment ending in a backslash that hides exit 0 (Issue #5348)", () => {
+  const problems = checkContainerBuildRunsAwsEmulator(parseYaml(
+    mutateText(CONTAINER_BUILD, [
+      "          set -euo pipefail\n" + AGENT_DOCKER_LINE,
+      "          set -euo pipefail # note \\\n          exit 0\n" +
+      AGENT_DOCKER_LINE,
+    ]),
+  ));
+  assertEquals(
+    problems.length,
+    1,
+    `expected one finding, got: ${JSON.stringify(problems)}`,
+  );
+  assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+});
+
+Deno.test("(gate-script) refuses a gate line whose # comment ends in a backslash (Issue #5348)", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_RUN,
+        "run: |\n          .github/scripts/gate.sh # note \\\n          exit 0",
+      ),
+    ),
+    "[gate-script]",
+    "no gate step runs",
+  );
+});

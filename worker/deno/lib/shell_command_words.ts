@@ -29,8 +29,18 @@ const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /**
  * Split a `run:` body into commands, each with its words and the separator
  * before it (`\n`, `;`, `|`, `&`, `&&` or `||`). Quotes keep a word together
- * (`X="a b"` is one word), a backslash-newline joins lines, a newline or
- * `;`/`|`/`&` starts a new command, and a `#` that starts a word ends the line.
+ * (`X="a b"` is one word), and a newline or `;`/`|`/`&` starts a new command.
+ *
+ * A backslash escapes the next character outside single quotes, and the word
+ * keeps the escape as written (`\\`, `\"`, `\;`). An odd run of backslashes
+ * before a newline is a continuation: the newline is removed with no blank
+ * inserted, so `ab\` + newline + `cd` is the word `abcd`, and leading blanks on
+ * the next line still split. An even run is escaped backslashes, so the newline
+ * ends the command (`a \\` + newline + `b` is two commands). Inside double
+ * quotes a backslash continues the line before a newline, escapes `\`, `"`,
+ * `$` or a backtick, and is otherwise literal. A `#` that starts a word is a
+ * comment that ends at its physical newline, so a backslash at its end is
+ * comment text and the next line is its own command.
  */
 export function shellCommands(script: string): ShellCommand[] {
   return shellCommandList(script).commands;
@@ -45,7 +55,10 @@ function shellCommandList(script: string): {
   commands: ShellCommand[];
   trailing: string;
 } {
-  const text = script.replace(/\\\r?\n/g, " ");
+  const text = script;
+  // The length of the line break at `at` (`\n` or `\r\n`), 0 when none is.
+  const newlineLength = (at: number): number =>
+    text.startsWith("\r\n", at) ? 2 : text.startsWith("\n", at) ? 1 : 0;
   const commands: ShellCommand[] = [];
   let words: string[] = [];
   let sep = "";
@@ -72,9 +85,42 @@ function shellCommandList(script: string): {
 
   for (let i = 0; i < text.length; i++) {
     const ch = text.charAt(i);
-    if (quote !== null) {
+    if (quote === "'") {
+      // Single quotes are literal, a backslash-newline included.
       word += ch;
-      if (ch === quote) quote = null;
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === "\\") {
+        const lineBreak = newlineLength(i + 1);
+        const escaped = text.charAt(i + 1);
+        if (lineBreak > 0) {
+          i += lineBreak; // a continuation inside double quotes is removed
+        } else if (["\\", '"', "$", "`"].includes(escaped)) {
+          word += ch + escaped;
+          i++;
+        } else {
+          word += ch;
+        }
+        continue;
+      }
+      word += ch;
+      if (ch === '"') quote = null;
+      continue;
+    }
+    // Outside quotes a backslash escapes the next character. A
+    // backslash-newline is a continuation: removed, with no blank inserted.
+    if (ch === "\\") {
+      const lineBreak = newlineLength(i + 1);
+      if (lineBreak > 0) {
+        i += lineBreak;
+        continue;
+      }
+      const escaped = text.charAt(i + 1);
+      word += ch + escaped; // a lone trailing backslash is appended alone
+      inWord = true;
+      if (escaped !== "") i++;
       continue;
     }
     if (ch === '"' || ch === "'") {

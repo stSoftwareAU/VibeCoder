@@ -26,7 +26,10 @@ import {
   workflowRunsFloci,
 } from "../lib/aws_emulator_in_ci_check.ts";
 import { parse as parseYaml } from "@std/yaml/parse";
-import { reachableCommands } from "../lib/shell_command_words.ts";
+import {
+  reachableCommands,
+  shellSegments,
+} from "../lib/shell_command_words.ts";
 
 async function makeTempRepo(): Promise<string> {
   return await Deno.makeTempDir({ prefix: "aws_emulator_in_ci_check_test_" });
@@ -4032,4 +4035,71 @@ Deno.test("checkAwsEmulatorInCI - a gap record whose Floci job only installs a t
     });
     assertEquals(result.wiring, "floci-gap", command);
   }
+});
+
+// Issue #5348: a backslash-newline joins lines only as an odd run of backslashes
+// outside single quotes, and a `#` comment ends at its physical newline, so a
+// backslash at the end of a comment is comment text.
+const SHELL_CONTINUATION_CASES: [string, string, string[][]][] = [
+  [
+    "an even run of backslashes is not a continuation",
+    "a \\\\\nb",
+    [["a", "\\\\"], ["b"]],
+  ],
+  ["an odd run continues the line", "a \\\nb", [["a", "b"]]],
+  [
+    "three backslashes continue after an escaped pair",
+    "a \\\\\\\nb",
+    [["a", "\\\\b"]],
+  ],
+  [
+    "a comment ends at its physical newline",
+    "a # c \\\nb",
+    [["a"], ["b"]],
+  ],
+  ["a CRLF continuation joins with no blank", "a\\\r\nb", [["ab"]]],
+  [
+    "an escaped backslash at the end of a comment",
+    "a #c\\\\\nb",
+    [["a"], ["b"]],
+  ],
+  [
+    "a double-quoted word spanning a continuation",
+    'echo "x \\\ny"',
+    [["echo", '"x y"']],
+  ],
+];
+
+for (const [label, script, expected] of SHELL_CONTINUATION_CASES) {
+  Deno.test(`shellSegments - ${label} (Issue #5348)`, () => {
+    assertEquals(shellSegments(script), expected);
+  });
+}
+
+Deno.test("workflowRunsAwsEmulator - a line hidden by an escaped backslash runs its command (Issue #5348)", () => {
+  assertEquals(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("true \\\\\nexit 0\naws-emulator-run -- ./t.sh"),
+    ),
+    false,
+  );
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("true\naws-emulator-run -- ./t.sh"),
+    ),
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - a line hidden in a # comment that ends in a backslash runs its command (Issue #5348)", () => {
+  assertEquals(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("true # note \\\nexit 0\naws-emulator-run -- ./t.sh"),
+    ),
+    false,
+  );
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("true # note\naws-emulator-run -- ./t.sh"),
+    ),
+  );
 });

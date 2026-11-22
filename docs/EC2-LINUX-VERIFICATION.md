@@ -102,7 +102,9 @@ treated as a blank or comment. A quoted word left open at the end of a code
 line is refused, so a `#` line inside a multi-line quoted word is never read as
 a comment. Only a single backslash as the final character of a code line is
 accepted; its newline is removed without adding a space, as
-Bash removes it. The raw body may contain no `${{ }}` expression,
+Bash removes it. It is refused when that line ends in a comment, because a
+backslash at the end of a comment is comment text and Bash runs the next line
+as its own command. The raw body may contain no `${{ }}` expression,
 including in a comment. Its code, comments and blank lines aside, must be
 exactly the current allowlist: `set -euo pipefail`, the non-pull-request branch
 that appends `image=true` to `"$GITHUB_OUTPUT"` and exits, then
