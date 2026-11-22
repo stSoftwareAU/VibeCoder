@@ -323,46 +323,48 @@ flowchart LR
     prefix glued to a run that decodes to a credential
     (`credentials:app.password<base64 of password=…>: secret:`,
     `password: app.password<base64> = x`, with `hunter2.` for `app.`) gave
-    `app.***REDACTED***` on the first call: the walk gave the outer value up
-    for the label and masked the inner value, and the decode pass then masked
-    the label's run. A second call read `app.***REDACTED***` as a plain value
-    of the outer label and masked it whole. Main is final on these inputs
+    `app.***REDACTED***` on the first call: the walk gave the outer value up for
+    the label and masked the inner value, and the decode pass then masked the
+    label's run. A second call read `app.***REDACTED***` as a plain value of the
+    outer label and masked it whole. Main is final on these inputs
     (`password: ***REDACTED*** = x`) and the head was not, which also made
-    `gh api --input` refuse such a body (`maskedJsonBody` masks again and
-    throws when the text changes). `redactSecrets` now walks the assignments
-    once more after the decode pass (`redactAssignments`, itself bounded by
-    `MAX_ASSIGNMENT_PASSES`), and decodes again only when that walk changed
-    the text. The first call now gives `password: ***REDACTED*** = ***REDACTED***`,
+    `gh api --input` refuse such a body (`maskedJsonBody` masks again and throws
+    when the text changes). `redactSecrets` now walks the assignments once more
+    after the decode pass (`redactAssignments`, itself bounded by
+    `MAX_ASSIGNMENT_PASSES`), and decodes again only when that walk changed the
+    text. The first call now gives `password: ***REDACTED*** = ***REDACTED***`,
     and a second call changes nothing. The post-decode walk is the same
-    `secret-assignment` walk a second call runs, so on this shape the first
-    call now equals the earlier second call. `SECURITY.md` and the
-    `redactAssignments` and `redactSecrets` comments say so; the one shape
-    still not final is unchanged.
-  - **Tests.** 6 more tests (318 → 324): the four inputs through
-    `assertFinal` (first-call output, second-call output, `containsSecret`
-    false on the output and true on the input, no value published), a control
+    `secret-assignment` walk a second call runs, so on this shape the first call
+    now equals the earlier second call. `SECURITY.md` and the
+    `redactAssignments` and `redactSecrets` comments say so; the one shape still
+    not final is unchanged.
+  - **Tests.** 6 more tests (318 → 324): the four inputs through `assertFinal`
+    (first-call output, second-call output, `containsSecret` false on the output
+    and true on the input, no value published), a control
     (`password: app.hunter2value = x` keeps its output), and `redactGhBodyArgs`
-    with `api … --input` posting the masked body. 5 of the 6 fail with the
-    walk removed (the four `assertFinal` inputs and the `--input` one); the
-    control passes either way.
+    with `api … --input` posting the masked body. 5 of the 6 fail with the walk
+    removed (the four `assertFinal` inputs and the `--input` one); the control
+    passes either way.
   - **Sweep.** 400,000 random inputs of 2-6 pieces (labels, separators,
     `app.`/`hunter2.` prefixes, base64 and reversed credential runs, newlines)
     behind five lead-ins: 229 changed on a second call before the walk, none
     after.
 - **Review round 16** — two items, and the round-15 test and docs asks:
   - **A run that never returned.** The wrapped-run loop stepped the shared
-    `WRAPPED_RUN_G` and called the decode pass, which walks the decoded text
-    and reaches the same check, resetting `lastIndex`, so the loop found the
-    same run without end. That loop and both `CREDENTIAL_KEYWORD_ALL` loops
-    now use `matchAll`, which steps a private copy. The 105-byte input (the
-    round-14 fixture, base64-encoded, broken after 24 characters, after
-    `credentials: DEPLOY_TOKEN = `) gives `credentials: DEPLOY_TOKEN =
-    ***REDACTED***\n***REDACTED***`. A base64 run decoding to a
-    label-as-value shape gives `credentials: ***REDACTED*** = ***REDACTED***`.
-  - **A later rule masks the next line.** The run is also cut at the first
-    value `secret-cli-flag` or `hex32-credential` masks after the inner value,
-    since main's decode pass runs after them. `<value>\nmd5=<32 hex>`, the
-    lead-in on its own line with `trace_id=<32 hex>` (LF and CRLF),
+    `WRAPPED_RUN_G` and called the decode pass, which walks the decoded text and
+    reaches the same check, resetting `lastIndex`, so the loop found the same
+    run without end. That loop and both `CREDENTIAL_KEYWORD_ALL` loops now use
+    `matchAll`, which steps a private copy. The 105-byte input (the round-14
+    fixture, base64-encoded, broken after 24 characters, after
+    `credentials: DEPLOY_TOKEN =`) gives
+    `credentials: DEPLOY_TOKEN =
+    ***REDACTED***\n***REDACTED***`. A base64
+    run decoding to a label-as-value shape gives
+    `credentials: ***REDACTED*** = ***REDACTED***`.
+  - **A later rule masks the next line.** The run is also cut at the first value
+    `secret-cli-flag` or `hex32-credential` masks after the inner value, since
+    main's decode pass runs after them. `<value>\nmd5=<32 hex>`, the lead-in on
+    its own line with `trace_id=<32 hex>` (LF and CRLF),
     `api_key: <value>\nsession=<32 hex> (expires soon)`, the short value
     `pw42x9z`, `<value>\n--password\nUSER=bob` and the YAML child
     `secrets:\n  api_key: <value>\ntrace_id=<32 hex>` mask the value on the
@@ -370,28 +372,27 @@ flowchart LR
     inner value: a first sweep showed that a 32-hex value inside the inner
     value, which the assignment rule has already masked, must not end the run.
   - **Round-15 asks.** The 8-key limit on that cut is stated in `SECURITY.md`
-    and below, with a test pinning base behaviour at eight and masking at
-    seven. The round-15 inputs with the lead-in on its own line (LF and CRLF)
-    are tested. The three round-15 timing units are pinned at 64,000 repeats
-    with exact outputs (each flag's double-quoted value takes the next unit,
-    so two input units give one output unit). They equal main's output and
-    run in about 1 s here, against about 0.25 s for main.
-  - 19 more tests (299 → 318): 8 fail at `7dedc381`, and the re-entry test
-    does not return there. The other 10 pin what that head already did: the
-    round-15 inputs with the lead-in on its own line, the three controls, the
-    8-key base case, the hostile sizes and the decoded label-as-value case.
-    Every test file importing `secret_redaction.ts`: `1359 passed | 0
+    and below, with a test pinning base behaviour at eight and masking at seven.
+    The round-15 inputs with the lead-in on its own line (LF and CRLF) are
+    tested. The three round-15 timing units are pinned at 64,000 repeats with
+    exact outputs (each flag's double-quoted value takes the next unit, so two
+    input units give one output unit). They equal main's output and run in about
+    1 s here, against about 0.25 s for main.
+  - 19 more tests (299 → 318): 8 fail at `7dedc381`, and the re-entry test does
+    not return there. The other 10 pin what that head already did: the round-15
+    inputs with the lead-in on its own line, the three controls, the 8-key base
+    case, the hostile sizes and the decoded label-as-value case. Every test file
+    importing `secret_redaction.ts`: `1359 passed | 0
     failed`.
   - **Sweep, head against main.** 2,059,345 distinct inputs, nine seeds over
     three generators (general; lead-in led; flag led), with 32-hex values,
     `md5=`, `trace_id=`, `session=`, a flag on its own line, `USER=bob`, CRLF
-    and the broken base64 fixture added. At the round-16 head the sweep found
-    no published value that main masks, no `containsSecret` disagreement and
-    no input over 200 ms. Its second-call check did not hold for every shape:
-    round 17 found glued-run inputs where main's output is final and the
-    round-16 head's first call was not (the post-decode walk fixes them). The
-    previous head was left out
-    because it does not return on some of these inputs.
+    and the broken base64 fixture added. At the round-16 head the sweep found no
+    published value that main masks, no `containsSecret` disagreement and no
+    input over 200 ms. Its second-call check did not hold for every shape: round
+    17 found glued-run inputs where main's output is final and the round-16
+    head's first call was not (the post-decode walk fixes them). The previous
+    head was left out because it does not return on some of these inputs.
 - **Review round 15** — two items:
   - **A masked assignment on the line after the inner value.** The wrapped-run
     check read `<value>\nAPI_KEY=abcdefgh1234` from the unmasked text and kept
@@ -715,12 +716,13 @@ flowchart LR
   64-character bound is renamed for what it checks, a 66-character label within
   the 128-character bound. Every test file that mentions `redactSecrets`,
   `containsSecret` or `secret_redaction` passes at head: 53 files, 1,491 passed,
-  0 failed (the review round 17 result: 1,447 in the parallel pass, 44 in the serial one). This run used a scratch import map in
-  place of the `jsr:@std/*` imports, since jsr.io was unreachable from the host;
-  CI runs the suites as written. That includes `secret_redaction_test.ts`, its
-  `_markdown_1727_`, `_redos_`, `_bounds_`, `_boolean_setting_`,
-  `_json_structure_` and `_prose_heading_5253_` siblings,
-  `fleet_telemetry_redaction_test.ts` and `run_stats_redaction_test.ts`.
+  0 failed (the review round 17 result: 1,447 in the parallel pass, 44 in the
+  serial one). This run used a scratch import map in place of the `jsr:@std/*`
+  imports, since jsr.io was unreachable from the host; CI runs the suites as
+  written. That includes `secret_redaction_test.ts`, its `_markdown_1727_`,
+  `_redos_`, `_bounds_`, `_boolean_setting_`, `_json_structure_` and
+  `_prose_heading_5253_` siblings, `fleet_telemetry_redaction_test.ts` and
+  `run_stats_redaction_test.ts`.
 - **Full gate:** `./quality.sh < /dev/null` passed on an earlier head
   (`be3317ae0`) with `Result: PASSED (with skipped checks)`. The gate itself
   skipped `config integration` (no `.config.json`) and `checkov` (no checkov on
@@ -767,12 +769,12 @@ flowchart LR
 - When more than 8 credential keys sit between the inner value and the first
   value masked after it (eight lines such as `GITHUB_TOKEN`, `NPM_TOKEN`, ...
   with no separator, then `ADMIN_TOKEN=abcdefgh1234`), the wrapped run is read
-  whole and keeps the base result, so the inner value is published as on base.
-  A test pins that output, and seven such lines mask the value.
+  whole and keeps the base result, so the inner value is published as on base. A
+  test pins that output, and seven such lines mask the value.
 - One label-as-value shape is still not final, and publishes nothing: a
-  single-quoted value of glued labels that the walk reads as the next chain
-  link (`'app.token=password:`), whose closing quote a later flag takes. A
-  second call masks the value too (see the round-14 entry).
+  single-quoted value of glued labels that the walk reads as the next chain link
+  (`'app.token=password:`), whose closing quote a later flag takes. A second
+  call masks the value too (see the round-14 entry).
 - A quoted inner value read through more than 64 `--` runs (a chain of flags
   each reaching past the last) also keeps the base result, so its inner value is
   published as on base. A test pins a 3.4 MB chain's exact output.
