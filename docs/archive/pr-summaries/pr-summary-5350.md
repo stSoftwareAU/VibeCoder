@@ -2,14 +2,14 @@
 
 ## Summary
 
-`checkAwsEmulatorWorkflow` matched the test step by path suffix. It also did
-not read the keys that decide which file a relative path names. Both
-validators now pin those keys:
+`checkAwsEmulatorWorkflow` matched the test step by path suffix. It also did not
+read the keys that decide which file a relative path names. Both validators now
+pin those keys:
 
 - **Exact command.** The test step runs, after an optional leading
   `set -euo pipefail`, exactly one command from `TEST_COMMANDS`: the script by
-  its exact path (bare or `./`), alone or after `bash`/`sh`. `TEST_COMMANDS`
-  and `GATE_COMMANDS` both come from one new helper, `exactCommands`.
+  its exact path (bare or `./`), alone or after `bash`/`sh`. `TEST_COMMANDS` and
+  `GATE_COMMANDS` both come from one new helper, `exactCommands`.
 - **No working directory.** `setsWorkingDirectory` now applies to the test step,
   its job and the workflow.
 - **Plain checkouts.** Every `actions/checkout` in the test job, and in job
@@ -24,16 +24,16 @@ Closes #5350.
 
 ### Intent and Rationale
 
-- A suffix match accepted `./x/infra/cloudformation/test-aws-emulator.sh`.
-  A working directory, or a checkout `ref`/`repository`/`path`, can also make
-  the relative path name a look-alike. Any of these, plus a second artefact,
-  could keep the required check green without running the repository's script.
-- The gate step already used an exact allowlist, so the test step now uses
-  the same builder instead of a second copy.
+- A suffix match accepted `./x/infra/cloudformation/test-aws-emulator.sh`. A
+  working directory, or a checkout `ref`/`repository`/`path`, can also make the
+  relative path name a look-alike. Any of these, plus a second artefact, could
+  keep the required check green without running the repository's script.
+- The gate step already used an exact allowlist, so the test step now uses the
+  same builder instead of a second copy.
 
 ### Essential Design Decisions
 
-- The test step is still *located* by the suffix match (`stepInvokes`), then
+- The test step is still _located_ by the suffix match (`stepInvokes`), then
   held to the exact allowlist. A look-alike call therefore yields the precise
   `[test-step] … must run only …` finding rather than "no step runs".
 - An inline assignment prefix (`FOO=true ./infra/…`, `BASH_ENV=… bash …`) is no
@@ -66,13 +66,13 @@ flowchart TD
 
 Issue numbers cited as provenance in the diff:
 
-- #5350: aws-emulator.yml validator does not pin which test script the step
-  runs (path suffix, working-directory, checkout inputs)
+- #5350: aws-emulator.yml validator does not pin which test script the step runs
+  (path suffix, working-directory, checkout inputs)
 
 ## Test Plan
 
-Tests added in `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`,
-all named `(Issue #5350)`. Each refusal asserts exactly one named finding.
+Tests added in `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`, all
+named `(Issue #5350)`. Each refusal asserts exactly one named finding.
 
 - **Working directory.** Refused on the test step, on job `cloudformation`'s
   `defaults.run` and on the workflow's `defaults.run`. Control: a job
@@ -86,24 +86,26 @@ all named `(Issue #5350)`. Each refusal asserts exactly one named finding.
   `repository` and `path`, each mutating the checkout in job `container`, not
   `changes`. Control: `fetch-depth: 0` is accepted.
 
-One existing test changed. `(a) accepts a real continuation from an assignment
-into true <script> (Issue #5304)` is now `(a) refuses …`:
+One existing test changed.
+`(a) accepts a real continuation from an assignment
+into true <script> (Issue #5304)`
+is now `(a) refuses …`:
 
 - **What changed.** The fixture `FOO=\` continued into `true <script>` is now a
-  refusal. The issue asks to "hold the test step's command to an exact
-  allowlist of command lines", and an assignment prefix is not one of those
-  lines.
-- **What still protects #5304's behaviour.** The new `(a) accepts a real
-  continuation from bash into the script path (Issue #5304)` checks that a
-  backslash continuation is joined into one command.
+  refusal. The issue asks to "hold the test step's command to an exact allowlist
+  of command lines", and an assignment prefix is not one of those lines.
+- **What still protects #5304's behaviour.** The new
+  `(a) accepts a real
+  continuation from bash into the script path (Issue #5304)`
+  checks that a backslash continuation is joined into one command.
 - **Unchanged.** The other #5304 refusals in the file keep their expectations.
 
 Results:
 
 - **Red on base.** I restored the base-branch
   `worker/deno/lib/aws_emulator_workflow_check.ts` and kept the new tests. All
-  14 new and changed refusals failed and every control passed (247 passed,
-  14 failed).
+  14 new and changed refusals failed and every control passed (247 passed, 14
+  failed).
 - **Green on head.** With the fixed validator: 261 passed, 0 failed
   (`deno test --allow-read tests/issue_5110_aws_emulator_workflow_test.ts`).
 - **Static checks.** `deno fmt`, `deno lint` and `deno check` are clean on both
@@ -117,11 +119,10 @@ Results:
 - **First run.** Bounded at 600s, it was killed without printing a verdict.
 - **Second run.** Bounded at 300s, every stage it reached passed: the
   chokepoint, hygiene and completeness checks, mermaid, markdownlint, semgrep,
-  gitleaks and release-tag ruleset. Config integration and checkov were
-  skipped. The run was cut off in the stage after release-tag ruleset (exit
-  124).
-- **Why not again.** With about 35 minutes left there was no runway for a
-  longer run. The worker runs the gate again before the PR is raised.
+  gitleaks and release-tag ruleset. Config integration and checkov were skipped.
+  The run was cut off in the stage after release-tag ruleset (exit 124).
+- **Why not again.** With about 35 minutes left there was no runway for a longer
+  run. The worker runs the gate again before the PR is raised.
 
 <!-- vibe-quality-gate-skipped reason="./quality.sh did not finish within 600s or 300s bounds this run; every stage it reached passed; run budget could not cover a longer run" -->
 
