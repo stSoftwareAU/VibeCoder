@@ -30,12 +30,19 @@
  *   - **Dedup.** The known-open list passed to Claude is built from the
  *     repo's existing open `best-practices` issues — Claude is
  *     instructed to skip any finding whose `BP-…` id is in the list.
- *   - **AWS-emulator pre-check (Issue #3368).** Runs on every bucket
- *     (unlike the linter pre-check, which is language-targeted): calls
- *     `checkAwsEmulatorInCI()` and, when the repo uses AWS, a workflow
- *     loaded, and no workflow runs Floci or the official AWS Emulator, files a
+ *   - **AWS-emulator pre-check (Issue #3368, wiring rules Issue #5112).**
+ *     Runs on every bucket (unlike the linter pre-check, which is
+ *     language-targeted): calls `checkAwsEmulatorInCI()` and, when the repo
+ *     uses AWS, a workflow loaded, no workflow wires AWS tests to the official
+ *     AWS Emulator, and no workflow fails to parse, files a
  *     `BP-AWS-EMULATOR-MISSING` finding as a standalone `best-practices`
- *     issue at `severity:medium`. A `# best-practice-ignore:
+ *     issue at `severity:medium`. The title says which: no test wiring at all
+ *     (`missing`), or Floci-only tests to migrate (`floci-only`). Static
+ *     wiring that is credited (`official-server`, `official-embedded`) or a
+ *     recorded Floci gap (`floci-gap`) is not filed. Floci never counts as
+ *     official coverage. A fleet-authored open issue with an "AWS Emulator"
+ *     title (see {@link findEquivalentAwsEmulatorIssue}) suppresses filing. A
+ *     `# best-practice-ignore:
  *     BP-AWS-EMULATOR-MISSING — …` marker in a loaded workflow or in one
  *     of the AWS-evidence files waives it. Like the linter pre-filer,
  *     the pre-filed id joins the known-open list so Claude does not
@@ -55,6 +62,7 @@ import {
   registerTemplate,
 } from "../idle_task_template.ts";
 import { guardedLabelArgs } from "../guarded_issue_labels.ts";
+import { stripWorkerRecordBlocks } from "../worker_record_block.ts";
 import {
   type BucketPick,
   pickBucket as defaultPickBucket,
@@ -75,6 +83,7 @@ import {
   type SupportedLanguage as CommentLanguage,
 } from "../suppression_comments.ts";
 import { blameFileLineLogins } from "../suppression_identity.ts";
+import { neutraliseHtmlComments } from "../prompt_delimiter.ts";
 import {
   detectRepoLanguages as defaultDetectLanguages,
   type RepoLanguages,
@@ -88,7 +97,11 @@ import {
   scanCapabilityCoverageDir,
 } from "../capability_coverage_scan.ts";
 import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
-import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
+import {
+  findFleetAuthoredIssuesTitled,
+  hasFleetAuthoredOpenIssueTitled,
+  type TitleMarkerDedupRow,
+} from "../idle_task_wrapper_dedup.ts";
 import {
   getPromptsDir,
   loadPrompt as defaultLoadPrompt,
@@ -292,8 +305,9 @@ export interface BestPracticesTemplateDeps {
   /**
    * Logger for the AWS-emulator pre-check (Issue #3368) — defaults to
    * `defaultLogger`. Used to record why the `BP-AWS-EMULATOR-MISSING`
-   * finding was not filed (no AWS usage, no workflow loaded, the
-   * emulator is already configured, or a valid waiver marker applies).
+   * finding was not filed (no AWS usage, no workflow loaded, credited or
+   * gap-recorded static wiring, an unreadable workflow, a valid waiver marker,
+   * or an equivalent open issue).
    */
   logger?: Logger;
   /**
@@ -636,67 +650,302 @@ async function filePreFiledFinding(
 /** Severity the AWS-emulator-missing (`BP-AWS-EMULATOR-MISSING`) finding carries. */
 const AWS_EMULATOR_SEVERITY: PreFiledSeverity = "medium";
 
-/** Maximum AWS-evidence paths listed in the finding body before truncating. */
+/** Maximum AWS-evidence paths and wiring diagnostics listed in the finding body before truncating. */
 const AWS_EVIDENCE_CAP = 50;
 
+/** The testing standard the finding links for the expected wiring. */
+const AWS_INTEGRATION_TESTING_URL =
+  "https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#aws-integration-testing";
+
 /**
- * Build the synthetic AWS-emulator-missing finding (Issue #3368). The
- * body lists up to {@link AWS_EVIDENCE_CAP} AWS-usage evidence paths,
- * then a `- … and N more` line for the remainder; any backtick in a path
- * is replaced with `'` so the Markdown code span cannot be broken out of.
+ * Code-span-safe form of a path or diagnostic: a backtick would break out of
+ * the span, and an HTML comment would be read as a body marker.
+ */
+function codeSpanSafe(text: string): string {
+  return neutraliseHtmlComments(text.replaceAll("`", "'"));
+}
+
+/**
+ * Build the synthetic AWS-emulator finding (Issue #3368, wiring rules Issue
+ * #5112). The title says what is missing: no AWS Emulator test wiring at all
+ * (`missing`), or tests that still run only against Floci (`floci-only`). The
+ * body lists up to {@link AWS_EVIDENCE_CAP} AWS-usage evidence paths, then a
+ * `- … and N more` line for the remainder, and the wiring diagnostics under the
+ * same cap. Backticks in a path or diagnostic are replaced with `'` so the
+ * Markdown code span cannot be broken out of, and HTML-comment delimiters are
+ * neutralised with {@link neutraliseHtmlComments}: a diagnostic quotes text
+ * from the scanned repository's workflows, so a `<!-- finding-id: … -->`
+ * comment there would otherwise become a second dedup marker in the body.
  */
 export function buildAwsEmulatorFinding(
   check: AwsEmulatorCheckResult,
 ): PreFiledFinding {
   const findingId = AWS_EMULATOR_FINDING_ID;
-  const title = "🟡 No AWS emulator (Floci) in CI";
-  const shown = check.awsEvidence.slice(0, AWS_EVIDENCE_CAP);
-  const remainder = check.awsEvidence.length - shown.length;
-  const evidenceLines = shown.map((p) => `- \`${p.replaceAll("`", "'")}\``);
-  if (remainder > 0) {
-    evidenceLines.push(`- … and ${remainder} more`);
+  const flociOnly = check.wiring === "floci-only";
+  const title = flociOnly
+    ? "🟡 Migrate Floci-only AWS tests to AWS Emulator"
+    : "🟡 No AWS Emulator test wiring in CI";
+  const shownEvidence = check.awsEvidence.slice(0, AWS_EVIDENCE_CAP);
+  const evidenceLines = shownEvidence.map((p) => `- \`${codeSpanSafe(p)}\``);
+  const evidenceRemainder = check.awsEvidence.length - shownEvidence.length;
+  if (evidenceRemainder > 0) {
+    evidenceLines.push(`- … and ${evidenceRemainder} more`);
   }
+  const shownDiagnostics = check.wiringDiagnostics.slice(0, AWS_EVIDENCE_CAP);
+  const found = shownDiagnostics.map((d) => `- ${codeSpanSafe(d)}`);
+  const diagnosticRemainder = check.wiringDiagnostics.length -
+    shownDiagnostics.length;
+  if (diagnosticRemainder > 0) {
+    found.push(`- … and ${diagnosticRemainder} more`);
+  }
+  if (found.length === 0) found.push("- No AWS Emulator wiring was found.");
+
+  const why = flociOnly
+    ? "This repository uses AWS, and its AWS tests run only against Floci. " +
+      "Floci is not the supported emulator for this, so those calls and " +
+      "templates are not checked against AWS Emulator before they reach a " +
+      "real account."
+    : "This repository uses AWS, but no pull_request workflow runs its AWS " +
+      "tests through the AWS Emulator, so its AWS templates and SDK calls are " +
+      "not exercised before they reach a real account.";
   const body = [
     `<!-- finding-id: ${findingId} -->`,
     "",
-    `**Severity:** ${AWS_EMULATOR_SEVERITY} (no AWS emulator in CI)`,
+    `**Severity:** ${AWS_EMULATOR_SEVERITY} (${
+      flociOnly
+        ? "AWS tests run only against Floci"
+        : "no AWS Emulator test wiring in CI"
+    })`,
     "",
     "## Why this matters",
     "",
-    "This repository uses AWS, but no GitHub Actions workflow runs the " +
-    "`floci/floci` emulator, so its AWS templates and SDK calls are never " +
-    "exercised before they reach a real account.",
+    why,
     "",
     "AWS usage was detected in:",
     "",
     ...evidenceLines,
     "",
+    "## What the scan found",
+    "",
+    ...found,
+    "",
+    "## What this scan checked",
+    "",
+    "This scan read workflow and script text only. It reports configured " +
+    "execution, not an observed green CI run, and not a review of test " +
+    "adequacy.",
+    "",
     "## Suggested fix",
     "",
-    "Add the emulator to this repository's own workflow — a per-repo " +
-    "change, never a shared reusable Action:",
+    "Wire this repository's own AWS tests to the AWS Emulator, per " +
+    "repository (never a shared reusable Action):",
     "",
-    "- Run `floci/floci@sha256:<digest>` as a CI service container, " +
-    "pinned by digest, and mount `/var/run/docker.sock` for " +
-    "Docker-backed services — or start it with `docker run`.",
-    "- CloudFormation: deploy every template to Floci and fail the job " +
-    "unless each stack reaches `CREATE_COMPLETE`. Resource types Floci " +
-    "stubs (enabled with " +
-    "`FLOCI_SERVICES_CLOUDFORMATION_ALLOW_STUB_UNSUPPORTED_RESOURCE_TYPES`) " +
-    "pass, with one `::warning::` annotation per stubbed type.",
-    "- SDK code: add at least one Floci test per AWS service the code " +
-    "calls. This audit checks only that Floci runs in CI, not " +
-    "per-service coverage.",
-    "- Test scripts start `floci` on demand. Where Docker is unavailable " +
-    "(as in the Vibe Coder worker) they print `SKIPPED (needs Docker): " +
-    "<name>` for each Docker-backed item; CI runs them and fails when no " +
-    "Docker socket is present.",
+    "- Install the pinned AWS Emulator in the job without starting it.",
+    "- Have the repository's own test command run its AWS integration tests " +
+    "through `aws-emulator-run [--timeout N] -- <test command>` from a job " +
+    "that runs on `pull_request`. Failures must propagate: no " +
+    "`continue-on-error`, `|| true`, `!` or pipe around the runner.",
+    "- Tests drive the repository's own production AWS scripts, clients, " +
+    "adapters and handlers with deterministic fixtures, unique per-run " +
+    "resources, and supported error cases. New or changed AWS components " +
+    "need these tests; this is not a request to rewrite the whole test suite.",
+    "- Rust may use embedded mode instead, with an " +
+    "`# aws-emulator-embedded: version=X.Y.Z; justification=…` marker in the " +
+    "step that runs `cargo test` or `cargo nextest`.",
+    "- Unsupported operations (HTTP 501), skips and stubbed resources are " +
+    "coverage gaps. Record each with an `# aws-emulator-gap: version=…; " +
+    "behaviour=…; evidence=…; alternative=…; recheck=…` marker. A gap is " +
+    "never a pass.",
+    "- Keep IAM/security and deployment checks on the authorised real-AWS " +
+    "path.",
+    ...(flociOnly
+      ? [
+        "- Keep Floci only for a recorded gap, and move supported behaviour " +
+        "to AWS Emulator.",
+      ]
+      : []),
+    "",
+    `Reference: ${AWS_INTEGRATION_TESTING_URL}`,
     "",
     "To waive this finding, add `# best-practice-ignore: " +
     "BP-AWS-EMULATOR-MISSING — author=<login> expires=<YYYY-MM-DD> " +
     "<reason>` to a workflow file or one of the files listed above.",
   ].join("\n");
   return { findingId, title, body };
+}
+
+/**
+ * The first open, fleet-authored issue whose title names the AWS Emulator (for
+ * example "Add AWS Emulator tests", or the older "No AWS emulator (Floci) in
+ * CI" finding), with its number, title and body, or null when there is none.
+ * Such an issue already tracks this gap, so the finding is not filed again
+ * (see {@link reconcileAwsEmulatorIssue} for posting the current finding on
+ * an older one).
+ *
+ * Titles are text anyone can write, so only a fleet-authored match counts: the
+ * author check is the one {@link findFleetAuthoredIssuesTitled} applies (Issue
+ * #1243). A gh failure throws with context: an unknown lookup must not file a
+ * duplicate, and the run's catch turns the throw into ok:false.
+ */
+export async function findEquivalentAwsEmulatorIssue(
+  repo: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  dedupAuthors: AlertDedupAuthorOptions,
+): Promise<TitleMarkerDedupRow | null> {
+  let matches: TitleMarkerDedupRow[];
+  try {
+    matches = await findFleetAuthoredIssuesTitled({
+      ...dedupAuthors,
+      repo,
+      title: "AWS Emulator",
+      context: `AWS Emulator issue lookup ${repo}`,
+      ghCommand: ghCommandFn,
+      searchExpression: `"AWS Emulator" in:title`,
+      titleMatches: (title) => title.toLowerCase().includes("aws emulator"),
+      limit: 50,
+      log: (message) => defaultLogger.warn(message),
+    });
+  } catch (err) {
+    throw new Error(
+      `best-practices: cannot look up open AWS Emulator issues in ${repo}: ${
+        (err as Error).message
+      }`,
+      { cause: err },
+    );
+  }
+  return matches[0] ?? null;
+}
+
+/**
+ * The hidden marker on the comment {@link reconcileAwsEmulatorIssue} posts:
+ * the finding id and the SHA-256 of the finding body it carries, so the same
+ * update is posted once, and a changed finding is posted again.
+ */
+export function awsEmulatorUpdateMarker(
+  findingId: string,
+  bodyDigest: string,
+): string {
+  return `<!-- finding-update: ${findingId} sha256:${bodyDigest} -->`;
+}
+
+/** Hex SHA-256 of `text`, as UTF-8. */
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Bring an open issue the AWS Emulator lookup reused up to date (Issue #5112
+ * scope 7: reconcile rather than file again), without editing it.
+ *
+ * Only an issue whose body's first line is this finding's `finding-id` marker
+ * (where the scan writes it) is a finding the scan filed; a marker anywhere
+ * else, such as one quoted in a code span or under an owner's paragraph, is
+ * not, and the issue is left alone. The body is compared with the current
+ * finding with its machine-owned record blocks set aside
+ * (`stripWorkerRecordBlocks`), so a `Deferred until` or `Depends on` record a
+ * worker added never reads as a stale finding.
+ *
+ * When the finding differs, the current finding is posted as one comment and
+ * the title and body are never edited. An edit would replace text the scan did
+ * not write (an owner's note, the worker record block that `time_deferral.ts`
+ * and `blocked_deferral.ts` read), and on an issue an owner has already
+ * approved with `work-on` it is a service-account change to approved content,
+ * which `work_on_content_integrity.ts` escalates to `needs-human`. A comment
+ * changes neither the title nor the body, so the approval digest and the
+ * record block are untouched. The comment carries
+ * {@link awsEmulatorUpdateMarker}, so a later scan with the same finding posts
+ * nothing; it does not carry the `finding-id` marker, so it is never read as a
+ * second finding. Returns true when it posted a comment. A gh failure throws
+ * with context, like the lookup.
+ */
+export async function reconcileAwsEmulatorIssue(
+  repo: string,
+  issue: TitleMarkerDedupRow,
+  finding: PreFiledFinding,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<boolean> {
+  const body = issue.body ?? "";
+  const marker = `<!-- finding-id: ${finding.findingId} -->`;
+  const firstLine = (body.split("\n", 1)[0] ?? "").replace(/\r$/, "").trim();
+  if (firstLine !== marker) return false;
+  if (stripWorkerRecordBlocks(body).trim() === finding.body.trim()) {
+    return false;
+  }
+  const update = awsEmulatorUpdateMarker(
+    finding.findingId,
+    await sha256Hex(finding.body),
+  );
+  const context = `AWS Emulator finding #${issue.number} in ${repo}`;
+  let comments: unknown;
+  try {
+    const raw = await ghCommandFn([
+      "issue",
+      "view",
+      String(issue.number),
+      "--repo",
+      repo,
+      "--json",
+      "comments",
+    ]);
+    comments = (JSON.parse(raw) as { comments?: unknown }).comments;
+  } catch (err) {
+    throw new Error(
+      `best-practices: cannot read the comments on ${context}: ${
+        (err as Error).message
+      }`,
+      { cause: err },
+    );
+  }
+  if (!Array.isArray(comments)) {
+    throw new Error(
+      `best-practices: cannot read the comments on ${context}: no comments list`,
+    );
+  }
+  const posted = comments.some((comment) =>
+    typeof (comment as { body?: unknown })?.body === "string" &&
+    ((comment as { body: string }).body.split("\n", 1)[0] ?? "").trim() ===
+      update
+  );
+  if (posted) return false;
+  const findingText = finding.body.split("\n").filter((line) =>
+    line.trim() !== marker
+  ).join("\n").trim();
+  const commentBody = [
+    update,
+    "",
+    "The best-practices scan's current finding for this repository differs " +
+    "from this issue's body. The issue is not edited, so its text and any " +
+    "approval stay as they are; this is the current finding.",
+    "",
+    `**Current title:** ${finding.title}`,
+    "",
+    findingText,
+  ].join("\n");
+  try {
+    await ghCommandFn([
+      "issue",
+      "comment",
+      String(issue.number),
+      "--repo",
+      repo,
+      "--body",
+      commentBody,
+    ]);
+  } catch (err) {
+    throw new Error(
+      `best-practices: cannot comment the current finding on ${context}: ${
+        (err as Error).message
+      }`,
+      { cause: err },
+    );
+  }
+  return true;
 }
 
 /** The repo-relative candidate file's text and relative path for the AWS-emulator waiver scan. */
@@ -1151,11 +1400,23 @@ export function createBestPracticesTemplate(
         );
       } else if (!aws.workflowsLoaded) {
         logger.info(
-          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — no workflow loaded, so whether CI runs Floci is unknown`,
+          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — no workflow loaded, so whether CI wires AWS Emulator tests is unknown`,
         );
-      } else if (aws.emulatorConfigured) {
+      } else if (
+        aws.wiring === "official-server" ||
+        aws.wiring === "official-embedded" ||
+        aws.wiring === "floci-gap"
+      ) {
         logger.info(
-          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — a workflow runs floci/floci or the official AWS Emulator`,
+          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — ${aws.wiring} wiring (static wiring evidence; no CI result observed): ${
+            aws.wiringEvidence[0] ?? "no evidence line"
+          }`,
+        );
+      } else if (aws.unreadableWorkflows.length > 0) {
+        logger.info(
+          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — unreadable workflow(s) ${
+            aws.unreadableWorkflows.join(", ")
+          }: whether they wire the emulator is unknown (not a missing-gate claim; retried on the next scan)`,
         );
       } else if (
         await hasAwsEmulatorWaiver(awsRepoPath, aws.awsEvidence, blameFileFn)
@@ -1164,23 +1425,44 @@ export function createBestPracticesTemplate(
           `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — waived by a best-practice-ignore marker`,
         );
       } else {
-        const filed = await fileFindingOnce({
-          repo: opts.repo,
-          logLabel: BEST_PRACTICES_LABEL,
-          findingId: AWS_EMULATOR_FINDING_ID,
+        const equivalent = await findEquivalentAwsEmulatorIssue(
+          opts.repo,
           ghCommandFn,
           dedupAuthors,
-          fileFn: () =>
-            filePreFiledFinding(
-              opts.repo,
-              bucket,
-              buildAwsEmulatorFinding(aws),
-              AWS_EMULATOR_SEVERITY,
-              ghCommandFn,
-            ),
-        });
-        if (filed !== null) {
-          preFiled.push(filed.findingId);
+        );
+        if (equivalent !== null) {
+          const updated = await reconcileAwsEmulatorIssue(
+            opts.repo,
+            equivalent,
+            buildAwsEmulatorFinding(aws),
+            ghCommandFn,
+          );
+          logger.info(
+            `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — open fleet-authored issue #${equivalent.number} already tracks AWS Emulator wiring${
+              updated
+                ? " (the current finding was posted on it as a comment; its title and body were not edited)"
+                : ""
+            }`,
+          );
+        } else {
+          const filed = await fileFindingOnce({
+            repo: opts.repo,
+            logLabel: BEST_PRACTICES_LABEL,
+            findingId: AWS_EMULATOR_FINDING_ID,
+            ghCommandFn,
+            dedupAuthors,
+            fileFn: () =>
+              filePreFiledFinding(
+                opts.repo,
+                bucket,
+                buildAwsEmulatorFinding(aws),
+                AWS_EMULATOR_SEVERITY,
+                ghCommandFn,
+              ),
+          });
+          if (filed !== null) {
+            preFiled.push(filed.findingId);
+          }
         }
       }
 
