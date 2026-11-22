@@ -89,10 +89,11 @@ API-key and unknown-billing accounts are never selected:
 }
 ```
 
-Auto mode is the default whenever two or more subscription providers are
-enabled (Issue #5089); set `agent_provider_mode: "pinned"` to keep one
-provider. The provider with the most remaining quota wins; an exact tie is not
-broken, and `agent_provider` plays no part in the choice. An explicit
+Auto mode is the default whenever two or more subscription-capable providers
+(Claude, Codex, Gemini) are enabled (Issue #5089); set
+`agent_provider_mode: "pinned"` to keep one provider. The provider with the
+most remaining quota wins; an exact tie is not broken, and `agent_provider`
+plays no part in the choice. An explicit
 per-invocation provider remains absolute, and `VIBE_AGENT_PROVIDER` can pin an
 enabled provider for that process. If every eligible subscription is exhausted
 or unavailable, the worker waits instead of falling through to metered usage.
