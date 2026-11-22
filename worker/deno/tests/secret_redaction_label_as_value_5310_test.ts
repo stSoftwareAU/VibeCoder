@@ -905,7 +905,7 @@ for (
     ],
     [
       "Rotate these credentials:\napi-key: ,tokenhunter2=\nsecret = token",
-      `Rotate these credentials:\napi-key: ,${R} = token`,
+      `Rotate these credentials:\napi-key: ,${R} = ${R}`,
       ["hunter2"],
     ],
     [
@@ -1027,3 +1027,69 @@ Deno.test("#5310 a 1 MB wrapped run of label-as-value lines keeps main's result"
       "abcdefgh12345678\n".repeat(59_999),
   );
 });
+
+// PR #5322 review round 11: a label followed by `=` and a line break keeps its
+// value masked; a flag after several words or a line break in an unclosed
+// quote keeps the first pass final; a match inside the inner value that runs
+// past it counts whether or not it is masked; and the line-break chain form.
+for (
+  const [input, expected, values] of [
+    [`credentials: DEPLOY_TOKEN=\n${V}`, `credentials: DEPLOY_TOKEN=\n${R}`, [
+      V,
+    ]],
+    [
+      `Rotate these credentials:\nDEPLOY_TOKEN=\n${V}`,
+      `Rotate these credentials:\nDEPLOY_TOKEN=\n${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'deploy now --token '${V}'`,
+      `secrets:\n  DEPLOY_TOKEN: 'deploy now --token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'deploy -v --token '${V}'`,
+      `secrets:\n  DEPLOY_TOKEN: 'deploy -v --token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'deploy x--token '${V}'`,
+      `secrets:\n  DEPLOY_TOKEN: 'deploy x--token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'a b c --token '${V}'`,
+      `secrets:\n  DEPLOY_TOKEN: 'a b c --token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'deploy\n--token '${V}'`,
+      `secrets:\n  DEPLOY_TOKEN: 'deploy\n--token ${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = API_TOKEN: ${V},DB_PASSWORD=\nhunter2`,
+      `credentials: ${R} = API_TOKEN: ${R}\nhunter2`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = API_TOKEN =\ntoken: x--token ${V}`,
+      `credentials: ${R} = API_TOKEN =\ntoken: x--token ${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = API_TOKEN\n = --token: --password ${V}`,
+      `credentials: ${R} = API_TOKEN\n = --token: --password ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: API_TOKEN =\ntoken: abc'--token ${V}`,
+      `secrets:\n  DEPLOY_TOKEN: API_TOKEN =\ntoken: abc'--token ${R}`,
+      [V],
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 round 11: ${JSON.stringify(input.slice(0, 52))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}

@@ -887,6 +887,18 @@ function verdictOf(text: string, match: RegExpExecArray): AssignmentVerdict {
  * mask.
  */
 function walkAssignments(text: string): AssignmentVerdict[] {
+  INNER_MEMO.text = text;
+  INNER_MEMO.results = new Map();
+  try {
+    return walkAssignmentsMemoised(text);
+  } finally {
+    INNER_MEMO.text = null;
+    INNER_MEMO.results = new Map();
+  }
+}
+
+/** {@link walkAssignments} with its {@link INNER_MEMO} in place. */
+function walkAssignmentsMemoised(text: string): AssignmentVerdict[] {
   const verdicts: AssignmentVerdict[] = [];
   let from = 0;
   // Where the last outer mask kept for an inner label ends; a later verdict
@@ -896,7 +908,7 @@ function walkAssignments(text: string): AssignmentVerdict[] {
   while ((match = execAssignmentAt(text, from)) !== null) {
     const outer = verdictOf(text, match);
     const valueStart = outer.end - outer.value.length;
-    const inner = innerAssignment(text, valueStart, outer.end);
+    const inner = innerAssignment(text, valueStart, outer.end, 0, outer.masked);
     if (
       inner && !inner.keepsOuter && !quotedRunOn(text, outer) &&
       isLabelOnly(text, valueStart, inner.labelStart)
@@ -1182,6 +1194,40 @@ function innerAssignment(
   start: number,
   end: number,
   depth = 0,
+  outerMasked = true,
+): InnerLabel | null {
+  // One answer per value within a walk (see INNER_MEMO): a long chain looks
+  // ahead once per link, not once per link per candidate.
+  const memo = INNER_MEMO.text === text ? INNER_MEMO.results : null;
+  const key = `${start}:${end}:${outerMasked ? 1 : 0}`;
+  const hit = memo?.get(key);
+  if (hit !== undefined) return hit;
+  const result = innerAssignmentUncached(text, start, end, depth, outerMasked);
+  memo?.set(key, result);
+  return result;
+}
+
+/**
+ * Answers of {@link innerAssignment} for the text being walked. A chain's
+ * look-ahead asks about each later link, and the walk then asks about the
+ * same link again, so without it a long chain cost the look-ahead's depth per
+ * link (PR #5322 review round 11; Issue #3942 linearity). The first answer
+ * for a value stands for the rest of the walk, so a link refused at the end
+ * of one candidate's look-ahead is refused for every candidate, which keeps
+ * main's result for a chain longer than the look-ahead.
+ */
+const INNER_MEMO: {
+  text: string | null;
+  results: Map<string, InnerLabel | null>;
+} = { text: null, results: new Map() };
+
+/** {@link innerAssignment} without the per-walk memo. */
+function innerAssignmentUncached(
+  text: string,
+  start: number,
+  end: number,
+  depth: number,
+  outerMasked: boolean,
 ): InnerLabel | null {
   const label = trailingLabel(text, start, end);
   if (!label) return null;
@@ -1222,7 +1268,9 @@ function innerAssignment(
   // mask the inner value whole and publish that text, so no inner label is
   // read. One check, with no whitespace or length bound of its own: wherever
   // main's scan reaches past the inner value, main's result stands.
-  if (mainReadsPastInnerValue(text, verdict, depth)) return null;
+  if (mainReadsPastInnerValue(text, verdict, depth, outerMasked ? end : -1)) {
+    return null;
+  }
   // A single-quoted inner value holding a space, found before one of the
   // value's quotes, that runs straight into more text (`DEPLOY_TOKEN='a b'.`):
   // its mask removes the space, so a second pass reads the label, placeholder
@@ -1292,6 +1340,7 @@ function mainReadsPastInnerValue(
   text: string,
   inner: AssignmentVerdict,
   depth: number,
+  maskedUntil: number,
 ): boolean {
   const start = inner.end - inner.value.length;
   // An inner value already holding the placeholder after other text
@@ -1307,7 +1356,7 @@ function mainReadsPastInnerValue(
   // exempt.
   const label = trailingLabel(text, start, inner.end);
   const chained = label !== null && depth < MAX_CHAIN_LOOKAHEAD &&
-      innerAssignment(text, start, inner.end, depth + 1) !== null
+      innerAssignment(text, start, inner.end, depth + 1, true) !== null
     ? label.start
     : -1;
   // Every `secret-assignment` key that starts inside the inner value, found
@@ -1330,7 +1379,10 @@ function mainReadsPastInnerValue(
     const match = SECRET_ASSIGNMENT_AT.exec(text);
     if (match === null) continue;
     const verdict = verdictOf(text, match);
-    if (verdict.end > inner.end && verdict.masked) return true;
+    // Masked or not: main's scan resumes after this match either way, so a
+    // match that reaches past the inner value changes what main reads next
+    // (PR #5322 review round 11).
+    if (verdict.end > inner.end) return true;
   }
   // Every credential flag whose `--` starts inside the inner value, read with
   // its whitespace and value from there, so a flag after any amount of
@@ -1352,10 +1404,22 @@ function mainReadsPastInnerValue(
   // begins at the separator's `=` or on the label's line counts (PR #5322
   // review round 10). When a wrapped run the pass would mask reaches past the
   // inner value, or covers the inner label, main's result stands.
-  let windowStart = inner.index;
+  // Which text the decode pass sees around the inner label depends on what
+  // stays visible (PR #5322 review round 11). When the inner value is itself a
+  // chained label the walk keeps visible, head's own pass sees the label line
+  // joined to it (`app.token=` then `DEPLOY_TOKEN = …`), so a run may start on
+  // the label's line and a run covering the label counts. Otherwise the inner
+  // value is masked in head's output, and on main the outer value (the inner
+  // label, up to `maskedUntil`) was masked when its verdict was, so a run can
+  // start no earlier than the end of that mask, and only a run reaching past
+  // the inner value counts (`DEPLOY_TOKEN=` then `<value>` keeps the value
+  // masked).
+  const labelVisible = chained !== -1;
+  const floor = labelVisible ? 0 : Math.max(maskedUntil, 0);
+  let windowStart = Math.max(inner.index, floor);
   for (
     let steps = 0;
-    windowStart > 0 && steps < WRAP_LOOKBACK &&
+    windowStart > floor && steps < WRAP_LOOKBACK &&
     WRAP_WINDOW_CHAR.test(text[windowStart - 1] ?? "");
     steps++
   ) windowStart--;
@@ -1377,7 +1441,10 @@ function mainReadsPastInnerValue(
     if (run === null) continue;
     const runEnd = runStart + run[0].length;
     if (runEnd <= inner.index) continue;
-    if (!(runEnd > inner.end || runStart < start) || !/\n/.test(run[0])) {
+    if (
+      !(runEnd > inner.end || (labelVisible && runStart < start)) ||
+      !/\n/.test(run[0])
+    ) {
       continue;
     }
     if (run[0].length > WRAP_RUN_MAX) return true;
@@ -1400,10 +1467,22 @@ function mainReadsPastInnerValue(
     (opener === "'" || opener === '"') &&
     inner.value.indexOf(opener, 1) === -1
   ) {
-    const gap = /^[ \t]+/.exec(text.slice(inner.end, inner.end + 64));
-    if (gap !== null) {
-      CLI_FLAG_AT.lastIndex = inner.end + gap[0].length;
-      if (CLI_FLAG_AT.exec(text) !== null) return true;
+    // The flag may follow other words or a line break inside the original
+    // quoted run (`'deploy now --token `, `'deploy\n--token `), so every `--`
+    // within INNER_ASSIGNMENT_SPAN after the inner value is read, and one
+    // whose value is the placeholder keeps main's result.
+    const after = text.slice(inner.end, inner.end + INNER_ASSIGNMENT_SPAN);
+    for (
+      let at = after.indexOf("--");
+      at !== -1;
+      at = after.indexOf("--", at + 1)
+    ) {
+      // Only text that could have sat inside the original quoted run lies
+      // between: no quote, separator or earlier placeholder.
+      if (/['"=:*]/.test(after.slice(0, at))) break;
+      CLI_FLAG_AT.lastIndex = inner.end + at;
+      const flag = CLI_FLAG_AT.exec(text);
+      if (flag !== null && flag[0].endsWith(REDACTION_PLACEHOLDER)) return true;
     }
   }
   return false;

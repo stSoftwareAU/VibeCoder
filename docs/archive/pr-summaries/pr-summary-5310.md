@@ -218,7 +218,7 @@ flowchart LR
 
 ## Test Plan
 
-- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 214
+- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 225
   tests**, all through `redactSecrets` and `containsSecret`:
   - **Leak cases** must mask the inner value and keep both labels:
     - `DEPLOY_TOKEN = <40-char value>` on the same line and the next line;
@@ -316,6 +316,33 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
+- **Review round 11** — the four partial items:
+  - **The #5310 leak across `=` and a line break.** A run covering the inner
+    label counts only when the inner value stays visible (a chained label);
+    otherwise runs start no earlier than the end of the outer value main
+    masked. `credentials: DEPLOY_TOKEN=` then `<token>` gives
+    `credentials: DEPLOY_TOKEN=` then `***REDACTED***` again, and
+    `The secret: app.token=` then `DEPLOY_TOKEN = hunter2` stays final.
+  - **Unclosed quote, flag later.** The second-pass check reads every `--`
+    within 256 characters after the inner value, up to the first quote,
+    separator or earlier placeholder, so `'deploy now --token `,
+    `'deploy -v --token `, `'deploy x--token `, `'a b c --token ` and
+    `'deploy` + line break + `--token ` are final.
+  - **Chains.** A `secret-assignment` match inside the inner value that runs
+    past it counts whether or not it is masked, so the three line-break
+    chain inputs give main's result; the `DB_PASSWORD=` line-break form has
+    a test now.
+  - **SECURITY.md** states the round-9 `"`-inside-a-quoted-value outcome.
+  - **Linearity.** A per-walk memo of the inner-label answer stops a long
+    chain's look-ahead from being repeated per link:
+    `secrets:\n  DEPLOY_TOKEN: 'a --token ` repeated (1.1 MB) takes about
+    1.1 s here, where the previous head took 5.4 s.
+  - 11 more tests (214 → 225); one round-10 expectation reverts to its round-9
+    output (`api-key: ,***REDACTED*** = ***REDACTED***`, which masks more than
+    main and is final). Every test file importing `secret_redaction.ts`:
+    `1266 passed | 0 failed`. Sweeps of 900,000 general and 900,000
+    quote-and-flag-weighted inputs found no head-only change on a second
+    pass, no head-only `containsSecret` and no published value main masked.
 - **Review round 10** — two more shapes, both now main's result:
   - **Where the decode pass's run starts.** The wrapped-run test now reads
     runs as the decode-then-rescan pass reads them on main: from where a run

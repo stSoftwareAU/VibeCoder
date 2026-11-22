@@ -569,7 +569,15 @@ and, apart from that check, **only when the separator crossed a line break**:
   line that the decode-then-rescan pass masks
   (`credentials: DEPLOY_TOKEN = API_TOKEN=` then `hunter2`), read from where
   that pass's run starts on the base text (the separator's `=`, the label's
-  own line) and covering the inner label as well as its value. A label that ends
+  own line) and covering the inner label as well as its value. A run is read
+  from the label's line only when the inner value stays visible (a chained
+  label); otherwise from the end of the outer value the base behaviour
+  masked, so `credentials: DEPLOY_TOKEN=` then `<value>` keeps the value
+  masked. A match inside the inner value that runs past it counts whether or
+  not it is masked, since the base scan resumes after it either way. When the
+  outer bare value stopped at a `"` inside a quoted inner value that the text
+  runs straight on from (`DEPLOY_TOKEN='"abc"'--token <value>`), the outer
+  mask is kept, so a flag after the quote is still masked. A label that ends
   the inner value is exempt only when the next link of the chain is itself
   read as an inner label (looked ahead at most 16 links), so a chain whose last
   value the base scan reads past gets the base result. An inner value that
