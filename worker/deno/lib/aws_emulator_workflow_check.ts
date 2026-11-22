@@ -13,8 +13,13 @@
  *   script fails the job: the step's code (comment lines, as Bash reads them,
  *   dropped) has no `|`, `;` or `&`, so nothing follows, pipes or backgrounds
  *   the call; the step consists only of an optional leading `set -euo pipefail`
- *   and then that one call as its last command, so no `if`, `exit`, trailing
- *   `set` or second command can skip or replace it; no `!` or
+ *   and then that one call as its last command, by the script's exact path
+ *   (bare or `./`, alone or after `bash`/`sh`; a path that only ends in the
+ *   script path is refused), so no `if`, `exit`, trailing `set`, second
+ *   command, assignment prefix or look-alike can skip or replace it; no
+ *   `working-directory` (step, job or workflow `defaults.run`) is set and every
+ *   checkout in the test job sets only `persist-credentials` and `fetch-depth`
+ *   in `with:`; no `!` or
  *   `if`/`while`/`until` word precedes the call, because `! ./script` turns
  *   a failure into success (PR #5276 review); and neither the
  *   job nor that step sets `continue-on-error` or an `if:` (PR #3478 review);
@@ -62,7 +67,9 @@
  * `|`, `;` or `&`, no `!`), no `continue-on-error`, an `if:` of only
  * `env.IMAGE_CHANGED == 'true'`, and an effective shell that runs the body. Job
  * `container` itself has no `continue-on-error` and no `if:`, since a skipped
- * or soft-failing job hides the run. It also checks the job that sets
+ * or soft-failing job hides the run. Every checkout in job `container` sets
+ * only `persist-credentials` and `fetch-depth` in `with:`, since `ref`,
+ * `repository` and `path` change the tree built and mounted. It also checks the job that sets
  * `IMAGE_CHANGED`: job `container` needs `changes`; job `changes` exists, has
  * no `if:` or soft `continue-on-error`, and its `outputs.image` is exactly
  * `${{ steps.filter.outputs.image }}`; and its `id: filter` step has no `if:`
@@ -263,16 +270,26 @@ function soleCommandAfterStrictMode<T>(
   return rest.length === 1 ? rest[0] : undefined;
 }
 
+/** Every exact command line that runs `path` with its status intact: by its exact path, bare or `./`-prefixed, alone or after `bash`/`sh`. */
+function exactCommands(path: string): string[] {
+  return [path, `./${path}`].flatMap((p) => [p, `bash ${p}`, `sh ${p}`]);
+}
+
+/** Every exact command line that runs the test script. */
+const TEST_COMMANDS = exactCommands(SCRIPT_PATH);
+
 /**
  * Whether the step's code is only an optional leading `set -euo pipefail` and
- * exactly one segment invoking `path`, which is the last.
+ * exactly one segment, the last, that is one of `commands`. The match is
+ * exact: a path that merely ends with the script path could be another file,
+ * and an inline assignment (`BASH_ENV=x bash ...`) could run code first.
  */
-function stepIsOnlyScript(step: unknown, path: string): boolean {
+function stepIsOnlyScript(step: unknown, commands: string[]): boolean {
   const words = soleCommandAfterStrictMode(
     segmentsOf(step),
     (w) => w.join(" "),
   );
-  return words !== undefined && segmentInvokes(words, path);
+  return words !== undefined && commands.includes(words.join(" "));
 }
 
 const SHELL_OPTION_NAMES = ["pipefail", "errexit", "nounset", "xtrace"];
@@ -360,9 +377,9 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
     const steps = stepsOf(job);
     const testIndex = steps.findIndex((s) => stepInvokes(s, SCRIPT_PATH));
     const testStep = steps[testIndex];
-    if (!stepIsOnlyScript(testStep, SCRIPT_PATH)) {
+    if (!stepIsOnlyScript(testStep, TEST_COMMANDS)) {
       problems.push(
-        `[test-step] the ${SCRIPT_PATH} step must run only an optional leading \`set -euo pipefail\` and then the script, so nothing can skip or replace the deploy`,
+        `[test-step] the ${SCRIPT_PATH} step must run only an optional leading \`set -euo pipefail\` and then the script by its exact path (bare or ./, alone or after bash or sh), so nothing can skip or replace the deploy or run a look-alike`,
       );
     }
     const softFails = [job, testStep].some((o) =>
@@ -396,6 +413,16 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
     ) {
       problems.push(
         `[test-step] the ${SCRIPT_PATH} step, job ${jobId} and the workflow must set no env: a variable such as SHELLOPTS=noexec or BASH_ENV can stop bash running the body or run code first`,
+      );
+    }
+    if (setsWorkingDirectory(workflow, job, testStep)) {
+      problems.push(
+        `[test-step] the ${SCRIPT_PATH} step may have no working-directory (step, job ${jobId} or workflow defaults.run): it changes which ${SCRIPT_PATH} the relative call runs`,
+      );
+    }
+    if (hasNonPlainCheckout(job)) {
+      problems.push(
+        `[test-step] every actions/checkout step in job ${jobId} may set with: only persist-credentials and fetch-depth: ref, repository or path change the checked-out tree, so the relative script path could name a look-alike`,
       );
     }
 
@@ -751,6 +778,21 @@ function filterCodeIsCanonical(step: unknown): boolean {
 /** The only `with:` inputs a plain checkout may set. */
 const CHECKOUT_WITH_KEYS = ["persist-credentials", "fetch-depth"];
 
+/** Whether a checkout's `with:` is absent or sets only {@link CHECKOUT_WITH_KEYS}. */
+function checkoutWithIsPlain(withBlock: unknown): boolean {
+  return withBlock === undefined ||
+    (isObject(withBlock) &&
+      Object.keys(withBlock).every((k) => CHECKOUT_WITH_KEYS.includes(k)));
+}
+
+/** Whether any `actions/checkout` step in the job has a non-plain `with:`. */
+function hasNonPlainCheckout(job: Record<string, unknown>): boolean {
+  return stepsOf(job).some((s) =>
+    isObject(s) && typeof s.uses === "string" &&
+    s.uses.startsWith(CHECKOUT_PREFIX) && !checkoutWithIsPlain(s.with)
+  );
+}
+
 /**
  * Whether a step only runs `actions/checkout` (pinned or tagged), with no
  * `run:`, `env:` or `shell:` of its own, and a `with:` that is absent or sets
@@ -762,9 +804,7 @@ function stepIsPlainCheckout(step: unknown): boolean {
   return isObject(step) && typeof step.uses === "string" &&
     step.uses.startsWith("actions/checkout@") && step.run === undefined &&
     step.env === undefined && step.shell === undefined &&
-    (step.with === undefined ||
-      (isObject(step.with) &&
-        Object.keys(step.with).every((k) => CHECKOUT_WITH_KEYS.includes(k))));
+    checkoutWithIsPlain(step.with);
 }
 
 /**
@@ -1033,6 +1073,11 @@ export function checkContainerBuildRunsAwsEmulator(
       }`,
     );
   }
+  if (hasNonPlainCheckout(job)) {
+    problems.push(
+      `${tag} every actions/checkout step in job container may set with: only persist-credentials and fetch-depth: ref, repository or path change the tree built into the image and mounted for the agent run`,
+    );
+  }
   return problems;
 }
 
@@ -1080,12 +1125,9 @@ export function checkQualityCallsAwsEmulator(quality: unknown): string[] {
 
 const GATE_SCRIPT_PATH = ".github/scripts/gate.sh";
 const ALWAYS_CONDITIONS = ["always()", "${{ always() }}"];
-const GATE_SCRIPT_PATHS = [GATE_SCRIPT_PATH, `./${GATE_SCRIPT_PATH}`];
 
-/** Every exact command line that runs the gate script with its status intact. */
-const GATE_COMMANDS = GATE_SCRIPT_PATHS.flatMap((
-  path,
-) => [path, `bash ${path}`, `sh ${path}`]);
+/** Every exact command line that runs the gate script. */
+const GATE_COMMANDS = exactCommands(GATE_SCRIPT_PATH);
 
 /**
  * Whether a step's code is, after an optional leading `set -euo pipefail`,
