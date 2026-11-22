@@ -2318,7 +2318,8 @@ selection.
 Every provider's output is decoded into **one** contract
 ([`worker/deno/lib/agent_output.ts`](../worker/deno/lib/agent_output.ts)), by
 the adapter its descriptor names — `claude_output_adapter.ts` for Claude and
-DeepSeek (one CLI, one event shape), `codex_output_adapter.ts` for Codex. The
+DeepSeek (one CLI, one event shape), `codex_output_adapter.ts` for Codex,
+`gemini_output_adapter.ts` for Gemini. The
 runner asks the descriptor; it never tests a vendor id.
 
 The decode carries the agent's answer **and where it came from**, the
@@ -2360,9 +2361,9 @@ vendor's output with another's parser:
   unrecognised event fields are preserved verbatim, and an undecodable line is
   counted rather than dropped in silence.
 
-A provider with **no** adapter yet — Gemini today — keeps the shared
-`stream-json` text extraction and reports no normalised result. An absent
-decode, never a guessed one.
+Every registered provider now names an adapter. A descriptor without one would
+keep the shared `stream-json` text extraction and report no normalised result
+(an absent decode, never a guessed one).
 
 The fixtures behind this are in
 [`worker/deno/tests/fixtures/agent_output/`](../worker/deno/tests/fixtures/agent_output/),
