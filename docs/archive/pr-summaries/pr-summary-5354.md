@@ -7,8 +7,8 @@ issue. When the subject repository is not positively public, the filer now
 titles the issue with a stable 12-hex SHA-256 digest and posts a body with only
 the counts and generic guidance. The real `owner/repo` stays only in the
 unrendered `<!-- VIBE_IDLE_INVERSION:owner/repo -->` dedup marker. A public
-subject keeps today's title, but its body now drops any census line that names
-a repository not positively public. The idle-starvation escalation body drops
+subject keeps today's title, but its body now drops any census line that names a
+repository not positively public. The idle-starvation escalation body drops
 those census lines too. The gate-wedge filer was already private-safe on `main`
 (#4780). This PR only moves its digest into the shared `privateRepoDigest`
 helper, with the same input and output. Closes #5354.
@@ -19,8 +19,8 @@ helper, with the same input and output. Closes #5354.
 
 - VibeCoder is public, so nothing it files may name a private fleet repository.
   Both idle filers now read visibility through `isRepoPublic`
-  (`worker/deno/lib/repo_visibility.ts`), the helper #4780 uses. A failed
-  lookup counts as private.
+  (`worker/deno/lib/repo_visibility.ts`), the helper #4780 uses. A failed lookup
+  counts as private.
 - A public subject's census `detail` can list other, private repositories.
   Production builds it as census lines that contain the subject
   (`worker/deno/lib/run_core_production_deps.ts:6888`), and those include
@@ -39,8 +39,8 @@ helper, with the same input and output. Closes #5354.
   `owner/name`, or whose lookup fails, withholds its line. The host log keeps
   every original line.
 - The issue asks for the real name to stay only in the HTML marker. The marker
-  is unrendered but readable through the API. This follows the issue as
-  written: the dedup search depends on that marker.
+  is unrendered but readable through the API. This follows the issue as written:
+  the dedup search depends on that marker.
 
 ### Undiscoverable Facts
 
@@ -49,8 +49,9 @@ helper, with the same input and output. Closes #5354.
   than #5354 itself (run on 2026-11-22). So no open issue needs reconciling
   under a changed title.
 - The gate-wedge filer dedupes by exact title, not by a marker
-  (`findFleetAuthoredIssuesTitled` in `worker/deno/lib/milestone_gate_wedge.ts`).
-  Its titles are byte-identical before and after this PR.
+  (`findFleetAuthoredIssuesTitled` in
+  `worker/deno/lib/milestone_gate_wedge.ts`). Its titles are byte-identical
+  before and after this PR.
 - I checked the other filers that put `${repo}` in a title.
   `run_failure_issue.ts` and `merge_fallback_issue.ts` already gate on
   visibility. `repo_fast_failure_issue.ts` (`resolveRepoFastFailureTarget`
@@ -59,8 +60,7 @@ helper, with the same input and output. Closes #5354.
 
 ## Evidence
 
-Backend-only change; no UI file is touched. The tests under Test Plan verify
-it.
+Backend-only change; no UI file is touched. The tests under Test Plan verify it.
 
 ```mermaid
 flowchart LR
@@ -73,17 +73,17 @@ flowchart LR
 
 Issue numbers this diff adds as provenance:
 
-- #5354: Gate-wedge and idle-inversion filers put a private repository's name
-  in the public issue title
+- #5354: Gate-wedge and idle-inversion filers put a private repository's name in
+  the public issue title
 - #4780: Milestone gate-wedge diagnostics publish a private fleet repo's name,
   milestone titles, file paths and tool output in the public VibeCoder repo:
   #4318's visibility check never reached milestone_gate_wedge.ts (#4733, #4761)
 
 Docs updated: `docs/IDLE-TASK-FRAMEWORK.md`, in the idle-inversion escalation
 section (the #5354 paragraph, plus the "body names the issues the census
-counted" sentence, now scoped to a public subject) and the idle-starvation
-alert section (census lines withheld). `docs/audits/lib-sweep-coverage.json`
-registers the new module.
+counted" sentence, now scoped to a public subject) and the idle-starvation alert
+section (census lines withheld). `docs/audits/lib-sweep-coverage.json` registers
+the new module.
 
 ## Acceptance Criteria
 
@@ -107,9 +107,9 @@ registers the new module.
   reason: the reviewer was read-only and could not run the gate; it was run
   here, and its result is recorded under Test Plan
 - **unrequested** — idle-starvation body withholds census lines naming a
-  non-public repository (`withholdPrivateCensusLines`) — reviewer: unrequested
-  — reason: traceable to the issue's suggestion to grep other filers that
-  format a repo into a public body and fix any that leak
+  non-public repository (`withholdPrivateCensusLines`) — reviewer: unrequested —
+  reason: traceable to the issue's suggestion to grep other filers that format a
+  repo into a public body and fix any that leak
 - **unrequested** — shared `privateRepoDigest` in
   `worker/deno/lib/private_repo_pseudonym.ts`, with the gate-wedge title moved
   onto it — reviewer: unrequested — reason: both filers need the same digest;
@@ -140,8 +140,8 @@ registers the new module.
   public subject
 - **violation** — `formatCensus` doc claimed "the reader sees every public
   repo's line" — evidence: `worker/deno/lib/idle_starvation_escalation.ts` —
-  reason: fixed in this diff; reworded to name the failed-lookup, mixed-line
-  and 40-line-cap cases
+  reason: fixed in this diff; reworded to name the failed-lookup, mixed-line and
+  40-line-cap cases
 - **clean** — no dummy or "how" tests; edited existing tests still go red
   without their code; fail-closed lookups; secret redaction on the host log
   path; regexes linear; DRY digest and body paragraphs; no test-only exports;
@@ -157,35 +157,36 @@ registers the new module.
   - an open marker issue is reused;
   - the digest is stable and distinct per subject;
   - the attestation records the posted opaque title and body;
-  - a public subject's body withholds a census line naming a private repo.
-    This test failed before the production change and passes after it.
+  - a public subject's body withholds a census line naming a private repo. This
+    test failed before the production change and passes after it.
 - New `worker/deno/tests/idle_starvation_private_census_5354_test.ts` covers
   `withholdPrivateCensusLines`: a private repo's line is withheld, a failed
-  lookup withholds, a line with no repo is kept with no lookup, all-public
-  lines are unchanged, no lookup runs below threshold, and a quoted public repo
-  is kept (look-alike control).
+  lookup withholds, a line with no repo is kept with no lookup, all-public lines
+  are unchanged, no lookup runs below threshold, and a quoted public repo is
+  kept (look-alike control).
 - Edited existing tests:
   - `#459 - the title and body still name a public subject repo` now routes a
     public visibility answer, keeps every earlier assertion, and adds an exact
     public-title assertion.
-  - The fakes in `worker/deno/tests/idle_starvation_escalation_1052_test.ts`
-    and `worker/deno/tests/idle_starvation_week_pace_1915_test.ts` now answer
-    the visibility lookup with `public`. No assertion was removed; they still
-    assert the census line is posted and an issue is filed.
+  - The fakes in `worker/deno/tests/idle_starvation_escalation_1052_test.ts` and
+    `worker/deno/tests/idle_starvation_week_pace_1915_test.ts` now answer the
+    visibility lookup with `public`. No assertion was removed; they still assert
+    the census line is posted and an issue is filed.
 - The gate-wedge private and public titles are covered by the existing #4780
   tests in `worker/deno/tests/milestone_gate_wedge_test.ts`. The digest test
   there pins the `privateRepoDigest` refactor.
 - Targeted run on the final head:
   `deno test -A tests/idle_inversion_streak_test.ts tests/idle_starvation_private_census_5354_test.ts tests/idle_starvation_escalation_1052_test.ts tests/idle_starvation_week_pace_1915_test.ts tests/lib_sweep_coverage_test.ts tests/alert_dedup_author_verification_test.ts`
   gave 131 passed, 0 failed. `deno task check:manifests` passed.
-- `./quality.sh < /dev/null` on the final code: `Result: PASSED (with skipped
-  checks)`. Every check passed, including deno tests, completeness checks,
-  semgrep and markdownlint. Two were skipped: config integration (no
-  `.config.json` here) and checkov (not installed). An earlier run failed only
-  because the new module was not registered in a sweep slice
+- `./quality.sh < /dev/null` on the final code:
+  `Result: PASSED (with skipped
+  checks)`. Every check passed, including deno
+  tests, completeness checks, semgrep and markdownlint. Two were skipped: config
+  integration (no `.config.json` here) and checkov (not installed). An earlier
+  run failed only because the new module was not registered in a sweep slice
   (`lib_sweep_coverage_test.ts`); that is fixed in this diff.
 - `deno task pr-summary-check`: 0 gates blocked, 0 not checked.
 
-Not done or not checked: checkov and config integration (skipped by the gate,
-as above). `docs/IDLE-TASK-FRAMEWORK.md` was not reflowed with `deno fmt`;
+Not done or not checked: checkov and config integration (skipped by the gate, as
+above). `docs/IDLE-TASK-FRAMEWORK.md` was not reflowed with `deno fmt`;
 markdownlint passed on it.
