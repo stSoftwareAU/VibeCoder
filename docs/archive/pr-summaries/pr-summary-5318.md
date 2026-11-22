@@ -79,6 +79,10 @@ already cited in the table row).
   `docs/audits/security-sweep-2682-prompt-too-long.md:34`, and unrelated uses
   of "then failed".
 - `markdownlint-cli2` on the three edited files: `Summary: 0 issues in 0 files`.
+- `./quality.sh` on the final docs head: `Result: PASSED (with skipped checks)`.
+  Config integration was skipped (no `.config.json`) and checkov was skipped (not
+  installed). Mermaid, markdownlint, deno tests, lint, type check and fmt all
+  passed. The first attempt hit its own 900 s bound and was re-run with 1700 s.
 - Not done: the doc comment on `ESCALATING_COOLDOWN_LADDER_SECONDS` in
   `worker/deno/lib/cooldown_state.ts` still says the third failure "also
   escalates to a human". That is a source doc comment outside this issue's
