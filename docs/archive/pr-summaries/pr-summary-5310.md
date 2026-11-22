@@ -385,9 +385,12 @@ flowchart LR
   - **Sweep, head against main.** 2,059,345 distinct inputs, nine seeds over
     three generators (general; lead-in led; flag led), with 32-hex values,
     `md5=`, `trace_id=`, `session=`, a flag on its own line, `USER=bob`, CRLF
-    and the broken base64 fixture added. No published value that main masks,
-    no second-call change where main's output is final, no `containsSecret`
-    disagreement, and no input over 200 ms. The previous head was left out
+    and the broken base64 fixture added. At the round-16 head the sweep found
+    no published value that main masks, no `containsSecret` disagreement and
+    no input over 200 ms. Its second-call check did not hold for every shape:
+    round 17 found glued-run inputs where main's output is final and the
+    round-16 head's first call was not (the post-decode walk fixes them). The
+    previous head was left out
     because it does not return on some of these inputs.
 - **Review round 15** — two items:
   - **A masked assignment on the line after the inner value.** The wrapped-run
