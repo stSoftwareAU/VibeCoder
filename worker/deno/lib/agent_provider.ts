@@ -103,14 +103,17 @@ import {
   resolveGeminiModel,
 } from "./gemini_executor.ts";
 import {
-  buildGeminiChildEnv,
+  buildIsolatedGeminiChildEnv,
   GEMINI_ENV_DENYLIST,
   GEMINI_ENV_SECRET_ALLOWLIST,
 } from "./gemini_env.ts";
 import {
+  GEMINI_CLI_HOME_ENV_VAR,
   GEMINI_CREDENTIAL_ENV_VARS,
   geminiAuthActionableMessage,
+  initialiseGeminiHome,
   isGeminiAuthError,
+  resolveGeminiAuthMode,
 } from "./gemini_auth.ts";
 import {
   applyDeepSeekModelAdaptation,
@@ -281,7 +284,8 @@ export interface AgentProviderBilling {
   readonly meteredEnvVars: readonly string[];
   /**
    * Billing state this provider keeps **outside** the environment — Codex's
-   * persistent ChatGPT login under `CODEX_HOME`. Consulted before the
+   * persistent ChatGPT login under `CODEX_HOME`, Gemini's Google-account login
+   * under `GEMINI_CLI_HOME`. Consulted before the
    * declared metered variables, so a provider whose CLI gives an API key
    * precedence can say so. Absent means the declared variables are the only
    * proof; `undefined` means this probe proved nothing. The probe must read
@@ -1031,14 +1035,43 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
     subdir: "gemini",
     file: "provider.env",
     envVars: GEMINI_CREDENTIAL_ENV_VARS,
+    stateEnvVars: [GEMINI_CLI_HOME_ENV_VAR],
+    initialiseState: initialiseGeminiHome,
     provisionEnvVar: "VIBE_LAUNCHAGENT_GEMINI_API_KEY",
   },
-  // Gemini bills per token against an API key (Issue #1923): there is no
-  // fixed-price subscription VibeCoder can run unattended, so it is never an
-  // automatic-routing candidate.
+  // Fixed-price subscription vs metered spend (Issues #1923, #5339). A Google
+  // account login under an explicit GEMINI_CLI_HOME proves a fixed-price
+  // subscription (so isSubscriptionCapable is true); an API key alone is
+  // metered. No variable carries the login, so the proof is a probe. It reads
+  // only an EXPLICIT GEMINI_CLI_HOME: that is the one home
+  // `buildIsolatedGeminiChildEnv` gives the child. Automatic selection still
+  // needs a Gemini status adapter, which `resolveAutomaticProviderStatus` in
+  // `provider_auto_runtime.ts` does not have yet (it answers
+  // `fixed-subscription-status-not-supported`): not yet, #5344 will add it.
   billing: {
     subscriptionEnvVars: [],
     meteredEnvVars: GEMINI_CREDENTIAL_ENV_VARS,
+    resolveStoredBilling(context) {
+      const explicitHome = (context.env(GEMINI_CLI_HOME_ENV_VAR) ?? "").trim();
+      if (!explicitHome) return undefined;
+      // An explicit home withholds the API keys from the child, so the
+      // environment is not consulted: the login is what the run spends.
+      const { mode, detail } = resolveGeminiAuthMode(explicitHome);
+      if (mode === "login") {
+        return { mode: "fixed-subscription", reason: "gemini-google-login" };
+      }
+      if (mode === "api-key") {
+        return { mode: "metered", reason: "gemini-settings-api-key" };
+      }
+      if (mode === "read-error") {
+        // A login that cannot be used is a fault, not an absent login.
+        return {
+          mode: "unknown",
+          reason: `gemini-login-unreadable (${detail ?? "no detail"})`,
+        };
+      }
+      return undefined;
+    },
   },
   environment: {
     secretAllowlist: GEMINI_ENV_SECRET_ALLOWLIST,
@@ -1079,7 +1112,12 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
   },
 
   buildChildEnv(parentEnv?: Record<string, string>): Record<string, string> {
-    return parentEnv ? buildGeminiChildEnv(parentEnv) : buildGeminiChildEnv();
+    const source = parentEnv ?? Deno.env.toObject();
+    return buildIsolatedGeminiChildEnv(source, {
+      geminiApiKey: source.GEMINI_API_KEY,
+      googleApiKey: source.GOOGLE_API_KEY,
+      geminiCliHome: source.GEMINI_CLI_HOME,
+    });
   },
 
   isAuthError(output: string): boolean {

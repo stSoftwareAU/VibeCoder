@@ -2435,7 +2435,7 @@ construction and the containment boundary do not change.
 | -------- | -------- | -------- | ---------------------------------- | ----- |
 | `claude` | `claude` | `container/providers/claude.sh` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | The default; installed by a default image build |
 | `codex` | `codex` | `container/providers/codex.sh` | `OPENAI_API_KEY`, `CODEX_API_KEY` | Pinned and selectable; enable it in `agent_providers` and the launcher builds it in |
-| `gemini` | `gemini` | `container/providers/gemini.sh` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Quorum's judge; pinned and selectable, enable it in `agent_providers` and the launcher builds it in |
+| `gemini` | `gemini` | `container/providers/gemini.sh` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` (or a `GEMINI_CLI_HOME` login selector) | Quorum's judge; pinned and selectable, enable it in `agent_providers` and the launcher builds it in |
 | `deepseek` | `deepseek` | `container/providers/deepseek.sh` | `DEEPSEEK_API_KEY` | Carried on the Claude CLI under its own command and its own pin; enable it in `agent_providers` and the launcher builds it in |
 
 Each vendor's credential is provisioned into its own
