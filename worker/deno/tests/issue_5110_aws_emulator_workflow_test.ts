@@ -46,7 +46,9 @@ function mutateText(base: string, ...pairs: [string, string][]): string {
         JSON.stringify(from)
       }`,
     );
-    text = text.replace(from, to);
+    // A function replacement keeps `to` literal: a string one would expand
+    // `$'` and friends (Issue #5353).
+    text = text.replace(from, () => to);
   }
   return text;
 }
@@ -349,6 +351,119 @@ for (
     );
   });
 }
+
+// Issue #5353: a `#` line inside a quoted word opened on an earlier line is part
+// of that word, not a comment, and text after the closing quote is live syntax.
+for (
+  const [label, replacement] of [
+    [
+      "a double-quoted word closed by a # line",
+      "\n          " + SCRIPT_LINE + ' "\n          # " || true\n',
+    ],
+    [
+      "a single-quoted word closed by a # line",
+      "\n          " + SCRIPT_LINE + " '\n          # ' || true\n",
+    ],
+    [
+      "an ANSI-C quote whose \\' does not close it",
+      "\n          " + SCRIPT_LINE + " $'a\\'\n          # ' || true\n",
+    ],
+    [
+      'a double quote with an escaped \\" before the newline',
+      "\n          " + SCRIPT_LINE + ' "a\\"\n          # " || true\n',
+    ],
+  ] as const
+) {
+  Deno.test(`(a) refuses ${label} (Issue #5353)`, () => {
+    expectFindings(mutate([TEST_STEP_ANCHOR, replacement]), [
+      "[test-step] no step runs",
+    ]);
+  });
+}
+
+Deno.test("(b) refuses a pinned install whose open quote hides a # line (Issue #5353)", () => {
+  expectFindings(
+    mutate([
+      TOOLCHAIN_ANCHOR,
+      TOOLCHAIN_ANCHOR + ' "\n            # " || true',
+    ]),
+    // The open quote also swallows the runner-install line in that step.
+    ["[pinned-install] no step runs", "[runner-install] no step installs"],
+  );
+});
+
+Deno.test("(b) refuses a pinned aws-cli install whose open quote hides a # line (Issue #5353)", () => {
+  expectFindings(
+    mutate([
+      CLI_TOOLCHAIN_ANCHOR,
+      CLI_TOOLCHAIN_ANCHOR + ' "\n            # " || true',
+    ]),
+    ["[pinned-cli] no step runs"],
+  );
+});
+
+Deno.test("(b) refuses a runner install whose open quote hides a # line (Issue #5353)", () => {
+  expectFindings(
+    mutate([
+      RUNNER_INSTALL_ANCHOR,
+      RUNNER_INSTALL_ANCHOR + ' "\n          # " || true',
+    ]),
+    // The runner install shares the pinned install's step, so both stop counting.
+    ["[pinned-install] no step runs", "[runner-install] no step installs"],
+  );
+});
+
+// Issue #5353 controls: quoting that closes, and apostrophes in comments, keep
+// their comment lines dropped.
+Deno.test("(a) accepts comment lines with apostrophes before the script (Issue #5353)", () => {
+  assertEquals(
+    problemsOf(
+      mutate([
+        TEST_STEP_ANCHOR,
+        "\n          # Don't skip the deploy.\n          # It's required.\n          " +
+        SCRIPT_LINE + "\n",
+      ]),
+    ),
+    [],
+  );
+});
+
+Deno.test("(b) accepts an apostrophe in a trailing comment before a comment line (Issue #5353)", () => {
+  assertEquals(
+    problemsOf(
+      mutate([
+        TOOLCHAIN_ANCHOR,
+        TOOLCHAIN_ANCHOR + " # it's pinned\n            # note || true",
+      ]),
+    ),
+    [],
+  );
+});
+
+Deno.test("(b) accepts a closed double-quoted word with an apostrophe before a comment line (Issue #5353)", () => {
+  assertEquals(
+    problemsOf(
+      mutate([
+        RUNNER_INSTALL_ANCHOR,
+        RUNNER_INSTALL_ANCHOR +
+        '\n          echo "it\'s installed"\n          # note || true',
+      ]),
+    ),
+    [],
+  );
+});
+
+Deno.test('(b) accepts a comment line after a closed "${GITHUB_WORKSPACE}" expansion (Issue #5353)', () => {
+  assertEquals(
+    problemsOf(
+      mutate([
+        CLI_TOOLCHAIN_ANCHOR,
+        CLI_TOOLCHAIN_ANCHOR + "\n          # done || true",
+      ]),
+    ),
+    [],
+  );
+});
 
 Deno.test("(a) accepts an explicit continue-on-error: false on the test step", () => {
   expectFindings(
@@ -806,6 +921,20 @@ for (
     );
   });
 }
+
+// Issue #5353: a `#` line inside a quoted word that a gate line opens is code.
+Deno.test("(gate-script) refuses a gate line whose open quote hides a # line (Issue #5353)", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_RUN,
+        'run: |\n          .github/scripts/gate.sh "\n          # " || true',
+      ),
+    ),
+    "[gate-script]",
+    "no gate step runs",
+  );
+});
 
 Deno.test("(gate-script) accepts a comment line that no continuation reaches", () => {
   assertEquals(
