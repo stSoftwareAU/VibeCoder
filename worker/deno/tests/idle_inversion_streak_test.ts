@@ -407,6 +407,42 @@ Deno.test("#459 - the title and body still name a public subject repo", async ()
   });
 });
 
+Deno.test("#5354 - a public subject's body withholds census lines naming a private repo", async () => {
+  await withState(async (statePath) => {
+    const own = `[idle-census] repo=${SUBJECT} work_on=2`;
+    const other =
+      `[idle-census] ALERT inversion repos=${SUBJECT},stSoftwareAU/Secret`;
+    const { fn, calls } = gh([
+      { match: /^api repos\/stSoftwareAU\/Secret/, reply: "private" },
+      { match: /^api repos\/stSoftwareAU\/GRQ/, reply: "public" },
+      NO_EXISTING,
+      CREATE_OK,
+    ]);
+    for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
+      await recordIdleInversion({
+        recordFiling: () => Promise.resolve(true),
+        statePath,
+        cycleId: `run-${cycle}`,
+        report: { ...report, repo: SUBJECT, detail: `${own}\n${other}` },
+        ghFn: fn,
+      });
+    }
+    const create = calls.find((c) => c[1] === "create");
+    if (!create) throw new Error("an issue is filed at the threshold");
+    const body = argAfter(create, "--body");
+    assertStringIncludes(body, own);
+    assert(
+      !body.includes("stSoftwareAU/Secret"),
+      "a private repo named in the census detail must not reach the public body",
+    );
+    assertEquals(
+      argAfter(create, "--title"),
+      "fix: idle-inversion on stSoftwareAU/GRQ — claimable work the claim " +
+        "scan keeps refusing, sustained across cycles",
+    );
+  });
+});
+
 Deno.test("#459 - the dedup search runs against VibeCoder", async () => {
   await withState(async (statePath) => {
     const { fn, calls } = gh([NO_EXISTING, CREATE_OK]);

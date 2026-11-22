@@ -1498,9 +1498,11 @@ files a new issue. Such a subject is filed under an opaque title,
 with a body that carries only the counts and the generic guidance. The
 `<!-- VIBE_IDLE_INVERSION:owner/repo -->` marker still keeps the real name, since
 it is not rendered and dedup depends on it; the full report goes to the host
-log. Public repositories keep today's title and body.
+log. Public repositories keep today's title and body, except that a public
+subject's body withholds any census line naming a repository that is not
+positively public (the same rule as the idle-starvation census).
 
-The body now names the issues the census counted and, where the scan recorded
+For a public subject, the body now names the issues the census counted and, where the scan recorded
 one, the gate that refused each — `FindIssuesResult.blockedDetails` carries the
 per-issue reasons the same way Issue #219's counts ride the result. GRQ#4465
 carried a bare count, and the scan logged only aggregate top-3 reasons, so which

@@ -17,7 +17,10 @@
  * mirroring #4780): its title is an opaque digest, its body carries only the
  * counts and the generic guidance, and the full report goes to the host log
  * instead. {@link isRepoPublic} decides, and a failed lookup counts as private.
- * The dedup marker still carries the real name; it is not rendered.
+ * The dedup marker still carries the real name; it is not rendered. A public
+ * subject's body withholds any census line that names a repository not
+ * positively public, since the report detail can list other fleet repos
+ * (Issue #5354).
  *
  * **Filed here, about them (Issue #459).** The issue lands in
  * {@link IDLE_INVERSION_TARGET_REPO} — the worker's own repo — because the
@@ -71,6 +74,7 @@ import {
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
 import { atomicWrite } from "./file_utils.ts";
+import { withholdPrivateCensusLines } from "./idle_starvation_escalation.ts";
 import { privateRepoDigest } from "./private_repo_pseudonym.ts";
 import { isRepoPublic } from "./repo_visibility.ts";
 import { withStateLock } from "./state_mutex.ts";
@@ -373,7 +377,11 @@ const IDLE_INVERSION_ONCE_PER_STREAK =
   "The worker files this once per streak and stops reporting as soon as " +
   "the repo has a clean cycle.";
 
-/** Issue body: marker first, then the diagnosis and what to do. */
+/**
+ * Issue body: marker first, then the diagnosis and what to do. This renders
+ * `report.detail` verbatim; for a public subject the filer first withholds
+ * census lines that name a repository not positively public (Issue #5354).
+ */
 export function formatIdleInversionBody(
   report: IdleInversionReport,
 ): string {
@@ -630,7 +638,19 @@ async function decide(
   // is unknown, and unknown is private (`isRepoPublic`).
   const isPublic = await isRepoPublic(repo, opts.ghFn);
   const report = { ...opts.report, consecutiveCycles: entry.count };
-  const publicBody = formatIdleInversionBody(report);
+  // The full report, as the host log keeps it.
+  const fullBody = formatIdleInversionBody(report);
+  // Issue #5354: the detail is census lines that can name other, private
+  // repos. A public body withholds those; an empty detail needs no lookup.
+  const publicBody = !isPublic || report.detail === ""
+    ? fullBody
+    : formatIdleInversionBody({
+      ...report,
+      detail: (await withholdPrivateCensusLines(
+        report.detail.split("\n"),
+        opts.ghFn,
+      )).join("\n"),
+    });
   const title = isPublic
     ? formatIdleInversionTitle(repo)
     : await formatPrivateIdleInversionTitle(repo);
@@ -642,7 +662,7 @@ async function decide(
         `${IDLE_INVERSION_TARGET_REPO} gets only the opaque form of this ` +
         `issue (Issue #5354); the full report follows`,
     );
-    log(publicBody);
+    log(fullBody);
   }
   try {
     const created = await opts.ghFn([

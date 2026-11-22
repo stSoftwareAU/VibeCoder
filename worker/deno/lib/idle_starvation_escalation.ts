@@ -399,9 +399,10 @@ function formatSlotSeconds(seconds: number): string {
  *
  * The issue is public, so a line naming a repository that is not positively
  * public is withheld before it reaches here (Issue #5354, see
- * {@link withholdPrivateCensusLines}). The reader sees every public repo's
- * line; a private repo appears only as a placeholder, and the host log keeps
- * the original.
+ * {@link withholdPrivateCensusLines}). A line naming only public repos is
+ * shown; one that names a private repo, or whose lookup failed, becomes a
+ * placeholder, and lines past the 40-line cap are summarised. The host log
+ * keeps the original.
  */
 function formatCensus(lines: readonly string[]): string[] {
   const limit = 40;
