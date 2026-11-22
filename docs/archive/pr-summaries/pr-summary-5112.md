@@ -389,7 +389,7 @@ emulator test.
   (`PKGS=$(for d in a b; do`, `X=$(if …; then`, `MODE=$(case …`), so a runner
   inside the multi-line substitution earns no credit. (2) `failureExits` carries
   the backtick parity across the `then` branch and refuses an `exit` read while
-  a backtick substitution is open (``then echo `echo bad; exit 1; echo x` ``,
+  a backtick substitution is open (`` then echo `echo bad; exit 1; echo x` ``,
   the assignment form and the multi-line form). (3) A backtick substitution that
   spans lines keeps its parity across the line end, so every command up to the
   closing backtick is untracked and never credited. (4) The `fi)`, `done)`,
@@ -398,14 +398,16 @@ emulator test.
   `X=$(for …; done)` inside a tracked subshell no longer closes the subshell
   early. The manual and the `keptCommands` comment state the rules. The new test
   `…::a runner inside a multi-line substitution or backtick earns no credit`
-  fails at `056c75f2`, and its credited `( for …; do X=$(for …; done); runner;
-  done )` fixture fails with only the `linePending` guard removed. The criterion
-  "A required test command failure cannot satisfy the workflow contract." stays
-  `met`: the three cases the review named are refused and tested. The seven
-  related test files give `671 passed | 0 failed` through `deno task
-  test:unit`; `deno lint`, `deno check` and `deno fmt --check` on the changed
-  source and test files are clean. The full `./quality.sh` was not run in this
-  round.
+  fails at `056c75f2`, and its credited
+  `( for …; do X=$(for …; done); runner;
+  done )` fixture fails with only the
+  `linePending` guard removed. The criterion "A required test command failure
+  cannot satisfy the workflow contract." stays `met`: the three cases the review
+  named are refused and tested. The seven related test files give
+  `671 passed | 0 failed` through `deno task
+  test:unit`; `deno lint`,
+  `deno check` and `deno fmt --check` on the changed source and test files are
+  clean. The full `./quality.sh` was not run in this round.
 - After the twelfth review (of `ffe02656`): (1) `failureExits` carries the
   unquoted parenthesis balance across the `then` branch and refuses only an
   `exit` read while it is above zero, so `echo "failed at $(date)"`,
@@ -429,10 +431,10 @@ emulator test.
   `idle_task_scan_dedup_conformance_test.ts`,
   `issue_5110_aws_emulator_workflow_test.ts`, `linter_in_ci_check_test.ts`,
   `issue_2315_actionlint_in_ci_test.ts`) give `670 passed | 0 failed` through
-  `deno task test:unit` (at that round); `deno lint`, `deno check` and `deno fmt
-  --check` on
-  the changed files are clean. The full `./quality.sh` was not run in this
-  round.
+  `deno task test:unit` (at that round); `deno lint`, `deno check` and
+  `deno fmt
+  --check` on the changed files are clean. The full `./quality.sh`
+  was not run in this round.
 - After the eleventh review (of `d5338565`): the explicit-exit idiom drops an
   exit's `)` only when it closes the tracked `( )` subshell around the runner,
   and a `(` or `$(` opened in the `then` branch and still open when the `exit`
@@ -461,9 +463,9 @@ emulator test.
   line and in a default-shell step, and refused when followed by a line without
   `set -e`. `docs/BEST-PRACTICES-SCAN.md` and the `keptCommands` comment state
   the rules. Both new tests fail at `d5338565`. The seven related test files
-  (listed in the twelfth-review entry) give `670 passed | 0 failed` at that round;
-  the earlier `805 passed | 1 failed` figure counted a wider file set that
-  included the root-only unreadable-directory test.
+  (listed in the twelfth-review entry) give `670 passed | 0 failed` at that
+  round; the earlier `805 passed | 1 failed` figure counted a wider file set
+  that included the root-only unreadable-directory test.
 - After the tenth review (of `9d7c2e54`): a `( )` subshell opened as an `if`,
   `elif`, `while` or `until` test is never kept, whatever errexit is outside it
   (`ReachableCommand.subshellsInCondition`). So
@@ -501,9 +503,9 @@ emulator test.
   explicit-exit rules also need the subshell rule inside a `( )` subshell, and
   the `keptCommands` doc comment sits on `keptCommands` again and lists the
   subshell rule. Both new tests fail at `c4c8839a`. The seven related test files
-  give `670 passed | 0 failed` at that round (the earlier `801 passed | 1 failed`
-  figure counted a wider file set that included the root-only
-  unreadable-directory test).
+  give `670 passed | 0 failed` at that round (the earlier
+  `801 passed | 1 failed` figure counted a wider file set that included the
+  root-only unreadable-directory test).
 - After the eighth review (of `8f32e27a`): every `( )` subshell around a command
   is judged on all three routes, explicit exit, `exec` and errexit: the command
   is kept only when errexit is on outside the subshell and not ignored, or the
@@ -514,9 +516,9 @@ emulator test.
   then a line), each in a script without `set -e` and in a step after `set +e`,
   and credits four controls (the subshell last, under a top-level `set -e`, and
   in a default-shell step). It fails at `8f32e27a`. The seven related test files
-  give `670 passed | 0 failed` at that round (the earlier `799 passed | 1 failed`
-  figure counted a wider file set that included the root-only
-  unreadable-directory test).
+  give `670 passed | 0 failed` at that round (the earlier
+  `799 passed | 1 failed` figure counted a wider file set that included the
+  root-only unreadable-directory test).
 - After the seventh review (of `926c2539`): the parenthesis balance is carried
   across the commands of one line, since the command list splits at a `|`, `;`
   or `&&` inside `$( … )`, and only a parenthesis still open at the line's end
