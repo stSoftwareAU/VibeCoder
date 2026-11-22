@@ -7,7 +7,9 @@ takes the figure from `Deno.systemMemoryInfo().available`, which the driver's
 `Deno.readTextFile("/proc/meminfo")`, which Deno refuses without `--allow-all`.
 The two PSI files (`/proc/pressure/memory`, `/proc/pressure/cpu`) are refused
 the same way, so they are now read through `cat` (`readProcFileWithCat`); the
-driver already holds `--allow-run`. The function's doc comment, the
+driver already holds `--allow-run`. Each `cat` runs through
+`commandOutputWithTimeout` with a 5 s bound, so a stuck read becomes
+`unavailable` instead of holding the tick. The function's doc comment, the
 `LivenessTickPressure` doc and `docs/CALLBACKS.md` now say how each field is
 read. Closes #5324.
 
@@ -124,4 +126,19 @@ outside `docs/archive/` returns nothing at the head.
     kept. The second now throws `NotCapable` from `systemMemoryInfo` and
     asserts that PSI is still read and parsed. Its `seen` list no longer
     contains `/proc/meminfo`, because that file is no longer read.
-- Results on the head: TEST_RESULTS_TO_FILL
+- Not tested: the 5 s timeout branch of `readProcFileWithCat`. A `cat` of a
+  `/proc` file cannot be made to stall portably, and the bound is the shared
+  `commandOutputWithTimeout` helper (`worker/deno/lib/subprocess_timeout.ts`),
+  which has its own tests. Any throw from the reader is caught by
+  `readPressureToken` and becomes `unavailable`, which the injected-reader
+  tests above cover.
+- `worker/deno/tests/spawn_timeout_check_test.ts::scanDirectoriesForSpawnTimeout
+  - this checkout has no untimed spawn` failed on the first gate run against
+  the untimed `cat` spawn, and passes after it was moved to
+  `commandOutputWithTimeout`.
+- Results on the head: `deno test --allow-all
+  tests/spawn_timeout_check_test.ts tests/liveness_pressure_4225_test.ts
+  tests/container_entrypoint_test.ts` (from `worker/deno`): 62 passed, 0
+  failed. `./quality.sh`: `Result: PASSED (with skipped checks)`. Config
+  integration was skipped (no `.config.json`) and checkov was skipped (not on
+  PATH).
