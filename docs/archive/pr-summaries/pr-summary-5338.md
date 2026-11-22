@@ -26,17 +26,19 @@ the reviewer not to name such an issue. Closes #5338.
 
 ### Essential Design Decisions
 
-- A view with no `closedByPullRequestsReferences` array is treated as
-  malformed. It throws into the existing catch, so the problem is logged and
-  filed as new, never commented onto an issue that might close.
+- A view with no `closedByPullRequestsReferences` array is treated as malformed.
+  It throws into the existing catch, so the problem is logged and filed as new,
+  never commented onto an issue that might close.
 - The match needs both the PR number and the repository. PR 7 of another repo,
   or another PR in the same repo, still gets the comment.
 
 ### Undiscoverable Facts
 
 - I observed `closedByPullRequestsReferences` with the real `gh`. It lists open
-  PRs as well as merged ones: `gh issue view 5328 -R stSoftwareAU/VibeCoder
-  --json closedByPullRequestsReferences` returned the open PR 5387 as
+  PRs as well as merged ones:
+  `gh issue view 5328 -R stSoftwareAU/VibeCoder
+  --json closedByPullRequestsReferences`
+  returned the open PR 5387 as
   `{"number":5387,"repository":{"name":"VibeCoder","owner":{"login":"stSoftwareAU"}}}`.
   For the issue's own example, #5304 lists 5336.
 - The triage comment on #5338 says the two findings at risk on #5304 were
@@ -54,8 +56,8 @@ flowchart TD
     B -->|open, not closed by this PR| C[comment on N]
 ```
 
-- Issue numbers cited: #3598: review-fleet-prs files one issue per instance of
-  a defect class (gh-guard spellings) and duplicates its footer. #5338: this
+- Issue numbers cited: #3598: review-fleet-prs files one issue per instance of a
+  defect class (gh-guard spellings) and duplicates its footer. #5338: this
   issue.
 
 ## Test Plan
@@ -75,29 +77,36 @@ drive `fileUnrelatedIssues` through the injected `gh` stub:
   failed before the fix (`a malformed view is not commented on`) and passes
   after it.
 
-Two existing tests had their fixtures edited. In `an unrelated issue naming an
-open existing issue is added there as a comment, not filed (Issue #3598)` and in
-the closed case of `an existingIssue that is closed, or cannot be read, still
-files a new issue (Issue #3598)`, the view answer now carries
-`closedByPullRequestsReferences: []`, which is the shape real `gh` returns for an
-issue no PR closes. No assertion was removed or changed. Without the field, the
-new fail-closed rule would file the issue as new, so the fixture change keeps
-the "PR does not close #N → comment added" case the issue asks to keep.
+Two existing tests had their fixtures edited. In
+`an unrelated issue naming an
+open existing issue is added there as a comment, not filed (Issue #3598)`
+and in the closed case of
+`an existingIssue that is closed, or cannot be read, still
+files a new issue (Issue #3598)`,
+the view answer now carries `closedByPullRequestsReferences: []`, which is the
+shape real `gh` returns for an issue no PR closes. No assertion was removed or
+changed. Without the field, the new fail-closed rule would file the issue as
+new, so the fixture change keeps the "PR does not close #N → comment added" case
+the issue asks to keep.
 
 Runs:
 
-- `deno task test:unit` over that file, `tests/pr_review_brief_shared_3395_test.ts`,
-  `tests/pre_pr_verifier_3395_test.ts`, `tests/coding_guidelines_twin_drift_test.ts`
-  and every `tests/*review_fleet_prs*` file: 562 passed, 0 failed.
-- `./quality.sh < /dev/null` on the final code: `Result: PASSED (with skipped
-  checks)`. Config integration and checkov were skipped by the gate itself.
+- `deno task test:unit` over that file,
+  `tests/pr_review_brief_shared_3395_test.ts`,
+  `tests/pre_pr_verifier_3395_test.ts`,
+  `tests/coding_guidelines_twin_drift_test.ts` and every
+  `tests/*review_fleet_prs*` file: 562 passed, 0 failed.
+- `./quality.sh < /dev/null` on the final code:
+  `Result: PASSED (with skipped
+  checks)`. Config integration and checkov were
+  skipped by the gate itself.
 
 Docs:
 
 - I read and updated the `post.ts` comments on `fileUnrelatedIssues` and
   `addToExistingIssue`.
-- I updated the `.claude/skills/review-fleet-prs/SKILL.md` post-step bullet
-  ("if it is closed, closes when this PR merges, or cannot be read").
+- I updated the `.claude/skills/review-fleet-prs/SKILL.md` post-step bullet ("if
+  it is closed, closes when this PR merges, or cannot be read").
 - I updated `prompts/pr_review_brief/prompt.md` step 10. The sentence after it
   now says "the issue you name", so it no longer points back at the closing
   issue.
