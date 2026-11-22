@@ -3062,6 +3062,16 @@ Deno.test("checkAwsEmulatorInCI - a set -e that runs only under a run-time condi
     ],
     ["loop body", `while read -r line; do set -e; done < flags.txt\n${tail}`],
     ["or chain", `[ -z "\${LOOSE:-}" ] || set -e\n${tail}`],
+    ["left of a pipe", `set -e | cat\n${tail}`],
+    ["backgrounded", `set -e &\n${tail}`],
+    [
+      "elif true after a run-time test",
+      `if [ -n "\${A:-}" ]; then echo a; elif true; then set -e; fi\n${tail}`,
+    ],
+    [
+      "else after a run-time test",
+      `if [ -n "\${A:-}" ]; then echo a; else set -e; fi\n${tail}`,
+    ],
   ];
   for (const [label, body] of conditional) {
     const script = await checkRepoWith({
@@ -3079,6 +3089,14 @@ Deno.test("checkAwsEmulatorInCI - a set -e that runs only under a run-time condi
     ["top level", `set -e\n${tail}`],
     ["if true", `if true; then set -e; fi\n${tail}`],
     ["true and", `true && set -e\n${tail}`],
+    [
+      "else after a false test",
+      `if false; then echo a; else set -e; fi\n${tail}`,
+    ],
+    [
+      "elif true after a false test",
+      `if false; then echo a; elif true; then set -e; fi\n${tail}`,
+    ],
   ];
   for (const [label, body] of certain) {
     const script = await checkRepoWith({

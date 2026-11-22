@@ -428,6 +428,24 @@ emulator test.
   `deno fmt --check` on the changed files are clean. The full `./quality.sh` was
   not run in this round. The cases the reviews named are refused and tested; the
   criterion is `partial`, as above.
+- After the pre-PR verifier round on the sixteenth-review fix (`340bd7b94`):
+  `certain` still credited a `set -e` that never reaches the shell it is judged
+  in. `reachableCommands` now also requires the separator after the command not
+  to be `|` or `&` (`set -e | cat`, `set -e &` run in a subshell), and a frame
+  whose earlier `if`/`elif` test was decided at run time (`earlierUnknown`, set
+  at `elif` and `else`) is not certain, so `elif true` or `else` after a
+  run-time test no longer credits. The `exit`/`set -n` stop check in the same
+  function is unchanged. The Errexit paragraph of `docs/BEST-PRACTICES-SCAN.md`
+  and the `keptCommands` and `ReachableCommand` comments say the same. The test
+  `worker/deno/tests/aws_emulator_in_ci_check_test.ts::checkAwsEmulatorInCI - a set -e that runs only under a run-time condition does not credit a runner followed by more commands`
+  gains refusal fixtures for the left side of a pipe, a backgrounded `set -e`,
+  `elif true` and `else` after a run-time test, each in a script and in a step
+  after `set +e`, and credited controls (`else` after `if false`, `elif true`
+  after `if false`); with the library files from `340bd7b94` it fails at
+  `script, left of a pipe` and passes at the head. The seven related test files
+  give `674 passed | 0 failed` through `deno task test:unit` at the head of this
+  round; `deno lint`, `deno check` and `deno fmt` on the changed files are
+  clean. The full `./quality.sh` was not run in this round.
 - After the fourteenth review (of `90b04627`): a command that starts inside a
   `$( … )` or backtick substitution the walk tracks no frame for
   (`linePending > 0` or an odd backtick count at the command's start) no longer

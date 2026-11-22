@@ -347,6 +347,11 @@ interface Frame {
   branch: "cond" | "body" | "else";
   /** An earlier `if`/`elif` branch was statically taken, so later ones are not. */
   earlierTrue: boolean;
+  /**
+   * An earlier `if`/`elif` test was decided at run time, so a later `elif` or
+   * `else` branch runs only when that test fails (PR #5332 review).
+   */
+  earlierUnknown: boolean;
   /** `while` runs while true; `until` runs while false. */
   loop: "while" | "until" | null;
   /** A function body: never reached, ended by `}`. */
@@ -386,6 +391,7 @@ function frameLive(f: Frame): boolean {
  */
 function frameCertain(f: Frame, allowSub = false): boolean {
   if (f.fn || (f.sub && !allowSub) || !f.entryCertain) return false;
+  if (f.earlierUnknown) return false;
   if (f.branch === "cond") return true;
   return f.branch === "body" ? f.truth === true : f.truth === false;
 }
@@ -487,9 +493,10 @@ export interface ReachableCommand {
   /**
    * True when the command runs every time the body reaches it: no run-time
    * `&&`/`||` chain, `if`/`elif`/`else` branch, loop body or `case` arm decides
-   * it, and the separator before it is not `|` or `&`
-   * (the separator after it is not checked, so `set -e &` is still certain). A
-   * `( )` subshell around it does
+   * it, and neither the separator before it nor the one after it is `|` or
+   * `&` (`set -e | cat` and `set -e &` run in a subshell). An `elif` or `else`
+   * branch is certain only when every earlier test of its `if` is decided
+   * statically. A `( )` subshell around it does
    * not clear this (`( set -e; cmd )` runs the `set` whenever the subshell
    * runs). A `set -e` that is not certain turns errexit on only when its
    * condition holds, so the walk does not credit it (PR #5332 review).
@@ -796,6 +803,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
       truth: null,
       branch: "body",
       earlierTrue: false,
+      earlierUnknown: false,
       loop: null,
       fn: false,
       awaitBrace: false,
@@ -991,12 +999,16 @@ export function reachableCommands(script: string): ReachableCommand[] {
         });
       } else if (w === "elif" && top) {
         top.earlierTrue = top.earlierTrue || top.truth === true;
+        top.earlierUnknown = top.earlierUnknown || top.truth === null;
         top.branch = "cond";
         top.truth = null;
       } else if (w === "then" || w === "do") {
         if (top) top.branch = "body";
       } else if (w === "else") {
-        if (top) top.branch = "else";
+        if (top) {
+          top.earlierUnknown = top.earlierUnknown || top.truth === null;
+          top.branch = "else";
+        }
       } else if (w === "for" || w === "case" || w === "select") {
         push({ iterates: w !== "case", kase: w === "case" });
         words = [];
@@ -1122,10 +1134,12 @@ export function reachableCommands(script: string): ReachableCommand[] {
         : !prev;
     }
     if (reached) {
+      const nextSep = listed[index + 1]?.sep ??
+        (trailing === "\n" ? "" : trailing);
       out.push({
         words,
         sep,
-        next: listed[index + 1]?.sep ?? (trailing === "\n" ? "" : trailing),
+        next: nextSep,
         // A group or subshell inside an `if`/`while` test is a condition
         // too: its status is the test's (PR #5332 review).
         condition: stack.some((frame) => frame.branch === "cond"),
@@ -1141,6 +1155,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
         subshellsInCondition: subshellsInsideConditions(stack),
         inUntrackedParen,
         certain: runs === true && sep !== "|" && sep !== "&" &&
+          nextSep !== "|" && nextSep !== "&" &&
           stack.every((frame) => frameCertain(frame, true)),
         subshells: stack.filter((frame) => frame.sub).map((frame) => frame.id),
       });
