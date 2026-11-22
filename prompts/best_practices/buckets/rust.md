@@ -879,12 +879,12 @@ This section applies only when the repository calls AWS through the
 Follow [AWS integration testing](https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#aws-integration-testing):
 a new or materially changed SDK client, adapter or handler is covered by a
 deterministic AWS Emulator test of that production code, not by mocks alone,
-while pure logic keeps its fast unit tests. Not yet:
-stSoftwareAU/VibeCoder#5112 will add the test-wiring detector and the migration
-findings, so do not file a per-module "missing emulator test" finding here;
-reuse the existing `BP-AWS-EMULATOR-MISSING` finding and open migration issues
-rather than filing a second integration-test campaign. Where that finding's
-older Floci wording disagrees with the canonical policy, the policy wins until
-stSoftwareAU/VibeCoder#5112 rewrites it. The installed server through
-`aws-emulator-run` is the default; the embedded mode suits a crate only where
-its build/resource cost and isolation are justified for that repository.
+while pure logic keeps its fast unit tests. The best-practices pre-filer
+(stSoftwareAU/VibeCoder#5112) checks the static test wiring and files the
+migration finding, so do not file a per-module "missing emulator test" finding
+here; reuse the existing `BP-AWS-EMULATOR-MISSING` finding and open migration
+issues rather than filing a second integration-test campaign. The installed
+server through `aws-emulator-run` is the default; the embedded mode suits a
+crate only where its build/resource cost and isolation are justified for that
+repository, and its test step then carries a
+`# aws-emulator-embedded: version=<X.Y.Z>; justification=<text>` comment.

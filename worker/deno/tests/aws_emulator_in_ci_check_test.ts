@@ -12,6 +12,7 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 
 import {
+  type AwsEmulatorCheckResult,
   cargoTomlUsesAws,
   checkAwsEmulatorInCI,
   isCfnTemplate,
@@ -20,10 +21,12 @@ import {
   packageJsonUsesAws,
   pomXmlUsesAws,
   requirementsUsesAws,
+  terraformUsesAws,
   workflowRunsAwsEmulator,
   workflowRunsFloci,
 } from "../lib/aws_emulator_in_ci_check.ts";
 import { parse as parseYaml } from "@std/yaml/parse";
+import { reachableCommands } from "../lib/shell_command_words.ts";
 
 async function makeTempRepo(): Promise<string> {
   return await Deno.makeTempDir({ prefix: "aws_emulator_in_ci_check_test_" });
@@ -237,7 +240,8 @@ Deno.test("checkAwsEmulatorInCI - no AWS evidence, but workflow runs floci servi
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     runs-on: ubuntu-latest
     services:
@@ -250,7 +254,7 @@ Deno.test("checkAwsEmulatorInCI - no AWS evidence, but workflow runs floci servi
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.usesAws, false);
     assertEquals(result.awsEvidence, []);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "floci-only");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -392,7 +396,8 @@ Deno.test("checkAwsEmulatorInCI - services.floci.image with a sha256 digest", as
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     services:
       floci:
@@ -402,7 +407,7 @@ Deno.test("checkAwsEmulatorInCI - services.floci.image with a sha256 digest", as
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "floci-only");
     assertEquals(result.workflowsLoaded, true);
   } finally {
     await Deno.remove(root, { recursive: true });
@@ -415,7 +420,8 @@ Deno.test("checkAwsEmulatorInCI - container as a plain string", async () => {
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     container: floci/floci:latest
     steps:
@@ -423,7 +429,7 @@ Deno.test("checkAwsEmulatorInCI - container as a plain string", async () => {
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "floci-only");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -435,7 +441,8 @@ Deno.test("checkAwsEmulatorInCI - container as a record with image", async () =>
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     container:
       image: floci/floci:latest
@@ -444,7 +451,7 @@ Deno.test("checkAwsEmulatorInCI - container as a record with image", async () =>
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "floci-only");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -456,14 +463,15 @@ Deno.test("checkAwsEmulatorInCI - step uses docker://floci/floci", async () => {
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     steps:
       - uses: docker://floci/floci:1.0
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "floci-only");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -475,14 +483,15 @@ Deno.test("checkAwsEmulatorInCI - step run with docker run floci/floci", async (
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     steps:
       - run: docker run -d -p 4566:4566 floci/floci:latest
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "floci-only");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -499,6 +508,7 @@ Deno.test("checkAwsEmulatorInCI - comment mentioning floci/floci does not count"
       root,
       ".github/workflows/ci.yml",
       `# runs floci/floci later
+on: pull_request
 jobs:
   test:
     steps:
@@ -506,7 +516,7 @@ jobs:
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -518,14 +528,15 @@ Deno.test("checkAwsEmulatorInCI - run echoing floci/floci without docker run doe
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     steps:
       - run: echo floci/floci
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -537,7 +548,8 @@ Deno.test("checkAwsEmulatorInCI - floci/floci-proxy image does not count", async
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     container:
       image: floci/floci-proxy
@@ -546,7 +558,7 @@ Deno.test("checkAwsEmulatorInCI - floci/floci-proxy image does not count", async
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -561,7 +573,7 @@ Deno.test("checkAwsEmulatorInCI - no workflows directory yields workflowsLoaded 
   try {
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.workflowsLoaded, false);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -573,7 +585,8 @@ Deno.test("checkAwsEmulatorInCI - a workflow present yields workflowsLoaded true
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     steps:
       - run: echo hi
@@ -723,7 +736,8 @@ Deno.test("isFlociImage - exact, tag and digest forms match; near-miss does not"
 
 Deno.test("workflowRunsFloci - run with docker run and floci/floci matches", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: docker run -d floci/floci:latest
@@ -744,7 +758,8 @@ Deno.test("workflowRunsFloci - no jobs does not throw and returns false", () => 
 
 Deno.test("workflowRunsAwsEmulator - pinned install fragment alone does not count", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: sudo env X=1 bash container/toolchains/aws-emulator.sh
@@ -766,7 +781,8 @@ Deno.test("workflowRunsAwsEmulator - pinned install fragment alone does not coun
 
 Deno.test("workflowRunsAwsEmulator - exec and env prefixes before aws-emulator-run count", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: exec aws-emulator-run --timeout 900 -- ./t.sh
@@ -777,7 +793,8 @@ Deno.test("workflowRunsAwsEmulator - exec and env prefixes before aws-emulator-r
 
 Deno.test("workflowRunsAwsEmulator - step runs aws-emulator-run wrapper", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: aws-emulator-run -- ./t.sh
@@ -788,7 +805,8 @@ Deno.test("workflowRunsAwsEmulator - step runs aws-emulator-run wrapper", () => 
 
 Deno.test("workflowRunsAwsEmulator - path ending in aws-emulator-run in command position counts", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: /usr/local/bin/aws-emulator-run -- ./t.sh
@@ -802,11 +820,37 @@ Deno.test("workflowRunsAwsEmulator - real .github/workflows/aws-emulator.yml cou
     new URL("../../../.github/workflows/aws-emulator.yml", import.meta.url),
   );
   const repoRoot = new URL("../../../", import.meta.url).pathname;
+  // aws-emulator.yml is `workflow_call` only: its credit depends on the
+  // pull_request caller (quality.yml, see the real-checkout test below). Here
+  // the file is given a pull_request trigger in memory, so only the step rules
+  // (status preservation, the repo script) are under test.
+  const doc = parseYaml(text) as Record<string, unknown>;
+  const asPullRequest = { ...doc, on: "pull_request" };
   assert(
-    workflowRunsAwsEmulator(parseYaml(text), makeRepoScriptReader(repoRoot)),
+    workflowRunsAwsEmulator(asPullRequest, makeRepoScriptReader(repoRoot)),
   );
   // Without the script the install steps alone are not coverage.
-  assertEquals(workflowRunsAwsEmulator(parseYaml(text)), false);
+  assertEquals(workflowRunsAwsEmulator(asPullRequest), false);
+  // Without a pull_request caller, the same steps earn nothing.
+  assertEquals(
+    workflowRunsAwsEmulator(doc, makeRepoScriptReader(repoRoot)),
+    false,
+  );
+});
+
+Deno.test("checkAwsEmulatorInCI - VibeCoder's own checkout is official-server (quality.yml calls aws-emulator.yml, which runs the repo script)", async () => {
+  const repoRoot = new URL("../../../", import.meta.url).pathname;
+  const result = await checkAwsEmulatorInCI(repoRoot);
+  assertEquals(result.usesAws, true);
+  assertEquals(result.wiring, "official-server");
+  assert(
+    result.wiringEvidence.some((e) => e.includes("`aws-emulator.yml` job")),
+    `expected aws-emulator.yml evidence, got: ${
+      result.wiringEvidence.join(" | ")
+    }`,
+  );
+  assertEquals(result.unreadableWorkflows, []);
+  assertEquals(result.workflowsLoaded, true);
 });
 
 // Issue #5110 (pre-PR verifier): only `aws-emulator-run [options] -- COMMAND`
@@ -879,7 +923,8 @@ Deno.test("checkAwsEmulatorInCI - script that only runs aws-emulator-run --smoke
 
 Deno.test("workflowRunsAwsEmulator - echo aws-emulator-run does not count", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: echo aws-emulator-run
@@ -890,7 +935,8 @@ Deno.test("workflowRunsAwsEmulator - echo aws-emulator-run does not count", () =
 
 Deno.test("workflowRunsAwsEmulator - comment line naming aws-emulator-run does not count", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - run: |
@@ -903,7 +949,8 @@ Deno.test("workflowRunsAwsEmulator - comment line naming aws-emulator-run does n
 
 Deno.test("workflowRunsAwsEmulator - step name only does not count", () => {
   const doc = parseYaml(
-    `jobs:
+    `on: pull_request
+jobs:
   test:
     steps:
       - name: aws-emulator-run
@@ -925,7 +972,7 @@ function workflowRunBlock(body: string): unknown {
     "\n",
   );
   return parseYaml(
-    `jobs:\n  test:\n    steps:\n      - run: |\n${indented}\n`,
+    `on: pull_request\njobs:\n  test:\n    steps:\n      - run: |\n${indented}\n`,
   );
 }
 
@@ -1049,6 +1096,15 @@ Resources:
     Type: AWS::S3::Bucket
 `,
     );
+    // quality.yml (pull_request) calls aws-emulator.yml (workflow_call only).
+    const callerPath = ".github/workflows/quality.yml";
+    await writeFile(
+      root,
+      callerPath,
+      await Deno.readTextFile(
+        new URL("../../../" + callerPath, import.meta.url),
+      ),
+    );
     const workflowPath = ".github/workflows/aws-emulator.yml";
     const workflowText = await Deno.readTextFile(
       new URL("../../../" + workflowPath, import.meta.url),
@@ -1065,12 +1121,12 @@ Resources:
 
     const withWorkflow = await checkAwsEmulatorInCI(root);
     assertEquals(withWorkflow.usesAws, true);
-    assertEquals(withWorkflow.emulatorConfigured, true);
+    assertEquals(withWorkflow.wiring, "official-server");
 
     await Deno.remove(`${root}/${workflowPath}`);
     const withoutWorkflow = await checkAwsEmulatorInCI(root);
     assertEquals(withoutWorkflow.usesAws, true);
-    assertEquals(withoutWorkflow.emulatorConfigured, false);
+    assertEquals(withoutWorkflow.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1094,7 +1150,8 @@ fi
 `;
 
 function workflowWithRun(run: string): string {
-  return `jobs:
+  return `on: pull_request
+jobs:
   test:
     steps:
       - run: ${run}
@@ -1116,7 +1173,8 @@ Deno.test("checkAwsEmulatorInCI - install-only workflow is not emulator coverage
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:
+      `on: pull_request
+jobs:
   test:
     steps:
       - run: |
@@ -1127,7 +1185,7 @@ Deno.test("checkAwsEmulatorInCI - install-only workflow is not emulator coverage
     );
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.usesAws, true);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1143,7 +1201,7 @@ Deno.test("checkAwsEmulatorInCI - ./script that execs aws-emulator-run counts", 
       RUNNER_SCRIPT,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "official-server");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1159,7 +1217,7 @@ Deno.test("checkAwsEmulatorInCI - bash script that execs aws-emulator-run counts
       RUNNER_SCRIPT,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "official-server");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1180,7 +1238,7 @@ fi
 `,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1195,7 +1253,7 @@ Deno.test("checkAwsEmulatorInCI - script path with .. does not count", async () 
     await writeFile(parent, "outside/run.sh", RUNNER_SCRIPT);
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.usesAws, true);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(parent, { recursive: true });
   }
@@ -1217,7 +1275,7 @@ Deno.test("checkAwsEmulatorInCI - absolute and expanded script paths do not coun
         await setupAwsRepo(root, JSON.stringify(run));
         await writeFile(root, "x.sh", RUNNER_SCRIPT);
         const result = await checkAwsEmulatorInCI(root);
-        assertEquals(result.emulatorConfigured, false, run);
+        assertEquals(result.wiring, "missing", run);
       } finally {
         await Deno.remove(root, { recursive: true });
       }
@@ -1236,7 +1294,7 @@ Deno.test("checkAwsEmulatorInCI - in-repo symlink to an outside script does not 
     await Deno.mkdir(`${root}/ci`);
     await Deno.symlink(`${outside}/run.sh`, `${root}/ci/run.sh`);
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
     await Deno.remove(outside, { recursive: true });
@@ -1248,7 +1306,7 @@ Deno.test("checkAwsEmulatorInCI - nonexistent script does not count and does not
   try {
     await setupAwsRepo(root, "./infra/missing.sh");
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1264,7 +1322,7 @@ Deno.test("checkAwsEmulatorInCI - script over 1 MiB is not read", async () => {
       "#" + "x".repeat(1024 * 1024) + "\n" + RUNNER_SCRIPT,
     );
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, false);
+    assertEquals(result.wiring, "missing");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1276,7 +1334,7 @@ Deno.test("checkAwsEmulatorInCI - timeout 900 ./ci/t.sh resolves the script and 
     await setupAwsRepo(root, "timeout 900 ./ci/t.sh");
     await writeFile(root, "ci/t.sh", RUNNER_SCRIPT);
     const result = await checkAwsEmulatorInCI(root);
-    assertEquals(result.emulatorConfigured, true);
+    assertEquals(result.wiring, "official-server");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1311,7 +1369,7 @@ Deno.test({
       // Positive control: the same repo counts once the script is readable.
       await Deno.chmod(script, 0o644);
       const result = await checkAwsEmulatorInCI(root);
-      assertEquals(result.emulatorConfigured, true);
+      assertEquals(result.wiring, "official-server");
     } finally {
       await Deno.remove(root, { recursive: true });
     }
@@ -1330,7 +1388,10 @@ function docWithStep(
   step: Record<string, unknown> = {},
   job: Record<string, unknown> = {},
 ): unknown {
-  return { jobs: { test: { ...job, steps: [{ run, ...step }] } } };
+  return {
+    on: "pull_request",
+    jobs: { test: { ...job, steps: [{ run, ...step }] } },
+  };
 }
 
 const NOT_EXECUTED: [
@@ -1369,6 +1430,12 @@ const NOT_EXECUTED: [
   [
     "code after an exit in an if true",
     `if true; then exit 0; fi\n${RUNNER}`,
+    {},
+    {},
+  ],
+  [
+    "code after an exit in an elif true behind a false test",
+    `if false; then echo a; elif true; then exit 0; fi\n${RUNNER}`,
     {},
     {},
   ],
@@ -1462,7 +1529,7 @@ const EXECUTED: [
   [
     "a step if decided at run time",
     RUNNER,
-    { if: "github.event_name == 'push'" },
+    { if: "github.actor != 'dependabot[bot]'" },
     {},
   ],
   ["a job if decided at run time", RUNNER, {}, { if: "always()" }],
@@ -1506,6 +1573,12 @@ const EXECUTED: [
   [
     "code after an exit in an if on a runtime test",
     `if [ -z "$X" ]; then exit 0; fi\n${RUNNER}`,
+    {},
+    {},
+  ],
+  [
+    "code after an exit in an elif true behind a runtime test",
+    `if [ -n "$X" ]; then echo a; elif true; then exit 0; fi\n${RUNNER}`,
     {},
     {},
   ],
@@ -1677,18 +1750,21 @@ Deno.test("checkAwsEmulatorInCI - a disabled or unreachable runner does not coun
       await writeFile(
         root,
         ".github/workflows/ci.yml",
-        `jobs:\n  test:\n    steps:\n      - run: |\n          ${run}\n`,
+        `on: pull_request\njobs:\n  test:\n    steps:\n      - run: |\n          ${run}\n`,
       );
       const result = await checkAwsEmulatorInCI(root);
       assertEquals(result.usesAws, true);
-      assertEquals(result.emulatorConfigured, false, run);
+      assertEquals(result.wiring, "missing", run);
       // Positive control: the same repo, running the script for real.
       await writeFile(
         root,
         ".github/workflows/ci.yml",
-        "jobs:\n  test:\n    steps:\n      - run: bash ./test.sh\n",
+        "on: pull_request\njobs:\n  test:\n    steps:\n      - run: bash ./test.sh\n",
       );
-      assertEquals((await checkAwsEmulatorInCI(root)).emulatorConfigured, true);
+      assertEquals(
+        (await checkAwsEmulatorInCI(root)).wiring,
+        "official-server",
+      );
     } finally {
       await Deno.remove(root, { recursive: true });
     }
@@ -1699,16 +1775,16 @@ Deno.test("checkAwsEmulatorInCI - a disabled or unreachable runner does not coun
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:\n  test:\n    steps:\n      - if: false\n        run: aws-emulator-run -- ./t.sh\n`,
+      `on: pull_request\njobs:\n  test:\n    steps:\n      - if: false\n        run: aws-emulator-run -- ./t.sh\n`,
     );
-    assertEquals((await checkAwsEmulatorInCI(root)).emulatorConfigured, false);
+    assertEquals((await checkAwsEmulatorInCI(root)).wiring, "missing");
     // Positive control: the same step without the `if: false`.
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `jobs:\n  test:\n    steps:\n      - run: aws-emulator-run -- ./t.sh\n`,
+      `on: pull_request\njobs:\n  test:\n    steps:\n      - run: aws-emulator-run -- ./t.sh\n`,
     );
-    assertEquals((await checkAwsEmulatorInCI(root)).emulatorConfigured, true);
+    assertEquals((await checkAwsEmulatorInCI(root)).wiring, "official-server");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1750,14 +1826,14 @@ Deno.test("checkAwsEmulatorInCI - a skipped brace group does not count as emulat
         await writeFile(
           root,
           ".github/workflows/ci.yml",
-          `jobs:\n  test:\n    steps:\n      - run: |\n${
+          `on: pull_request\njobs:\n  test:\n    steps:\n      - run: |\n${
             run.split("\n").map((l) => `          ${l}`).join("\n")
           }\n`,
         );
         const result = await checkAwsEmulatorInCI(root);
         assertEquals(result.usesAws, true);
         assertEquals(
-          result.emulatorConfigured,
+          result.wiring === "official-server",
           expected,
           `${viaScript ? "via script: " : ""}${script}`,
         );
@@ -1787,4 +1863,2173 @@ Deno.test("workflowRunsAwsEmulator - hostile long inputs finish with the right a
     ),
     false,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #5112: wiring rules. Each refusal fixture is otherwise valid (a
+// pull_request workflow with a real runner step), so only the probed rule
+// refuses it, and each group has an allowed control.
+// ---------------------------------------------------------------------------
+
+const RUNNER_STEP = "aws-emulator-run -- ./t.sh";
+const CARGO_TOML_AWS =
+  '[package]\nname = "x"\n\n[dependencies]\naws-sdk-s3 = "1"\n';
+const EMBEDDED_STEP =
+  "# aws-emulator-embedded: version=1.2.3; justification=the Rust SDK tests need no Docker runner\ncargo test --workspace";
+const FLOCI_SERVICE =
+  "    services:\n      floci:\n        image: floci/floci:1.4.0\n";
+/** A Floci job's test step: a test run whose failure fails the job. */
+const FLOCI_TEST_STEP = "npm test";
+const GAP_RECORD =
+  "# aws-emulator-gap: version=2.1.0; behaviour=IAM policy simulation; evidence=ci/run-1.log; alternative=a real AWS sandbox account; recheck=2027-01-01\n";
+
+/** Write a CloudFormation template (AWS usage) plus `files`, then run the check. */
+async function checkRepoWith(
+  files: Record<string, string>,
+): Promise<AwsEmulatorCheckResult> {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "infra/cloudformation/host.yaml", CFN_TEMPLATE);
+    for (const [rel, text] of Object.entries(files)) {
+      await writeFile(root, rel, text);
+    }
+    return await checkAwsEmulatorInCI(root);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+/** One `run: |` step whose body is `run`, with extra step keys (indented to the step). */
+function stepYaml(run: string, keys: string[] = []): string {
+  const body = run.split("\n").map((line) => `          ${line}`).join("\n");
+  return [
+    "      - run: |",
+    body,
+    ...keys.map((key) => `        ${key}`),
+  ].join("\n") + "\n";
+}
+
+/** A workflow with one job `test` holding `steps`; `jobKeys` are extra job lines (indented 4). */
+function prWorkflow(
+  steps: string,
+  jobKeys = "",
+  on = "on: pull_request\n",
+): string {
+  return `${on}jobs:\n  test:\n    runs-on: ubuntu-latest\n${jobKeys}    steps:\n${steps}`;
+}
+
+function assertDiagnostic(
+  result: AwsEmulatorCheckResult,
+  fragment: string,
+): void {
+  assert(
+    result.wiringDiagnostics.some((d) => d.includes(fragment)),
+    `expected a diagnostic containing "${fragment}", got: ${
+      result.wiringDiagnostics.join(" | ")
+    }`,
+  );
+}
+
+Deno.test("checkAwsEmulatorInCI - a direct runner step in a pull_request job is official-server with its command as evidence", async () => {
+  const result = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(RUNNER_STEP)),
+  });
+  assertEquals(result.usesAws, true);
+  assertEquals(result.wiring, "official-server");
+  assertEquals(result.wiringEvidence, [
+    "`ci.yml` job `test`: `aws-emulator-run -- ./t.sh`",
+  ]);
+  assertEquals(result.wiringDiagnostics, []);
+});
+
+Deno.test("checkAwsEmulatorInCI - a repository script that runs the emulator is official-server, with the script call as evidence", async () => {
+  const result = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": "#!/usr/bin/env bash\naws-emulator-run -- ./t.sh\n",
+  });
+  assertEquals(result.wiring, "official-server");
+  assertEquals(result.wiringEvidence, ["`ci.yml` job `test`: `./ci/t.sh`"]);
+});
+
+Deno.test("checkAwsEmulatorInCI - a workflow_call workflow called from a pull_request workflow is official-server", async () => {
+  const caller =
+    "on: pull_request\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n";
+  const reusable = prWorkflow(stepYaml(RUNNER_STEP), "", "on: workflow_call\n");
+  const called = await checkRepoWith({
+    ".github/workflows/ci.yml": caller,
+    ".github/workflows/reusable.yml": reusable,
+  });
+  assertEquals(called.wiring, "official-server");
+  assertEquals(called.wiringEvidence, [
+    "`reusable.yml` job `test`: `aws-emulator-run -- ./t.sh`",
+  ]);
+});
+
+Deno.test("checkAwsEmulatorInCI - a workflow_call workflow that no pull_request workflow calls is not credited", async () => {
+  const uncalled = await checkRepoWith({
+    ".github/workflows/reusable.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "",
+      "on: workflow_call\n",
+    ),
+  });
+  assertEquals(uncalled.wiring, "missing");
+  assertDiagnostic(
+    uncalled,
+    "`reusable.yml`: does not run on pull_request and no pull_request workflow calls it",
+  );
+  // Control: the same file, once a pull_request workflow calls it.
+  const called = await checkRepoWith({
+    ".github/workflows/ci.yml":
+      "on: pull_request\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n",
+    ".github/workflows/reusable.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "",
+      "on: workflow_call\n",
+    ),
+  });
+  assertEquals(called.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - a push-only workflow is not credited; the same workflow on pull_request is", async () => {
+  const pushOnly = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "",
+      "on: push\n",
+    ),
+  });
+  assertEquals(pushOnly.wiring, "missing");
+  assertDiagnostic(pushOnly, "`ci.yml`: does not run on pull_request");
+  const pullRequest = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(RUNNER_STEP)),
+  });
+  assertEquals(pullRequest.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - a justified, pinned embedded marker with cargo test is official-embedded in a Rust repo", async () => {
+  const result = await checkRepoWith({
+    "Cargo.toml": CARGO_TOML_AWS,
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(EMBEDDED_STEP)),
+  });
+  assertEquals(result.wiring, "official-embedded");
+  assertEquals(result.wiringEvidence, [
+    "`ci.yml` job `test`: `cargo test --workspace`",
+  ]);
+});
+
+Deno.test("checkAwsEmulatorInCI - an embedded marker is refused when unpinned, unjustified, without cargo test, or outside a Rust repo", async () => {
+  const refusals: Array<[string, string, string]> = [
+    [
+      "unpinned version",
+      "# aws-emulator-embedded: version=1.2; justification=x\ncargo test",
+      "exact pin X.Y.Z",
+    ],
+    [
+      "missing version",
+      "# aws-emulator-embedded: justification=x\ncargo test",
+      "exact pin X.Y.Z",
+    ],
+    [
+      "empty justification",
+      "# aws-emulator-embedded: version=1.2.3; justification=\ncargo test",
+      "justification is empty",
+    ],
+    [
+      "no cargo test",
+      "# aws-emulator-embedded: version=1.2.3; justification=x\necho done",
+      "no status-preserving cargo test",
+    ],
+    [
+      "cargo test behind ||",
+      "# aws-emulator-embedded: version=1.2.3; justification=x\ncargo test || true",
+      "no status-preserving cargo test",
+    ],
+  ];
+  for (const [label, run, fragment] of refusals) {
+    const result = await checkRepoWith({
+      "Cargo.toml": CARGO_TOML_AWS,
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(run)),
+    });
+    assertEquals(result.wiring, "missing", label);
+    assertDiagnostic(result, fragment);
+  }
+  // A non-Rust repo (no Cargo.toml evidence): the valid marker earns nothing.
+  const nonRust = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(EMBEDDED_STEP)),
+  });
+  assertEquals(nonRust.wiring, "missing");
+  assertDiagnostic(nonRust, "no Cargo.toml with AWS evidence");
+});
+
+Deno.test("checkAwsEmulatorInCI - a comment naming the runner, an echo of it, or a command -v lookup is missing", async () => {
+  for (
+    const run of [
+      "# aws-emulator-run -- ./t.sh",
+      "echo aws-emulator-run -- ./t.sh",
+      "command -v aws-emulator-run",
+    ]
+  ) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(run)),
+    });
+    assertEquals(result.wiring, "missing", run);
+  }
+  const control = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(RUNNER_STEP)),
+  });
+  assertEquals(control.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - an emulator service image with no runner step is missing; with one it is official-server", async () => {
+  const service =
+    "    services:\n      emulator:\n        image: localstack/localstack:3\n";
+  const unused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("echo hi"), service),
+  });
+  assertEquals(unused.wiring, "missing");
+  const used = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(RUNNER_STEP), service),
+  });
+  assertEquals(used.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - a statically disabled job is missing; an expression-guarded one is official-server", async () => {
+  const disabled = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "    if: false\n",
+    ),
+  });
+  assertEquals(disabled.wiring, "missing");
+  // A condition that can be true on a pull request keeps the credit (PR #5332
+  // review: `github.ref == 'refs/heads/main'` never is, and is refused below).
+  const guarded = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "    if: github.actor != 'dependabot[bot]'\n",
+    ),
+  });
+  assertEquals(guarded.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - a job or step if: that compares the ref with a branch or tag literal earns no pull_request credit", async () => {
+  const refused: Array<[string, string]> = [
+    ["github.ref == 'refs/heads/main'", "excludes pull_request"],
+    ["${{ github.ref == 'refs/heads/main' }}", "excludes pull_request"],
+    ["github.ref_name == 'main'", "excludes pull_request"],
+    ["startsWith(github.ref, 'refs/tags/')", "excludes pull_request"],
+    ["github.ref_type == 'tag'", "excludes pull_request"],
+    [
+      "github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')",
+      "excludes pull_request",
+    ],
+  ];
+  for (const [condition, fragment] of refused) {
+    const onJob = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(RUNNER_STEP),
+        `    if: ${condition}\n`,
+      ),
+    });
+    assertEquals(onJob.wiring, "missing", `job: ${condition}`);
+    assertDiagnostic(onJob, fragment);
+    const onStep = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(RUNNER_STEP, [`if: ${condition}`]),
+      ),
+    });
+    assertEquals(onStep.wiring, "missing", `step: ${condition}`);
+  }
+  // Controls: ref conditions that can be true on a pull request keep it.
+  for (
+    const condition of [
+      "github.ref != 'refs/heads/main'",
+      "startsWith(github.ref, 'refs/pull/')",
+      "${{ !startsWith(github.ref, 'refs/tags/') }}",
+      "github.ref_type == 'branch'",
+      "github.ref == 'refs/heads/main' || github.event_name == 'pull_request'",
+    ]
+  ) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(RUNNER_STEP),
+        `    if: ${condition}\n`,
+      ),
+    });
+    assertEquals(result.wiring, "official-server", condition);
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - continue-on-error, || true, !, a pipe and an if condition each refuse the credit with a diagnostic", async () => {
+  const refusals: Array<[string, string, string]> = [
+    [
+      "step continue-on-error",
+      prWorkflow(stepYaml(RUNNER_STEP, ["continue-on-error: true"])),
+      "sets continue-on-error",
+    ],
+    [
+      "job continue-on-error",
+      prWorkflow(stepYaml(RUNNER_STEP), "    continue-on-error: true\n"),
+      "job sets continue-on-error",
+    ],
+    [
+      "|| true",
+      prWorkflow(stepYaml(`${RUNNER_STEP} || true`)),
+      "is not status-preserving",
+    ],
+    [
+      "negated with !",
+      prWorkflow(stepYaml(`! ${RUNNER_STEP}`)),
+      "is not status-preserving",
+    ],
+    [
+      "piped to tee",
+      prWorkflow(stepYaml(`${RUNNER_STEP} | tee log`)),
+      "is not status-preserving",
+    ],
+    [
+      "backgrounded with a trailing &",
+      prWorkflow(stepYaml(`${RUNNER_STEP} &`)),
+      "is not status-preserving",
+    ],
+    [
+      "as an if condition",
+      prWorkflow(stepYaml(`if ${RUNNER_STEP}; then echo ok; fi`)),
+      "is not status-preserving",
+    ],
+  ];
+  for (const [label, workflow, fragment] of refusals) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": workflow,
+    });
+    assertEquals(result.wiring, "missing", label);
+    assertDiagnostic(result, fragment);
+  }
+  // Controls: an explicit `continue-on-error: false`, and a chain that keeps
+  // the status (`&& true` does not swallow a failure).
+  const explicitFalse = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP, ["continue-on-error: false"]),
+    ),
+  });
+  assertEquals(explicitFalse.wiring, "official-server");
+  const andChain = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${RUNNER_STEP} && echo ok`),
+    ),
+  });
+  assertEquals(andChain.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - Floci only is floci-only, with a diagnostic naming the job", async () => {
+  const result = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("echo hi"), FLOCI_SERVICE),
+  });
+  assertEquals(result.wiring, "floci-only");
+  assertEquals(result.wiringEvidence, []);
+  assertDiagnostic(result, "`ci.yml` job `test` runs floci/floci");
+});
+
+Deno.test("checkAwsEmulatorInCI - Floci with a valid gap record is floci-gap, with the record as evidence", async () => {
+  const result = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), FLOCI_SERVICE),
+  });
+  assertEquals(result.wiring, "floci-gap");
+  assertEquals(result.wiringEvidence.length, 1);
+  assert(result.wiringEvidence[0]!.includes("aws-emulator-gap: version=2.1.0"));
+});
+
+Deno.test("checkAwsEmulatorInCI - Floci with a gap record lacking recheck is floci-only and names recheck", async () => {
+  const withoutRecheck = GAP_RECORD.replace("; recheck=2027-01-01", "");
+  const result = await checkRepoWith({
+    ".github/workflows/ci.yml": withoutRecheck +
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), FLOCI_SERVICE),
+  });
+  assertEquals(result.wiring, "floci-only");
+  assertDiagnostic(result, "aws-emulator-gap record lacks recheck");
+  // A version without a digit is not a version.
+  const noDigit = GAP_RECORD.replace("version=2.1.0", "version=latest");
+  const badVersion = await checkRepoWith({
+    ".github/workflows/ci.yml": noDigit +
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), FLOCI_SERVICE),
+  });
+  assertEquals(badVersion.wiring, "floci-only");
+  assertDiagnostic(badVersion, "aws-emulator-gap record lacks version");
+});
+
+Deno.test("checkAwsEmulatorInCI - an unparseable workflow is listed in unreadableWorkflows; a readable one is still judged", async () => {
+  const mixed = await checkRepoWith({
+    ".github/workflows/broken.yml": "jobs: [\n",
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(RUNNER_STEP)),
+  });
+  assertEquals(mixed.unreadableWorkflows, ["broken.yml"]);
+  assertEquals(mixed.wiring, "official-server");
+  assertEquals(mixed.workflowsLoaded, true);
+
+  const onlyBroken = await checkRepoWith({
+    ".github/workflows/broken.yml": "jobs: [\n",
+  });
+  assertEquals(onlyBroken.unreadableWorkflows, ["broken.yml"]);
+  assertEquals(onlyBroken.wiring, "missing");
+  assertEquals(onlyBroken.workflowsLoaded, false);
+});
+
+Deno.test("checkAwsEmulatorInCI - a trailing & after a runner is refused, but a plain trailing newline is not", async () => {
+  // Pinned directly on the command list: the separator after the last command.
+  const background = reachableCommands(RUNNER_STEP + " &");
+  assertEquals(background.length, 1);
+  assertEquals(background[0]?.next, "&");
+  const plain = reachableCommands(RUNNER_STEP + "\n");
+  assertEquals(plain[0]?.next, "");
+  assertEquals(plain[0]?.sep, "");
+  const condition = reachableCommands(
+    `if ${RUNNER_STEP}; then echo ok; fi\nlast`,
+  );
+  assertEquals(condition[0]?.condition, true);
+  assertEquals(condition[0]?.next, ";");
+  assertEquals(condition.at(-1)?.words, ["last"]);
+  assertEquals(condition.at(-1)?.sep, "\n");
+  assertEquals(condition.at(-1)?.next, "");
+});
+
+Deno.test("terraformUsesAws - AWS providers, resources, data, required_providers, sources and registry modules are AWS", () => {
+  const positives = [
+    'provider "aws" {\n  region = "ap-southeast-2"\n}\n',
+    'resource "aws_s3_bucket" "b" {\n  bucket = "x"\n}\n',
+    'data "aws_iam_policy_document" "p" {\n}\n',
+    'terraform {\n  required_providers {\n    aws = {\n      source = "hashicorp/aws"\n    }\n  }\n}\n',
+    'module "x" {\n  source = "hashicorp/aws"\n}\n',
+    'module "x" {\n  source = "registry.terraform.io/hashicorp/aws"\n}\n',
+    'module "vpc" {\n  source = "terraform-aws-modules/vpc/aws"\n}\n',
+    'module "vpc" {\n  source = "github.com/terraform-aws-modules//vpc"\n}\n',
+    'module "net" {\n  source = "acme/network/aws"\n}\n',
+  ];
+  for (const text of positives) assert(terraformUsesAws(text), text);
+  const negatives = [
+    'provider "google" {\n  project = "x"\n}\n',
+    'resource "azurerm_resource_group" "rg" {\n}\n',
+    '# resource "aws_s3_bucket" "b" {}\n',
+    '// provider "aws" {}\n',
+    '/* data "aws_iam_role" "r" {} */\n',
+    'module "local" {\n  source = "./modules/aws"\n}\n',
+    'module "gcp" {\n  source = "terraform-google-modules/network/google"\n}\n',
+    'module "git" {\n  source = "git::https://example.com/foo//bar"\n}\n',
+  ];
+  for (const text of negatives) assert(!terraformUsesAws(text), text);
+});
+
+Deno.test("terraformUsesAws - hostile long lines finish with the right answer, one per pattern", () => {
+  // TF_AWS_BLOCK: `resource` then blanks, no quoted aws_ type.
+  assertEquals(terraformUsesAws(`resource${" ".repeat(100_000)}x`), false);
+  // TF_AWS_BLOCK: a long quoted aws_ type name.
+  assertEquals(
+    terraformUsesAws(`resource "aws_${"x".repeat(100_000)}"`),
+    true,
+  );
+  // TF_AWS_PROVIDER: `provider` then blanks.
+  assertEquals(terraformUsesAws(`provider${" ".repeat(100_000)}x`), false);
+  // TF_AWS_REQUIRED_PROVIDER: `aws` then blanks.
+  assertEquals(terraformUsesAws(`aws${" ".repeat(100_000)}x`), false);
+  // TF_SOURCE_LINE: an unterminated source value.
+  assertEquals(terraformUsesAws(`source = "${"a/".repeat(50_000)}`), false);
+  // TF_AWS_SOURCE: many segments ending in /aws are not a provider source.
+  assertEquals(
+    terraformUsesAws(`source = "${"a/".repeat(50_000)}aws"`),
+    false,
+  );
+  // TF_AWS_SOURCE: one long namespace over /aws is.
+  assertEquals(
+    terraformUsesAws(`source = "${"x".repeat(100_000)}/aws"`),
+    true,
+  );
+});
+
+Deno.test("checkAwsEmulatorInCI - a Terraform file counts only when it names AWS, and a .terraform cache never counts", async () => {
+  const google = await makeTempRepo();
+  try {
+    await writeFile(google, "main.tf", 'provider "google" {\n}\n');
+    const result = await checkAwsEmulatorInCI(google);
+    assertEquals(result.usesAws, false);
+  } finally {
+    await Deno.remove(google, { recursive: true });
+  }
+
+  const cache = await makeTempRepo();
+  try {
+    await writeFile(
+      cache,
+      ".terraform/modules/vpc/main.tf",
+      'resource "aws_vpc" "v" {\n}\n',
+    );
+    await writeFile(
+      cache,
+      ".terragrunt-cache/x/main.tf",
+      'provider "aws" {\n}\n',
+    );
+    const result = await checkAwsEmulatorInCI(cache);
+    assertEquals(result.usesAws, false);
+    assertEquals(result.awsEvidence, []);
+  } finally {
+    await Deno.remove(cache, { recursive: true });
+  }
+
+  const aws = await makeTempRepo();
+  try {
+    await writeFile(aws, "main.tf", 'provider "aws" {\n}\n');
+    const result = await checkAwsEmulatorInCI(aws);
+    assertEquals(result.usesAws, true);
+    assertEquals(result.awsEvidence, ["main.tf"]);
+  } finally {
+    await Deno.remove(aws, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Errexit-aware failure propagation (Issue #5112 review): whether a runner's
+// failure fails the step depends on what runs after it and on `set -e`.
+// ---------------------------------------------------------------------------
+
+Deno.test("checkAwsEmulatorInCI - a runner followed by && and another line is refused; as the last && link it is credited", async () => {
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${RUNNER_STEP} && echo ok\necho after`),
+    ),
+  });
+  assertEquals(refused.wiring, "missing");
+  assertDiagnostic(refused, "is not status-preserving");
+  const last = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${RUNNER_STEP} && echo ok`),
+    ),
+  });
+  assertEquals(last.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - a repository script without set -e that runs the runner then more lines is refused; with set -euo pipefail it is credited", async () => {
+  const body = `aws-emulator-run -- ./t.sh\necho done\n`;
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\n${body}`,
+  });
+  assertEquals(refused.wiring, "missing");
+  assertDiagnostic(refused, "whose emulator run is not status-preserving");
+  for (
+    const errexit of [
+      "set -euo pipefail",
+      "set -eo pipefail",
+      "set -o errexit",
+    ]
+  ) {
+    const credited = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${errexit}\n${body}`,
+    });
+    assertEquals(credited.wiring, "official-server", errexit);
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - a runner started with exec is credited even when more lines follow it in the script", async () => {
+  const result = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      "#!/usr/bin/env bash\nexec aws-emulator-run -- ./t.sh\necho never-reached\n",
+  });
+  assertEquals(result.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - set +e before the runner refuses it when another command follows; set -e or the default shell keeps it", async () => {
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`set +e\n${RUNNER_STEP}\necho after`),
+    ),
+  });
+  assertEquals(refused.wiring, "missing");
+  const explicit = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`set -e\n${RUNNER_STEP}\necho after`),
+    ),
+  });
+  assertEquals(explicit.wiring, "official-server");
+  const defaultShell = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${RUNNER_STEP}\necho after`),
+    ),
+  });
+  assertEquals(defaultShell.wiring, "official-server");
+});
+
+Deno.test("checkAwsEmulatorInCI - a step shell of bash {0} with a later command refuses the runner; exactly bash keeps errexit and credits it", async () => {
+  const body = `${RUNNER_STEP}\necho after`;
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(body, ["shell: bash {0}"]),
+    ),
+  });
+  assertEquals(refused.wiring, "missing");
+  const credited = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(body, ["shell: bash"])),
+  });
+  assertEquals(credited.wiring, "official-server");
+});
+
+// ---------------------------------------------------------------------------
+// Floci gap credit (Issue #5112 review): a gap credits floci-gap only in an
+// applicable workflow with an enabled Floci job that is not continue-on-error.
+// ---------------------------------------------------------------------------
+
+Deno.test("checkAwsEmulatorInCI - a valid Floci gap in a disabled Floci job is floci-only, with the reason; the enabled job is floci-gap", async () => {
+  const disabled = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), "    if: false\n" + FLOCI_SERVICE),
+  });
+  assertEquals(disabled.wiring, "floci-only");
+  assertDiagnostic(
+    disabled,
+    "no Floci job is enabled for pull_request without continue-on-error and runs a test step",
+  );
+  const continued = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(
+        stepYaml(FLOCI_TEST_STEP),
+        "    continue-on-error: true\n" + FLOCI_SERVICE,
+      ),
+  });
+  assertEquals(continued.wiring, "floci-only");
+  const control = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), FLOCI_SERVICE),
+  });
+  assertEquals(control.wiring, "floci-gap");
+});
+
+Deno.test("checkAwsEmulatorInCI - a valid Floci gap in a push-only workflow is floci-only, with the reason; on pull_request it is floci-gap", async () => {
+  const pushOnly = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), FLOCI_SERVICE, "on: push\n"),
+  });
+  assertEquals(pushOnly.wiring, "floci-only");
+  assertDiagnostic(
+    pushOnly,
+    "aws-emulator-gap record is not credited: the workflow does not run on pull_request",
+  );
+  const control = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml(FLOCI_TEST_STEP), FLOCI_SERVICE),
+  });
+  assertEquals(control.wiring, "floci-gap");
+});
+
+// ---------------------------------------------------------------------------
+// Pre-PR verifier findings (Issue #5112): Floci gap credit needs a test step,
+// failure-preserving idioms, pull_request event conditions, the .tf size cap.
+// ---------------------------------------------------------------------------
+
+Deno.test("checkAwsEmulatorInCI - a gap record with an unused Floci image and no test step is floci-only; a Floci test step credits floci-gap", async () => {
+  const unusedImage = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(
+        stepYaml("echo hello", ["continue-on-error: true"]),
+        FLOCI_SERVICE,
+      ),
+  });
+  assertEquals(unusedImage.wiring, "floci-only");
+  assertDiagnostic(unusedImage, "runs a test step whose failure fails the job");
+  const echoOnly = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml("echo hello"), FLOCI_SERVICE),
+  });
+  assertEquals(echoOnly.wiring, "floci-only");
+  const control = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(stepYaml("npm test"), FLOCI_SERVICE),
+  });
+  assertEquals(control.wiring, "floci-gap");
+});
+
+Deno.test("checkAwsEmulatorInCI - a gap record whose Floci test step ignores failure (continue-on-error, || true, push-only if) is floci-only", async () => {
+  const fixtures: Array<[string, string]> = [
+    [
+      "step continue-on-error",
+      stepYaml("npm test", ["continue-on-error: true"]),
+    ],
+    ["|| true", stepYaml("npm test || true")],
+    [
+      "step if excludes pull_request",
+      stepYaml("npm test", ["if: github.event_name == 'push'"]),
+    ],
+  ];
+  for (const [label, steps] of fixtures) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": GAP_RECORD +
+        prWorkflow(steps, FLOCI_SERVICE),
+    });
+    assertEquals(result.wiring, "floci-only", label);
+  }
+  const pushOnlyJob = await checkRepoWith({
+    ".github/workflows/ci.yml": GAP_RECORD +
+      prWorkflow(
+        stepYaml("npm test"),
+        "    if: github.event_name == 'push'\n" + FLOCI_SERVICE,
+        "on: [push, pull_request]\n",
+      ),
+  });
+  assertEquals(pushOnlyJob.wiring, "floci-only");
+});
+
+Deno.test("checkAwsEmulatorInCI - if ! runner; then ...; exit 1; fi with a later command is credited; exit 0 in the branch is refused", async () => {
+  const credited = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(
+        `if ! ${RUNNER_STEP}; then\n  echo "::error::tests failed"\n  exit 1\nfi\necho finished`,
+        ["shell: bash {0}"],
+      ),
+    ),
+  });
+  assertEquals(credited.wiring, "official-server");
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(
+        `if ! ${RUNNER_STEP}; then\n  echo "tests failed"\n  exit 0\nfi\necho finished`,
+      ),
+    ),
+  });
+  assertEquals(refused.wiring, "missing");
+  assertDiagnostic(refused, "is not status-preserving");
+});
+
+Deno.test("checkAwsEmulatorInCI - a script running runner || exit 1 then more lines is credited; runner || exit 0 is refused", async () => {
+  const credited = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      "#!/usr/bin/env bash\naws-emulator-run -- ./t.sh || exit 1\necho done\n",
+  });
+  assertEquals(credited.wiring, "official-server");
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      "#!/usr/bin/env bash\naws-emulator-run -- ./t.sh || exit 0\necho done\n",
+  });
+  assertEquals(refused.wiring, "missing");
+});
+
+Deno.test("checkAwsEmulatorInCI - a push-only job in a push and pull_request workflow earns no official credit; a pull_request-inclusive if does", async () => {
+  const pushOnly = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "    if: github.event_name == 'push'\n",
+      "on: [push, pull_request]\n",
+    ),
+  });
+  assertEquals(pushOnly.wiring, "missing");
+  assertDiagnostic(pushOnly, "excludes pull_request events");
+  const notPr = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP, ["if: ${{ github.event_name != 'pull_request' }}"]),
+      "",
+      "on: [push, pull_request]\n",
+    ),
+  });
+  assertEquals(notPr.wiring, "missing");
+  const undecided = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(RUNNER_STEP),
+      "    if: contains(fromJSON('[\"push\"]'), github.event_name)\n",
+      "on: [push, pull_request]\n",
+    ),
+  });
+  assertEquals(undecided.wiring, "missing");
+  assertDiagnostic(
+    undecided,
+    "reads the event in a form this check cannot decide",
+  );
+  for (
+    const condition of [
+      "github.event_name == 'pull_request'",
+      "github.event_name == 'push' || github.event_name == 'pull_request'",
+      "${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}",
+    ]
+  ) {
+    const credited = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(RUNNER_STEP),
+        `    if: "${condition}"\n`,
+        "on: [push, pull_request]\n",
+      ),
+    });
+    assertEquals(credited.wiring, "official-server", condition);
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - a .tf file over the 1 MiB cap is not read, so it is not evidence; a small one is", async () => {
+  const root = await makeTempRepo();
+  try {
+    const aws = 'resource "aws_s3_bucket" "b" {}\n';
+    await writeFile(root, "infra/big.tf", aws + "#".repeat(1024 * 1024));
+    await writeFile(root, "infra/small/main.tf", aws);
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.awsEvidence, ["infra/small/main.tf"]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+// PR #5332 review: a failure swallowed one level out, around a group or a
+// compound, is not credited, and neither is `|| exit 1` after a negated
+// runner. Each form is refused in the workflow and in a repository script,
+// with a credited control beside it.
+Deno.test("checkAwsEmulatorInCI - a runner whose group or compound is swallowed one level out, or a negated runner before || exit 1, earns no credit", async () => {
+  const refusedBodies: Array<[string, string]> = [
+    ["a brace group || true", `{ ${RUNNER_STEP}; } || true`],
+    ["an if/fi || true", `if true; then ${RUNNER_STEP}; fi || true`],
+    ["a subshell || true", `( ${RUNNER_STEP} ) || true`],
+    ["a brace group piped to tee", `{ ${RUNNER_STEP}; } | tee log`],
+    ["a for loop || true", `for i in 1; do ${RUNNER_STEP}; done || true`],
+    [
+      "a multi-line brace group || true",
+      `{\n  ${RUNNER_STEP}\n} || true`,
+    ],
+    ["! runner || exit 1, then more", `! ${RUNNER_STEP} || exit 1\necho after`],
+    // A subshell holding more than one command closes on its last `)` too.
+    [
+      "a multi-command subshell || true",
+      `( cd infra; ${RUNNER_STEP}; cd .. ) || true`,
+    ],
+    [
+      "a multi-command subshell with attached parens || true",
+      `(cd infra; ${RUNNER_STEP}; echo done) || true`,
+    ],
+    [
+      "a multi-command subshell piped to tee",
+      `( ${RUNNER_STEP}; echo done ) | tee log`,
+    ],
+    [
+      "a multi-command subshell backgrounded",
+      `( ${RUNNER_STEP}; echo done ) &\nwait`,
+    ],
+    // errexit is ignored inside a compound on the left of `&&`.
+    [
+      "a brace group && echo ok, then more",
+      `{ ${RUNNER_STEP}; } && echo ok\necho more`,
+    ],
+    [
+      "an if/fi && echo ok, then more",
+      `if true; then ${RUNNER_STEP}; fi && echo ok\necho more`,
+    ],
+    // A `)` attached to a quoted word closes the subshell too (PR #5332
+    // review round 4).
+    [
+      "a subshell closed by a double-quoted word's ) || true",
+      `(cd infra; ${RUNNER_STEP}; echo "done") || true`,
+    ],
+    [
+      "a subshell closed by a single-quoted word's ) || true",
+      `( ${RUNNER_STEP}; echo 'done') || true`,
+    ],
+    [
+      "a subshell closed by a quoted word's ) piped to tee",
+      `(${RUNNER_STEP}; echo "done") | tee log`,
+    ],
+    [
+      'a runner after ( cd infra; echo "built") then exit 0',
+      `( cd infra; echo "built")\nexit 0\n${RUNNER_STEP}`,
+    ],
+    // errexit is ignored inside a compound left of `&&`, so a runner that is
+    // not its last command is lost even when the chain ends the body.
+    [
+      "a brace group whose runner is not last && echo ok",
+      `{ ${RUNNER_STEP}; echo done; } && echo ok`,
+    ],
+    [
+      "an if/fi whose runner is not last && echo ok",
+      `if true; then ${RUNNER_STEP}; echo done; fi && echo ok`,
+    ],
+    // A group or subshell inside an `if` test is a condition (PR #5332
+    // review round 5).
+    [
+      "a subshell as an if condition",
+      `if ( ${RUNNER_STEP} ); then echo ok; fi\necho more`,
+    ],
+    [
+      "a brace group as an if condition",
+      `if { ${RUNNER_STEP}; }; then echo ok; fi\necho more`,
+    ],
+    [
+      "a multi-line subshell as an if condition",
+      `if (\n  cd infra\n  ${RUNNER_STEP}\n); then echo ok; else echo failed; fi`,
+    ],
+    // A `)` closing a `$(` or an array literal opened earlier in the same
+    // command does not close the subshell.
+    [
+      "a swallowed subshell after cd $(git rev-parse --show-toplevel)",
+      `(\n  cd $(git rev-parse --show-toplevel)\n  ${RUNNER_STEP}\n) || true`,
+    ],
+    [
+      "a swallowed subshell after ROOT=$(git rev-parse --show-toplevel)",
+      `(\n  ROOT=$(git rev-parse --show-toplevel)\n  ${RUNNER_STEP}\n) || true`,
+    ],
+    [
+      "a swallowed subshell after an array literal",
+      `(\n  args=(--foo bar)\n  ${RUNNER_STEP}\n) || true`,
+    ],
+    [
+      "a subshell after echo started at $(date +%s) piped to tee",
+      `(\n  echo started at $(date +%s)\n  ${RUNNER_STEP}\n) | tee log`,
+    ],
+    // A subshell that closes before an unconditional exit leaves the runner
+    // after it unreachable.
+    [
+      "a runner after ( cd infra; make build ) then exit 0",
+      `( cd infra; make build )\nexit 0\n${RUNNER_STEP}`,
+    ],
+  ];
+  for (const [label, body] of refusedBodies) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "missing", `workflow: ${label}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(inScript.wiring, "missing", `script: ${label}`);
+  }
+  // Controls: the same groups and compounds that keep the status are credited.
+  const creditedBodies: Array<[string, string]> = [
+    ["a brace group", `{ ${RUNNER_STEP}; }`],
+    ["an if/fi", `if true; then ${RUNNER_STEP}; fi`],
+    ["a brace group && echo ok", `{ ${RUNNER_STEP}; } && echo ok`],
+    [
+      "a multi-command subshell",
+      `( cd infra; ${RUNNER_STEP}; cd .. )\necho after`,
+    ],
+    [
+      "a multi-command subshell with attached parens",
+      `(cd infra; ${RUNNER_STEP})`,
+    ],
+    [
+      "a subshell after cd $(git rev-parse --show-toplevel), not swallowed",
+      `(\n  cd $(git rev-parse --show-toplevel)\n  ${RUNNER_STEP}\n)\necho after`,
+    ],
+    ["a for loop under errexit", `for t in a b; do ${RUNNER_STEP}; done`],
+    ["runner || exit 1, then more", `${RUNNER_STEP} || exit 1\necho after`],
+    [
+      "if ! runner; then exit 1; fi, then more",
+      `if ! ${RUNNER_STEP}; then\n  exit 1\nfi\necho after`,
+    ],
+  ];
+  for (const [label, body] of creditedBodies) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "official-server", `workflow: ${label}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(inScript.wiring, "official-server", `script: ${label}`);
+  }
+});
+
+// PR #5332 review round 5: a loop returns its last pass's status, so with
+// errexit off a runner in a loop body is not kept by being the last command.
+Deno.test("checkAwsEmulatorInCI - a runner in a loop body in a script without set -e earns no credit; with set -e or in a default workflow shell it does", async () => {
+  for (
+    const body of [
+      `for t in a b; do ${RUNNER_STEP}; done`,
+      `for t in a b\ndo\n  ${RUNNER_STEP}\ndone`,
+      `while read -r t; do ${RUNNER_STEP}; done < list`,
+    ]
+  ) {
+    const refused = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(refused.wiring, "missing", `no set -e: ${body}`);
+    const withErrexit = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(withErrexit.wiring, "official-server", `set -e: ${body}`);
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "official-server", `workflow: ${body}`);
+  }
+});
+
+// PR #5332 review: an `EXIT` or `ERR` trap whose handler runs `exit 0`
+// replaces the failing status, so the step passes when the tests fail. Each
+// form is refused in the workflow and in a repository script, with credited
+// controls for handlers that keep the status, resets and `exec`.
+Deno.test("checkAwsEmulatorInCI - an EXIT or ERR trap whose handler may exit 0 earns no credit; a status-keeping handler, a reset or exec does", async () => {
+  const refusedBodies: Array<[string, string]> = [
+    ["trap 'exit 0' EXIT", `trap 'exit 0' EXIT\n${RUNNER_STEP}`],
+    ['trap "exit 0" ERR', `trap "exit 0" ERR\n${RUNNER_STEP}`],
+    [
+      "trap -- 'echo done; exit 0' 0",
+      `trap -- 'echo done; exit 0' 0\n${RUNNER_STEP}`,
+    ],
+    ["a lower-case exit condition", `trap 'exit 0' exit\n${RUNNER_STEP}`],
+    [
+      "a cleanup function that exits 0",
+      `cleanup() {\n  rm -rf tmp\n  exit 0\n}\ntrap cleanup EXIT\n${RUNNER_STEP}`,
+    ],
+    [
+      "a function-keyword handler on ERR",
+      `function cleanup { exit 0; }\ntrap cleanup ERR\n${RUNNER_STEP}`,
+    ],
+    [
+      "a handler calling a function that exits 0",
+      `finish() { exit 0; }\ncleanup() {\n  echo bye\n  finish\n}\ntrap cleanup EXIT\n${RUNNER_STEP}`,
+    ],
+    [
+      "runner || exit 1 under the trap",
+      `trap 'exit 0' EXIT\n${RUNNER_STEP} || exit 1`,
+    ],
+    [
+      "an ERR trap left by an EXIT reset",
+      `trap 'exit 0' ERR\ntrap - EXIT\n${RUNNER_STEP}`,
+    ],
+  ];
+  for (const [label, body] of refusedBodies) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "missing", `workflow: ${label}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(inScript.wiring, "missing", `script: ${label}`);
+  }
+  // A trap in the step before it calls a script swallows the script's failure.
+  const stepTrap = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml("trap 'exit 0' EXIT\n./ci/t.sh"),
+    ),
+    "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${RUNNER_STEP}\n`,
+  });
+  assertEquals(stepTrap.wiring, "missing", "a step trap before the script");
+  const creditedBodies: Array<[string, string]> = [
+    ["a tidy-up handler", `trap 'rm -rf tmp' EXIT\n${RUNNER_STEP}`],
+    [
+      "a cleanup function that exits with the saved status",
+      `cleanup() {\n  rc=$?\n  rm -rf tmp\n  exit $rc\n}\ntrap cleanup EXIT\n${RUNNER_STEP}`,
+    ],
+    ["a bare exit", `trap 'echo done; exit' EXIT\n${RUNNER_STEP}`],
+    ["exit $?", `trap 'exit $?' ERR\n${RUNNER_STEP}`],
+    ["a non-zero exit", `trap 'exit 3' EXIT\n${RUNNER_STEP}`],
+    ["trap - EXIT", `trap 'exit 0' EXIT\ntrap - EXIT\n${RUNNER_STEP}`],
+    ["trap '' EXIT", `trap 'exit 0' EXIT\ntrap '' EXIT\n${RUNNER_STEP}`],
+    ["another condition", `trap 'exit 0' INT TERM\n${RUNNER_STEP}`],
+    ["trap -p", `trap -p\n${RUNNER_STEP}`],
+    ["exec under the trap", `trap 'exit 0' EXIT\nexec ${RUNNER_STEP}`],
+  ];
+  for (const [label, body] of creditedBodies) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "official-server", `workflow: ${label}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(inScript.wiring, "official-server", `script: ${label}`);
+  }
+});
+
+// PR #5332 review round 6: a subshell closed by `)` and then redirections, or
+// one holding a multi-line `$(`, is still swallowed by `|| true` or a pipe; a
+// `set -e` inside a subshell ends with it; and an `&` in a redirection
+// (`2>&1`, `>&2`, `&>`) is not a background `&`.
+Deno.test("checkAwsEmulatorInCI - a swallowed subshell closed before redirections or holding a multi-line $( earns no credit; a redirected runner does", async () => {
+  const multiLineSubst =
+    `(\n  VERSION=$(\n    cat VERSION\n  )\n  ${RUNNER_STEP}\n  echo done\n)`;
+  const refusedBodies: Array<[string, string]> = [
+    [
+      "a subshell ) 2>&1 | tee log",
+      `( cd infra; ${RUNNER_STEP}; echo done ) 2>&1 | tee log`,
+    ],
+    [
+      "a subshell ) > log 2>&1 || true",
+      `( cd infra; ${RUNNER_STEP}; echo done ) > log 2>&1 || true`,
+    ],
+    [
+      "an attached subshell) >log || true",
+      `(cd infra; ${RUNNER_STEP}; echo done) >log || true`,
+    ],
+    ["a multi-line $( in a subshell || true", `${multiLineSubst} || true`],
+    ["a runner |& tee log", `${RUNNER_STEP} |& tee log`],
+    ["a runner 2>&1 | tee log", `${RUNNER_STEP} 2>&1 | tee log`],
+  ];
+  for (const [label, body] of refusedBodies) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "missing", `workflow: ${label}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(inScript.wiring, "missing", `script: ${label}`);
+  }
+  // Without pipefail in a default workflow shell, a pipe swallows too.
+  for (
+    const body of [
+      `( ${RUNNER_STEP}; echo done ) >/dev/null || true`,
+      `( ${RUNNER_STEP}; echo done ) </dev/null | tee log`,
+      `${multiLineSubst} | tee log`,
+      // Backstops: a subshell never closed, and a `)` with none open.
+      `(\n  ${RUNNER_STEP}\n  echo done`,
+      `${RUNNER_STEP}\n)\necho x`,
+    ]
+  ) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(result.wiring, "missing", `workflow: ${body}`);
+  }
+  const credited: Array<[string, string, string]> = [
+    ["a runner > log 2>&1", "workflow", `${RUNNER_STEP} > log 2>&1`],
+    ["a runner 2>&1, then more", "workflow", `${RUNNER_STEP} 2>&1\necho more`],
+    ["a runner &> test.log", "workflow", `${RUNNER_STEP} &> test.log`],
+    ["a runner >&2, then more", "script", `${RUNNER_STEP} >&2\necho more`],
+    [
+      "a subshell >log, then more",
+      "workflow",
+      `( ${RUNNER_STEP}; echo done ) >log\necho more`,
+    ],
+    [
+      "a multi-line $( before the runner",
+      "workflow",
+      `VERSION=$(\n  cat VERSION\n)\n${RUNNER_STEP}\necho done`,
+    ],
+    [
+      "a multi-line array before the runner",
+      "workflow",
+      `args=(\n  --foo\n  bar\n)\n${RUNNER_STEP} "\${args[@]}"`,
+    ],
+    [
+      "a case pattern closed by a spaced )",
+      "workflow",
+      `case "$1" in\n  ci )\n    echo ci\n    ;;\nesac\n${RUNNER_STEP}\necho more`,
+    ],
+  ];
+  for (const [label, where, body] of credited) {
+    const result = await checkRepoWith(
+      where === "workflow"
+        ? { ".github/workflows/ci.yml": prWorkflow(stepYaml(body)) }
+        : {
+          ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+          "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+        },
+    );
+    assertEquals(result.wiring, "official-server", `${where}: ${label}`);
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - set -e inside a subshell ends with it; a top-level set -e keeps the runner credited", async () => {
+  const refused = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      `#!/usr/bin/env bash\n( set -e; make build )\n${RUNNER_STEP}\necho done\n`,
+  });
+  assertEquals(refused.wiring, "missing", "set -e only in a subshell");
+  const multiLine = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      `#!/usr/bin/env bash\n(\n  set -e\n  make build\n)\n${RUNNER_STEP}\necho done\n`,
+  });
+  assertEquals(multiLine.wiring, "missing", "set -e in a multi-line subshell");
+  const credited = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      `#!/usr/bin/env bash\nset -e\n( make build )\n${RUNNER_STEP}\necho done\n`,
+  });
+  assertEquals(credited.wiring, "official-server", "top-level set -e");
+  const inside = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\n( set -e; ${RUNNER_STEP}; echo done )\n`,
+  });
+  assertEquals(
+    inside.wiring,
+    "official-server",
+    "runner inside the set -e subshell",
+  );
+});
+
+// PR #5332 review: a `set -e` that runs only under a run-time condition leaves
+// errexit off when the condition is false, so a runner followed by more
+// commands loses its failure; a `set -e` certain to run is credited.
+Deno.test("checkAwsEmulatorInCI - a set -e that runs only under a run-time condition does not credit a runner followed by more commands", async () => {
+  const tail = `${RUNNER_STEP}\necho done`;
+  const conditional: Array<[string, string]> = [
+    ["if branch", `if [ "\${DEBUG:-}" = "1" ]; then set -ex; fi\n${tail}`],
+    ["and chain", `[ -n "\${STRICT:-}" ] && set -e\n${tail}`],
+    [
+      "else branch",
+      `if [ -n "\${LOOSE:-}" ]; then echo loose; else set -e; fi\n${tail}`,
+    ],
+    ["loop body", `while read -r line; do set -e; done < flags.txt\n${tail}`],
+    ["or chain", `[ -z "\${LOOSE:-}" ] || set -e\n${tail}`],
+    ["left of a pipe", `set -e | cat\n${tail}`],
+    ["backgrounded", `set -e &\n${tail}`],
+    [
+      "elif true after a run-time test",
+      `if [ -n "\${A:-}" ]; then echo a; elif true; then set -e; fi\n${tail}`,
+    ],
+    [
+      "else after a run-time test",
+      `if [ -n "\${A:-}" ]; then echo a; else set -e; fi\n${tail}`,
+    ],
+  ];
+  for (const [label, body] of conditional) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `script, ${label}`);
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    });
+    assertEquals(step.wiring, "missing", `step after set +e, ${label}`);
+  }
+  // Controls: a set -e certain to run is credited in the same two shapes.
+  const certain: Array<[string, string]> = [
+    ["top level", `set -e\n${tail}`],
+    ["if true", `if true; then set -e; fi\n${tail}`],
+    ["true and", `true && set -e\n${tail}`],
+    [
+      "else after a false test",
+      `if false; then echo a; else set -e; fi\n${tail}`,
+    ],
+    [
+      "elif true after a false test",
+      `if false; then echo a; elif true; then set -e; fi\n${tail}`,
+    ],
+  ];
+  // A `set -e` after a backgrounded command runs in the current shell: only
+  // the command before the `&` is backgrounded.
+  certain.push(
+    ["after a backgrounded command", `sleep 30 &\nset -e\n${tail}`],
+    ["after a backgrounded command, one line", `sleep 30 & set -e\n${tail}`],
+  );
+  for (const [label, body] of certain) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "official-server", `script, ${label}`);
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    });
+    assertEquals(step.wiring, "official-server", `step, ${label}`);
+  }
+});
+
+// PR #5332 review round 7: errexit switched on inside a subshell ends the
+// subshell with the failure, but with errexit off outside it the body carries
+// on, so a runner there is credited only when the subshell's failure fails the
+// body.
+Deno.test("checkAwsEmulatorInCI - a runner in a ( set -e; ... ) subshell followed by more commands, with errexit off outside, earns no credit", async () => {
+  for (
+    const [label, files] of [
+      ["one-line subshell then a line, no top-level set -e", {
+        ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+        "ci/t.sh":
+          `#!/usr/bin/env bash\n( set -e; ${RUNNER_STEP}; echo done )\necho after\n`,
+      }],
+      ["multi-line subshell then two lines, no top-level set -e", {
+        ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+        "ci/t.sh":
+          `#!/usr/bin/env bash\n(\n  set -e\n  cd infra\n  ${RUNNER_STEP}\n)\necho cleaning up\nrm -rf tmp\n`,
+      }],
+      ["workflow step after set +e", {
+        ".github/workflows/ci.yml": prWorkflow(
+          stepYaml(`set +e\n( set -e; ${RUNNER_STEP}; echo done )\necho after`),
+        ),
+      }],
+    ] as Array<[string, Record<string, string>]>
+  ) {
+    const result = await checkRepoWith(files);
+    assertEquals(result.wiring, "missing", label);
+  }
+  // Controls: the subshell as the last command, and under a top-level set -e.
+  const last = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\n( set -e; ${RUNNER_STEP}; echo done )\n`,
+  });
+  assertEquals(last.wiring, "official-server", "subshell last");
+  const topLevel = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      `#!/usr/bin/env bash\nset -e\n( set -e; ${RUNNER_STEP}; echo done )\necho after\n`,
+  });
+  assertEquals(topLevel.wiring, "official-server", "top-level set -e");
+});
+
+// PR #5332 review round 8: every route that fails a `( )` subshell (errexit
+// inside it, an explicit exit, `exec`) fails the body only when the
+// subshell's own failure does; a loop body is never the last command.
+Deno.test("checkAwsEmulatorInCI - a subshell's exit, exec or set -e fails the body only when the subshell's failure does", async () => {
+  const bodies: Array<[string, string]> = [
+    [
+      "(a) a set -e subshell as a loop body",
+      `for d in a b; do ( set -e; cd "$d"; ${RUNNER_STEP} ); done`,
+    ],
+    [
+      "(a) the multi-line loop",
+      `for d in a b\ndo\n  ( set -e; cd "$d"; ${RUNNER_STEP} )\ndone`,
+    ],
+    [
+      "(b) runner || exit 1 in a subshell, then a line",
+      `(\n  cd infra\n  ${RUNNER_STEP} || exit 1\n)\necho after`,
+    ],
+    [
+      "(b) the same subshell as a loop body",
+      `for d in a b; do (\n  cd infra\n  ${RUNNER_STEP} || exit 1\n); done`,
+    ],
+    [
+      "(c) if ! runner; then exit 1; fi in a subshell, then a line",
+      `(\n  cd infra\n  if ! ${RUNNER_STEP}; then\n    echo failed\n    exit 1\n  fi\n)\necho after`,
+    ],
+    [
+      "(d) exec runner in a subshell, then a line",
+      `( cd infra && exec ${RUNNER_STEP} )\necho after`,
+    ],
+  ];
+  for (const [label, body] of bodies) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `script without set -e: ${label}`);
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    });
+    assertEquals(step.wiring, "missing", `step after set +e: ${label}`);
+  }
+  // Controls: the same subshells as the body's last command, or under errexit.
+  const credited: Array<[string, Record<string, string>]> = [
+    ["runner || exit 1 in the last subshell", {
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh":
+        `#!/usr/bin/env bash\n(\n  cd infra\n  ${RUNNER_STEP} || exit 1\n)\n`,
+    }],
+    ["exec runner in the last subshell", {
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n( cd infra && exec ${RUNNER_STEP} )\n`,
+    }],
+    ["the set -e loop under a top-level set -e", {
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh":
+        `#!/usr/bin/env bash\nset -e\nfor d in a b; do ( set -e; cd "$d"; ${RUNNER_STEP} ); done\necho after\n`,
+    }],
+    ["runner || exit 1 in a subshell in a default-shell step", {
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(`(\n  cd infra\n  ${RUNNER_STEP} || exit 1\n)\necho after`),
+      ),
+    }],
+  ];
+  for (const [label, files] of credited) {
+    const result = await checkRepoWith(files);
+    assertEquals(result.wiring, "official-server", label);
+  }
+});
+
+// PR #5332 review round 9: only a loop around the subshell loses the
+// subshell's failure; a loop inside a set -e subshell ends it on the first
+// failing pass, so that subshell as the last command is credited.
+Deno.test("checkAwsEmulatorInCI - a loop inside a set -e subshell that is the last command is credited; a loop around the subshell is not", async () => {
+  const credited: Array<[string, string]> = [
+    ["one line", `( set -e; for d in a b; do ${RUNNER_STEP}; done )`],
+    [
+      "multi-line",
+      `(\n  set -e\n  for d in a b\n  do\n    ${RUNNER_STEP}\n  done\n)`,
+    ],
+    [
+      "|| exit 1 in the loop",
+      `( for d in a b; do ${RUNNER_STEP} || exit 1; done )`,
+    ],
+  ];
+  for (const [label, body] of credited) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "official-server", `script: ${label}`);
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    });
+    assertEquals(step.wiring, "official-server", `step after set +e: ${label}`);
+  }
+  const refused: Array<[string, string]> = [
+    ["no errexit in the subshell", `( for d in a b; do ${RUNNER_STEP}; done )`],
+    [
+      "a line after the subshell",
+      `( set -e; for d in a b; do ${RUNNER_STEP}; done )\necho after`,
+    ],
+    [
+      "then an && chain (errexit is ignored left of &&)",
+      `( set -e; for d in a b; do ${RUNNER_STEP}; done ) && echo ok`,
+    ],
+    [
+      "a subshell inside a loop inside a subshell",
+      `( for d in a b; do ( set -e; ${RUNNER_STEP} ); done )`,
+    ],
+  ];
+  for (const [label, body] of refused) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `script: ${label}`);
+  }
+});
+
+// PR #5332 review round 10: a `( )` subshell that is an `if`, `elif`,
+// `while` or `until` test never fails the body, whatever errexit is outside
+// it: its exit only makes the test false. A brace group as the test, and a
+// test inside the subshell, are still read as before.
+Deno.test("checkAwsEmulatorInCI - an explicit exit in a subshell that is an if or while test earns no credit", async () => {
+  const refused: Array<[string, string]> = [
+    [
+      "one-line if test",
+      `if ( cd infra && ${RUNNER_STEP} || exit 1; ); then echo ok; else echo failed; fi`,
+    ],
+    [
+      "multi-line if test",
+      `if (\n  cd infra\n  ${RUNNER_STEP} || exit 1\n); then echo passed; else echo failed; fi`,
+    ],
+    [
+      "if ! runner inside the test subshell",
+      `if (\n  if ! ${RUNNER_STEP}; then exit 1; fi\n); then echo ok; fi`,
+    ],
+    [
+      "while test",
+      `while (\n  cd infra\n  ${RUNNER_STEP} || exit 1\n); do break; done`,
+    ],
+    [
+      "until test",
+      `until (\n  cd infra\n  ${RUNNER_STEP} || exit 1\n); do break; done`,
+    ],
+    [
+      "elif test",
+      `if false; then echo no\nelif (\n  cd infra\n  ${RUNNER_STEP} || exit 1\n); then echo ok; fi`,
+    ],
+  ];
+  for (const [label, body] of refused) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "missing", `default-shell step: ${label}`);
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -e\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `set -e script: ${label}`);
+  }
+  const credited: Array<[string, string]> = [
+    [
+      "a brace group as the test",
+      `if { ${RUNNER_STEP} || exit 1; }; then echo ok; fi`,
+    ],
+    [
+      "a test inside the subshell",
+      `( if ! ${RUNNER_STEP}; then exit 1; fi )`,
+    ],
+  ];
+  for (const [label, body] of credited) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(
+      step.wiring,
+      "official-server",
+      `default-shell step: ${label}`,
+    );
+  }
+});
+
+// PR #5332 review round 10: the one-line `( …; runner || exit 1 )`, with the
+// closing `)` spaced or attached, is the explicit-exit idiom.
+Deno.test("checkAwsEmulatorInCI - a one-line subshell ending in runner || exit 1 is read as an explicit exit", async () => {
+  const forms = [
+    `( cd infra; ${RUNNER_STEP} || exit 1 )`,
+    `(cd infra && ${RUNNER_STEP} || exit 1)`,
+    `( cd infra; ${RUNNER_STEP} || exit 1 ) 2>&1`,
+  ];
+  for (const form of forms) {
+    const last = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${form}\n`,
+    });
+    assertEquals(last.wiring, "official-server", `script's last line: ${form}`);
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`${form}\necho after`)),
+    });
+    assertEquals(step.wiring, "official-server", `default-shell step: ${form}`);
+    const underSetE = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -e\n${form}\necho after\n`,
+    });
+    assertEquals(
+      underSetE.wiring,
+      "official-server",
+      `set -e then a line: ${form}`,
+    );
+    const noSetE = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${form}\necho after\n`,
+    });
+    assertEquals(noSetE.wiring, "missing", `no set -e, then a line: ${form}`);
+  }
+  const ifForm = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      `#!/usr/bin/env bash\n( if ! ${RUNNER_STEP}; then echo bad; exit 1; fi )\n`,
+  });
+  assertEquals(
+    ifForm.wiring,
+    "official-server",
+    "one-line if ! runner subshell",
+  );
+});
+
+// PR #5332 review round 11: an exit whose `)` closes anything but the
+// tracked subshell around the runner (a nested subshell, a `$( )`, or a
+// parenthesis opened earlier on the line with no frame) ends only that, so it
+// is not the explicit-exit idiom; and a runner inside such a parenthesis is
+// never credited.
+Deno.test("checkAwsEmulatorInCI - an exit that ends only a nested subshell or substitution earns no credit", async () => {
+  const R = RUNNER_STEP;
+  const bodies: Array<[string, string]> = [
+    [
+      "(a) time ( … || exit 1 )",
+      `time ( cd infra; ${R} || exit 1 )\necho done`,
+    ],
+    [
+      "(b) LOG=$( … || exit 1)",
+      `LOG=$(cd infra && ${R} 2>&1 || exit 1)\necho "$LOG" | tail -5`,
+    ],
+    ["(b) ; form", `LOG=$(cd infra; ${R} || exit 1)\necho "$LOG"`],
+    [
+      "(b) OUT=$( if ! … fi)",
+      `OUT=$(cd infra; if ! ${R}; then exit 1; fi)\necho "$OUT"`,
+    ],
+    [
+      "(c) (echo bad; exit 1) in the branch",
+      `if ! ${R}; then\n  (echo bad; exit 1)\nfi\necho done`,
+    ],
+    [
+      "(c) one line",
+      `if ! ${R}; then (echo bad; exit 1); fi\necho done`,
+    ],
+    [
+      "(c) MSG=$( … ) in the branch",
+      `if ! ${R}; then\n  MSG=$(echo bad; exit 1)\nfi\necho done`,
+    ],
+    ["(d) echo $( … || exit 1)", `echo $(cd infra; ${R} || exit 1)\necho done`],
+    ["(d) ! ( … )", `! ( cd infra; ${R} || exit 1 )\necho done`],
+    ["echo $(cd infra; runner)", `echo $(cd infra; ${R})`],
+  ];
+  for (const [label, body] of bodies) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `script without set -e: ${label}`);
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    });
+    assertEquals(step.wiring, "missing", `step after set +e: ${label}`);
+  }
+  for (
+    const body of [
+      `echo $(cd infra; ${R} || exit 1)`,
+      `echo $(cd infra; ${R})`,
+      `! ( cd infra; ${R} || exit 1 )\necho done`,
+    ]
+  ) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "missing", `default-shell step: ${body}`);
+  }
+  // Controls.
+  const refusedControls = [
+    `if ! ${R}; then\n  ( echo bad; exit 1 )\nfi\necho done`,
+    `${R} || (echo failed; exit 1)\necho done`,
+    `time ( cd infra; ${R} )\necho done`,
+  ];
+  for (const body of refusedControls) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `control: ${body}`);
+  }
+  for (
+    const body of [
+      `${R} || exit 1\necho done`,
+      `if ! ${R}; then echo bad; exit 1; fi\necho done`,
+      `( cd infra; ${R} || exit 1 )`,
+      `(cd infra && ${R} || exit 1)`,
+    ]
+  ) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "official-server", `control: ${body}`);
+  }
+});
+
+// PR #5332 review round 11: `fi)` and `done)` close the compound and then
+// the subshell around it, as `fi )` and `done )` do.
+Deno.test("checkAwsEmulatorInCI - a one-line subshell closed by fi) or done) is read like fi ) and done )", async () => {
+  const R = RUNNER_STEP;
+  const forms = [
+    `(if ! ${R}; then echo bad; exit 1; fi)`,
+    `( if ! ${R}; then echo bad; exit 1; fi)`,
+    `(for d in a b; do ${R} || exit 1; done)`,
+  ];
+  for (const form of forms) {
+    const last = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${form}\n`,
+    });
+    assertEquals(last.wiring, "official-server", `script's last line: ${form}`);
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`${form}\necho after`)),
+    });
+    assertEquals(step.wiring, "official-server", `default-shell step: ${form}`);
+    const noSetE = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${form}\necho after\n`,
+    });
+    assertEquals(noSetE.wiring, "missing", `no set -e, then a line: ${form}`);
+  }
+  const ifInside = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`( cd infra; if [ -f t.sh ]; then ${R}; fi)\necho after`),
+    ),
+  });
+  assertEquals(ifInside.wiring, "official-server", "if inside, closed by fi)");
+});
+
+// PR #5332 review round 12: a `$( … )` or `$(( … ))` that opens and closes
+// inside the `then` branch is not a nested construct, so the `exit` after it
+// still ends the shell and the idiom keeps its credit.
+Deno.test("checkAwsEmulatorInCI - a balanced substitution before the exit keeps the if ! runner idiom credited", async () => {
+  const R = RUNNER_STEP;
+  const forms = [
+    `if ! ${R}; then echo "failed at $(date)"; exit 1; fi`,
+    `if ! ${R}; then\n  docker logs "$(docker ps -lq)"\n  exit 1\nfi`,
+    `if ! ${R}; then echo "took $((SECONDS / 60)) min"; exit 1; fi`,
+    `if ! ${R}; then cat $(pwd)/log.txt; exit 1; fi`,
+    `if ! ${R}; then echo "(see the log)"; exit 1; fi`,
+    `if ! ${R}; then echo "tests failed" >&2; exit 1; fi`,
+    `if ! ${R}; then ( echo a ); exit 1; fi`,
+  ];
+  for (const form of forms) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`${form}\necho after`)),
+    });
+    assertEquals(step.wiring, "official-server", `default-shell step: ${form}`);
+    const afterSetPlusE = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(`set +e\n${form}\necho after`),
+      ),
+    });
+    assertEquals(
+      afterSetPlusE.wiring,
+      "official-server",
+      `step after set +e: ${form}`,
+    );
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${form}\necho after\n`,
+    });
+    assertEquals(
+      script.wiring,
+      "official-server",
+      `script without set -e, then a line: ${form}`,
+    );
+  }
+  // Inside a subshell the idiom ends only the subshell, so it is credited
+  // where errexit outside the subshell (or the last line) carries the failure.
+  const subshellForm =
+    `( if ! ${R}; then echo "failed at $(date)"; exit 1; fi )`;
+  const subshellStep = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${subshellForm}\necho after`),
+    ),
+  });
+  assertEquals(
+    subshellStep.wiring,
+    "official-server",
+    "subshell, default shell",
+  );
+  const subshellLast = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\n${subshellForm}\n`,
+  });
+  assertEquals(subshellLast.wiring, "official-server", "subshell, last line");
+  const subshellNoErrexit = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\n${subshellForm}\necho after\n`,
+  });
+  assertEquals(subshellNoErrexit.wiring, "missing", "subshell, no errexit");
+  // The same idiom with an exit inside a parenthesis still open is refused.
+  for (
+    const form of [
+      `if ! ${R}; then (echo bad; exit 1); fi`,
+      `if ! ${R}; then MSG=$(echo bad; exit 1); fi`,
+      `if ! ${R}; then ( echo bad; exit 1 ); fi`,
+      `if ! ${R}; then echo "$(date)" (echo bad; exit 1); fi`,
+    ]
+  ) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${form}\necho after\n`,
+    });
+    assertEquals(script.wiring, "missing", `refused: ${form}`);
+  }
+});
+
+// PR #5332 review round 12: `done)`, `fi)`, `esac)` and `})` that close a
+// `$( … )` the walk tracks no frame for do not stray, so a runner before or
+// after the line is still credited.
+Deno.test("checkAwsEmulatorInCI - a compound closed inside a substitution does not hide the runner", async () => {
+  const R = RUNNER_STEP;
+  const lines = [
+    'PKGS=$(for d in services/*; do basename "$d"; done)',
+    'PKGS=$(for d in services/*; do\n  basename "$d"\ndone)',
+    'MODE=$(case "$X" in\n  a) echo 1 ;;\n  *) echo 2 ;;\nesac)',
+    "OUT=$({ echo a; echo b; })",
+    "OUT=$({\n  echo a\n  echo b\n})",
+  ];
+  for (const line of lines) {
+    const inStep = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`${line}\n${R}`)),
+    });
+    assertEquals(inStep.wiring, "official-server", `step: ${line}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${line}\n${R}\n`,
+    });
+    assertEquals(inScript.wiring, "official-server", `script: ${line}`);
+    const after = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${R} || exit 1\n${line}\n`,
+    });
+    assertEquals(after.wiring, "official-server", `after the runner: ${line}`);
+  }
+  // Inside an `if` block the `fi)` of a substitution must not pop the `if`.
+  const insideIf = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`if true; then\n  X=$(if true; then echo a; fi)\n  ${R}\nfi`),
+    ),
+  });
+  assertEquals(insideIf.wiring, "official-server", "X=$(if …; fi) in an if");
+  // Control: a runner that really is in a subshell swallowed one level out is
+  // still refused, so the credit comes from the substitution rule alone.
+  const swallowed = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`( for d in a b; do ${R}; done ) || true`),
+    ),
+  });
+  assertEquals(swallowed.wiring, "missing", "swallowed subshell");
+});
+
+// PR #5332 review round 12: the command that opens an untracked parenthesis
+// or backtick substitution is inside it, and a `set` in it changes no errexit
+// outside.
+Deno.test("checkAwsEmulatorInCI - a runner that is the first command inside an untracked substitution earns no credit", async () => {
+  const R = RUNNER_STEP;
+  const bodies: Array<[string, string]> = [
+    ["X=$( runner; echo done )", `X=$( ${R}; echo done )\necho "$X"`],
+    [
+      "OUT=$( runner 2>&1; echo rc )",
+      `OUT=$( ${R} 2>&1; echo "rc=$?" )\necho "$OUT"`,
+    ],
+    ["echo done ) on the next line", `X=$( ${R};\necho done )\necho "$X"`],
+    ["X=$( runner )", `X=$( ${R} )\necho "$X"`],
+    ["time ( runner )", `time ( ${R} )\necho done`],
+    ["backtick argument", `echo \`cd infra; ${R}\`\necho done`],
+    ["backtick assignment", `X=\` ${R}; echo done \`\necho "$X"`],
+  ];
+  for (const [label, body] of bodies) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "missing", `default-shell step: ${label}`);
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `set -euo pipefail: ${label}`);
+  }
+  // A `set -e` inside an untracked parenthesis does not turn errexit on.
+  for (
+    const body of [
+      `X=$( set -e; cat VERSION )\n${R}\necho done`,
+      `X=$(cd infra; set -e; make build)\n${R}\necho done`,
+      `time ( set -e; cd infra )\n${R}\necho done`,
+    ]
+  ) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `set -e in a substitution: ${body}`);
+  }
+  // Controls: a tracked subshell's `set -e` still applies inside it only, and
+  // a balanced earlier substitution does not make a later runner untracked.
+  const tracked = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\n( set -e; cd infra )\n${R}\necho done\n`,
+  });
+  assertEquals(tracked.wiring, "missing", "( set -e; … ) then a runner");
+  const balanced = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`X=$(cat VERSION); echo \`date\`; ${R}\necho done`),
+    ),
+  });
+  assertEquals(balanced.wiring, "official-server", "balanced substitutions");
+});
+
+// PR #5332 review round 13: a multi-line `$(` whose opening line ends in a
+// keyword opens a frame, a backtick substitution is read in the `then` branch
+// and across lines, and a `done)` closing a `$( … )` opened earlier on the
+// line does not close the tracked subshell around it.
+Deno.test("checkAwsEmulatorInCI - a runner inside a multi-line substitution or backtick earns no credit", async () => {
+  const R = RUNNER_STEP;
+  const refused: Array<[string, string]> = [
+    ["$(for … do", `PKGS=$(for d in a b; do\n  ${R}\ndone)\necho "$PKGS"`],
+    ["$(if … then", `X=$(if true; then\n  ${R}\nfi)\necho "$X"`],
+    ["$(case", `MODE=$(case "$X" in\n  a) ${R} ;;\nesac)\necho "$MODE"`],
+    ["multi-line backticks", `X=\`\n${R}\necho done\n\`\necho "$X"`],
+    [
+      "backtick exit in the then branch",
+      `if ! ${R}; then echo \`echo bad; exit 1; echo x\`; fi\necho after`,
+    ],
+    [
+      "backtick assignment exit in the then branch",
+      `if ! ${R}; then\n  X=\`echo bad; exit 1; echo x\`\nfi\necho after`,
+    ],
+    [
+      "backtick exit across lines in the then branch",
+      `if ! ${R}; then\n  X=\`\n  exit 1\n  \`\nfi\necho after`,
+    ],
+  ];
+  for (const [label, body] of refused) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "missing", `default-shell step: ${label}`);
+    const strict = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(strict.wiring, "missing", `set -euo pipefail: ${label}`);
+    const afterSetPlusE = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    });
+    assertEquals(afterSetPlusE.wiring, "missing", `after set +e: ${label}`);
+  }
+  // Controls: the same constructs, balanced and not holding the runner, keep a
+  // plain runner after them credited, as does a backtick in the then branch
+  // that closes before the exit.
+  const credited = [
+    `PKGS=$(for d in a b; do\n  basename "$d"\ndone)\n${R}`,
+    `X=$(if true; then\n  echo a\nfi)\n${R}`,
+    `X=\`\ndate\n\`\n${R}`,
+    `if ! ${R}; then echo \`date\`; exit 1; fi\necho after`,
+    `( for d in a; do X=$(for e in b; do echo $e; done); ${R}; done )`,
+    `( if true; then X=$(if true; then echo a; fi); ${R} || exit 1; fi )`,
+  ];
+  for (const body of credited) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "official-server", `credited: ${body}`);
+  }
+  // A `done)` that closes a `$( … )` opened earlier on the line must not close
+  // the tracked subshell: the loop is judged like the same loop without it.
+  const swallowed = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(
+        `( for d in a; do X=$(for e in b; do echo $e; done); ${R}; done ) || true`,
+      ),
+    ),
+  });
+  assertEquals(swallowed.wiring, "missing", "swallowed subshell with a $( )");
+});
+
+// PR #5332 review round 14: a compound inside a `$( … )` the walk tracks no
+// frame for does not touch the frame stack, and its closer, attached or
+// spaced, goes to the parenthesis balance.
+Deno.test("checkAwsEmulatorInCI - a compound inside an untracked substitution leaves the runner's credit alone", async () => {
+  const R = RUNNER_STEP;
+  // Credited: the runner is the last command, so its status is the body's.
+  const credited = [
+    'PKGS=$( for d in services/*; do basename "$d"; done )',
+    'PKGS=$(for d in services/*; do basename "$d"; done )',
+    "OUT=$( { echo a; echo b; } )",
+    'PKGS=$(for d in a b; do\n  basename "$d"\ndone )',
+    "X=$(cd a; if [ -f x ]; then echo y; fi )",
+    "X=$(cd a; for f in *; do echo $f; done)",
+    "X=$(cd a; ls | while read l; do echo $l; done)",
+    "X=$(cd a; if true; then echo y; fi)",
+    'MODE=$(cd a; case "$X" in a) echo 1 ;; esac )',
+    "X=$( ls )",
+  ];
+  for (const line of credited) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`${line}\n${R}`)),
+    });
+    assertEquals(step.wiring, "official-server", `default step: ${line}`);
+    const afterSetPlusE = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(`set +e\n${line}\n${R}`),
+      ),
+    });
+    assertEquals(afterSetPlusE.wiring, "official-server", `set +e: ${line}`);
+    for (const header of ["", "set -euo pipefail\n"]) {
+      const script = await checkRepoWith({
+        ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+        "ci/t.sh": `#!/usr/bin/env bash\n${header}${line}\n${R}\n`,
+      });
+      assertEquals(
+        script.wiring,
+        "official-server",
+        `script (${header.trim() || "no set -e"}): ${line}`,
+      );
+    }
+  }
+  // Refused: the line leaks no frame, so a swallowed or never-reached runner
+  // is still judged as such.
+  const subst = "X=$(cd a; for f in *; do echo $f; done)";
+  const refused: Array<[string, string]> = [
+    ["swallowed by || true", `{ ${subst}; ${R}; } || true`],
+    [
+      "| while form",
+      `{ X=$(cd a; ls | while read l; do echo $l; done); ${R}; } || true`,
+    ],
+    [
+      "; if form",
+      `{ X=$(cd a; if true; then echo y; fi); ${R}; } || true`,
+    ],
+    ["| tee log", `{ ${subst}; ${R}; } | tee log`],
+    ["group on several lines", `{\n  ${subst}\n  ${R}\n} || true`],
+    ["never reached", `${subst}\nexit 0\n${R}`],
+    [
+      "never reached after | while",
+      `X=$(cd a; ls | while read l; do echo $l; done)\nexit 0\n${R}`,
+    ],
+    [
+      "never reached after &&",
+      `${subst} && for f in a; do :; done\nexit 0\n${R}`,
+    ],
+  ];
+  for (const [label, body] of refused) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "missing", `default step: ${label}`);
+    const strict = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(strict.wiring, "missing", `set -euo pipefail: ${label}`);
+  }
+  // Controls: the same group without a compound in the substitution.
+  for (
+    const body of [
+      `{ X=$(cd a; ls); ${R}; } || true`,
+      `{ X=$(for f in *; do echo $f; done); ${R}; } || true`,
+    ]
+  ) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "missing", `control: ${body}`);
+  }
+});
+
+// PR #5332 review round 15: an `exit` inside a one-line substitution ends the
+// substitution only, and a `for`, C-style `for` or multi-pattern `case` header
+// inside an untracked `$( … )` keeps the substitution's parenthesis balance.
+Deno.test("checkAwsEmulatorInCI - an exit or a compound header inside an untracked substitution does not end the body or hide a swallowed runner", async () => {
+  const R = RUNNER_STEP;
+  const contexts = async (body: string) => {
+    const wirings: Record<string, string> = {};
+    wirings["default step"] = (await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    })).wiring;
+    wirings["after set +e"] = (await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    })).wiring;
+    for (const header of ["", "set -euo pipefail\n"]) {
+      wirings[`script (${header.trim() || "no set -e"})`] =
+        (await checkRepoWith({
+          ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+          "ci/t.sh": `#!/usr/bin/env bash\n${header}${body}\n`,
+        })).wiring;
+    }
+    return wirings;
+  };
+  const credited = [
+    'VERSION=$(cat VERSION || { echo "no version" >&2; exit 1; })',
+    "X=$(echo a; exit 0)",
+    "X=$(cat a || (echo bad >&2; exit 1))",
+    "X=$(cd a; if [ -f x ]; then exit 1; fi )",
+    "X=`echo a; exit 1`",
+    "X=$(cd a; for f in $(ls | sort); do echo $f; done)",
+    "X=$(cd a; for ((i=0; i<3; i++)); do echo $i; done)",
+    'X=$(cd a; case "$x" in a) echo 1 ;; b) echo 2 ;; esac)',
+    'X=$(cd a; case "$x" in a|b) echo 1 ;; *) echo 2 ;; esac )',
+    'X=$(cd a; case "$x" in\n  a) echo 1 ;;\n  b) echo $(date | tr a b) ;;\nesac)',
+    "X=$(cd a; for f in `ls | sort`; do echo $f; done)",
+  ];
+  for (const line of credited) {
+    for (
+      const [context, wiring] of Object.entries(await contexts(`${line}\n${R}`))
+    ) {
+      assertEquals(wiring, "official-server", `${context}: ${line}`);
+    }
+  }
+  // The runner stays swallowed or unreached when such a line comes first.
+  const refused = [
+    `{ X=$(cd a; for f in $(ls | sort); do echo $f; done); ${R}; } || true`,
+    `{ X=$(cd a; for ((i=0; i<3; i++)); do echo $i; done); ${R}; } || true`,
+    `{ X=$(cd a; case "$x" in a) echo 1 ;; b) echo 2 ;; esac); ${R}; } || true`,
+    `{ X=$(cd a; case "$x" in\n  a) echo 1 ;;\n  b) echo 2 ;;\nesac); ${R}; } | tee log`,
+    `X=$(cd a; for f in $(ls | sort); do echo $f; done)\nexit 0\n${R}`,
+    `X=$(echo a; exit 0)\nexit 0\n${R}`,
+  ];
+  for (const body of refused) {
+    for (const context of ["default step", "script (set -euo pipefail)"]) {
+      const wiring = (await contexts(body))[context];
+      assertEquals(wiring, "missing", `${context}: ${body}`);
+    }
+  }
+});
+
+// PR #5332 review round 7: a one-line `$( … )` holding `|`, `;` or `&&`, with
+// more words after it, opens no frame, so later commands are still judged.
+Deno.test("checkAwsEmulatorInCI - a one-line substitution with a separator inside it does not hide a later runner", async () => {
+  for (
+    const line of [
+      "if [ $(ls | wc -l) -gt 0 ]; then echo found; fi",
+      '[[ "$X" =~ ^(a|b)$ ]] && echo matched',
+      "cd $(git rev-parse --show-toplevel | head -1)/infra",
+      "echo started $(date | tr a b) now",
+      "export A=$(cat VERSION | tr -d x) B=2",
+      "test $(git status --porcelain | wc -l) -eq 0",
+      "echo $(cd infra; pwd) done",
+      "echo $(cd infra && pwd) done",
+    ]
+  ) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(`${line}\n${RUNNER_STEP}`),
+      ),
+    });
+    assertEquals(inWorkflow.wiring, "official-server", `workflow: ${line}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh":
+        `#!/usr/bin/env bash\nset -euo pipefail\n${line}\n${RUNNER_STEP}\n`,
+    });
+    assertEquals(inScript.wiring, "official-server", `script: ${line}`);
+  }
+  // A one-line substitution with a separator inside a swallowed subshell does
+  // not close the subshell early.
+  const swallowed = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`( X=$(cat V | tr -d x); ${RUNNER_STEP}; echo done ) || true`),
+    ),
+  });
+  assertEquals(swallowed.wiring, "missing", "swallowed subshell");
+});
+
+// PR #5332 review: the Floci job's test step is read on whole command words.
+// An install-only step beside a valid gap record earns nothing, and the common
+// runners the matcher is meant to accept are credited.
+Deno.test("checkAwsEmulatorInCI - a gap record whose Floci job only installs a test tool is floci-only; common test runners are floci-gap", async () => {
+  for (
+    const command of [
+      "pip install pytest",
+      "npm install --save-dev jest",
+      "npm install typescript@latest",
+      "npm ci",
+      "yarn add mocha",
+      "echo test",
+      "./scripts/attestation.sh",
+      // Probes and install-named targets or scripts (PR #5332 review round 3).
+      "pytest --version",
+      "npx jest --version",
+      "make install-test-deps",
+      "./scripts/check-install.sh",
+      "mvn -B package -DskipTests",
+      "./gradlew build -x test",
+      "mvn -P test compile",
+      "mvn --version",
+      "pytest -V",
+    ]
+  ) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": GAP_RECORD +
+        prWorkflow(stepYaml(command), FLOCI_SERVICE),
+    });
+    assertEquals(result.wiring, "floci-only", command);
+  }
+  for (
+    const command of [
+      "npm test",
+      "npm run test:aws",
+      "yarn test",
+      "pnpm run integration",
+      "pytest -k aws",
+      "python -m pytest tests/aws",
+      "cargo test --workspace",
+      "go test ./...",
+      "mvn verify",
+      "./gradlew check",
+      "make check",
+      "make test-aws",
+      "tox -e aws",
+      "npx jest",
+      "./scripts/run-tests.sh",
+      "bash ci/integration.sh",
+      // Goal lists, lifecycle phases, wrappers and options with values (PR
+      // #5332 review round 3).
+      "mvn -B clean verify",
+      "mvn clean test",
+      "mvn -B package --file pom.xml",
+      "./gradlew build",
+      "cargo +stable test --workspace",
+      "deno task test",
+      "poetry run pytest",
+      "uv run pytest",
+      "bundle exec rspec",
+      "npm --prefix app test",
+      "make -C infra test",
+      // `-V` is not a probe for every tool (PR #5332 review round 4).
+      "mvn -B -V verify",
+      "mvn -V -B clean verify",
+      "ctest -V",
+    ]
+  ) {
+    const result = await checkRepoWith({
+      ".github/workflows/ci.yml": GAP_RECORD +
+        prWorkflow(stepYaml(command), FLOCI_SERVICE),
+    });
+    assertEquals(result.wiring, "floci-gap", command);
+  }
 });
