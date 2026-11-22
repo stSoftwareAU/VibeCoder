@@ -559,6 +559,9 @@ async function formatSeededFiles(
   options: {
     links?: Record<string, string>;
     beforeFormat?: (repo: string) => Promise<void>;
+    setAsideUncommittedArchive?: boolean;
+    /** Replaces the production git runner, to stage a failing command. */
+    runGitCommand?: RepoFormatterDeps["runGitCommand"];
   } = {},
 ): Promise<{ repo: string; logger: Logger & { lines: string[] } }> {
   const repo = await initRepo(root);
@@ -585,10 +588,17 @@ async function formatSeededFiles(
           Promise.resolve({ runs: [], failures: [], committed: false }),
       },
       logger,
-      formatterDeps: { ...createRepoFormatterDeps(), logger },
+      formatterDeps: {
+        ...createRepoFormatterDeps(),
+        logger,
+        ...(options.runGitCommand
+          ? { runGitCommand: options.runGitCommand }
+          : {}),
+      },
     },
     repo,
     undefined,
+    { setAsideUncommittedArchive: options.setAsideUncommittedArchive },
   );
   return { repo, logger };
 }
@@ -888,6 +898,67 @@ Deno.test("formatBeforeGate commits a clean archive file and leaves a summary st
       (await git(repo, ["diff", "--cached", "--name-only"])).trim(),
       ARCHIVE[2],
     );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate stashes an uncommitted archive summary when asked, and still formats and commits the clean files (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-stash-" });
+  try {
+    const seed = "# Summary\n\nNot delivered.\n";
+    const edit = `# Summary\n\nEdited after the seed.\n\n${LONG_PARAGRAPH}\n`;
+    const { repo, logger } = await formatSeededFiles(root, {
+      [ARCHIVE[0]]: LONG_LINE,
+      [ARCHIVE[2]]: seed,
+    }, {
+      setAsideUncommittedArchive: true,
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[2], edit),
+    });
+    assertEquals(
+      (await git(repo, ["log", "-1", "--format=%s"])).trim(),
+      FORMATTER_COMMIT_MESSAGE,
+    );
+    assertEquals(
+      (await git(repo, ["show", "--name-only", "--format=", "HEAD"])).trim(),
+      ARCHIVE[0],
+    );
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`), seed);
+    assertEquals(await git(repo, ["status", "--porcelain"]), "");
+    assertEquals(await git(repo, ["show", `stash@{0}:${ARCHIVE[2]}`]), edit);
+    assertStringIncludes(logger.lines.join("\n"), "set aside");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate logs a stash that fails and leaves the uncommitted summary in place (Issue #5328)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5328-stashfail-" });
+  try {
+    const seed = "# Summary\n\nNot delivered.\n";
+    const edit = `# Summary\n\nEdited after the seed.\n\n${LONG_PARAGRAPH}\n`;
+    const real = createRepoFormatterDeps().runGitCommand;
+    const { repo, logger } = await formatSeededFiles(root, {
+      [ARCHIVE[2]]: seed,
+    }, {
+      setAsideUncommittedArchive: true,
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[2], edit),
+      runGitCommand: (args, options) =>
+        args[0] === "stash"
+          ? Promise.resolve({
+            ok: true as const,
+            value: { code: 128, stdout: "", stderr: "fatal: stash refused" },
+          })
+          : real(args, options),
+    });
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`), edit);
+    assertEquals(
+      (await git(repo, ["log", "-1", "--format=%s"])).trim(),
+      "seed",
+    );
+    const joined = logger.lines.join("\n");
+    assertStringIncludes(joined, "could not set aside");
+    assertStringIncludes(joined, "stash refused");
   } finally {
     await Deno.remove(root, { recursive: true });
   }

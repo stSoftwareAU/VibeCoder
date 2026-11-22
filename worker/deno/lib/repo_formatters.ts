@@ -320,6 +320,47 @@ export function isolateLinkageLines(text: string): string {
 }
 
 /**
+ * Move uncommitted edits to archive files into a git stash (Issue #5328).
+ *
+ * The completion phase's pre-push gate runs `deno fmt --check` on the working
+ * tree copy of every branch-changed archive file, so an unformatted edit that
+ * is not in the push would block it, and the recovery turn would commit it.
+ * Stashing keeps the edit recoverable (`git stash list`) while the gate and
+ * the PR body both see the committed copy. A failed stash is logged; the gate
+ * then reports whatever it finds.
+ */
+async function stashUncommittedArchive(
+  repoPath: string,
+  deps: RepoFormatterDeps,
+  paths: string[],
+): Promise<void> {
+  const stash = await deps.runGitCommand(
+    [
+      "stash",
+      "push",
+      "-m",
+      `worker: uncommitted archive edit set aside before the pre-push gate (Issue #5328, run ${deps.runId()})`,
+      "--",
+      ...paths.map((path) => `:(literal)${path}`),
+    ],
+    { cwd: repoPath },
+  );
+  if (!stash.ok || stash.value.code !== 0) {
+    deps.logger.warn(
+      `repo formatters: could not set aside ${paths.join(", ")}: ${
+        gitStepError("stash push", stash)
+      }`,
+    );
+    return;
+  }
+  deps.logger.info(
+    `repo formatters: set aside uncommitted ${
+      paths.join(", ")
+    } in a git stash; the gate judges the committed copy (Issue #5328)`,
+  );
+}
+
+/**
  * Format the worker's own archive Markdown and JSON, then commit.
  *
  * Runs after the repository formatters. Only the two worker-owned
@@ -331,14 +372,16 @@ export function isolateLinkageLines(text: string): string {
  * MAX_ARCHIVE_REWRITE_BYTES are skipped with a warning and left for the gate
  * to report. An archive file with uncommitted changes is left out, neither
  * formatted nor committed, and a failed check skips the step (Issue #5328).
- * A missing formatter, a write failure, or a formatter that exits non-zero is
- * logged.
+ * With `setAsideUncommitted`, that edit is also moved into a git stash, so a
+ * gate that judges the working tree sees the committed copy instead. A missing
+ * formatter, a write failure, or a formatter that exits non-zero is logged.
  * This function never throws, so the gate still runs.
  */
 export async function formatWorkerOwnedArchive(
   repoPath: string,
   baseRef: string | undefined,
   deps: RepoFormatterDeps,
+  options: { setAsideUncommitted?: boolean } = {},
 ): Promise<void> {
   try {
     const git: PrePushGit = async (args, cwd) => {
@@ -415,6 +458,9 @@ export async function formatWorkerOwnedArchive(
           leftOut.join(", ")
         } out of the archive formatting: uncommitted changes stay uncommitted (Issue #5328)`,
       );
+      if (options.setAsideUncommitted) {
+        await stashUncommittedArchive(repoPath, deps, leftOut);
+      }
     }
     const cleanFiles = archiveFiles.filter((path) => !dirtyPaths.has(path));
     if (cleanFiles.length === 0) return;
@@ -530,9 +576,11 @@ export async function formatWorkerOwnedArchive(
  * commit. An uncommitted edit already in a formatted code file does go in with
  * it: the quality-gate loop leaves the fix agent's code edits uncommitted for
  * `./quality.sh` to judge, so formatting and committing them puts on the branch
- * the same code the gate checks. An archive summary describes the branch and is
- * not judged by that gate, so one with uncommitted changes is left out instead
- * (see {@link formatWorkerOwnedArchive}).
+ * the same code the gate checks. An archive summary describes the branch, so
+ * one with uncommitted changes is left out instead: not formatted and not
+ * committed (see {@link formatWorkerOwnedArchive}). A gate that judges the
+ * working tree still sees that edit unless the caller asks for it to be set
+ * aside (the completion phase does).
  * Never throws: any unexpected failure is logged and reported via `gitError`
  * instead, and a formatter that fails is logged and recorded in `failures` —
  * the caller's own check still runs and reports what was left unfixed.
@@ -708,7 +756,9 @@ export async function formatBranchChanges(
  * is missing, fails or throws is logged here, and the gate that follows still
  * runs and reports whatever is left unfixed. After the repository formatters,
  * the worker's own archive Markdown and JSON are formatted the same way
- * (Issue #4129).
+ * (Issue #4129). `options.setAsideUncommittedArchive` is for a caller whose
+ * gate judges the working tree but whose push carries commits only: an archive
+ * file with uncommitted edits is then stashed rather than left in place.
  */
 export async function formatBeforeGate(
   deps: {
@@ -719,6 +769,7 @@ export async function formatBeforeGate(
   },
   repoPath: string,
   baseRef: string | undefined,
+  options: { setAsideUncommittedArchive?: boolean } = {},
 ): Promise<void> {
   try {
     const result = await deps.git.formatBranchChanges(repoPath, baseRef);
@@ -739,5 +790,7 @@ export async function formatBeforeGate(
     ...createRepoFormatterDeps(),
     logger: deps.logger,
   };
-  await formatWorkerOwnedArchive(repoPath, baseRef, formatterDeps);
+  await formatWorkerOwnedArchive(repoPath, baseRef, formatterDeps, {
+    setAsideUncommitted: options.setAsideUncommittedArchive,
+  });
 }

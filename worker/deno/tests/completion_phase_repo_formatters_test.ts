@@ -378,6 +378,63 @@ Deno.test({
 
 Deno.test({
   name:
+    "completion - an archive summary with an uncommitted unformatted edit is set aside: the gate passes and the committed copy stays (Issue #5328)",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const summary = "docs/archive/pr-summaries/pr-summary-10.md";
+    const committed = "# Summary\n\nDelivered.\n";
+    // Over 80 columns: `deno fmt` would re-wrap it, so the gate would block.
+    const interrupted = `${committed}\nAn interrupted recovery turn rewrote ` +
+      "this paragraph and never committed it, and the line is deliberately " +
+      "far beyond eighty columns so deno fmt has to re-wrap it.\n";
+    const { tmp, repo } = await makeRepo({
+      "deno.json": "{}\n",
+      [summary]: committed,
+    });
+    try {
+      const headBefore = (await git(["rev-parse", "HEAD"], repo)).trim();
+      await Deno.writeTextFile(`${repo}/${summary}`, interrupted);
+      // Positive control: the gate judges the working tree, so the edit blocks it.
+      const bare = await gateUnpushedCommits(
+        BRANCH,
+        { cwd: repo, env: NO_HOST_GIT_CONFIG },
+        { commands: [] },
+        false,
+        "origin/main",
+      );
+      assert(!bare.ok, "the unformatted edit must fail the bare gate");
+      assertStringIncludes(
+        bare.ok ? "" : bare.error.message,
+        "pr-summary-10.md",
+      );
+
+      const o = await runCompletion(repo, real);
+      assertEquals(o.order.slice(0, 2), ["format", "gate"]);
+      assertEquals(o.pushes, 1, `gate should pass: ${o.reason ?? ""}`);
+      assert(!(o.reason ?? "").includes(PRE_PUSH_GATE_MARKER));
+
+      // No commit holds the edit; the committed copy is what is published.
+      assertEquals((await git(["rev-parse", "HEAD"], repo)).trim(), headBefore);
+      assertEquals(await git(["show", `HEAD:${summary}`], repo), committed);
+      assertEquals(await Deno.readTextFile(`${repo}/${summary}`), committed);
+      assertEquals(
+        (await git(["status", "--porcelain", "--", summary], repo)).trim(),
+        "",
+      );
+      // The edit is recoverable, not destroyed.
+      assertStringIncludes(await git(["stash", "list"], repo), "Issue #5328");
+      assertEquals(
+        await git(["show", `stash@{0}:${summary}`], repo),
+        interrupted,
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
     "completion - Markdown inside the deno root is never formatted; the gate still reports it",
   permissions: { read: true, write: true, run: true, env: true },
   async fn() {
