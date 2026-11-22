@@ -20,16 +20,13 @@ it: file no AWS testing work for them.
 
 Follow [AWS integration testing](https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#aws-integration-testing)
 for CLI/SDK tests, on-demand service lifecycle and documented coverage gaps.
-Not yet: stSoftwareAU/VibeCoder#5112 will narrow the existing
-`BP-AWS-EMULATOR-MISSING` pre-filer's any-`.tf` trigger to AWS provider
-evidence and add the test-wiring detector and migration findings, so do not
-file a per-module "missing emulator test" finding here or a second
-integration-test campaign. Where that finding's older Floci wording disagrees
-with the canonical policy, the policy wins until stSoftwareAU/VibeCoder#5112
-rewrites it. A successful apply alone does not prove supported resource
-behaviour; unsupported resources remain explicit gaps, and no module has to
-deploy in full when one of its resources is a recorded gap. Keep IAM,
-resource-policy and KMS-policy validation on real AWS: emulator success does
+The best-practices pre-filer (stSoftwareAU/VibeCoder#5112) triggers only on AWS
+provider evidence, checks the static test wiring and files the migration
+finding, so do not file a per-module "missing emulator test" finding here or a
+second integration-test campaign. A successful apply alone does not prove
+supported resource behaviour; unsupported resources remain explicit gaps, and no
+module has to deploy in full when one of its resources is a recorded gap. Keep
+IAM, resource-policy and KMS-policy validation on real AWS: emulator success does
 not prove it.
 
 ## Checks
