@@ -57,18 +57,18 @@ Floci now gets one migration finding through the ordinary scan. Closes #5112.
   makes the result unknown: nothing is filed, and the next scheduled scan
   retries (the #5009 principle). A failing gh call in the new equivalent-issue
   lookup fails the run rather than filing on an unknown.
-- **An open older finding is answered, not left stale, and never edited.**
-  When the reused fleet-authored issue's body opens with this finding's
-  `finding-id` marker on its first line (such as the old "🟡 No AWS emulator
-  (Floci) in CI" body that says to run Floci) and the body, with the worker
-  record block set aside, differs from the current finding, the current finding
-  is posted on it as one comment. The comment opens with a `finding-update`
-  marker holding the finding body's SHA-256, so the same finding is commented
-  once, and carries no `finding-id` marker. The title and body are not edited:
-  an edit would drop an owner's added text and the `Deferred until` /
-  `Depends on` record discovery reads, and on an issue approved with `work-on`
-  would trip the content-integrity gate (PR review). A marker anywhere but the
-  first line, or a hand-written issue, is left alone.
+- **An open older finding is answered, not left stale, and never edited.** When
+  the reused fleet-authored issue's body opens with this finding's `finding-id`
+  marker on its first line (such as the old "🟡 No AWS emulator (Floci) in CI"
+  body that says to run Floci) and the body, with the worker record block set
+  aside, differs from the current finding, the current finding is posted on it
+  as one comment. The comment opens with a `finding-update` marker holding the
+  finding body's SHA-256, so the same finding is commented once, and carries no
+  `finding-id` marker. The title and body are not edited: an edit would drop an
+  owner's added text and the `Deferred until` / `Depends on` record discovery
+  reads, and on an issue approved with `work-on` would trip the
+  content-integrity gate (PR review). A marker anywhere but the first line, or a
+  hand-written issue, is left alone.
 - **`.tf` reads are capped.** A `.tf` file is stat'ed first and skipped when it
   is over 1 MiB (the script reader's cap), so an oversized file is never loaded.
 
@@ -191,31 +191,30 @@ emulator test.
   (after the third to fifth reviews it also covers multi-command subshells,
   attached and quoted closing parentheses, a `$(…)` or array literal inside a
   subshell, a group or subshell as an `if` condition, a compound followed by
-  `&&` with more after it, and a runner that is not last in a compound left
-  of `&&`), and
+  `&&` with more after it, and a runner that is not last in a compound left of
+  `&&`), and
   `…::a runner in a loop body in a script without set -e earns no credit; with set -e or in a default workflow shell it does`.
   An `EXIT` or `ERR` trap whose handler may `exit 0` is refused too, with
   status-keeping handlers, resets and `exec` credited:
   `…::an EXIT or ERR trap whose handler may exit 0 earns no credit; a status-keeping handler, a reset or exec does`.
   After the sixth review, a swallowed subshell closed before redirections
-  (`) 2>&1 | tee log`, `) > log 2>&1 || true`) or holding a multi-line `$(`
-  is refused, and a runner with an fd redirection (`> log 2>&1`, `2>&1`,
-  `&>`, `>&2`) is credited again:
+  (`) 2>&1 | tee log`, `) > log 2>&1 || true`) or holding a multi-line `$(` is
+  refused, and a runner with an fd redirection (`> log 2>&1`, `2>&1`, `&>`,
+  `>&2`) is credited again:
   `…::a swallowed subshell closed before redirections or holding a multi-line $( earns no credit; a redirected runner does`;
   a `set -e` inside a subshell ends with it:
   `…::set -e inside a subshell ends with it; a top-level set -e keeps the runner credited`.
   After the seventh review, a runner in a `( set -e; … )` subshell followed by
   more commands, with errexit off outside, is refused:
   `…::a runner in a ( set -e; ... ) subshell followed by more commands, with errexit off outside, earns no credit`;
-  after the eighth review, the same holds whichever route fails the
-  subshell (`|| exit 1`, `if ! …; exit 1; fi`, `exec`) and for a subshell as
-  a loop body:
+  after the eighth review, the same holds whichever route fails the subshell
+  (`|| exit 1`, `if ! …; exit 1; fi`, `exec`) and for a subshell as a loop body:
   `…::a subshell's exit, exec or set -e fails the body only when the subshell's failure does`;
   and a one-line `$( … )` with a separator inside no longer hides a later
   runner:
   `…::a one-line substitution with a separator inside it does not hide a later runner`.
-  The Floci test-step matcher reads whole command words, so an install-only
-  step beside a gap record earns nothing:
+  The Floci test-step matcher reads whole command words, so an install-only step
+  beside a gap record earns nothing:
   `…::a gap record whose Floci job only installs a test tool is floci-only; common test runners are floci-gap`.
   A job or step `if:` that compares the ref with a branch or tag literal is
   refused:
@@ -267,9 +266,9 @@ emulator test.
   documented gap and a justified, pinned embedded setup, and a static check
   needs a fixed format to read them
 - **unrequested** — A gh failure in the equivalent-issue lookup (or in reading
-  the comments or posting the reconcile comment) fails the scan run — reviewer: unrequested — reason: fail
-  loud. An unknown lookup must not file a possible duplicate, and the scan
-  already retries a failed run.
+  the comments or posting the reconcile comment) fails the scan run — reviewer:
+  unrequested — reason: fail loud. An unknown lookup must not file a possible
+  duplicate, and the scan already retries a failed run.
 - **unrequested** — Only `pull_request` (not `pull_request_target` or
   `merge_group`) makes a workflow applicable — reviewer: unrequested — reason:
   `pull_request_target` runs base-branch code, so it does not test the PR's
@@ -364,8 +363,9 @@ emulator test.
   - New tests cover the floci-only and missing titles, fleet versus non-fleet
     equivalent issues, gh-failure handling, the finding body, and reconciling an
     old-body finding (commented, not edited) versus an up-to-date or
-    hand-written one (neither commented nor edited). `findEquivalentAwsEmulatorIssue` now returns the row, so its test
-    reads `found?.number`.
+    hand-written one (neither commented nor edited).
+    `findEquivalentAwsEmulatorIssue` now returns the row, so its test reads
+    `found?.number`.
   - The dedup and waiver tests are unchanged and pass.
 - `worker/deno/tests/capability_coverage_scan_4367_test.ts` and
   `worker/deno/tests/idle_task_scan_dedup_conformance_test.ts`: the fake results
@@ -390,183 +390,192 @@ emulator test.
   `docker logs "$(docker ps -lq)"`, `echo "took $((SECONDS / 60)) min"` and
   `cat $(pwd)/log.txt` before `exit 1` keep the idiom credited, and
   `then (echo bad; exit 1)`, `then MSG=$(echo bad; exit 1)` and
-  `( echo bad; exit 1 )` stay refused. (2) A first word `fi)`, `done)`,
-  `esac)` or `})` is split into the keyword and `)` only when the innermost
-  frame is the compound it closes and a tracked `( )` subshell is open around
-  it for each `)`; otherwise the `)` closes the `$( … )` by the parenthesis
-  balance, so `PKGS=$(for …; done)`, the `case`/`esac` and `$({ …; })` forms
-  and `X=$(if …; fi)` inside an `if` no longer make the whole body
-  uncredited. (3) A command is inside an untracked parenthesis or backtick
-  substitution when one is open at its own command word, so a runner that is
-  the first command in `X=$( runner; echo done )`, `time ( runner )` or a
-  backtick substitution earns no credit, and a `set` in such a parenthesis no
-  longer changes errexit outside it. The manual and the `keptCommands` comment
-  state the rules. Three new tests in
-  `worker/deno/tests/aws_emulator_in_ci_check_test.ts` fail without the
+  `( echo bad; exit 1 )` stay refused. (2) A first word `fi)`, `done)`, `esac)`
+  or `})` is split into the keyword and `)` only when the innermost frame is the
+  compound it closes and a tracked `( )` subshell is open around it for each
+  `)`; otherwise the `)` closes the `$( … )` by the parenthesis balance, so
+  `PKGS=$(for …; done)`, the `case`/`esac` and `$({ …; })` forms and
+  `X=$(if …; fi)` inside an `if` no longer make the whole body uncredited. (3) A
+  command is inside an untracked parenthesis or backtick substitution when one
+  is open at its own command word, so a runner that is the first command in
+  `X=$( runner; echo done )`, `time ( runner )` or a backtick substitution earns
+  no credit, and a `set` in such a parenthesis no longer changes errexit outside
+  it. The manual and the `keptCommands` comment state the rules. Three new tests
+  in `worker/deno/tests/aws_emulator_in_ci_check_test.ts` fail without the
   change. Seven related test files (`aws_emulator_in_ci_check_test.ts`,
   `best_practices_template_test.ts`, `capability_coverage_scan_4367_test.ts`,
   `idle_task_scan_dedup_conformance_test.ts`,
   `issue_5110_aws_emulator_workflow_test.ts`, `linter_in_ci_check_test.ts`,
-  `issue_2315_actionlint_in_ci_test.ts`) give `670 passed | 0 failed`
-  through `deno task test:unit`; `deno lint`, `deno check` and `deno fmt
-  --check` on the changed files are clean. The full `./quality.sh` was not run
-  in this round.
+  `issue_2315_actionlint_in_ci_test.ts`) give `670 passed | 0 failed` through
+  `deno task test:unit`; `deno lint`, `deno check` and `deno fmt
+  --check` on
+  the changed files are clean. The full `./quality.sh` was not run in this
+  round.
 - After the eleventh review (of `d5338565`): the explicit-exit idiom drops an
   exit's `)` only when it closes the tracked `( )` subshell around the runner,
   and a `(` or `$(` opened in the `then` branch and still open when the `exit`
   is read is a nested construct (round 12 narrowed this from any word holding
-  one). A command inside a parenthesis or backtick with no frame, opened
-  earlier on its line or by the command's own words before its command word, is
-  never credited (`ReachableCommand.inUntrackedParen`; round 12 widened this
-  to the own-words case, so the first command in `X=$( runner; echo done )` is
+  one). A command inside a parenthesis or backtick with no frame, opened earlier
+  on its line or by the command's own words before its command word, is never
+  credited (`ReachableCommand.inUntrackedParen`; round 12 widened this to the
+  own-words case, so the first command in `X=$( runner; echo done )` is
   refused). So `time ( cd infra;
-  runner || exit 1 )`, `LOG=$(cd infra && runner 2>&1 || exit 1)` and its `;`
-  form, `OUT=$(cd infra; if ! runner; then exit 1; fi)`, `then (echo bad;
-  exit 1)` on one or several lines, `then MSG=$(echo bad; exit 1)`,
+  runner || exit 1 )`,
+  `LOG=$(cd infra && runner 2>&1 || exit 1)` and its `;` form,
+  `OUT=$(cd infra; if ! runner; then exit 1; fi)`, `then (echo bad;
+  exit 1)`
+  on one or several lines, `then MSG=$(echo bad; exit 1)`,
   `echo $(cd infra; runner || exit 1)`, `! ( cd infra; runner || exit 1 )` and
-  `echo $(cd infra; runner)` earn no credit. Each is checked in a script
-  without `set -e` and in a step after `set +e`, and the argument and negation
-  forms in a default-shell step too. The controls (`( echo bad; exit 1 )` in
-  the branch, `runner || (echo failed; exit 1)`, `time ( cd infra; runner )`
-  refused; top-level `runner || exit 1`, `if ! runner; …; exit 1; fi`, and the
-  round-10 one-line subshells credited) hold. `fi)`, `done)`, `esac)` and
-  `})` close the compound and then the subshell only when a tracked `( )`
-  subshell is open around it (round 12; otherwise the `)` closes a `$( … )`), so
+  `echo $(cd infra; runner)` earn no credit. Each is checked in a script without
+  `set -e` and in a step after `set +e`, and the argument and negation forms in
+  a default-shell step too. The controls (`( echo bad; exit 1 )` in the branch,
+  `runner || (echo failed; exit 1)`, `time ( cd infra; runner )` refused;
+  top-level `runner || exit 1`, `if ! runner; …; exit 1; fi`, and the round-10
+  one-line subshells credited) hold. `fi)`, `done)`, `esac)` and `})` close the
+  compound and then the subshell only when a tracked `( )` subshell is open
+  around it (round 12; otherwise the `)` closes a `$( … )`), so
   `(if ! runner; then echo bad; exit 1; fi)`, `( if ! …; fi)` and
-  `(for d in a b; do runner || exit 1; done)` are credited as a script's
-  last line and in a default-shell step, and refused when followed by a line
-  without `set -e`. `docs/BEST-PRACTICES-SCAN.md` and the `keptCommands`
-  comment state the rules. Both new tests fail at `d5338565`. The seven related
-  test files (listed in the twelfth-review entry) give `670 passed | 0 failed`
-  at the head; the earlier `805 passed | 1 failed` figure counted a wider file
-  set that included the root-only unreadable-directory test.
+  `(for d in a b; do runner || exit 1; done)` are credited as a script's last
+  line and in a default-shell step, and refused when followed by a line without
+  `set -e`. `docs/BEST-PRACTICES-SCAN.md` and the `keptCommands` comment state
+  the rules. Both new tests fail at `d5338565`. The seven related test files
+  (listed in the twelfth-review entry) give `670 passed | 0 failed` at the head;
+  the earlier `805 passed | 1 failed` figure counted a wider file set that
+  included the root-only unreadable-directory test.
 - After the tenth review (of `9d7c2e54`): a `( )` subshell opened as an `if`,
-  `elif`, `while` or `until` test is never kept, whatever errexit is outside
-  it (`ReachableCommand.subshellsInCondition`). So `if ( cd infra && runner ||
-  exit 1; ); then …`, the multi-line form, `if ! runner; then exit 1; fi`
-  inside the test subshell, and the `while`, `until` and `elif` forms are
-  refused, in a default-shell step and in a `set -e` script. The brace-group
-  test `if { runner || exit 1; }; then …` and `( if ! runner; then exit 1; fi )`
-  stay credited. The explicit-exit idiom now reads past a one-line subshell's
-  own `(` and `)`: `( cd infra; runner || exit 1 )`,
-  `(cd infra && runner || exit 1)` and the same with `2>&1` are credited as a
-  script's last line, in a default-shell step, and under `set -e` followed
-  by a line, and refused when followed by a line without `set -e`. The
-  one-line `( if ! runner; then echo bad; exit 1; fi )` is credited too.
-  `docs/BEST-PRACTICES-SCAN.md` and the `keptCommands` comment state both
-  rules. Both new tests fail at `9d7c2e54`. The seven related test files give `670 passed | 0 failed` at the head
-  (the earlier `803 passed | 1 failed` figure counted a wider file set that
-  included the root-only unreadable-directory test).
+  `elif`, `while` or `until` test is never kept, whatever errexit is outside it
+  (`ReachableCommand.subshellsInCondition`). So
+  `if ( cd infra && runner ||
+  exit 1; ); then …`, the multi-line form,
+  `if ! runner; then exit 1; fi` inside the test subshell, and the `while`,
+  `until` and `elif` forms are refused, in a default-shell step and in a
+  `set -e` script. The brace-group test `if { runner || exit 1; }; then …` and
+  `( if ! runner; then exit 1; fi )` stay credited. The explicit-exit idiom now
+  reads past a one-line subshell's own `(` and `)`:
+  `( cd infra; runner || exit 1 )`, `(cd infra && runner || exit 1)` and the
+  same with `2>&1` are credited as a script's last line, in a default-shell
+  step, and under `set -e` followed by a line, and refused when followed by a
+  line without `set -e`. The one-line
+  `( if ! runner; then echo bad; exit 1; fi )` is credited too.
+  `docs/BEST-PRACTICES-SCAN.md` and the `keptCommands` comment state both rules.
+  Both new tests fail at `9d7c2e54`. The seven related test files give
+  `670 passed | 0 failed` at the head (the earlier `803 passed | 1 failed`
+  figure counted a wider file set that included the root-only
+  unreadable-directory test).
 - After the ninth review (of `c4c8839a`): the wiring diagnostics and evidence
   paths in the finding body have HTML-comment delimiters neutralised
-  (`neutraliseHtmlComments`), so a `<!-- finding-id: … -->` comment read from
-  a scanned workflow cannot become a second dedup marker. A new test plants
-  one in a diagnostic and a path and checks that `listKnownOpenFindingIds`
-  returns only `BP-AWS-EMULATOR-MISSING` and `findOpenIssueByFindingId` finds
-  nothing for the planted id. A subshell is now refused as a loop body only
-  when a loop encloses it (`ReachableCommand.subshellsInLoop`), so
-  `( set -e; for d in a b; do runner; done )` and `( for …; do runner ||
-  exit 1; done )` as the last command are credited, while the loop without
-  errexit, the subshell followed by a line or by `&& echo ok` (errexit is
-  ignored there), and a subshell inside a loop inside a subshell stay
-  refused. `docs/BEST-PRACTICES-SCAN.md` now says the loop and explicit-exit
-  rules also need the subshell rule inside a `( )` subshell, and the
-  `keptCommands` doc comment sits on `keptCommands` again and lists the
+  (`neutraliseHtmlComments`), so a `<!-- finding-id: … -->` comment read from a
+  scanned workflow cannot become a second dedup marker. A new test plants one in
+  a diagnostic and a path and checks that `listKnownOpenFindingIds` returns only
+  `BP-AWS-EMULATOR-MISSING` and `findOpenIssueByFindingId` finds nothing for the
+  planted id. A subshell is now refused as a loop body only when a loop encloses
+  it (`ReachableCommand.subshellsInLoop`), so
+  `( set -e; for d in a b; do runner; done )` and
+  `( for …; do runner ||
+  exit 1; done )` as the last command are credited,
+  while the loop without errexit, the subshell followed by a line or by
+  `&& echo ok` (errexit is ignored there), and a subshell inside a loop inside a
+  subshell stay refused. `docs/BEST-PRACTICES-SCAN.md` now says the loop and
+  explicit-exit rules also need the subshell rule inside a `( )` subshell, and
+  the `keptCommands` doc comment sits on `keptCommands` again and lists the
   subshell rule. Both new tests fail at `c4c8839a`. The seven related test files
   give `670 passed | 0 failed` at the head (the earlier `801 passed | 1 failed`
   figure counted a wider file set that included the root-only
   unreadable-directory test).
-- After the eighth review (of `8f32e27a`): every `( )` subshell around a
-  command is judged on all three routes, explicit exit, `exec` and errexit:
-  the command is kept only when errexit is on outside the subshell and not
-  ignored, or the subshell is the last command or has an `&&` chain after it
-  and is not a loop body. A new test refuses six forms (a `set -e` subshell as
-  a one-line and multi-line loop body, `|| exit 1` in a subshell then a line
-  and as a loop body, `if ! …; exit 1; fi` in a subshell then a line, and
-  `exec` in a subshell then a line), each in a script without `set -e` and in
-  a step after `set +e`, and credits four controls (the subshell last, under a
-  top-level `set -e`, and in a default-shell step). It fails at `8f32e27a`.
-  The seven related test files give `670 passed | 0 failed` at the head (the
-  earlier `799 passed | 1 failed` figure counted a wider file set that included
-  the root-only unreadable-directory test).
-- After the seventh review (of `926c2539`): the parenthesis balance is carried
-  across the commands of one line, since the command list splits at a `|`,
-  `;` or `&&` inside `$( … )`, and only a parenthesis still open at the line's
-  end opens a frame. So `if [ $(ls | wc -l) -gt 0 ]; then …; fi`,
-  `[[ "$X" =~ ^(a|b)$ ]]`, `cd $(cmd | head -1)/dir` and five more lines
-  before the runner are credited again, in a workflow step and a
-  `set -euo pipefail` script, while `( X=$(cat V | tr -d x); runner; echo
-  done ) || true` stays refused. A runner kept by a `set -e` inside a
-  subshell now also needs that subshell's failure to fail the body (errexit
-  on outside, the subshell last, or an `&&` chain after it): the one-line and
-  multi-line subshells followed by more lines in a script without
-  `set -e`, and the subshell after `set +e` in a step, are refused; the
-  subshell as the last command and under a top-level `set -e` stay credited.
-  Each new case fails at `926c2539`. The seven related test files give
-  `670 passed | 0 failed` at the head; the earlier `798 passed | 1 failed`
+- After the eighth review (of `8f32e27a`): every `( )` subshell around a command
+  is judged on all three routes, explicit exit, `exec` and errexit: the command
+  is kept only when errexit is on outside the subshell and not ignored, or the
+  subshell is the last command or has an `&&` chain after it and is not a loop
+  body. A new test refuses six forms (a `set -e` subshell as a one-line and
+  multi-line loop body, `|| exit 1` in a subshell then a line and as a loop
+  body, `if ! …; exit 1; fi` in a subshell then a line, and `exec` in a subshell
+  then a line), each in a script without `set -e` and in a step after `set +e`,
+  and credits four controls (the subshell last, under a top-level `set -e`, and
+  in a default-shell step). It fails at `8f32e27a`. The seven related test files
+  give `670 passed | 0 failed` at the head (the earlier `799 passed | 1 failed`
   figure counted a wider file set that included the root-only
-  unreadable-directory test.
-- After the sixth review (of `83013b2f`), in the same push as the owner
-  fix: `&` inside a redirection (`2>&1`, `>&2`, `<&3`, `&>`) is part of the
-  word, not a background `&`, and `|&` is a pipe. A subshell closes on its
-  last unquoted `)` even with redirections after it, which belong to the
-  subshell. A `$(` or `(` left open at a line end opens its own frame, which
-  its balancing `)` closes and inside which nothing is credited. A subshell
-  still open at the end, or a `)` that closes no subshell or `case`
-  pattern, gives no credit (backstop). `keptCommands` restores errexit when
-  a subshell whose `set` changed it closes. New tests: the six refused forms
-  in the workflow and a `set -euo pipefail` script, five workflow-only
-  refusals (including both backstops), eight credited controls (four
-  redirected runners, a redirected subshell followed by a line, a multi-line
-  `$(` and array before the runner, and a spaced `case` pattern), and the
-  subshell `set -e` test with its top-level control. Every test file
+  unreadable-directory test).
+- After the seventh review (of `926c2539`): the parenthesis balance is carried
+  across the commands of one line, since the command list splits at a `|`, `;`
+  or `&&` inside `$( … )`, and only a parenthesis still open at the line's end
+  opens a frame. So `if [ $(ls | wc -l) -gt 0 ]; then …; fi`,
+  `[[ "$X" =~ ^(a|b)$ ]]`, `cd $(cmd | head -1)/dir` and five more lines before
+  the runner are credited again, in a workflow step and a `set -euo pipefail`
+  script, while `( X=$(cat V | tr -d x); runner; echo
+  done ) || true` stays
+  refused. A runner kept by a `set -e` inside a subshell now also needs that
+  subshell's failure to fail the body (errexit on outside, the subshell last, or
+  an `&&` chain after it): the one-line and multi-line subshells followed by
+  more lines in a script without `set -e`, and the subshell after `set +e` in a
+  step, are refused; the subshell as the last command and under a top-level
+  `set -e` stay credited. Each new case fails at `926c2539`. The seven related
+  test files give `670 passed | 0 failed` at the head; the earlier
+  `798 passed | 1 failed` figure counted a wider file set that included the
+  root-only unreadable-directory test.
+- After the sixth review (of `83013b2f`), in the same push as the owner fix: `&`
+  inside a redirection (`2>&1`, `>&2`, `<&3`, `&>`) is part of the word, not a
+  background `&`, and `|&` is a pipe. A subshell closes on its last unquoted `)`
+  even with redirections after it, which belong to the subshell. A `$(` or `(`
+  left open at a line end opens its own frame, which its balancing `)` closes
+  and inside which nothing is credited. A subshell still open at the end, or a
+  `)` that closes no subshell or `case` pattern, gives no credit (backstop).
+  `keptCommands` restores errexit when a subshell whose `set` changed it closes.
+  New tests: the six refused forms in the workflow and a `set -euo pipefail`
+  script, five workflow-only refusals (including both backstops), eight credited
+  controls (four redirected runners, a redirected subshell followed by a line, a
+  multi-line `$(` and array before the runner, and a spaced `case` pattern), and
+  the subshell `set -e` test with its top-level control. Every test file
   importing `shell_command_words.ts`, `aws_emulator_in_ci_check.ts`,
-  `aws_emulator_workflow_check.ts` or `best_practices_template.ts`
-  (13 files) gave 796 passed, 1 failed at that commit (the root-only
-  unreadable-directory case); the seven related files give
-  `670 passed | 0 failed` at the head. The new refusals fail at `83013b2f`.
+  `aws_emulator_workflow_check.ts` or `best_practices_template.ts` (13 files)
+  gave 796 passed, 1 failed at that commit (the root-only unreadable-directory
+  case); the seven related files give `670 passed | 0 failed` at the head. The
+  new refusals fail at `83013b2f`.
 - Owner review of `83013b2f`: a `trap 'exit 0' EXIT` (or `ERR`) before the
-  runner was credited, but bash then exits 0 when the tests fail (checked
-  with `bash -e -c "trap 'exit 0' EXIT; false"`, which exits 0). A new test
-  refuses nine handler forms (literal, quoted, `--` and `0`, lower case, a
-  cleanup function, a `function` keyword handler, a nested function call,
-  `runner || exit 1` under the trap, an `ERR` trap left by an `EXIT` reset)
-  in the workflow and in a script, plus a step trap before a script call.
-  It credits ten controls (a tidy-up handler, `exit $rc`, a bare `exit`,
-  `exit $?`, `exit 3`, `trap - EXIT`, `trap '' EXIT`, `INT TERM`, `trap -p`
-  and `exec` under the trap). The refusals fail at `83013b2f`. A handler that calls a function the body does
-  not define (a sourced library) is not followed.
+  runner was credited, but bash then exits 0 when the tests fail (checked with
+  `bash -e -c "trap 'exit 0' EXIT; false"`, which exits 0). A new test refuses
+  nine handler forms (literal, quoted, `--` and `0`, lower case, a cleanup
+  function, a `function` keyword handler, a nested function call,
+  `runner || exit 1` under the trap, an `ERR` trap left by an `EXIT` reset) in
+  the workflow and in a script, plus a step trap before a script call. It
+  credits ten controls (a tidy-up handler, `exit $rc`, a bare `exit`, `exit $?`,
+  `exit 3`, `trap - EXIT`, `trap '' EXIT`, `INT TERM`, `trap -p` and `exec`
+  under the trap). The refusals fail at `83013b2f`. A handler that calls a
+  function the body does not define (a sourced library) is not followed.
 - After the fifth review (of `8654e2f9`): the swallow test adds a subshell, a
   brace group and a multi-line subshell as an `if` condition; swallowed
-  multi-line subshells after `cd $(git rev-parse --show-toplevel)`,
-  `ROOT=$(…)` and an array literal, and one after `echo started at
-  $(date +%s)` piped to `tee`; and credited controls for the `$(…)` subshell
-  not swallowed and a `for` loop under errexit. A new test refuses a runner in
-  a `for` or `while` body in a script without `set -e` and credits it with
-  `set -euo pipefail` and in a default workflow shell. A command is a
-  condition when any enclosing frame is in its test, a subshell closes only
-  when the command holds one more unquoted `)` than `(`, and a loop body is
-  never kept by being last. Each new case fails at `8654e2f9`.
+  multi-line subshells after `cd $(git rev-parse --show-toplevel)`, `ROOT=$(…)`
+  and an array literal, and one after `echo started at
+  $(date +%s)` piped to
+  `tee`; and credited controls for the `$(…)` subshell not swallowed and a `for`
+  loop under errexit. A new test refuses a runner in a `for` or `while` body in
+  a script without `set -e` and credits it with `set -euo pipefail` and in a
+  default workflow shell. A command is a condition when any enclosing frame is
+  in its test, a subshell closes only when the command holds one more unquoted
+  `)` than `(`, and a loop body is never kept by being last. Each new case fails
+  at `8654e2f9`.
 - After the fourth review (of `1367ed64`): the swallow test adds a subshell
-  closed by a quoted word's `)` (`echo "done")`, `echo 'done')`, the same
-  piped to `tee`, and the unreachable runner after `( cd infra; echo
-  "built")` then `exit 0`), and a runner that is not the last command of a
-  compound left of `&&` (`{ runner; echo done; } && echo ok` and the `if`/`fi`
-  form); `{ runner; } && echo ok` stays credited. A `)` outside its word's
-  quotes now closes the subshell, and a command inside a compound followed by
-  `&&` is judged with errexit off. The matcher's short probes are per tool, so
+  closed by a quoted word's `)` (`echo "done")`, `echo 'done')`, the same piped
+  to `tee`, and the unreachable runner after `( cd infra; echo
+  "built")` then
+  `exit 0`), and a runner that is not the last command of a compound left of
+  `&&` (`{ runner; echo done; } && echo ok` and the `if`/`fi` form);
+  `{ runner; } && echo ok` stays credited. A `)` outside its word's quotes now
+  closes the subshell, and a command inside a compound followed by `&&` is
+  judged with errexit off. The matcher's short probes are per tool, so
   `mvn -B -V verify`, `mvn -V -B clean verify` and `ctest -V` are credited and
   `mvn --version` and `pytest -V` refused. Each new case fails at `1367ed64`.
 - After the third review (of `e0d44a4c`):
   - The swallow test now also refuses a subshell holding more than one command
-    (`( cd infra; runner; cd .. ) || true`, `(cd infra; runner; echo done) ||
-    true`, the same piped to `tee` or backgrounded) and a compound followed by
-    `&&` with more after it (`{ runner; } && echo ok` then a line, the `if`/`fi`
-    form), and a runner after `( cd infra; make build )` then `exit 0`, which
-    is unreachable. A `)` that ends a later command of an open subshell, or a
-    `(` attached to its first word, now opens and closes it. Credited controls
-    add the multi-command subshell with and without attached parens. Each new
-    refusal fails at `e0d44a4c`.
+    (`( cd infra; runner; cd .. ) || true`,
+    `(cd infra; runner; echo done) ||
+    true`, the same piped to `tee` or
+    backgrounded) and a compound followed by `&&` with more after it
+    (`{ runner; } && echo ok` then a line, the `if`/`fi` form), and a runner
+    after `( cd infra; make build )` then `exit 0`, which is unreachable. A `)`
+    that ends a later command of an open subshell, or a `(` attached to its
+    first word, now opens and closes it. Credited controls add the multi-command
+    subshell with and without attached parens. Each new refusal fails at
+    `e0d44a4c`.
   - The Floci matcher test adds 11 credited commands (`mvn -B clean verify`,
     `mvn clean test`, `mvn -B package --file pom.xml`, `./gradlew build`,
     `cargo +stable test --workspace`, `deno task test`, `poetry run pytest`,
@@ -581,35 +590,37 @@ emulator test.
     attempted only in the post case. A direct `reconcileAwsEmulatorIssue` test
     asserts each error names the issue, the repository and the cause.
 - After the second review (of `c1f12f06`):
-  - `aws_emulator_in_ci_check_test.ts` gained three tests: groups and
-    compounds swallowed one level out and `! runner || exit 1` refused in the
-    workflow and in a `set -euo pipefail` repository script, with credited
-    controls (`{ runner; }`, `if true; then runner; fi`, `runner || exit 1`,
-    `if ! runner; then exit 1; fi`); install-only Floci steps (`pip install
-    pytest`, `npm install --save-dev jest`, `npm install typescript@latest`,
-    `npm ci`, `yarn add mocha`, `echo test`, `./scripts/attestation.sh`)
-    staying `floci-only` beside a valid gap record while 16 common runners
-    (including `make check` and `tox -e aws`) are `floci-gap`; and branch- and
-    tag-literal ref conditions refused on the job and the step, with five
-    pull-request-compatible controls. One existing test was changed: "a
-    statically disabled job is missing; an expression-guarded one is
-    official-server" now guards with `github.actor != 'dependabot[bot]'`,
+  - `aws_emulator_in_ci_check_test.ts` gained three tests: groups and compounds
+    swallowed one level out and `! runner || exit 1` refused in the workflow and
+    in a `set -euo pipefail` repository script, with credited controls
+    (`{ runner; }`, `if true; then runner; fi`, `runner || exit 1`,
+    `if ! runner; then exit 1; fi`); install-only Floci steps
+    (`pip install
+    pytest`, `npm install --save-dev jest`,
+    `npm install typescript@latest`, `npm ci`, `yarn add mocha`, `echo test`,
+    `./scripts/attestation.sh`) staying `floci-only` beside a valid gap record
+    while 16 common runners (including `make check` and `tox -e aws`) are
+    `floci-gap`; and branch- and tag-literal ref conditions refused on the job
+    and the step, with five pull-request-compatible controls. One existing test
+    was changed: "a statically disabled job is missing; an expression-guarded
+    one is official-server" now guards with `github.actor != 'dependabot[bot]'`,
     because its old `github.ref == 'refs/heads/main'` never runs on a pull
     request and is now refused.
   - `best_practices_template_test.ts`: the reconcile test now expects one
-    comment and no edit; new tests cover the dedup marker (and a comment
-    that only quotes it), a body with a worker record block, and markers not
-    on the first line (an owner's paragraph above, a code-span quote).
+    comment and no edit; new tests cover the dedup marker (and a comment that
+    only quotes it), a body with a worker record block, and markers not on the
+    first line (an owner's paragraph above, a code-span quote).
   - Every test file importing `shell_command_words.ts`,
     `aws_emulator_in_ci_check.ts`, `aws_emulator_workflow_check.ts` or
-    `best_practices_template.ts` (13 files): `747 passed | 1 failed |
-    1 ignored`. The one failure, "unreadable nested directory rejects with
-    the path in the message", relies on an unreadable directory, which the
-    root user that ran it reads anyway; CI runs it as a normal user. The new
-    swallow test fails at `c1f12f06` (`workflow: a brace group || true`).
-    `deno lint` and `deno fmt --check` are clean; `deno check` reports nothing
-    in this repository's files. `./quality.sh` was not run here, so CI is the
-    gate for the rest.
+    `best_practices_template.ts` (13 files):
+    `747 passed | 1 failed |
+    1 ignored`. The one failure, "unreadable nested
+    directory rejects with the path in the message", relies on an unreadable
+    directory, which the root user that ran it reads anyway; CI runs it as a
+    normal user. The new swallow test fails at `c1f12f06`
+    (`workflow: a brace group || true`). `deno lint` and `deno fmt --check` are
+    clean; `deno check` reports nothing in this repository's files.
+    `./quality.sh` was not run here, so CI is the gate for the rest.
 
 Not done or not checked: no live best-practices scan was run against fleet
 repositories from this run, so the first real findings appear on the next
