@@ -1443,7 +1443,8 @@ const CLI_FLAG_AT =
  * and its value, that starts inside the inner value and ends past it, other
  * than the label that ends the inner value, which the walk reads next; or a
  * run from the inner value wrapped onto the next line that the
- * decode-then-rescan pass would mask. Every search reads only the inner
+ * decode-then-rescan pass would mask, read after the assignment rule's own
+ * masks ({@link maskedValueStart}). Every search reads only the inner
  * value, then each match from where it starts inside it, so the work per
  * candidate is bounded by the inner value and what it reaches.
  */
@@ -1455,6 +1456,20 @@ function mainReadsPastInnerValue(
   outerStart: number,
 ): boolean | number {
   const start = inner.end - inner.value.length;
+  // A flag inside a quoted inner value whose own value takes the closing
+  // quote (`DEPLOY_TOKEN: 'deploy --token '<value>'`): main's result masks the
+  // flag's value from that quote on and leaves the quote's opening run
+  // unclosed, which a second walk reads differently. When nothing else
+  // below keeps main's result, the inner value is masked through the flag's
+  // value instead, so the first walk's output is final (PR #5322 review
+  // round 13). When something else does, main's result stands: its other
+  // masks past the inner value are main's to make. The walk then never reads
+  // a label ending the inner value as the next chain link, so that label is
+  // probed like any other key. Read once, first, as it is the costliest read
+  // here; flags too many to read keep main's result (Issue #3942 linearity;
+  // PR #5322 review round 15).
+  const through = quotedValueFlagEnd(text, inner, start);
+  if (through === TOO_MANY_FLAGS) return true;
   // A credential flag whose quoted value opens before the outer value and
   // reaches a quote in the outer or inner value
   // (`--token 'alpha credentials: DEPLOY_TOKEN = 'tail`,
@@ -1469,7 +1484,7 @@ function mainReadsPastInnerValue(
       text,
       outerStart,
       inner,
-      quotedValueFlagEnd(text, inner, start) === -1,
+      through === -1,
     )
   ) return true;
   // An inner value already holding the placeholder after other text
@@ -1488,17 +1503,6 @@ function mainReadsPastInnerValue(
       innerAssignment(text, start, inner.end, depth + 1, true) !== null
     ? label.start
     : -1;
-  // A flag inside a quoted inner value whose own value takes the closing
-  // quote (`DEPLOY_TOKEN: 'deploy --token '<value>'`): main's result masks the
-  // flag's value from that quote on and leaves the quote's opening run
-  // unclosed, which a second walk reads differently. When nothing else
-  // below keeps main's result, the inner value is masked through the flag's
-  // value instead, so the first walk's output is final (PR #5322 review
-  // round 13). When something else does, main's result stands: its other
-  // masks past the inner value are main's to make. The walk then never reads
-  // a label ending the inner value as the next chain link, so that label is
-  // probed like any other key.
-  const through = quotedValueFlagEnd(text, inner, start);
   // Every `secret-assignment` key that starts inside the inner value, found
   // by its credential keyword in the inner value alone and matched from its
   // start, so no search leaves the inner value. At most MAX_INNER_PROBES keys
@@ -1584,22 +1588,30 @@ function mainReadsPastInnerValue(
     const run = WRAPPED_RUN_AT.exec(reach);
     WRAPPED_RUN_AT.lastIndex = 0;
     if (run === null) continue;
-    const runEnd = runStart + run[0].length;
+    // Main's decode pass runs after its assignment rule, so it sees the run
+    // cut at the first value that rule masks after the inner value (PR #5322
+    // review round 15). A run too long to read whole keeps main's result.
+    const long = run[0].length > WRAP_RUN_MAX;
+    const seen = long ? run[0] : run[0].slice(
+      0,
+      maskedValueStart(text, inner.end, runStart + run[0].length) - runStart,
+    );
+    const runEnd = runStart + seen.length;
     if (runEnd <= inner.index) continue;
     if (
       !(runEnd > inner.end || (labelVisible && runStart < start)) ||
-      !/\n/.test(run[0])
+      !/\n/.test(seen)
     ) {
       continue;
     }
-    if (run[0].length > WRAP_RUN_MAX) return true;
+    if (long) return true;
     if (
       redactTransformedSecrets(
-        run[0],
+        seen,
         matchesSignatureRule,
         REDACTION_PLACEHOLDER,
       ) !==
-        run[0]
+        seen
     ) return true;
   }
   WRAPPED_RUN_G.lastIndex = 0;
@@ -1621,12 +1633,42 @@ function mainReadsPastInnerValue(
 }
 
 /**
+ * Where the first `secret-assignment` value this walk masks, whose key starts
+ * in `[from, to)`, begins; `to` when there is none. Main's decode-then-rescan
+ * pass reads the text after that rule's masks, so a run it joins ends at the
+ * separator before such a value (`API_KEY=`), not at the value (PR #5322
+ * review round 15). A match whose verdict is not masked (`API_KEY=true`) stays
+ * in the run. At most {@link MAX_INNER_PROBES} keys are read; past that the
+ * run is read whole.
+ */
+function maskedValueStart(text: string, from: number, to: number): number {
+  const keywords = CREDENTIAL_KEYWORD_ALL;
+  const span = text.slice(from, to);
+  keywords.lastIndex = 0;
+  let probes = 0;
+  let lastKey = -1;
+  for (let k = keywords.exec(span); k !== null; k = keywords.exec(span)) {
+    const keyStart = keyStartBefore(text, from, from + k.index);
+    if (keyStart === -1 || keyStart === lastKey) continue;
+    lastKey = keyStart;
+    if (++probes > MAX_INNER_PROBES) return to;
+    SECRET_ASSIGNMENT_AT.lastIndex = keyStart;
+    const match = SECRET_ASSIGNMENT_AT.exec(text);
+    if (match === null) continue;
+    const verdict = verdictOf(text, match);
+    if (verdict.masked) return verdict.end - verdict.value.length;
+  }
+  return to;
+}
+
+/**
  * Where the value of the first credential flag inside the quoted `inner`
  * value ends, when that value takes the closing quote (it ends on or past
  * it, so the `secret-cli-flag` rule would remove the quote), moved on past
  * any flag value the mask would cut; -1 when the inner value is not a closed
  * quoted value, no flag inside it reaches the quote, or a credential keyword
- * lies between the quote and that end.
+ * lies between the quote and that end; {@link TOO_MANY_FLAGS} when more than
+ * {@link MAX_FLAG_VISITS} `--` runs would be read.
  */
 function quotedValueFlagEnd(
   text: string,
@@ -1640,14 +1682,16 @@ function quotedValueFlagEnd(
   ) return -1;
   const value = inner.value;
   for (
-    let at = value.indexOf("--");
+    let at = value.indexOf("--"), visited = 1;
     at !== -1;
-    at = value.indexOf("--", at + 1)
+    at = value.indexOf("--", at + 1), visited++
   ) {
+    if (visited > MAX_FLAG_VISITS) return TOO_MANY_FLAGS;
     CLI_FLAG_AT.lastIndex = start + at;
     const flag = CLI_FLAG_AT.exec(text);
     if (flag !== null && start + at + flag[0].length >= inner.end) {
       const through = flagsThrough(text, start, start + at + flag[0].length);
+      if (through === TOO_MANY_FLAGS) return TOO_MANY_FLAGS;
       // A credential keyword past the inner value may start a match main
       // masks before the flag rule runs, which moves the flag value's closing
       // quote on main; the mask cannot follow that, so main's result stands.
@@ -1658,6 +1702,19 @@ function quotedValueFlagEnd(
   }
   return -1;
 }
+
+/**
+ * What {@link quotedValueFlagEnd} and {@link flagsThrough} return when more
+ * than {@link MAX_FLAG_VISITS} `--` runs would be read: main's result stands.
+ */
+const TOO_MANY_FLAGS = -2;
+
+/**
+ * Most `--` runs one {@link quotedValueFlagEnd} call reads, so a chain of
+ * flags that each reach past the last cannot make every candidate rescan the
+ * rest of the text (Issue #3942 linearity; PR #5322 review round 15).
+ */
+const MAX_FLAG_VISITS = 64;
 
 /** {@link CREDENTIAL_KEYWORD} as a plain test, without the global flag. */
 const CREDENTIAL_KEYWORD_ANY = new RegExp(CREDENTIAL_KEYWORD.source, "i");
@@ -1670,10 +1727,11 @@ const CREDENTIAL_KEYWORD_ANY = new RegExp(CREDENTIAL_KEYWORD.source, "i");
 function flagsThrough(text: string, start: number, end: number): number {
   let through = end;
   for (
-    let at = text.indexOf("--", start);
+    let at = text.indexOf("--", start), visited = 1;
     at !== -1 && at < through;
-    at = text.indexOf("--", at + 1)
+    at = text.indexOf("--", at + 1), visited++
   ) {
+    if (visited > MAX_FLAG_VISITS) return TOO_MANY_FLAGS;
     CLI_FLAG_AT.lastIndex = at;
     const flag = CLI_FLAG_AT.exec(text);
     if (flag !== null && at + flag[0].length > through) {

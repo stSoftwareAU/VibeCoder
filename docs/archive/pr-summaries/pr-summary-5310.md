@@ -218,8 +218,8 @@ flowchart LR
 
 ## Test Plan
 
-- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 239
-  tests**, all through `redactSecrets` and `containsSecret`:
+- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 299
+  tests at this head**, all through `redactSecrets` and `containsSecret`:
   - **Leak cases** must mask the inner value and keep both labels:
     - `DEPLOY_TOKEN = <40-char value>` on the same line and the next line;
     - `api_key: <value>` on the same line and the next line, each with the short
@@ -316,6 +316,45 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
+- **Review round 15** — two items:
+  - **A masked assignment on the line after the inner value.** The wrapped-run
+    check read `<value>\nAPI_KEY=abcdefgh1234` from the unmasked text and kept
+    main's result, but main runs the decode pass after the assignment rule, so
+    it sees `<value>\nAPI_KEY=` and masks nothing. The run is now cut at the
+    first value the walk masks after the inner value (`maskedValueStart`), so
+    the inner label is read. `credentials: DEPLOY_TOKEN = <value>` followed by
+    `\nAPI_KEY=…`, `\r\nAPI_KEY=…`, `\nDB_PASSWORD=…`, `\ntoken=… and more`,
+    `\nprivate-key=…`, `\nPASSWORD_FILE=…`, with a short value (`pw42x9z`) and
+    the `The secret: api_key: <value>\npassword=…` form, all mask the inner
+    value. A next line the rule leaves unmasked (`API_KEY=`, `API_KEY=true`,
+    `USER=bob`, a blank line, a same-line key, a colon key) and the bare
+    `DEPLOY_TOKEN = API_TOKEN=` then `hunter2zzzz` keep their output.
+    Other paths checked: the same run read for a run that starts before the
+    inner label uses the same cut (only keys after the inner value count);
+    matrix of 6 lead-ins × 7 inner shapes × 2 values × 21 next-line texts
+    (1,764 inputs) and 14 more next-line shapes (`ghp_`, `AKIA`, `sk-`,
+    `--password=`, `export`, three stacked keys, quoted keys): the value is
+    published at head by none, a second call changes none and
+    `containsSecret` is false on every output; before this round 648 of the
+    1,764 published the value.
+  - **Quadratic time on chained flags.** `quotedValueFlagEnd` was run twice
+    per candidate and its `flagsThrough` walked every later `--` whose flag
+    reached past the last, so a text of repeated
+    `"DEPLOY_TOKEN = secrets:'x --token ` took 29, 91, 336 and 1,303 ms at
+    500, 1,000, 2,000 and 4,000 repeats at the previous head (shared host,
+    indicative), against 6, 6, 9 and 18 ms at `0de6b1f81`. The call is now made once per candidate, and
+    both loops read at most 64 `--` runs, past which main's result stands
+    (`TOO_MANY_FLAGS`; `SECURITY.md` states it). After the fix the same inputs
+    take 9, 11, 18 and 34 ms. A random search of 1,000 repeated units drawn
+    from 13 fragments found no case growing faster than linearly. Other
+    regexes in the module checked for the shared-quantifier shape:
+    `CLI_FLAG_AT`, `CLI_FLAG_RULE_G`, `WRAPPED_RUN_AT` and `WRAPPED_RUN_G`
+    (each bounded by `{0,63}` classes or disjoint classes); none changed.
+  - 16 more tests (283 → 299); the 8 next-line leak tests fail at `61d60fdd9`
+    and the hostile test (100,001 repeats, 3.4 MB) did not return in 100 s
+    there; it passes in about 1 s at this head. The controls pass at both. Every
+    test file naming `redactSecrets`, `containsSecret` or `secret_redaction`
+    (53 files by that grep): `1466 passed | 0 failed`.
 - **Review round 14** — two items:
   - **The issue's leak after a closed flag value.** The flag-quote look-back
     now counts the quote before the outer value only where the
@@ -651,6 +690,9 @@ flowchart LR
     `credentials: DEPLOY_TOKEN='a'b'c <value>'` publishes `<value>'`, as on base
     (run at head). The earlier head tried any label inside the value. No test
     covers this shape.
+- A quoted inner value read through more than 64 `--` runs (a chain of flags
+  each reaching past the last) also keeps the base result, so its inner value
+  is published as on base. A test pins a 3.4 MB chain's exact output.
 - An inner label opened by a backtick (`` `PASSWORD: <value>` ``) counts as text
   before the label, so the outer value, label included, is masked whole with the
   inner value. Nothing is published, but the label is not kept.

@@ -1456,3 +1456,119 @@ Deno.test("#5310 round 14: main's output with text after the flag's placeholder 
     assertEquals(containsSecret(input), false);
   }
 });
+
+// PR #5322 review round 15, finding 1. Main's decode-then-rescan pass runs
+// after its assignment rule, so a value that rule masks on the line after the
+// inner value ends the wrapped run at its separator (`API_KEY=`); the pass
+// then masks nothing and the inner label is read, so the inner value is
+// masked. Each lead-in below published its inner value at the previous head.
+for (
+  const [input, expected, values] of [
+    [
+      `Rotate these credentials: DEPLOY_TOKEN = ${V}\nAPI_KEY=abcdefgh1234`,
+      `Rotate these credentials: DEPLOY_TOKEN = ${R}\nAPI_KEY=${R}`,
+      [V],
+    ],
+    [
+      `Rotate these credentials: DEPLOY_TOKEN = ${V}\r\nAPI_KEY=abcdefgh1234`,
+      `Rotate these credentials: DEPLOY_TOKEN = ${R}\r\nAPI_KEY=${R}`,
+      [V],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = ${V}\nDB_PASSWORD=abcdefgh1234`,
+      `credentials: DEPLOY_TOKEN = ${R}\nDB_PASSWORD=${R}`,
+      [V],
+    ],
+    [
+      `The secret: api_key: ${V}\npassword=abcdefgh1234`,
+      `The secret: api_key: ${R}\npassword=${R}`,
+      [V],
+    ],
+    [
+      `Use this password: DEPLOY_TOKEN = ${V}\ntoken=abcdefgh1234 and more`,
+      `Use this password: DEPLOY_TOKEN = ${R}\ntoken=${R} and more`,
+      [V],
+    ],
+    [
+      `Rotate these credentials: DEPLOY_TOKEN = ${V}\nprivate-key=abcdefgh1234`,
+      `Rotate these credentials: DEPLOY_TOKEN = ${R}\nprivate-key=${R}`,
+      [V],
+    ],
+    [
+      `Rotate these credentials: DEPLOY_TOKEN = ${V}\nPASSWORD_FILE=abcdefgh1234`,
+      `Rotate these credentials: DEPLOY_TOKEN = ${R}\nPASSWORD_FILE=${R}`,
+      [V],
+    ],
+    [
+      "Rotate these credentials: DEPLOY_TOKEN = pw42x9z\nAPI_KEY=abcdefgh1234",
+      `Rotate these credentials: DEPLOY_TOKEN = ${R}\nAPI_KEY=${R}`,
+      ["pw42x9z"],
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 round 15 assignment on the next line: ${JSON.stringify(input.slice(0, 60))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}
+
+// The same inner value with a next line that main's rule leaves unmasked
+// (`API_KEY=`, `API_KEY=true`, `USER=bob`, a blank line then a key, a key on
+// the same line, a colon key) is masked as before this round.
+for (
+  const [input, expected] of [
+    [
+      `Rotate these credentials: DEPLOY_TOKEN = ${V}\nAPI_KEY=`,
+      `Rotate these credentials: DEPLOY_TOKEN = ${R}\nAPI_KEY=`,
+    ],
+    [
+      `Rotate these credentials: DEPLOY_TOKEN = ${V}\nAPI_KEY=true`,
+      `Rotate these credentials: DEPLOY_TOKEN = ${R}\nAPI_KEY=true`,
+    ],
+    [
+      `Rotate these credentials: DEPLOY_TOKEN = ${V}\nUSER=bob`,
+      `Rotate these credentials: DEPLOY_TOKEN = ${R}\nUSER=bob`,
+    ],
+    [
+      `Rotate these credentials: DEPLOY_TOKEN = ${V}\n\nAPI_KEY=abcdefgh1234`,
+      `Rotate these credentials: DEPLOY_TOKEN = ${R}\n\nAPI_KEY=${R}`,
+    ],
+    [
+      `Rotate these credentials: DEPLOY_TOKEN = ${V} API_KEY=abcdefgh1234`,
+      `Rotate these credentials: DEPLOY_TOKEN = ${R} API_KEY=${R}`,
+    ],
+    [
+      `Rotate these credentials: DEPLOY_TOKEN = ${V}\napi_key: abcdefgh1234`,
+      `Rotate these credentials: DEPLOY_TOKEN = ${R}\napi_key: ${R}`,
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 round 15 next line main leaves alone: ${JSON.stringify(input.split(V)[1])}`, () => {
+    assertFinal(input, expected, [V]);
+  });
+}
+
+// Where the assignment rule leaves the next line's value for the decode pass
+// (a bare run, no key), main's result stands: the pass joins the inner value
+// with it and masks the whole run.
+Deno.test("#5310 round 15 control: a bare next line keeps main's result", () => {
+  assertFinal(
+    "Rotate these credentials: DEPLOY_TOKEN = API_TOKEN=\nhunter2zzzz",
+    `Rotate these credentials: ${R} = API_TOKEN=\n${R}`,
+    ["hunter2zzzz"],
+  );
+});
+
+// PR #5322 review round 15, finding 2: a chain of flags that each take a
+// quote and reach past the last made every candidate rescan the rest of the
+// text. 100,001 repeats (3.4 MB) never return when that read is quadratic, as
+// in secret_redaction_redos_test.ts; the mask is the one main gives, which
+// takes each pair of repeats as one `DEPLOY_TOKEN = ... --token ...` run.
+Deno.test("#5310 round 15 hostile: 100,001 chained quoted flags are read linearly", () => {
+  const pairs = 50_000;
+  const input = "\"DEPLOY_TOKEN = secrets:'x --token ".repeat(2 * pairs + 1);
+  const expected = '"' + `DEPLOY_TOKEN = ${R} --token ${R}`.repeat(pairs) +
+    `DEPLOY_TOKEN = ${R} --token `;
+  const once = redactSecrets(input);
+  assertEquals(once === expected, true);
+  assertEquals(containsSecret(once), false);
+});

@@ -574,7 +574,12 @@ and, apart from that check, **only when the separator crossed a line break**:
   from the label's line only when the inner value stays visible (a chained
   label); otherwise from the end of the outer value the base behaviour
   masked, so `credentials: DEPLOY_TOKEN=` then `<value>` keeps the value
-  masked. A match inside the inner value that runs past it counts whether or
+  masked. The base behaviour runs the decode pass after its assignment rule,
+  so a run is read as that pass sees it: cut at the first value the
+  assignment rule masks on a line after the inner value, which ends it at the
+  separator (`API_KEY=`), and `credentials: DEPLOY_TOKEN = <value>` then
+  `API_KEY=abcdefgh1234` masks `<value>`. A next line the rule leaves
+  unmasked (`API_KEY=true`, `USER=bob`) stays in the run. A match inside the inner value that runs past it counts whether or
   not it is masked, since the base scan resumes after it either way. When the
   outer bare value stopped at a `"` inside a quoted inner value that the text
   runs straight on from (`DEPLOY_TOKEN='"abc"'--token <value>`), the outer
@@ -583,8 +588,9 @@ and, apart from that check, **only when the separator crossed a line break**:
   read as an inner label (looked ahead at most 16 links), so a chain whose last
   value the base scan reads past gets the base result. An inner value that
   already holds the placeholder after other text, holds more than 8
-  credential keys, or touches a wrapped run longer than 4,096 characters,
-  gets the base result too. So does one that opens with a quote it never
+  credential keys, touches a wrapped run longer than 4,096 characters, or
+  holds a quoted value read through more than 64 `--` runs, gets the base
+  result too. So does one that opens with a quote it never
   closes, is not itself the chain's next label, and is followed by a
   credential flag whose value starts with the placeholder (text may run on
   after it, as in `--token ***REDACTED***;`) before the next quote of that
