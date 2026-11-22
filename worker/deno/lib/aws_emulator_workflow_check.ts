@@ -11,26 +11,26 @@
  * - (a) a step invokes `infra/cloudformation/test-aws-emulator.sh` in command
  *   position (an `echo` or a comment does not count), and a failure of the
  *   script fails the job: the step's code (comment lines, as Bash reads them,
- *   dropped) has no `|`, `;` or `&`, so nothing follows, pipes or backgrounds
- *   the call; the step consists only of an optional leading `set -euo pipefail`
- *   and then that one call as its last command, by the script's exact path
- *   (bare or `./`, alone or after `bash`/`sh`; a path that only ends in the
- *   script path is refused), so no `if`, `exit`, trailing `set`, second
- *   command, assignment prefix or look-alike can skip or replace it; no
- *   `working-directory` (step, job or workflow `defaults.run`) is set and every
- *   checkout in the test job sets only `persist-credentials` and `fetch-depth`
- *   in `with:`; no `!` or
- *   `if`/`while`/`until` word precedes the call, because `! ./script` turns
- *   a failure into success (PR #5276 review); and neither the
- *   job nor that step sets `continue-on-error` or an `if:` (PR #3478 review);
- *   and the step's effective shell (its `shell:`, else the job's or the
- *   workflow's `defaults.run.shell`) is unset or on an allowlist: `bash` or
- *   `sh`, then only `--noprofile`, `--norc` and `-e`/`-u`/`-x`/`-o <name>`
- *   options, then optionally `{0}`; `-c`, `-s`, `-n`, `-o noexec`, extra
- *   words, `true {0}` and the like could pass without running the body
- *   (PR #5276 review); and neither the step, the job nor the workflow sets
- *   `env:`, since `SHELLOPTS=noexec` makes bash exit 0 without running the
- *   body and `BASH_ENV` runs code first;
+ *   dropped, but a `#` line inside a quoted word opened on an earlier line is
+ *   code, Issue #5353) has no `|`, `;` or `&`, so nothing follows, pipes or
+ *   backgrounds the call; the step consists only of an optional leading
+ *   `set -euo pipefail` and then that one call as its last command, by the
+ *   script's exact path (bare or `./`, alone or after `bash`/`sh`; a path that
+ *   only ends in the script path is refused), so no `if`, `exit`, trailing
+ *   `set`, second command, assignment prefix or look-alike can skip or replace
+ *   it; no `working-directory` (step, job or workflow `defaults.run`) is set
+ *   and every checkout in the test job sets only `persist-credentials` and
+ *   `fetch-depth` in `with:`; no `!` or `if`/`while`/`until` word precedes the
+ *   call, because `! ./script` turns a failure into success (PR #5276 review);
+ *   and neither the job nor that step sets `continue-on-error` or an `if:` (PR
+ *   #3478 review); and the step's effective shell (its `shell:`, else the job's
+ *   or the workflow's `defaults.run.shell`) is unset or on an allowlist: `bash`
+ *   or `sh`, then only `--noprofile`, `--norc` and `-e`/`-u`/`-x`/`-o <name>`
+ *   options, then optionally `{0}`; `-c`, `-s`, `-n`, `-o noexec`, extra words,
+ *   `true {0}` and the like could pass without running the body (PR #5276
+ *   review); and neither the step, the job nor the workflow sets `env:`, since
+ *   `SHELLOPTS=noexec` makes bash exit 0 without running the body and
+ *   `BASH_ENV` runs code first;
  * - (b) a step runs `container/toolchains/aws-emulator.sh` (the pinned,
  *   checksum-verified install), a step runs `container/toolchains/aws-cli.sh`
  *   (the pinned aws-cli, not the runner's own), and a step installs
@@ -132,7 +132,8 @@ function stepsOf(job: Record<string, unknown>): unknown[] {
  * continuation is pending into it, and its first character after spaces and
  * tabs (Bash's only blanks, unlike JavaScript's `trim()`) is `#`. A `#` line
  * that a trailing backslash continues into is part of that command (Issue
- * #5304).
+ * #5304). Callers check it only outside a quoted word: a `#` line inside one
+ * is text of that word (Issue #5353).
  */
 function isCommentLine(pending: string, physical: string): boolean {
   return pending === "" && physical.replace(/^[ \t]+/, "").startsWith("#");
@@ -164,6 +165,90 @@ function continuedIntoComment(pending: string, physical: string): boolean {
   return lead[0].length > 1 || /[ \t]$/.test(pending);
 }
 
+/** Quoting open at the end of a physical line: none, '…', "…", $'…', or unknown. */
+type QuoteState = "" | "'" | '"' | "$'" | "unknown";
+
+/**
+ * The quoting open at the end of `physical`, given the `state` at its start.
+ * `before` is the text of the same logical line before `physical` (the pending
+ * continuation, "" for none), so a `#` at the start of `physical` is checked
+ * against the blank or operator before it. A `#` that starts a word outside
+ * quotes ends the scan: it is a comment. Quoting this scanner does not model
+ * (a backtick, `$(` or `${` with nested quoting, a here-document) is sticky and
+ * returns "unknown"; callers treat any state but "" as open, so unknown fails
+ * closed (Issue #5353).
+ */
+function quoteStateAfter(
+  state: QuoteState,
+  physical: string,
+  before: string,
+): QuoteState {
+  if (state === "unknown") return "unknown";
+  let open: QuoteState = state;
+  // Whether a word starts at the next character: nothing, or a blank or
+  // operator, precedes it. An escape or quote is a word character.
+  let boundary = /(^|[ \t;&|()<>])$/.test(before);
+  let i = 0;
+  while (i < physical.length) {
+    const c = physical[i] ?? "";
+    if (open === "'") {
+      boundary = false;
+      if (c === "'") open = "";
+      i += 1;
+    } else if (open === '"') {
+      boundary = false;
+      if (c === "\\") {
+        i += 2;
+      } else if (c === '"') {
+        open = "";
+        i += 1;
+      } else if (c === "`" || physical.startsWith("$(", i)) {
+        return "unknown";
+      } else if (physical.startsWith("${", i)) {
+        const close = physical.indexOf("}", i + 2);
+        if (close === -1) return "unknown";
+        if (/['"`]|\$\(/.test(physical.slice(i + 2, close))) return "unknown";
+        i = close + 1;
+      } else {
+        i += 1;
+      }
+    } else if (open === "$'") {
+      boundary = false;
+      if (c === "\\") {
+        i += 2;
+      } else if (c === "'") {
+        open = "";
+        i += 1;
+      } else {
+        i += 1;
+      }
+    } else if (c === "#" && boundary) {
+      break;
+    } else if (c === "\\") {
+      boundary = false;
+      i += 2;
+    } else if (c === "$" && physical[i + 1] === "'") {
+      open = "$'";
+      boundary = false;
+      i += 2;
+    } else if (c === "'" || c === '"') {
+      open = c === "'" ? "'" : '"';
+      boundary = false;
+      i += 1;
+    } else if (c === "`") {
+      return "unknown";
+    } else if (c === "<" && physical[i + 1] === "<") {
+      if (physical[i + 2] !== "<") return "unknown";
+      boundary = true;
+      i += 3;
+    } else {
+      boundary = /[ \t;&|()<>]/.test(c);
+      i += 1;
+    }
+  }
+  return open;
+}
+
 /**
  * The `run:` text of a step as Bash reads it: backslash-newline removed with
  * no blank inserted (the next line's leading whitespace is kept), and comment
@@ -173,14 +258,23 @@ function continuedIntoComment(pending: string, physical: string): boolean {
  * line ending in an escaped backslash stays its own command, and so does the
  * line after a `#` comment that a continuation reached (see
  * {@link continuedIntoComment}), whatever the comment ends in.
+ *
+ * A line is a comment only outside a quoted word: the quoting open at each
+ * kept line's end is tracked with {@link quoteStateAfter}, so a `#` line
+ * inside a quoted word opened on an earlier line is kept as code. Unknown
+ * quoting keeps the line too, which fails closed (Issue #5353).
  */
 function codeOf(step: unknown): string {
   const lines: string[] = [];
   let continued = "";
+  let quote: QuoteState = "";
   for (const physical of runOf(step).split("\n")) {
-    if (isCommentLine(continued, physical)) continue;
+    if (quote === "" && isCommentLine(continued, physical)) continue;
     const line = continued + physical;
-    if (continued !== "" && continuedIntoComment(continued, physical)) {
+    if (
+      quote === "" && continued !== "" &&
+      continuedIntoComment(continued, physical)
+    ) {
       // The comment ends the command here and contributes no code; keeping
       // its text would hand a trailing backslash to `shellCommands`, which
       // would join the next line onto it.
@@ -188,6 +282,7 @@ function codeOf(step: unknown): string {
       continued = "";
       continue;
     }
+    quote = quoteStateAfter(quote, physical, continued);
     if (endsInContinuation(line)) {
       continued = line.slice(0, -1);
       continue;
@@ -722,6 +817,10 @@ const FILTER_CODE = [
 /**
  * The step's code lines: comment lines and blank lines dropped, backslash
  * continuations joined as Bash joins them, and runs of ASCII blanks collapsed.
+ * A quoted word left open at a line end (a multi-line quoted word, or a
+ * trailing backslash inside quotes) is refused, so a `#` line inside it is
+ * never read as a comment; the result is then `["invalid open quote"]`
+ * (Issue #5353).
  */
 function codeLines(step: unknown): string[] {
   const code = runOf(step);
@@ -747,6 +846,12 @@ function codeLines(step: unknown): string[] {
     const firstBackslash = physical.indexOf("\\");
     if (firstBackslash !== -1 && firstBackslash !== physical.length - 1) {
       return ["invalid backslash"];
+    }
+    // A line starts outside quotes (any open quoting returns below), so a
+    // quoted word left open here is multi-line and is refused: a `#` line
+    // inside it must never be taken for a comment (Issue #5353).
+    if (quoteStateAfter("", physical, continued) !== "") {
+      return ["invalid open quote"];
     }
     const line = `${continued}${physical}`;
     if (firstBackslash !== -1 && firstBackslash === physical.length - 1) {
@@ -1140,8 +1245,9 @@ const GATE_COMMANDS = exactCommands(GATE_SCRIPT_PATH);
  * {@link codeOf} share {@link isCommentLine}, so neither drops a `#` line that
  * a continuation reaches (`.github/scripts/gate.sh\` then `# || true` is
  * `.github/scripts/gate.sh# || true`, so the script never runs and the step is
- * always green). The gate step uses `codeLines` because it compares exact
- * lines against an allowlist (Issue #5110).
+ * always green). Both also share {@link quoteStateAfter}, so neither drops a
+ * `#` line inside a quoted word (Issue #5353). The gate step uses `codeLines`
+ * because it compares exact lines against an allowlist (Issue #5110).
  */
 function stepRunsGateScript(step: unknown): boolean {
   const line = soleCommandAfterStrictMode(codeLines(step), (l) => l);
