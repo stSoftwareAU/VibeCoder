@@ -5333,24 +5333,46 @@ formatters over the same changed files and commits the result as one
 `style: apply repository formatters` commit (`formatBeforeGate` in
 `repo_formatters.ts`, part of #2932). A formatting-only miss is fixed there
 rather than failing the gate, or reaching review and CI and costing another
-round. The formatters cover exactly what the gate's format checks would flag:
-`deno fmt` on the changed code files (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
+round. The formatters cover what the gate's format checks would flag, except an
+archive file with uncommitted changes (described below): `deno fmt` on the changed code files (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
 `.cjs`, `.mts`, `.cts`, `.json`, `.jsonc`) that the deno root's own fmt
 `include`/`exclude` covers, and `cargo fmt --all` for a cargo root whose `.rs`
 files changed. Markdown outside `docs/archive/pr-summaries/` and
 `docs/archive/handover/` is never formatted: `deno fmt` re-wraps whole documents
 and trips markdownlint MD018, so a Markdown miss there is left to the check to
 report. Those two directories are the worker's own notes, and `docs/archive/`
-is excluded from the markdownlint globs. After the repository formatters,
-`formatBeforeGate` puts each linkage-only line in archive Markdown in a
-paragraph of its own before running `deno fmt` on the Markdown and JSON the
-branch changed under them, then commits the result (Issue #4802). An archive
-file over 1 MiB (`MAX_ARCHIVE_REWRITE_BYTES`) is skipped with a warning and
-left for the gate to report. A missing formatter or a write failure is logged,
-and the gate still runs.
-Only the formatted paths are staged. A formatter that is missing, fails or
-throws never fails the run on its own: it is logged, and the gate that follows
-still runs every check and reports what was left unfixed.
+is excluded from the markdownlint globs. Both the repository formatters and the
+archive step first check which archive Markdown and JSON under those two
+directories already differ from HEAD, staged or unstaged. The repository
+formatters drop such a file from the files they hand to `deno fmt`, so a Deno
+config at any level (such as a root `deno.json` covering `.facts.json`) cannot
+format or commit it; if their check fails they leave every archive file out.
+The archive step then leaves it out too: it is neither rewritten, formatted nor
+committed, so an edit nobody
+committed (for example an interrupted recovery turn's rewrite of the PR summary)
+stays uncommitted and the completion phase publishes the copy committed at HEAD
+(Issue #4764). The pre-push gate judges the working tree, so the completion
+phase's own call also stashes that edit (`git stash push`, with a message that
+names Issue 5328): the file then holds exactly its committed copy, so it is
+formatted and committed like any other archive file, the gate checks that
+copy, no recovery commit can pick the edit up, and the stash keeps it
+recoverable. If the stash fails the edit stays in place, unformatted, a warning is logged and the gate reports what it finds. The other
+callers (the quality-gate loop and the PR-feedback, CI-fix and spelling
+processors) do not set the edit aside; they only leave it out of the formatting and the commit.
+Only archive files are left out this way: an uncommitted edit
+already in a formatted code file is still formatted and committed with it,
+because the gate judges that code as it stands. If that check itself fails, the
+archive step is skipped with a warning (Issue #5328). Otherwise it puts each
+linkage-only line in archive Markdown in a paragraph of its own before running
+`deno fmt` on the remaining Markdown and JSON the branch changed under them,
+then commits the result (Issue #4802). An archive file over 1 MiB
+(`MAX_ARCHIVE_REWRITE_BYTES`) is skipped with a warning and left for the gate
+to report. A missing formatter or a write failure is logged, and the gate still
+runs.
+The commit names its paths, so only the formatted paths are staged and
+committed; a file someone else has staged stays out of it. A formatter that is
+missing, fails or throws never fails the run on its own: it is logged, and the
+gate that follows still runs every check and reports what was left unfixed.
 
 The PR-feedback and CI-fix rounds do the same through `commitAndPushPending`
 (follow-up to #3806): the processors pass a Step 1a hook that runs the
