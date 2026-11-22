@@ -4,6 +4,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { gitOperationsCommand } from "../commands/git_operations.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -138,10 +142,11 @@ Deno.test("git operations command - validate-repo-state on clean feature branch"
   try {
     const run = async (args: string[]) => {
       const cmd = new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: dir,
         stdout: "piped",
         stderr: "piped",
+        env: NO_HOST_GIT_CONFIG,
       });
       await cmd.output();
     };

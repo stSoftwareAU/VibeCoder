@@ -23,6 +23,10 @@ import {
 } from "../lib/repo_formatters.ts";
 import type { Logger } from "../types.ts";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   PART_OF_OTHER,
   PART_OF_SAME,
 } from "../../../.claude/skills/review-fleet-prs/scripts/test_change_policy.ts";
@@ -331,10 +335,11 @@ Deno.test("formatBeforeGate logs a missing formatter binary and still returns (I
 
 async function git(repo: string, args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd: repo,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   const stderr = new TextDecoder().decode(out.stderr);
   assertEquals(out.code, 0, `git ${args.join(" ")}: ${stderr}`);
@@ -346,9 +351,10 @@ Deno.test("formatBeforeGate formats worker-owned archive files with the producti
   const repo = `${root}/repo`;
   try {
     await new Deno.Command("git", {
-      args: ["init", "-b", "main", repo],
+      args: [...NO_HOST_HOOKS_ARGS, "init", "-b", "main", repo],
       stdout: "null",
       stderr: "piped",
+      env: NO_HOST_GIT_CONFIG,
     }).output();
     await Deno.mkdir(`${root}/hooks`);
     for (
@@ -448,9 +454,10 @@ async function formatSeededSummary(
 ): Promise<{ repo: string; logger: Logger & { lines: string[] } }> {
   const repo = `${root}/repo`;
   await new Deno.Command("git", {
-    args: ["init", "-b", "main", repo],
+    args: [...NO_HOST_HOOKS_ARGS, "init", "-b", "main", repo],
     stdout: "null",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   await Deno.mkdir(`${root}/hooks`);
   for (
@@ -537,9 +544,10 @@ async function formatSeededFiles(
 ): Promise<{ repo: string; logger: Logger & { lines: string[] } }> {
   const repo = `${root}/repo`;
   await new Deno.Command("git", {
-    args: ["init", "-b", "main", repo],
+    args: [...NO_HOST_HOOKS_ARGS, "init", "-b", "main", repo],
     stdout: "null",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   await Deno.mkdir(`${root}/hooks`);
   for (

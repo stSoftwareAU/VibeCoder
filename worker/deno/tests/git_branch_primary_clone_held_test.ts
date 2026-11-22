@@ -14,6 +14,7 @@ import {
 } from "../lib/git_branch.ts";
 import { primaryCloneHoldingBranch } from "../lib/lane_worktree.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 
 /**
  * A clone on `main` with one commit, a detached lane worktree for slot s2
@@ -28,30 +29,30 @@ async function primaryHeldFixture(): Promise<
   const lanePath = `${workDir}/worktrees/s2/VibeCoder`;
   const branch = "issue-4789-primary-held";
 
-  await runGitCommand(["init", "-b", "main", repoPath], { cwd: workDir });
-  await runGitCommand(["config", "user.email", "t@example.com"], {
+  await runFixtureGit(["init", "-b", "main", repoPath], { cwd: workDir });
+  await runFixtureGit(["config", "user.email", "t@example.com"], {
     cwd: repoPath,
   });
-  await runGitCommand(["config", "user.name", "Test"], { cwd: repoPath });
+  await runFixtureGit(["config", "user.name", "Test"], { cwd: repoPath });
   await Deno.writeTextFile(`${repoPath}/base.txt`, "base\n");
-  await runGitCommand(["add", "."], { cwd: repoPath });
-  await runGitCommand(["commit", "-m", "initial"], { cwd: repoPath });
+  await runFixtureGit(["add", "."], { cwd: repoPath });
+  await runFixtureGit(["commit", "-m", "initial"], { cwd: repoPath });
 
   // The lane worktree is detached, as a healthy lane is between runs.
   await Deno.mkdir(`${workDir}/worktrees/s2`, { recursive: true });
-  await runGitCommand(["worktree", "add", "--detach", lanePath, "main"], {
+  await runFixtureGit(["worktree", "add", "--detach", lanePath, "main"], {
     cwd: repoPath,
   });
 
   // The issue branch is left checked out in the shared clone's primary.
-  await runGitCommand(["checkout", "-b", branch], { cwd: repoPath });
+  await runFixtureGit(["checkout", "-b", branch], { cwd: repoPath });
 
   return { workDir, repoPath, lanePath, branch };
 }
 
 /** The symbolic HEAD of the worktree at `cwd`, trimmed. */
 async function headOf(cwd: string): Promise<string> {
-  const head = await runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], {
+  const head = await runFixtureGit(["rev-parse", "--abbrev-ref", "HEAD"], {
     cwd,
   });
   assert(head.ok, JSON.stringify(head));
@@ -78,7 +79,7 @@ Deno.test("resumeFeatureBranchFromRemote - preserves a pushed checkpoint held by
   const { workDir, repoPath, lanePath, branch } = await primaryHeldFixture();
   try {
     const git = async (args: string[], cwd = repoPath) => {
-      const result = await runGitCommand(args, { cwd });
+      const result = await runFixtureGit(args, { cwd });
       assert(result.ok && result.value.code === 0, JSON.stringify(result));
       return result.value.stdout.trim();
     };
@@ -106,7 +107,7 @@ Deno.test("createFeatureBranchFromBase - will not detach a developer's worktree 
   const outsidePath = `${workDir}/somebody-elses-worktree`;
   const otherBranch = "other-branch";
   try {
-    await runGitCommand(
+    await runFixtureGit(
       ["worktree", "add", "-b", otherBranch, outsidePath, "main"],
       { cwd: `${workDir}/VibeCoder` },
     );
@@ -152,7 +153,7 @@ Deno.test("primaryCloneHoldingBranch - undefined for a linked worktree outside t
   const { workDir, repoPath } = await primaryHeldFixture();
   const outsidePath = `${workDir}/somebody-elses-worktree`;
   try {
-    await runGitCommand(
+    await runFixtureGit(
       ["worktree", "add", "-b", "other-branch", outsidePath, "main"],
       { cwd: repoPath },
     );

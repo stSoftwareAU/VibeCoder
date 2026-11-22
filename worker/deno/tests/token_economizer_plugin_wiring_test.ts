@@ -1,4 +1,8 @@
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   buildTokenEconomizerStatsLine,
   summariseTokenEconomizerRun,
   tokenEconomizerCallbackBlock,
@@ -197,10 +201,11 @@ function assertAdjacent(args: string[], flag: string, value: string): void {
 /** Runs `git` in `cwd` and returns its stdout, failing on a non-zero exit. */
 async function git(cwd: string, args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args: ["-C", cwd, ...GIT_IDENTITY, ...args],
+    args: [...NO_HOST_HOOKS_ARGS, "-C", cwd, ...GIT_IDENTITY, ...args],
     stdin: "null",
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   if (!out.success) {
     throw new Error(

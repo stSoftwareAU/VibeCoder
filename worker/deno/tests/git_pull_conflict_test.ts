@@ -13,7 +13,7 @@ import {
   syncMilestoneBranchWithDefault,
   updatePrBranch,
 } from "../lib/git_pull.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 import {
   isForcedPush,
   recordedPushes,
@@ -39,35 +39,35 @@ async function setupTestRepos(
 
   // Create bare remote
   await Deno.mkdir(remotePath, { recursive: true });
-  await runGitCommand(["init", "--bare"], { cwd: remotePath });
+  await runFixtureGit(["init", "--bare"], { cwd: remotePath });
 
   // Ensure the bare repo uses 'main' as the default branch.
   // On CI runners without init.defaultBranch configured, git may default to
   // 'master'. Setting symbolic-ref explicitly ensures the clone's default
   // branch is 'main', matching the branch names used throughout this test.
-  await runGitCommand(
+  await runFixtureGit(
     ["symbolic-ref", "HEAD", "refs/heads/main"],
     { cwd: remotePath },
   );
 
   // Clone locally
-  await runGitCommand(["clone", remotePath, localPath], { cwd: tmpDir });
+  await runFixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
 
   // Configure git user in local repo
-  await runGitCommand(
+  await runFixtureGit(
     ["config", "user.email", "test@example.com"],
     { cwd: localPath },
   );
-  await runGitCommand(
+  await runFixtureGit(
     ["config", "user.name", "Test User"],
     { cwd: localPath },
   );
 
   // Create initial commit on main
   await Deno.writeTextFile(`${localPath}/README.md`, "# Test Repo\n");
-  await runGitCommand(["add", "README.md"], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Initial commit"], { cwd: localPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  await runFixtureGit(["add", "README.md"], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Initial commit"], { cwd: localPath });
+  await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
   return { remotePath, localPath };
 }
@@ -91,16 +91,16 @@ Deno.test("updatePrBranch - returns early when not behind and no conflicting rea
     const { localPath } = await setupTestRepos(tmpDir);
 
     // Create a feature branch with a commit
-    await runGitCommand(["checkout", "-b", "feature-branch"], {
+    await runFixtureGit(["checkout", "-b", "feature-branch"], {
       cwd: localPath,
     });
     await Deno.writeTextFile(
       `${localPath}/feature.ts`,
       "export const x = 1;\n",
     );
-    await runGitCommand(["add", "feature.ts"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Add feature"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "feature-branch"], {
+    await runFixtureGit(["add", "feature.ts"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Add feature"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "feature-branch"], {
       cwd: localPath,
     });
 
@@ -125,8 +125,8 @@ async function heads(
   localPath: string,
   branch: string,
 ): Promise<{ local: string; remote: string }> {
-  const local = await runGitCommand(["rev-parse", branch], { cwd: localPath });
-  const remote = await runGitCommand(["rev-parse", `origin/${branch}`], {
+  const local = await runFixtureGit(["rev-parse", branch], { cwd: localPath });
+  const remote = await runFixtureGit(["rev-parse", `origin/${branch}`], {
     cwd: localPath,
   });
   return {
@@ -141,28 +141,28 @@ Deno.test("updatePrBranch - a 'conflicting' PR whose changes collide with the ba
     const { localPath } = await setupTestRepos(tmpDir);
 
     // Feature branch modifies a file …
-    await runGitCommand(["checkout", "-b", "feature-branch"], {
+    await runFixtureGit(["checkout", "-b", "feature-branch"], {
       cwd: localPath,
     });
     await Deno.writeTextFile(
       `${localPath}/shared.ts`,
       "// Feature version\nexport const x = 1;\n",
     );
-    await runGitCommand(["add", "shared.ts"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Feature change"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "feature-branch"], {
+    await runFixtureGit(["add", "shared.ts"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Feature change"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "feature-branch"], {
       cwd: localPath,
     });
     // … and main changes the same lines.
-    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await runFixtureGit(["checkout", "main"], { cwd: localPath });
     await Deno.writeTextFile(
       `${localPath}/shared.ts`,
       "// Main version\nexport const x = 2;\n",
     );
-    await runGitCommand(["add", "shared.ts"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
-    await runGitCommand(["checkout", "feature-branch"], { cwd: localPath });
+    await runFixtureGit(["add", "shared.ts"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Main change"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["checkout", "feature-branch"], { cwd: localPath });
     const before = await heads(localPath, "feature-branch");
     const trace = await startGitTrace();
 
@@ -195,7 +195,7 @@ Deno.test("updatePrBranch - a 'conflicting' PR whose changes collide with the ba
       "the PR's content is preserved",
     );
     // No merge left in progress.
-    const status = await runGitCommand(["status", "--porcelain"], {
+    const status = await runFixtureGit(["status", "--porcelain"], {
       cwd: localPath,
     });
     assertEquals(status.ok && status.value.stdout.trim(), "");
@@ -209,34 +209,34 @@ Deno.test("updatePrBranch - a 'behind' PR whose merge conflicts is aborted and L
   try {
     const { localPath } = await setupTestRepos(tmpDir);
     await Deno.writeTextFile(`${localPath}/config.json`, '{"version": 1}\n');
-    await runGitCommand(["add", "config.json"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Add config"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["add", "config.json"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Add config"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
-    await runGitCommand(["checkout", "-b", "issue-42-update"], {
+    await runFixtureGit(["checkout", "-b", "issue-42-update"], {
       cwd: localPath,
     });
     await Deno.writeTextFile(
       `${localPath}/config.json`,
       '{"version": 2, "feature": true}\n',
     );
-    await runGitCommand(["add", "config.json"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Update config for feature"], {
+    await runFixtureGit(["add", "config.json"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Update config for feature"], {
       cwd: localPath,
     });
-    await runGitCommand(["push", "origin", "issue-42-update"], {
+    await runFixtureGit(["push", "origin", "issue-42-update"], {
       cwd: localPath,
     });
 
-    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await runFixtureGit(["checkout", "main"], { cwd: localPath });
     await Deno.writeTextFile(
       `${localPath}/config.json`,
       '{"version": 3, "hotfix": true}\n',
     );
-    await runGitCommand(["add", "config.json"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Hotfix config"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
-    await runGitCommand(["checkout", "issue-42-update"], { cwd: localPath });
+    await runFixtureGit(["add", "config.json"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Hotfix config"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["checkout", "issue-42-update"], { cwd: localPath });
     const before = await heads(localPath, "issue-42-update");
     const trace = await startGitTrace();
 
@@ -265,12 +265,12 @@ Deno.test("updatePrBranch - a 'behind' PR whose merge conflicts is aborted and L
     );
     // Issue #2807: the merge that replaced the rebase is aborted — no
     // MERGE_HEAD and a clean tree.
-    const merging = await runGitCommand(
+    const merging = await runFixtureGit(
       ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
       { cwd: localPath },
     );
     assertEquals(merging.ok && merging.value.code !== 0, true, "merge aborted");
-    const status = await runGitCommand(["status", "--porcelain"], {
+    const status = await runFixtureGit(["status", "--porcelain"], {
       cwd: localPath,
     });
     assertEquals(status.ok && status.value.stdout.trim(), "");
@@ -283,17 +283,17 @@ Deno.test("updatePrBranch - a 'behind' PR with NO conflict merges the base in an
   const tmpDir = await createTempDir();
   try {
     const { localPath } = await setupTestRepos(tmpDir);
-    await runGitCommand(["checkout", "-b", "issue-7-docs"], { cwd: localPath });
+    await runFixtureGit(["checkout", "-b", "issue-7-docs"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/docs.md`, "feature docs\n");
-    await runGitCommand(["add", "docs.md"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Feature docs"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "issue-7-docs"], { cwd: localPath });
-    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await runFixtureGit(["add", "docs.md"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Feature docs"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "issue-7-docs"], { cwd: localPath });
+    await runFixtureGit(["checkout", "main"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/other.md`, "main change\n");
-    await runGitCommand(["add", "other.md"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
-    await runGitCommand(["checkout", "issue-7-docs"], { cwd: localPath });
+    await runFixtureGit(["add", "other.md"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Main change"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["checkout", "issue-7-docs"], { cwd: localPath });
     const before = await heads(localPath, "issue-7-docs");
     const trace = await startGitTrace();
 
@@ -305,7 +305,7 @@ Deno.test("updatePrBranch - a 'behind' PR with NO conflict merges the base in an
     const after = await heads(localPath, "issue-7-docs");
     assertEquals(after.local, after.remote, "merged head pushed");
     // The old PR head is an ancestor of the new one: no history rewritten.
-    const ancestor = await runGitCommand(
+    const ancestor = await runFixtureGit(
       ["merge-base", "--is-ancestor", before.remote, after.remote],
       { cwd: localPath },
     );
@@ -330,17 +330,17 @@ Deno.test("updatePrBranch - a 'conflicting' PR whose merge is clean merges the b
   const trace = await startGitTrace();
   try {
     const { localPath } = await setupTestRepos(tmpDir);
-    await runGitCommand(["checkout", "-b", "issue-9-docs"], { cwd: localPath });
+    await runFixtureGit(["checkout", "-b", "issue-9-docs"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/docs.md`, "feature docs\n");
-    await runGitCommand(["add", "docs.md"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Feature docs"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "issue-9-docs"], { cwd: localPath });
-    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await runFixtureGit(["add", "docs.md"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Feature docs"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "issue-9-docs"], { cwd: localPath });
+    await runFixtureGit(["checkout", "main"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/other.md`, "main change\n");
-    await runGitCommand(["add", "other.md"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
-    await runGitCommand(["checkout", "issue-9-docs"], { cwd: localPath });
+    await runFixtureGit(["add", "other.md"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Main change"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["checkout", "issue-9-docs"], { cwd: localPath });
     const before = await heads(localPath, "issue-9-docs");
 
     const result = await updatePrBranch("issue-9-docs", "main", {
@@ -351,7 +351,7 @@ Deno.test("updatePrBranch - a 'conflicting' PR whose merge is clean merges the b
     assertEquals(result.ok, true, JSON.stringify(result));
     const after = await heads(localPath, "issue-9-docs");
     assertEquals(after.local, after.remote, "merged head pushed");
-    const ancestor = await runGitCommand(
+    const ancestor = await runFixtureGit(
       ["merge-base", "--is-ancestor", before.remote, after.remote],
       { cwd: localPath },
     );
@@ -370,17 +370,17 @@ Deno.test("updatePrBranch - a rejected plain push fails loud with git's stderr a
   const tmpDir = await createTempDir();
   try {
     const { remotePath, localPath } = await setupTestRepos(tmpDir);
-    await runGitCommand(["checkout", "-b", "issue-8-docs"], { cwd: localPath });
+    await runFixtureGit(["checkout", "-b", "issue-8-docs"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/docs.md`, "feature docs\n");
-    await runGitCommand(["add", "docs.md"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Feature docs"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "issue-8-docs"], { cwd: localPath });
-    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await runFixtureGit(["add", "docs.md"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Feature docs"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "issue-8-docs"], { cwd: localPath });
+    await runFixtureGit(["checkout", "main"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/other.md`, "main change\n");
-    await runGitCommand(["add", "other.md"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
-    await runGitCommand(["checkout", "issue-8-docs"], { cwd: localPath });
+    await runFixtureGit(["add", "other.md"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Main change"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["checkout", "issue-8-docs"], { cwd: localPath });
     const before = await heads(localPath, "issue-8-docs");
 
     // The remote now refuses every push, as a branch rule would.
@@ -406,7 +406,7 @@ Deno.test("updatePrBranch - a rejected plain push fails loud with git's stderr a
     assertEquals(pushes.length, 1, "one plain push, no forced retry");
     assertEquals(isForcedPush(pushes[0]!), false, pushes[0]!.join(" "));
     await trace.dispose();
-    const remote = await runGitCommand(
+    const remote = await runFixtureGit(
       ["rev-parse", "issue-8-docs"],
       { cwd: remotePath },
     );
@@ -422,11 +422,11 @@ Deno.test("updatePrBranch - without conflicting reason returns early when not be
     const { localPath } = await setupTestRepos(tmpDir);
 
     // Create feature branch
-    await runGitCommand(["checkout", "-b", "my-feature"], { cwd: localPath });
+    await runFixtureGit(["checkout", "-b", "my-feature"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/file.ts`, "content\n");
-    await runGitCommand(["add", "file.ts"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Add file"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "my-feature"], { cwd: localPath });
+    await runFixtureGit(["add", "file.ts"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Add file"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "my-feature"], { cwd: localPath });
 
     // Default reason (undefined) — should return "already up to date"
     const result = await updatePrBranch(
@@ -471,36 +471,36 @@ Deno.test("syncMilestoneBranchWithDefault - succeeds when milestone branch exist
     // Create a shallow clone FIRST — mirrors production `git clone --depth=1
     // --no-single-branch`. At this point the remote only has `main`.
     const shallowPath = `${tmpDir}/shallow`;
-    await runGitCommand(
+    await runFixtureGit(
       ["clone", "--depth=1", "--no-single-branch", remotePath, shallowPath],
       { cwd: tmpDir },
     );
-    await runGitCommand(["config", "user.email", "test@example.com"], {
+    await runFixtureGit(["config", "user.email", "test@example.com"], {
       cwd: shallowPath,
     });
-    await runGitCommand(["config", "user.name", "Test User"], {
+    await runFixtureGit(["config", "user.name", "Test User"], {
       cwd: shallowPath,
     });
 
     // Now create the milestone branch on the remote AFTER the shallow clone
     // — exactly the Issue #1517 scenario. The shallow clone's
     // remote-tracking refs will not know about it.
-    await runGitCommand(["checkout", "-b", "milestone/v1-0"], {
+    await runFixtureGit(["checkout", "-b", "milestone/v1-0"], {
       cwd: seedPath,
     });
     await Deno.writeTextFile(
       `${seedPath}/milestone.ts`,
       "export const m = 1;\n",
     );
-    await runGitCommand(["add", "milestone.ts"], { cwd: seedPath });
-    await runGitCommand(["commit", "-m", "Milestone seed"], { cwd: seedPath });
-    await runGitCommand(["push", "origin", "milestone/v1-0"], {
+    await runFixtureGit(["add", "milestone.ts"], { cwd: seedPath });
+    await runFixtureGit(["commit", "-m", "Milestone seed"], { cwd: seedPath });
+    await runFixtureGit(["push", "origin", "milestone/v1-0"], {
       cwd: seedPath,
     });
 
     // Precondition: milestone branch is absent from the shallow clone's
     // remote-tracking refs (the scenario that triggers the warning).
-    const refsResult = await runGitCommand(
+    const refsResult = await runFixtureGit(
       ["for-each-ref", "--format=%(refname)", "refs/remotes/origin/"],
       { cwd: shallowPath },
     );
@@ -514,14 +514,14 @@ Deno.test("syncMilestoneBranchWithDefault - succeeds when milestone branch exist
     }
 
     // Advance main on the remote so the sync has something to merge
-    await runGitCommand(["checkout", "main"], { cwd: seedPath });
+    await runFixtureGit(["checkout", "main"], { cwd: seedPath });
     await Deno.writeTextFile(
       `${seedPath}/main-update.ts`,
       "export const u = 1;\n",
     );
-    await runGitCommand(["add", "main-update.ts"], { cwd: seedPath });
-    await runGitCommand(["commit", "-m", "Main update"], { cwd: seedPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: seedPath });
+    await runFixtureGit(["add", "main-update.ts"], { cwd: seedPath });
+    await runFixtureGit(["commit", "-m", "Main update"], { cwd: seedPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: seedPath });
 
     const result = await syncMilestoneBranchWithDefault(
       "milestone/v1-0",
@@ -538,7 +538,7 @@ Deno.test("syncMilestoneBranchWithDefault - succeeds when milestone branch exist
     );
 
     // Verify we actually ended up on the milestone branch
-    const branchResult = await runGitCommand(
+    const branchResult = await runFixtureGit(
       ["rev-parse", "--abbrev-ref", "HEAD"],
       { cwd: shallowPath },
     );
@@ -560,19 +560,19 @@ Deno.test("syncMilestoneBranchWithDefault - a non-conflict merge failure is a fa
     // "refusing to merge unrelated histories" — a merge failure with ZERO
     // conflicted files, exactly the branch that was reported as
     // "Synced … Could not resolve merge conflicts — aborted" with ok:true.
-    await runGitCommand(
+    await runFixtureGit(
       ["checkout", "--orphan", "milestone/test-4260"],
       { cwd: localPath },
     );
-    await runGitCommand(["rm", "-rf", "--cached", "."], { cwd: localPath });
+    await runFixtureGit(["rm", "-rf", "--cached", "."], { cwd: localPath });
     await Deno.remove(`${localPath}/README.md`).catch(() => undefined);
     await Deno.writeTextFile(`${localPath}/NOTES.md`, "unrelated\n");
-    await runGitCommand(["add", "NOTES.md"], { cwd: localPath });
-    await runGitCommand(
+    await runFixtureGit(["add", "NOTES.md"], { cwd: localPath });
+    await runFixtureGit(
       ["commit", "-m", "Unrelated history"],
       { cwd: localPath },
     );
-    await runGitCommand(
+    await runFixtureGit(
       ["push", "origin", "milestone/test-4260"],
       { cwd: localPath },
     );
@@ -607,28 +607,28 @@ Deno.test("syncMilestoneBranchWithDefault - a dirty shallow clone is healed rath
     const { remotePath, localPath: seedPath } = await setupTestRepos(tmpDir);
 
     const shallowPath = `${tmpDir}/shallow`;
-    await runGitCommand(
+    await runFixtureGit(
       ["clone", "--depth=1", "--no-single-branch", remotePath, shallowPath],
       { cwd: tmpDir },
     );
-    await runGitCommand(["config", "user.email", "test@example.com"], {
+    await runFixtureGit(["config", "user.email", "test@example.com"], {
       cwd: shallowPath,
     });
-    await runGitCommand(["config", "user.name", "Test User"], {
+    await runFixtureGit(["config", "user.name", "Test User"], {
       cwd: shallowPath,
     });
 
     // A milestone branch on the remote adds `milestone.ts`.
-    await runGitCommand(["checkout", "-b", "milestone/v1-0"], {
+    await runFixtureGit(["checkout", "-b", "milestone/v1-0"], {
       cwd: seedPath,
     });
     await Deno.writeTextFile(
       `${seedPath}/milestone.ts`,
       "export const m = 1;\n",
     );
-    await runGitCommand(["add", "milestone.ts"], { cwd: seedPath });
-    await runGitCommand(["commit", "-m", "Milestone seed"], { cwd: seedPath });
-    await runGitCommand(["push", "origin", "milestone/v1-0"], {
+    await runFixtureGit(["add", "milestone.ts"], { cwd: seedPath });
+    await runFixtureGit(["commit", "-m", "Milestone seed"], { cwd: seedPath });
+    await runFixtureGit(["push", "origin", "milestone/v1-0"], {
       cwd: seedPath,
     });
 
@@ -657,7 +657,7 @@ Deno.test("syncMilestoneBranchWithDefault - a dirty shallow clone is healed rath
       assertStringIncludes(result.value.message, "milestone.ts");
     }
     // The branch really is checked out, carrying the remote's own file.
-    const branch = await runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], {
+    const branch = await runFixtureGit(["rev-parse", "--abbrev-ref", "HEAD"], {
       cwd: shallowPath,
     });
     assertEquals(branch.ok && branch.value.stdout.trim(), "milestone/v1-0");
@@ -683,7 +683,7 @@ Deno.test("syncMilestoneBranchWithDefault - a triaged side and an agent-resolved
   const tmpDir = await createTempDir();
   try {
     const { localPath } = await setupTestRepos(tmpDir);
-    const git = (args: string[]) => runGitCommand(args, { cwd: localPath });
+    const git = (args: string[]) => runFixtureGit(args, { cwd: localPath });
     const write = (rel: string, text: string) =>
       Deno.writeTextFile(`${localPath}/${rel}`, text);
 
@@ -742,7 +742,7 @@ Deno.test("syncMilestoneBranchWithDefault - a triaged side and an agent-resolved
           `${request.workDir}/lib/rival.ts`,
           "const impl = both();\n",
         );
-        await runGitCommand(["add", "--", "lib/rival.ts"], {
+        await runFixtureGit(["add", "--", "lib/rival.ts"], {
           cwd: request.workDir,
         });
         return { ok: true, value: { terminated: false } };

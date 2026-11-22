@@ -6,6 +6,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assertEquals } from "@std/assert";
 import {
   loadCommittedPrSummary,
@@ -45,6 +49,7 @@ async function cleanupDir(dir: string): Promise<void> {
 async function git(dir: string, ...args: string[]): Promise<string> {
   const output = await new Deno.Command("git", {
     args: [
+      ...NO_HOST_HOOKS_ARGS,
       "-c",
       "user.name=Test",
       "-c",
@@ -57,6 +62,7 @@ async function git(dir: string, ...args: string[]): Promise<string> {
     stdin: "null",
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   if (output.code !== 0) {
     throw new Error(

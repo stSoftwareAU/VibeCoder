@@ -10,6 +10,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { cloneGitFixture, seedGitRemote } from "./support/git_fixture.ts";
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -19,10 +23,11 @@ import { buildConflictEscalationComment } from "../lib/milestone_sync_conflict.t
 
 async function git(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   const decode = new TextDecoder();
   if (out.code !== 0 && !args.includes("merge")) {

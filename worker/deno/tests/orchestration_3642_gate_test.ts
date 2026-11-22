@@ -7,6 +7,10 @@
  * Australian English spelling throughout (behaviour, recognised, honour).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { AgentFailure } from "../lib/agent_output.ts";
 import type {
@@ -818,7 +822,11 @@ async function gitCheckout(dir: string): Promise<string> {
   const repo = `${dir}/repo`;
   await Deno.mkdir(repo);
   const git = async (...args: string[]) => {
-    const out = await new Deno.Command("git", { args, cwd: repo }).output();
+    const out = await new Deno.Command("git", {
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
+      cwd: repo,
+      env: { ...NO_HOST_GIT_CONFIG },
+    }).output();
     assertEquals(out.success, true, `git ${args.join(" ")}`);
   };
   await git("init", "-q");

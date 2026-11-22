@@ -7,11 +7,23 @@
 import { assert, assertEquals } from "@std/assert";
 import { libSweepRecordCommand } from "../commands/lib_sweep_record.ts";
 import { parseLibSweepRecordArgs } from "../commands/lib_sweep_record.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args: ["-c", "user.email=t@e", "-c", "user.name=t", ...args],
+    args: [
+      ...NO_HOST_HOOKS_ARGS,
+      "-c",
+      "user.email=t@e",
+      "-c",
+      "user.name=t",
+      ...args,
+    ],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   }).output();

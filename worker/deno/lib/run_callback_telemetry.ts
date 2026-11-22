@@ -33,6 +33,7 @@ import type {
 import {
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
+  DEEPSEEK_PROVIDER_ID,
   GEMINI_PROVIDER_ID,
 } from "./agent_provider.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
@@ -153,11 +154,14 @@ export function summariseCallbackTelemetry(
  * the field". Any other provider id is `provider_unsupported` (Issue #1948).
  * The provider is the one each invocation reported, not the host's configured
  * one (Issue #5295).
+ * DeepSeek is listed because it runs on the Claude Code CLI and decodes with
+ * the Claude Code adapter (Issue #5334).
  */
 const PROVIDERS_WITH_USAGE_ADAPTER: ReadonlySet<string> = new Set([
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
   GEMINI_PROVIDER_ID,
+  DEEPSEEK_PROVIDER_ID,
 ]);
 
 /**

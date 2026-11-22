@@ -4,6 +4,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assertEquals } from "@std/assert";
 import {
   isRebaseInProgress,
@@ -16,10 +20,11 @@ async function createTempRepo(): Promise<string> {
 
   const run = async (args: string[]) => {
     const cmd = new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd: dir,
       stdout: "piped",
       stderr: "piped",
+      env: { ...NO_HOST_GIT_CONFIG },
     });
     await cmd.output();
   };
@@ -88,10 +93,11 @@ Deno.test("git conflict - resolveRebaseConflicts resolves a conflicting rebase",
   try {
     const run = async (args: string[]): Promise<number> => {
       const cmd = new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: dir,
         stdout: "piped",
         stderr: "piped",
+        env: { ...NO_HOST_GIT_CONFIG },
       });
       const result = await cmd.output();
       return result.code;

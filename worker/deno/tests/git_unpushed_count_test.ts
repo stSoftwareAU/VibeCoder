@@ -16,6 +16,10 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { countUnpushedCommits } from "../lib/git_unpushed_count.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 interface GitRunResult {
   code: number;
@@ -25,11 +29,12 @@ interface GitRunResult {
 
 async function runGit(args: string[], cwd: string): Promise<GitRunResult> {
   const cmd = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
     env: {
+      ...NO_HOST_GIT_CONFIG,
       GIT_AUTHOR_NAME: "test",
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",
