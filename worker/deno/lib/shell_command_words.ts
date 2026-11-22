@@ -383,8 +383,8 @@ function frameLive(f: Frame): boolean {
  * Whether the frame's current branch runs every time the construct is reached
  * and an `exit` in it ends the script (false for a function body or subshell).
  */
-function frameCertain(f: Frame): boolean {
-  if (f.fn || f.sub || !f.entryCertain) return false;
+function frameCertain(f: Frame, allowSub = false): boolean {
+  if (f.fn || (f.sub && !allowSub) || !f.entryCertain) return false;
   if (f.branch === "cond") return true;
   return f.branch === "body" ? f.truth === true : f.truth === false;
 }
@@ -483,6 +483,15 @@ export interface ReachableCommand {
    * and 12).
    */
   inUntrackedParen: boolean;
+  /**
+   * True when the command runs every time the body reaches it: no run-time
+   * `&&`/`||` chain, `if`/`elif`/`else` branch, loop body or `case` arm decides
+   * it, and it is not piped or backgrounded. A `( )` subshell around it does
+   * not clear this (`( set -e; cmd )` runs the `set` whenever the subshell
+   * runs). A `set -e` that is not certain turns errexit on only when its
+   * condition holds, so the walk does not credit it (PR #5332 review).
+   */
+  certain: boolean;
   /**
    * Ids of the `( )` subshells and substitutions open around the command,
    * innermost last: a `set` inside one changes the options only until it
@@ -1128,13 +1137,15 @@ export function reachableCommands(script: string): ReachableCommand[] {
         subshellsInLoop: subshellsInsideLoops(stack),
         subshellsInCondition: subshellsInsideConditions(stack),
         inUntrackedParen,
+        certain: runs === true && sep !== "|" && sep !== "&" &&
+          stack.every((frame) => frameCertain(frame, true)),
         subshells: stack.filter((frame) => frame.sub).map((frame) => frame.id),
       });
       enclosing.push(stack.map((frame) => frame.id));
       const at = commandIndex(words);
       const head = stripQuotes(words[at] ?? "");
       const certain = runs === true && sep !== "|" && sep !== "&" &&
-        stack.every(frameCertain);
+        stack.every((frame) => frameCertain(frame));
       const stops = head === "exit" ||
         (head === "set" && readShellOptions(words.slice(at + 1)).noexec);
       // An `exit` or `set -n` inside a `$( … )` or backtick substitution ends

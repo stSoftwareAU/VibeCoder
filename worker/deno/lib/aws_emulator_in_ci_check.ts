@@ -939,8 +939,9 @@ function applyTrap(
  * failure fails the body ("kept").
  *
  * `initialErrexit` says whether the body runs with `-e`; a reachable `set`
- * then updates it (`set -e`, `set -o errexit` on; `set +e`, `set +o errexit`
- * off). A `set` inside a `( )` subshell changes errexit only until that
+ * then updates it (`set -e`, `set -o errexit` on only when it is certain to run
+ * (`ReachableCommand.certain`: not in a run-time branch, loop body or `&&`/`||`
+ * chain); `set +e`, `set +o errexit` off wherever it is reachable). A `set` inside a `( )` subshell changes errexit only until that
  * subshell closes (`ReachableCommand.subshells`).
  *
  * A command is never kept when:
@@ -1044,8 +1045,15 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
         saved.push({ id: inner, errexit });
       }
       // A `set` inside a parenthesis or substitution the walk tracks no frame
-      // for (`X=$( set -e; … )`) cannot change errexit outside it.
-      if (option !== null && !cmd.inUntrackedParen) errexit = option;
+      // for (`X=$( set -e; … )`) cannot change errexit outside it. A `set -e`
+      // that only runs under a run-time condition (an `if` branch, a loop
+      // body, behind `&&`/`||`) is not credited, since errexit is still off
+      // when the condition is false; `set +e` turns it off wherever reachable.
+      if (
+        option !== null && !cmd.inUntrackedParen && (!option || cmd.certain)
+      ) {
+        errexit = option;
+      }
     } else if (head === "trap") {
       applyTrap(cmd.words, at, body, trapped);
     }

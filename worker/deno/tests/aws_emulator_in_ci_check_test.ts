@@ -3048,6 +3048,51 @@ Deno.test("checkAwsEmulatorInCI - set -e inside a subshell ends with it; a top-l
   );
 });
 
+// PR #5332 review: a `set -e` that runs only under a run-time condition leaves
+// errexit off when the condition is false, so a runner followed by more
+// commands loses its failure; a `set -e` certain to run is credited.
+Deno.test("checkAwsEmulatorInCI - a set -e that runs only under a run-time condition does not credit a runner followed by more commands", async () => {
+  const tail = `${RUNNER_STEP}\necho done`;
+  const conditional: Array<[string, string]> = [
+    ["if branch", `if [ "\${DEBUG:-}" = "1" ]; then set -ex; fi\n${tail}`],
+    ["and chain", `[ -n "\${STRICT:-}" ] && set -e\n${tail}`],
+    [
+      "else branch",
+      `if [ -n "\${LOOSE:-}" ]; then echo loose; else set -e; fi\n${tail}`,
+    ],
+    ["loop body", `while read -r line; do set -e; done < flags.txt\n${tail}`],
+    ["or chain", `[ -z "\${LOOSE:-}" ] || set -e\n${tail}`],
+  ];
+  for (const [label, body] of conditional) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `script, ${label}`);
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    });
+    assertEquals(step.wiring, "missing", `step after set +e, ${label}`);
+  }
+  // Controls: a set -e certain to run is credited in the same two shapes.
+  const certain: Array<[string, string]> = [
+    ["top level", `set -e\n${tail}`],
+    ["if true", `if true; then set -e; fi\n${tail}`],
+    ["true and", `true && set -e\n${tail}`],
+  ];
+  for (const [label, body] of certain) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "official-server", `script, ${label}`);
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    });
+    assertEquals(step.wiring, "official-server", `step, ${label}`);
+  }
+});
+
 // PR #5332 review round 7: errexit switched on inside a subshell ends the
 // subshell with the failure, but with errexit off outside it the body carries
 // on, so a runner there is credited only when the subshell's failure fails the

@@ -457,8 +457,12 @@ Official server mode needs all of the following:
 **Errexit.** Errexit is on for a workflow step whose shell is unset or
 exactly `bash` or `sh` (GitHub adds `-e`), or whose custom shell sets `-e`
 or `-o errexit`, and off at the start of a repository script. `set -e` or
-`set -o errexit` turn it on and `set +e` turns it off, at the point each
-appears; inside a `( )` subshell the change lasts only until the subshell
+`set -o errexit` turn it on only when it is certain to run, and `set +e` turns
+it off wherever it is reachable, at the point each appears. A `set -e` in an
+`if`/`elif`/`else` branch or loop body decided at run time, or behind a
+run-time `&&` or `||` (`[ -n "$STRICT" ] && set -e`), is not certain, because
+errexit is still off when the condition is false; `if true; then set -e; fi`
+is certain; inside a `( )` subshell the change lasts only until the subshell
 closes, so `( set -e; make build )` leaves errexit off for the lines after
 it. A command inside a `( )` subshell is kept, by whatever route fails the
 subshell (errexit inside it, `runner || exit 1`, `if ! runner; then …; exit 1;

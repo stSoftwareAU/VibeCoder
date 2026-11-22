@@ -177,7 +177,8 @@ emulator test.
   `…::a step shell of bash {0} with a later command refuses the runner; exactly bash keeps errexit and credits it`,
   `…::a gap record whose Floci test step ignores failure (continue-on-error, || true, push-only if) is floci-only`,
   `…::a gap record with an unused Floci image and no test step is floci-only; a Floci test step credits floci-gap`,
-  `…::a push-only job in a push and pull_request workflow earns no official credit; a pull_request-inclusive if does`
+  `…::a push-only job in a push and pull_request workflow earns no official credit; a pull_request-inclusive if does`,
+  `…::a set -e that runs only under a run-time condition does not credit a runner followed by more commands`
   — reviewer: partial — reason: the reviewer's `&&`, `set +e`,
   script-without-`set -e` and custom-shell gaps were fixed after the review by
   the errexit-aware rule and the tests named here. The pre-PR verifier's Floci
@@ -408,6 +409,25 @@ emulator test.
   `./quality.sh` was not run in this round. The criterion "A required test
   command failure cannot satisfy the workflow contract." stays `met` for the
   cases the reviews named.
+- After the sixteenth review (of `23d438a1f`): `keptCommands` turned errexit on
+  at every reachable `set -e`, so a `set -e` that ran only under a run-time
+  condition credited a runner followed by more commands. `ReachableCommand`
+  now carries `certain` (computed in `reachableCommands` beside the existing
+  `exit` check, but a `( )` subshell does not clear it), and `keptCommands`
+  turns errexit on only for a certain `set -e` or `set -o errexit`; `set +e`
+  still turns it off wherever it is reachable. The Errexit paragraph of
+  `docs/BEST-PRACTICES-SCAN.md` and the `keptCommands` comments say the same.
+  The new test
+  `worker/deno/tests/aws_emulator_in_ci_check_test.ts::checkAwsEmulatorInCI - a set -e that runs only under a run-time condition does not credit a runner followed by more commands`
+  refuses an `if` branch, an `&&` chain, an `else` branch, a loop body and an
+  `||` chain, each in a repository script and in a step after `set +e`, with
+  credited controls (top-level `set -e`, `if true; then set -e; fi`,
+  `true && set -e`); it fails at `23d438a1f` (`script, if branch`) and passes at
+  the head. The seven related test files give `674 passed | 0 failed` through
+  `deno task test:unit` at the head of this round; `deno lint`, `deno check` and
+  `deno fmt --check` on the changed files are clean. The full `./quality.sh` was
+  not run in this round. The criterion stays `met` for the cases the reviews
+  named.
 - After the fourteenth review (of `90b04627`): a command that starts inside a
   `$( … )` or backtick substitution the walk tracks no frame for
   (`linePending > 0` or an odd backtick count at the command's start) no longer
