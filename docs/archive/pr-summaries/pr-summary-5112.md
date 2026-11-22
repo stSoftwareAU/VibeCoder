@@ -397,11 +397,17 @@ emulator test.
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts::checkAwsEmulatorInCI - an exit or a compound header inside an untracked substitution does not end the body or hide a swallowed runner`
   fails at `da5a937f7` (the `exit` form is `missing`) and passes at the head, in
   a default-shell step, after `set +e` and in scripts with and without `set -e`.
-  The seven related test files give `510 passed | 0 failed` through
-  `deno task test:unit`; `deno lint`, `deno check` and `deno fmt --check` on the
-  changed source and test files are clean. The full `./quality.sh` was not run
-  in this round. The criterion "A required test command failure cannot satisfy
-  the workflow contract." stays `met` for the cases the reviews named.
+  The seven related test files (`aws_emulator_in_ci_check_test.ts`,
+  `best_practices_template_test.ts`, `capability_coverage_scan_4367_test.ts`,
+  `idle_task_scan_dedup_conformance_test.ts`,
+  `issue_5110_aws_emulator_workflow_test.ts`, `linter_in_ci_check_test.ts` and
+  `issue_2315_actionlint_in_ci_test.ts`) give `673 passed | 0 failed` through
+  `deno task test:unit` at the head of this round (an earlier figure of 510
+  counted only five of the seven files); `deno lint`, `deno check` and
+  `deno fmt --check` on the changed source and test files are clean. The full
+  `./quality.sh` was not run in this round. The criterion "A required test
+  command failure cannot satisfy the workflow contract." stays `met` for the
+  cases the reviews named.
 - After the fourteenth review (of `90b04627`): a command that starts inside a
   `$( … )` or backtick substitution the walk tracks no frame for
   (`linePending > 0` or an odd backtick count at the command's start) no longer
