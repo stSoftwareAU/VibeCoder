@@ -80,6 +80,11 @@ function fleetGh() {
   let next = 900;
   const fn = (args: string[]): Promise<string> => {
     calls.push(args);
+    // Visibility lookups for the census repos (`gh api repos/<owner>/<repo>
+    // --jq .visibility`) answer public, so the census lines are kept.
+    if (args[0] === "api" && args[1]?.startsWith("repos/stSoftwareAU/")) {
+      return Promise.resolve("public\n");
+    }
     const repo = args[args.indexOf("--repo") + 1];
     if (repo !== IDLE_STARVATION_TARGET_REPO) {
       return Promise.reject(new Error(`unexpected repo: ${repo}`));
