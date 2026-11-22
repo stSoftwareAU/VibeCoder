@@ -11,6 +11,10 @@ import type { BabysitterContainerDeps } from "../../lib/fleet_babysitter_contain
 import type { FetchFn } from "../../lib/github_app_auth.ts";
 import { buildLaunchPlanForCommand } from "../../commands/container_launch_plan.ts";
 import { REPO_ROOT } from "./launcher_harness.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "../support/no_host_git_config.ts";
 
 /** A PKCS#8 RSA key, generated for the test. */
 export async function generateTestKeyPem(): Promise<string> {
@@ -116,6 +120,7 @@ function copyTreeSync(src: string, dst: string): void {
 function gitSync(cwd: string, args: string[]): void {
   const out = new Deno.Command("git", {
     args: [
+      ...NO_HOST_HOOKS_ARGS,
       "-C",
       cwd,
       "-c",
@@ -130,6 +135,7 @@ function gitSync(cwd: string, args: string[]): void {
       PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
+      ...NO_HOST_GIT_CONFIG,
     },
     stdout: "null",
     stderr: "piped",

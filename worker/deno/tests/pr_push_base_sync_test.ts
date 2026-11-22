@@ -24,16 +24,20 @@ import {
 } from "../lib/issue_worker_wiring.ts";
 import type { PushLineageOptions } from "../lib/git_push_recovery.ts";
 import type { Logger } from "../types.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 /** Run git in `cwd`, returning trimmed stdout and failing the test on error. */
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdin: "null",
-    env: { GIT_CONFIG_NOSYSTEM: "1" },
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   assert(
     out.success,

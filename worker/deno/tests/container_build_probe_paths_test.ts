@@ -15,6 +15,10 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const REPO_ROOT = new URL("../../..", import.meta.url).pathname.replace(
   /\/$/,
@@ -53,10 +57,11 @@ function pullRequestPathspecs(scriptSource: string): string[] {
 /** Run `git` in `cwd`, failing loudly with git's own stderr. */
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const output = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   assert(
     output.success,

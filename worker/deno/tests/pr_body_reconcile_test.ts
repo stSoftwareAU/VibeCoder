@@ -34,6 +34,10 @@ import { buildIdempotencyMarker } from "../lib/pr_body.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import type { Logger } from "../types.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const REPO = "owner/repo";
 const PR_NUMBER = 7;
@@ -386,10 +390,11 @@ Deno.test("reconcile - end to end: mismatch rebuilds through the real sync with 
   try {
     const git = async (...args: string[]): Promise<string> => {
       const out = await new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: checkoutDir,
         stdout: "piped",
         stderr: "piped",
+        env: NO_HOST_GIT_CONFIG,
       }).output();
       if (!out.success) {
         throw new Error(

@@ -12,6 +12,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml/parse";
 
@@ -210,7 +214,7 @@ Deno.test("release-tag.yml - the manifest generator runs on the pinned toolchain
 /** Run a git command in `cwd`, returning its trimmed stdout. */
 async function git(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -219,6 +223,7 @@ async function git(args: string[], cwd: string): Promise<string> {
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",
       GIT_COMMITTER_EMAIL: "test@example.com",
+      ...NO_HOST_GIT_CONFIG,
     },
   }).output();
   assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));

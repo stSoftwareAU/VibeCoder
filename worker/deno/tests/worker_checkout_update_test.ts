@@ -27,7 +27,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 import {
   resolveSelfHealEventsWorkDir,
   SKIP_CHECKOUT_UPDATE_ENV,
@@ -53,16 +53,16 @@ async function makeCheckout(): Promise<{
   const logDir = `${tmp}/logs`;
 
   // A deliberately unusual default branch name: nothing may assume `main`.
-  await runGitCommand(["init", "--bare", "--initial-branch=trunk", remote]);
-  await runGitCommand(["init", "--initial-branch=trunk", seed]);
+  await runFixtureGit(["init", "--bare", "--initial-branch=trunk", remote]);
+  await runFixtureGit(["init", "--initial-branch=trunk", seed]);
   await Deno.writeTextFile(`${seed}/file.txt`, "one\n");
-  await runGitCommand(["add", "file.txt"], { cwd: seed });
-  await runGitCommand(
+  await runFixtureGit(["add", "file.txt"], { cwd: seed });
+  await runFixtureGit(
     ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "one"],
     { cwd: seed },
   );
-  await runGitCommand(["push", remote, "trunk"], { cwd: seed });
-  await runGitCommand(["clone", "--quiet", remote, clone]);
+  await runFixtureGit(["push", remote, "trunk"], { cwd: seed });
+  await runFixtureGit(["clone", "--quiet", remote, clone]);
 
   return { tmp, remote, seed, clone, logDir };
 }
@@ -70,24 +70,24 @@ async function makeCheckout(): Promise<{
 /** Push a second commit to the remote, so the clone has something to fetch. */
 async function pushSecondCommit(seed: string, remote: string): Promise<void> {
   await Deno.writeTextFile(`${seed}/file.txt`, "two\n");
-  await runGitCommand(["add", "file.txt"], { cwd: seed });
-  await runGitCommand(
+  await runFixtureGit(["add", "file.txt"], { cwd: seed });
+  await runFixtureGit(
     ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "two"],
     { cwd: seed },
   );
-  await runGitCommand(["push", remote, "trunk"], { cwd: seed });
+  await runFixtureGit(["push", remote, "trunk"], { cwd: seed });
 }
 
 /** The commit a checkout is sitting on. */
 async function headSha(repoDir: string): Promise<string> {
-  const result = await runGitCommand(["rev-parse", "HEAD"], { cwd: repoDir });
+  const result = await runFixtureGit(["rev-parse", "HEAD"], { cwd: repoDir });
   assert(result.ok && result.value.code === 0, "cannot read HEAD");
   return result.value.stdout.trim();
 }
 
 /** The branch a checkout is on (`HEAD` when detached). */
 async function currentBranch(repoDir: string): Promise<string> {
-  const result = await runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], {
+  const result = await runFixtureGit(["rev-parse", "--abbrev-ref", "HEAD"], {
     cwd: repoDir,
   });
   assert(result.ok && result.value.code === 0, "cannot read the branch");
@@ -155,7 +155,7 @@ Deno.test("worker-checkout-update - discards local modifications and untracked f
 Deno.test("worker-checkout-update - returns a detached HEAD to the default branch", async () => {
   const { tmp, clone, logDir } = await makeCheckout();
   try {
-    await runGitCommand(["checkout", "--detach", "HEAD"], { cwd: clone });
+    await runFixtureGit(["checkout", "--detach", "HEAD"], { cwd: clone });
     assertEquals(await currentBranch(clone), "HEAD");
 
     const result = await updateWorkerCheckout({
@@ -173,7 +173,7 @@ Deno.test("worker-checkout-update - returns a detached HEAD to the default branc
 Deno.test("worker-checkout-update - repairs a clone that has no origin/HEAD", async () => {
   const { tmp, clone, logDir } = await makeCheckout();
   try {
-    await runGitCommand(
+    await runFixtureGit(
       ["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
       { cwd: clone },
     );
@@ -185,7 +185,7 @@ Deno.test("worker-checkout-update - repairs a clone that has no origin/HEAD", as
 
     assertEquals(result.success, true, result.message);
     assertEquals(result.data?.branch, "trunk");
-    const head = await runGitCommand(
+    const head = await runFixtureGit(
       ["symbolic-ref", "refs/remotes/origin/HEAD"],
       { cwd: clone },
     );
@@ -198,14 +198,14 @@ Deno.test("worker-checkout-update - repairs a clone that has no origin/HEAD", as
 Deno.test("worker-checkout-update - honours an explicit --default-branch override", async () => {
   const { tmp, remote, seed, clone, logDir } = await makeCheckout();
   try {
-    await runGitCommand(["checkout", "-b", "side"], { cwd: seed });
+    await runFixtureGit(["checkout", "-b", "side"], { cwd: seed });
     await Deno.writeTextFile(`${seed}/file.txt`, "side\n");
-    await runGitCommand(["add", "file.txt"], { cwd: seed });
-    await runGitCommand(
+    await runFixtureGit(["add", "file.txt"], { cwd: seed });
+    await runFixtureGit(
       ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "side"],
       { cwd: seed },
     );
-    await runGitCommand(["push", remote, "side"], { cwd: seed });
+    await runFixtureGit(["push", remote, "side"], { cwd: seed });
 
     const result = await updateWorkerCheckout({
       "base-dir": clone,
@@ -362,8 +362,8 @@ async function pushTag(
   remote: string,
   tag: string,
 ): Promise<void> {
-  await runGitCommand(["tag", tag], { cwd: seed });
-  await runGitCommand(["push", remote, tag], { cwd: seed });
+  await runFixtureGit(["tag", tag], { cwd: seed });
+  await runFixtureGit(["push", remote, tag], { cwd: seed });
 }
 
 /** The `run_core.log` this run wrote, or "" when there is none. */
@@ -721,8 +721,8 @@ Deno.test("worker-checkout-update - frozen moves a dirty checkout that has drift
     await pushSecondCommit(seed, remote);
     await writeConfig(clone, { update_mode: "frozen", pinned_ref: pinnedSha });
     // The checkout has drifted to the tip and someone left work behind.
-    await runGitCommand(["fetch", "origin"], { cwd: clone });
-    await runGitCommand(["reset", "--hard", "origin/trunk"], { cwd: clone });
+    await runFixtureGit(["fetch", "origin"], { cwd: clone });
+    await runFixtureGit(["reset", "--hard", "origin/trunk"], { cwd: clone });
     await Deno.writeTextFile(`${clone}/file.txt`, "locally hacked\n");
 
     const result = await updateWorkerCheckout({
@@ -832,8 +832,8 @@ Deno.test("worker-checkout-update - a host with no hook records no_hook_configur
 
     // And the absent hook never stopped the update from working once the
     // remote came back.
-    await runGitCommand(["init", "--bare", "--initial-branch=trunk", remote]);
-    await runGitCommand(["push", remote, "trunk"], { cwd: seed });
+    await runFixtureGit(["init", "--bare", "--initial-branch=trunk", remote]);
+    await runFixtureGit(["push", remote, "trunk"], { cwd: seed });
     const recovered = await updateWorkerCheckout({
       "base-dir": clone,
       "log-dir": logDir,
