@@ -27,9 +27,9 @@ helper. Closes #5309.
   `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0=core.hooksPath`. Command-scope config
   outranks repository config, so a fixture can only escape it through its own
   git child's env or a `-c` flag. The helper sets both, as #5254 did.
-- The audit was run, not read from the source. Each batch of converted files
-  ran with a refusing `pre-commit`/`commit-msg`/`pre-push` hook injected the
-  host's way, and again without it.
+- The audit was run, not read from the source. Each batch of converted files ran
+  with a refusing `pre-commit`/`commit-msg`/`pre-push` hook injected the host's
+  way, and again without it.
 
 ### Essential Design Decisions
 
@@ -38,17 +38,17 @@ helper. Closes #5309.
   on the spread order.
 - Only fixture calls changed. Some calls are left alone: calls made by the
   production code under test, fake or recorded runners, and source text a
-  checker scans (`git_ref_argv_check_test.ts`, `git_spawn_chokepoint_check_test.ts`,
-  `gh_spawn_chokepoint_check_test.ts`, `spawn_timeout_check_test.ts`). So is the
-  deliberately unshielded positive control in
-  `fleet_pr_babysitter_git_hardening_test.ts`.
+  checker scans (`git_ref_argv_check_test.ts`,
+  `git_spawn_chokepoint_check_test.ts`, `gh_spawn_chokepoint_check_test.ts`,
+  `spawn_timeout_check_test.ts`). So is the deliberately unshielded positive
+  control in `fleet_pr_babysitter_git_hardening_test.ts`.
 - Some tests rely on their own hooks or config. A test that installs its own
   hooks keeps them running: `hooks_pre_commit_test.ts` gets only the env shield,
   and `pre_push_gate_retry_test.ts` keeps its own `core.hooksPath`. In
   `milestone_rollback_test.ts` (`GIT_CONFIG_COUNT=2` maintenance entries) and
-  `pr_ci_processor_test.ts` (a `clearEnv` call with its own `GIT_CONFIG_GLOBAL`),
-  the test's own `GIT_CONFIG_*` entries are spread after the shield, so they
-  still apply.
+  `pr_ci_processor_test.ts` (a `clearEnv` call with its own
+  `GIT_CONFIG_GLOBAL`), the test's own `GIT_CONFIG_*` entries are spread after
+  the shield, so they still apply.
 - No production code under `worker/deno/lib/` changed. The fake AWS key in
   `secrets_history_scan_test.ts`'s trufflehog-parser test gained `nosemgrep`
   lines: shielding that file put it in semgrep's changed-file scan.
@@ -56,14 +56,15 @@ helper. Closes #5309.
 ### Undiscoverable Facts
 
 - Git calls made by the production code a test exercises still inherit the test
-  process's environment. Examples are `pushUnpushedCommits`/`commitAndPushPending`
-  (`lib/git_push.ts`), `syncMilestoneBranchWithDefault` and `pushFeatureBranch`
-  (`lib/git_pull.ts`), and `claimMilestoneSync`. A test helper cannot reach
-  them. With a refusing `pre-push` hook injected, 125 tests in the files that
-  push still fail through those calls. The issue asks for fixture calls, so
-  isolating them would need a production seam.
-- `shellcheck_publication_test.ts` has two `pre-push CLI` tests that fail with no
-  hook injected as well. They fail on the base branch too and are not touched
+  process's environment. Examples are
+  `pushUnpushedCommits`/`commitAndPushPending` (`lib/git_push.ts`),
+  `syncMilestoneBranchWithDefault` and `pushFeatureBranch` (`lib/git_pull.ts`),
+  and `claimMilestoneSync`. A test helper cannot reach them. With a refusing
+  `pre-push` hook injected, 125 tests in the files that push still fail through
+  those calls. The issue asks for fixture calls, so isolating them would need a
+  production seam.
+- `shellcheck_publication_test.ts` has two `pre-push CLI` tests that fail with
+  no hook injected as well. They fail on the base branch too and are not touched
   here.
 
 ## Evidence
@@ -98,8 +99,8 @@ and exit 1. Results:
   `FAILED | 3140 passed | 125 failed`. The 125 are the production-code pushes
   and base-branch tests listed above.
 - **The 97 non-push files converted last**, run in five batches together with
-  the importers of the shared fixtures. All batches passed both with and
-  without the injection, and the marker was never printed:
+  the importers of the shared fixtures. All batches passed both with and without
+  the injection, and the marker was never printed:
   - `ok | 998 passed | 0 failed`
   - `ok | 602 + 7 passed | 0 failed`
   - `ok | 427 + 61 passed | 0 failed`, plus the two integration suites run
@@ -136,7 +137,8 @@ Issues cited as provenance:
   or changed. The `secrets_history_scan_test.ts` edit adds comments only.
 - `runFixtureGit` has no test of its own. The converted files exercise it, for
   example `git_branch_sync_test.ts`, which passes with the hook injected.
-- `./quality.sh < /dev/null` on commit `01d25e647`: `Result: PASSED (with
-  skipped checks)`, exit 0. Semgrep passed over the 162 changed files, and
-  `deno tests`, lint, type check and fmt passed. Config integration and checkov
-  were skipped.
+- `./quality.sh < /dev/null` on commit `01d25e647`:
+  `Result: PASSED (with
+  skipped checks)`, exit 0. Semgrep passed over the 162
+  changed files, and `deno tests`, lint, type check and fmt passed. Config
+  integration and checkov were skipped.
