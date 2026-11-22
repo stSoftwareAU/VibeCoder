@@ -11,6 +11,10 @@
 import { assert, assertEquals } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   isConflictEscalation,
   MilestoneConflictEscalation,
 } from "../lib/milestone_conflict_triage.ts";
@@ -36,12 +40,14 @@ import {
   type MergeFallbackFiling,
 } from "../lib/merge_fallback_issue.ts";
 
+/** Fixture git, shut off from the host's config and hooks (Issue #5309). */
 async function gitOk(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   if (out.code !== 0) {
     throw new Error(

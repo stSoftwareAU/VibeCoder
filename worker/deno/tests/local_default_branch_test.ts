@@ -5,11 +5,16 @@
 
 import { assertEquals } from "@std/assert";
 import { resolveLocalDefaultBranch } from "../lib/local_default_branch.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 async function git(cwd: string, ...args: string[]): Promise<void> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "null",
     stderr: "piped",
   }).output();

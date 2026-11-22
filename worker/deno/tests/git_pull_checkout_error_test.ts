@@ -13,7 +13,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ensurePrMergeable, updatePrBranch } from "../lib/git_pull.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 
 /** A clone on `main` with one commit and no feature branch anywhere. */
 async function setupCloneWithoutFeatureBranch(): Promise<{
@@ -25,20 +25,20 @@ async function setupCloneWithoutFeatureBranch(): Promise<{
   const localPath = `${tmpDir}/local`;
 
   await Deno.mkdir(remotePath, { recursive: true });
-  await runGitCommand(["init", "--bare"], { cwd: remotePath });
-  await runGitCommand(["symbolic-ref", "HEAD", "refs/heads/main"], {
+  await runFixtureGit(["init", "--bare"], { cwd: remotePath });
+  await runFixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
     cwd: remotePath,
   });
-  await runGitCommand(["clone", remotePath, localPath], { cwd: tmpDir });
-  await runGitCommand(["config", "user.email", "test@example.com"], {
+  await runFixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
+  await runFixtureGit(["config", "user.email", "test@example.com"], {
     cwd: localPath,
   });
-  await runGitCommand(["config", "user.name", "Test User"], { cwd: localPath });
+  await runFixtureGit(["config", "user.name", "Test User"], { cwd: localPath });
 
   await Deno.writeTextFile(`${localPath}/shared.txt`, "base\n");
-  await runGitCommand(["add", "."], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Initial commit"], { cwd: localPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  await runFixtureGit(["add", "."], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Initial commit"], { cwd: localPath });
+  await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
   return { tmpDir, localPath };
 }

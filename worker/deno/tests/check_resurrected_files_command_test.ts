@@ -8,6 +8,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { checkResurrectedFilesCommand } from "../commands/check_resurrected_files.ts";
 import type { ResurrectionReport } from "../lib/resurrected_file_check.ts";
@@ -18,10 +22,11 @@ const config = {} as WorkerConfig;
 /** Run git in `cwd`, failing loud so a mis-built fixture is never a pass. */
 async function gitOk(cwd: string, args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   if (out.code !== 0) {
     throw new Error(

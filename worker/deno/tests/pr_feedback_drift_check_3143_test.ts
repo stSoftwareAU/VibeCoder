@@ -10,6 +10,10 @@
  */
 
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   assert,
   assertEquals,
   assertFalse,
@@ -59,7 +63,7 @@ interface GitRunResult {
 
 async function git(dir: string, args: string[]): Promise<GitRunResult> {
   const cmd = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd: dir,
     stdin: "null",
     stdout: "piped",
@@ -69,6 +73,7 @@ async function git(dir: string, args: string[]): Promise<GitRunResult> {
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",
       GIT_COMMITTER_EMAIL: "test@example.com",
+      ...NO_HOST_GIT_CONFIG,
     },
   });
   const out = await cmd.output();

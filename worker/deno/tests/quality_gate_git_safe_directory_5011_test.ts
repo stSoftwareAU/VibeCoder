@@ -19,13 +19,18 @@ import {
   UNTRUSTED_USER,
 } from "../lib/untrusted_command_env.ts";
 import { makeAgentReachableTempDir } from "./support/gate_child_env.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 async function gitInit(cwd: string): Promise<void> {
   const init = await new Deno.Command("git", {
-    args: ["init", "-q"],
+    args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
     cwd,
     stdout: "null",
     stderr: "null",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   assertEquals(init.code, 0);
 }

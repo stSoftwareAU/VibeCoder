@@ -9,6 +9,10 @@ import {
   requireRealShellcheck,
   STUB_SHELLCHECK_VERSION,
 } from "./support/shellcheck_support.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const REAL_SHELLCHECK = await requireRealShellcheck();
 const ZERO = "0".repeat(40);
@@ -49,8 +53,9 @@ const GIT_ENV = ["-c", "user.email=t@e", "-c", "user.name=t"];
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args: [...GIT_ENV, ...args],
+    args: [...NO_HOST_HOOKS_ARGS, ...GIT_ENV, ...args],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   }).output();

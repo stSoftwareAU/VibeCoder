@@ -2,7 +2,13 @@
  * Seed real Git histories without replaying a shell workflow for every test.
  * Fast-import only prepares the fixture: the tested merge, rebase, push and
  * recovery operations still run against real repositories and real Git.
+ * Fixture git calls are shut off from the host's config and hooks (Issue #5309).
  */
+
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./no_host_git_config.ts";
 
 export interface GitFixtureCommit {
   branch: string;
@@ -16,7 +22,8 @@ export interface GitFixtureCommit {
 
 async function git(args: string[]): Promise<void> {
   const result = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   }).output();
@@ -51,7 +58,8 @@ export async function seedGitRemote(
     input += "\n";
   }
   const child = new Deno.Command("git", {
-    args: ["-C", remote, "fast-import", "--quiet"],
+    args: [...NO_HOST_HOOKS_ARGS, "-C", remote, "fast-import", "--quiet"],
+    env: NO_HOST_GIT_CONFIG,
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",

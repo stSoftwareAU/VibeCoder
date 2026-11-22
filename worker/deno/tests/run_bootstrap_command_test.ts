@@ -11,7 +11,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { runBootstrapCommand } from "../commands/run_bootstrap.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 import type { WorkerConfig } from "../types.ts";
 
 function createMockConfig(): WorkerConfig {
@@ -42,7 +42,7 @@ Deno.test("run-bootstrap command - shell-exports emits export lines on success",
     // Create a bare "remote" with a Develop branch, then clone it so the
     // git reset (fetch/checkout/reset/clean) has a real origin to act on.
     await Deno.mkdir(remoteDir, { recursive: true });
-    await runGitCommand([
+    await runFixtureGit([
       "init",
       "--bare",
       "--initial-branch=Develop",
@@ -50,24 +50,24 @@ Deno.test("run-bootstrap command - shell-exports emits export lines on success",
     ]);
 
     const seedDir = `${tmpDir}/seed`;
-    await runGitCommand(["init", "--initial-branch=Develop", seedDir]);
-    await runGitCommand(["config", "user.email", "t@example.com"], {
+    await runFixtureGit(["init", "--initial-branch=Develop", seedDir]);
+    await runFixtureGit(["config", "user.email", "t@example.com"], {
       cwd: seedDir,
     });
-    await runGitCommand(["config", "user.name", "Test"], { cwd: seedDir });
+    await runFixtureGit(["config", "user.name", "Test"], { cwd: seedDir });
     await Deno.writeTextFile(`${seedDir}/README.md`, "seed\n");
-    await runGitCommand(["add", "."], { cwd: seedDir });
-    await runGitCommand(["commit", "-m", "seed"], { cwd: seedDir });
-    await runGitCommand(["remote", "add", "origin", remoteDir], {
+    await runFixtureGit(["add", "."], { cwd: seedDir });
+    await runFixtureGit(["commit", "-m", "seed"], { cwd: seedDir });
+    await runFixtureGit(["remote", "add", "origin", remoteDir], {
       cwd: seedDir,
     });
-    await runGitCommand(["push", "origin", "Develop"], { cwd: seedDir });
+    await runFixtureGit(["push", "origin", "Develop"], { cwd: seedDir });
 
-    await runGitCommand(["clone", remoteDir, repoDir]);
-    await runGitCommand(["config", "user.email", "t@example.com"], {
+    await runFixtureGit(["clone", remoteDir, repoDir]);
+    await runFixtureGit(["config", "user.email", "t@example.com"], {
       cwd: repoDir,
     });
-    await runGitCommand(["config", "user.name", "Test"], { cwd: repoDir });
+    await runFixtureGit(["config", "user.name", "Test"], { cwd: repoDir });
 
     const result = await runBootstrapCommand.execute(
       {

@@ -22,7 +22,7 @@ import {
   runBootstrap,
   toShellExports,
 } from "../lib/run_bootstrap.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 import type { Result } from "../types.ts";
 import type { GzipWorkerLogsResult } from "../lib/worker_log_gzip.ts";
 
@@ -307,23 +307,23 @@ Deno.test("runBootstrap - leaves a dirty checkout on another branch exactly as i
     const seed = `${tmp}/seed`;
     const clone = `${tmp}/clone`;
     const logDir = `${tmp}/logs`;
-    await runGitCommand(["init", "--bare", "--initial-branch=trunk", remote]);
-    await runGitCommand(["init", "--initial-branch=trunk", seed]);
+    await runFixtureGit(["init", "--bare", "--initial-branch=trunk", remote]);
+    await runFixtureGit(["init", "--initial-branch=trunk", seed]);
     await Deno.writeTextFile(`${seed}/file.txt`, "one\n");
-    await runGitCommand(["add", "file.txt"], { cwd: seed });
-    await runGitCommand(
+    await runFixtureGit(["add", "file.txt"], { cwd: seed });
+    await runFixtureGit(
       ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "one"],
       { cwd: seed },
     );
-    await runGitCommand(["push", remote, "trunk"], { cwd: seed });
-    await runGitCommand(["clone", "--quiet", remote, clone]);
+    await runFixtureGit(["push", remote, "trunk"], { cwd: seed });
+    await runFixtureGit(["clone", "--quiet", remote, clone]);
 
     // An active development tree: another branch, a modified file, and an
     // untracked one — everything the old reset would have destroyed.
-    await runGitCommand(["checkout", "-b", "fix/in-flight"], { cwd: clone });
+    await runFixtureGit(["checkout", "-b", "fix/in-flight"], { cwd: clone });
     await Deno.writeTextFile(`${clone}/file.txt`, "work in progress\n");
     await Deno.writeTextFile(`${clone}/scratch.txt`, "untracked\n");
-    const headBefore = await runGitCommand(["rev-parse", "HEAD"], {
+    const headBefore = await runFixtureGit(["rev-parse", "HEAD"], {
       cwd: clone,
     });
     assert(headBefore.ok && headBefore.value.code === 0);
@@ -350,13 +350,13 @@ Deno.test("runBootstrap - leaves a dirty checkout on another branch exactly as i
     assertEquals(result.defaultBranch, "trunk");
 
     // Nothing moved: same branch, same commit, same working tree.
-    const branchAfter = await runGitCommand(
+    const branchAfter = await runFixtureGit(
       ["rev-parse", "--abbrev-ref", "HEAD"],
       { cwd: clone },
     );
     assert(branchAfter.ok);
     assertEquals(branchAfter.value.stdout.trim(), "fix/in-flight");
-    const headAfter = await runGitCommand(["rev-parse", "HEAD"], {
+    const headAfter = await runFixtureGit(["rev-parse", "HEAD"], {
       cwd: clone,
     });
     assert(headAfter.ok);
@@ -391,23 +391,23 @@ Deno.test("resolveOriginDefaultBranch - reads origin/HEAD, and records it first 
     // once with origin/HEAD removed as an older or hand-made clone would be.
     const remote = `${tmp}/remote.git`;
     const seed = `${tmp}/seed`;
-    await runGitCommand(["init", "--bare", "--initial-branch=trunk", remote]);
-    await runGitCommand(["init", "--initial-branch=trunk", seed]);
+    await runFixtureGit(["init", "--bare", "--initial-branch=trunk", remote]);
+    await runFixtureGit(["init", "--initial-branch=trunk", seed]);
     await Deno.writeTextFile(`${seed}/f`, "x");
-    await runGitCommand(["add", "f"], { cwd: seed });
-    await runGitCommand(
+    await runFixtureGit(["add", "f"], { cwd: seed });
+    await runFixtureGit(
       ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "i"],
       { cwd: seed },
     );
-    await runGitCommand(["push", remote, "trunk"], { cwd: seed });
+    await runFixtureGit(["push", remote, "trunk"], { cwd: seed });
 
     const clone = `${tmp}/clone`;
-    await runGitCommand(["clone", "--quiet", remote, clone]);
+    await runFixtureGit(["clone", "--quiet", remote, clone]);
     const withHead = await resolveOriginDefaultBranch(clone);
     assertEquals(withHead.ok, true);
     if (withHead.ok) assertEquals(withHead.value, "trunk");
 
-    await runGitCommand(
+    await runFixtureGit(
       ["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
       { cwd: clone },
     );

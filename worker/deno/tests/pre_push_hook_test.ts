@@ -11,6 +11,10 @@ import {
   PRE_PUSH_HOOK_MARKER,
   renderPrePushHookScript,
 } from "../lib/pre_push_hook.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 async function run(
   cmd: string,
@@ -34,6 +38,10 @@ async function run(
   };
 }
 
+/** Run a fixture git call shut off from the host's config and hooks (Issue #5309). */
+function fixtureGit(cwd: string, args: string[]) {
+  return run("git", [...NO_HOST_HOOKS_ARGS, ...args], cwd, NO_HOST_GIT_CONFIG);
+}
 Deno.test("renderPrePushHookScript: missing deno blocks the push", async () => {
   const dir = await Deno.makeTempDir({ prefix: "vibe-pp-hook-test-" });
   try {
@@ -222,19 +230,19 @@ async function makeFixture(): Promise<PushFixture> {
   const root = await Deno.makeTempDir({ prefix: "vibe-pp-int-" });
   const remote = `${root}/remote.git`;
   const clone = `${root}/clone`;
-  await run("git", ["init", "-q", "--bare", "-b", "main", remote], root);
-  await run("git", ["clone", "-q", remote, clone], root);
+  await fixtureGit(root, ["init", "-q", "--bare", "-b", "main", remote]);
+  await fixtureGit(root, ["clone", "-q", remote, clone]);
   return { root, clone, remote };
 }
 
 async function commitAll(clone: string, message: string) {
-  await run("git", ["add", "-A"], clone);
-  const r = await run("git", [...GIT_ID, "commit", "-qm", message], clone);
+  await fixtureGit(clone, ["add", "-A"]);
+  const r = await fixtureGit(clone, [...GIT_ID, "commit", "-qm", message]);
   assertEquals(r.code, 0, r.stderr);
 }
 
 async function remoteHead(remote: string): Promise<string> {
-  const r = await run("git", ["rev-parse", "-q", "--verify", "main"], remote);
+  const r = await fixtureGit(remote, ["rev-parse", "-q", "--verify", "main"]);
   return r.code === 0 ? r.stdout.trim() : "";
 }
 
@@ -460,7 +468,7 @@ Deno.test("integration: a CI scan the worker could not produce refuses a Rust pu
     // Positive control: the refusal is the unverifiable scan, not the push.
     // The docs commit replaces the unpushed Rust commit so the pushed range
     // touches no Rust path (Issue #5169).
-    const unborn = await run("git", ["update-ref", "-d", "HEAD"], fx.clone);
+    const unborn = await fixtureGit(fx.clone, ["update-ref", "-d", "HEAD"]);
     assertEquals(unborn.code, 0, unborn.stderr);
     await Deno.remove(`${fx.clone}/src`, { recursive: true });
     await Deno.remove(`${fx.clone}/Cargo.toml`);
@@ -483,7 +491,12 @@ Deno.test("integration: the hook compares a failing CI clippy against the PR bas
   });
   try {
     await commitRust(same, "pub fn f() {} // BAD\n", "base is red");
-    const seed = await push(same, Deno.env.toObject());
+    const seed = await fixtureGit(same.clone, [
+      "push",
+      "-q",
+      "origin",
+      "HEAD:main",
+    ]);
     assertEquals(seed.code, 0, seed.stderr);
     await commitRust(same, "pub fn f() {} // BAD\npub fn g() {}\n", "repair");
     const allowed = await push(same, sameHook.env);
@@ -506,7 +519,12 @@ Deno.test("integration: the hook compares a failing CI clippy against the PR bas
   });
   try {
     await commitRust(fresh, "pub fn f() {}\n", "base is green");
-    const seed = await push(fresh, Deno.env.toObject());
+    const seed = await fixtureGit(fresh.clone, [
+      "push",
+      "-q",
+      "origin",
+      "HEAD:main",
+    ]);
     assertEquals(seed.code, 0, seed.stderr);
     await commitRust(fresh, "pub fn f() {} // BAD\n", "repair breaks it");
     const blocked = await push(fresh, freshHook.env);
@@ -603,12 +621,22 @@ async function seedUnitTestPush(
   await Deno.writeTextFile(`${fx.clone}/tests/foo_test.ts`, "export {};\n");
   await Deno.writeTextFile(`${fx.clone}/marker.txt`, `${baseMarker}\n`);
   await commitAll(fx.clone, "base");
-  const seed = await push(fx, Deno.env.toObject());
+  const seed = await fixtureGit(fx.clone, [
+    "push",
+    "-q",
+    "origin",
+    "HEAD:main",
+  ]);
   assertEquals(seed.code, 0, seed.stderr);
   await Deno.writeTextFile(`${fx.clone}/marker.txt`, "red\n");
   await Deno.writeTextFile(`${fx.clone}/previous.txt`, "previous head\n");
   await commitAll(fx.clone, "previous PR head");
-  const previous = await pushPr(fx, Deno.env.toObject());
+  const previous = await fixtureGit(fx.clone, [
+    "push",
+    "-q",
+    "origin",
+    "HEAD:pr",
+  ]);
   assertEquals(previous.code, 0, previous.stderr);
   await Deno.writeTextFile(`${fx.clone}/lib/foo.ts`, "export const foo = 2;\n");
   await commitAll(fx.clone, "repair");
@@ -618,13 +646,13 @@ const pushPr = (fx: PushFixture, env: Record<string, string>) =>
   run("git", ["push", "-q", "origin", "HEAD:pr"], fx.clone, env);
 
 async function remotePr(remote: string): Promise<string> {
-  const r = await run("git", ["rev-parse", "-q", "--verify", "pr"], remote);
+  const r = await fixtureGit(remote, ["rev-parse", "-q", "--verify", "pr"]);
   return r.code === 0 ? r.stdout.trim() : "";
 }
 
 /** Worktrees git still lists for the clone, the main one included. */
 async function worktreeCount(clone: string): Promise<number> {
-  const listed = await run("git", ["worktree", "list"], clone);
+  const listed = await fixtureGit(clone, ["worktree", "list"]);
   return listed.stdout.trim().split("\n").length;
 }
 
@@ -633,11 +661,12 @@ for (
     [
       "the checkout's default branch (origin/HEAD)",
       async (fx: PushFixture) => {
-        const set = await run(
-          "git",
-          ["remote", "set-head", "origin", "main"],
-          fx.clone,
-        );
+        const set = await fixtureGit(fx.clone, [
+          "remote",
+          "set-head",
+          "origin",
+          "main",
+        ]);
         assertEquals(set.code, 0, set.stderr);
         return {};
       },
