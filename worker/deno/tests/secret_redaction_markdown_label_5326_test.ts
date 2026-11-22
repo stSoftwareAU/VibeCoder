@@ -132,9 +132,10 @@ Deno.test("#5326 hostile: a long run of asterisks after a key passes through", (
 });
 
 Deno.test("#5326 hostile: repeated marked labels are stable", () => {
-  const input = "TOKEN**: ".repeat(20_000);
+  const input = "TOKEN**: ".repeat(20_000) + V;
   const once = redactSecrets(input);
-  assertEquals(typeof once, "string");
+  assertEquals(once.includes(V), false);
+  assertEquals(once.endsWith("TOKEN**: " + R), true);
   assertEquals(redactSecrets(once), once);
 });
 

@@ -669,18 +669,20 @@ itself must not report as carrying a secret, and vice versa.
 A product-name heading is not an assignment (Issue #5253). The PR title for
 Issue #4959, a product-name heading, had the word after its colon published as
 the placeholder, because the rule read the heading's `Name:` as a label. The
-word after a bare `: ` is now left alone when four things hold: the key is a
-Capitalised product name that does not end in a credential word (`TokenBudget`,
-though `GithubToken` and `Userpassword` do), the value is a single plain word of
-at most 15 letters, and a further word follows it on the same line, so the
+word after a bare `: ` (Markdown markers around the colon allowed, Issue
+#5326) is now left alone when four things hold: the key is a Capitalised
+product name that does not end in a credential word (`TokenBudget`, though
+`GithubToken` and `Userpassword` do), the value is a single plain word of at
+most 15 letters, and a further word follows it on the same line, so the
 heading leads into a sentence. It is the one judgement made on a single line,
 and it looks at the key, the value and what follows rather than a line break. A
 key ending in a credential word keeps its mask whatever its value, except under
 Markdown markers (Issue #5326): a key ending in a plural credential noun such as
 `Tokens` or `Secrets`, with a plain-word value followed by more text on the
 line, is a heading for a count or list (the run-stats line
-`- **Tokens:** input 27 · output 11`). A `Key: word` that ends its line (`SecretString: hunter`) stays masked, and `=`,
-quoted keys, underscore keys and lower-camel identifiers are never exempt.
+`- **Tokens:** input 27 · output 11`). A `Key: word` that ends its line
+(`SecretString: hunter`) stays masked, and `=`, quoted keys, underscore keys and
+lower-camel identifiers are never exempt.
 
 The accepted costs are two rules. The first: a credential shorter than eight
 characters, or one whose emphasis-stripped value is a single lower-case word,
