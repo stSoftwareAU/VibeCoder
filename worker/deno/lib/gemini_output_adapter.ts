@@ -34,11 +34,11 @@
  *    routinely carries advisory warnings (naming GEMINI_API_KEY, quoting a
  *    limit) that are not the verdict. Only when there is no terminal error are
  *    the non-terminal `error` events and stderr read.
- * 3. Authentication: a structured class or phrase, exit 41, or a structured
- *    401/403. Then quota-exhausted, from a terminal error only and never from
- *    a `RetryableQuotaError`. A 401/403 read from text, and any prose from
- *    stderr, come after the quota verdict, so a `TerminalQuotaError` quoting
- *    403 stays a quota.
+ * 3. Authentication from a structured class or phrase, or exit 41. Then
+ *    quota-exhausted, from a terminal error only and never from a
+ *    `RetryableQuotaError`. Only then a 401/403 status, so a
+ *    `TerminalQuotaError` quoting 403 stays a quota, and then (with no
+ *    terminal error) authentication and quota read from stderr prose.
  * 4. Then, in order: model unavailable; turn limit; network; rate limit; and
  *    task failure as the fallback.
  *
