@@ -286,12 +286,26 @@ for (
   });
 }
 
-Deno.test("(a) accepts a real continuation from an assignment into true <script> (Issue #5304)", () => {
-  // `FOO=\` + newline + `true <script>` is `FOO=true <script>`: the script runs.
+Deno.test("(a) refuses a real continuation from an assignment into true <script> (Issue #5304)", () => {
+  // `FOO=\` + newline + `true <script>` is `FOO=true <script>`: the script is
+  // joined, but the exact allowlist (Issue #5350) refuses an assignment prefix.
+  expectFindings(
+    mutate([
+      TEST_STEP_ANCHOR,
+      "\n          FOO=\\\n          true " + SCRIPT_LINE + "\n",
+    ]),
+    [
+      "[test-step] the infra/cloudformation/test-aws-emulator.sh step must run only",
+    ],
+  );
+});
+
+Deno.test("(a) accepts a real continuation from bash into the script path (Issue #5304)", () => {
+  // `bash \` + newline + `<script>` is `bash <script>`: a real continuation.
   assertEquals(
     problemsOf(mutate([
       TEST_STEP_ANCHOR,
-      "\n          FOO=\\\n          true " + SCRIPT_LINE + "\n",
+      "\n          bash \\\n          infra/cloudformation/test-aws-emulator.sh\n",
     ])),
     [],
   );
@@ -1849,3 +1863,131 @@ for (
     ]);
   });
 }
+
+// Issue #5350: the test step runs the script by its exact path, in the
+// checked-out tree, with no working directory or checkout input that moves it.
+
+const WD_NEEDLE =
+  "[test-step] the infra/cloudformation/test-aws-emulator.sh step may have no working-directory";
+const EXACT_NEEDLE =
+  "[test-step] the infra/cloudformation/test-aws-emulator.sh step must run only";
+const CHECKOUT_NEEDLE =
+  "[test-step] every actions/checkout step in job cloudformation may set with: only persist-credentials and fetch-depth";
+const JOB_TIMEOUT = "    timeout-minutes: 25\n";
+
+for (
+  const [label, pairs] of [
+    ["working-directory on the test step", [[
+      TEST_STEP_NAME,
+      TEST_STEP_NAME + "        working-directory: infra\n",
+    ]]],
+    ["defaults.run.working-directory on job cloudformation", [[
+      JOB_TIMEOUT,
+      JOB_TIMEOUT +
+      "    defaults:\n      run:\n        working-directory: x\n",
+    ]]],
+    ["a workflow-level defaults.run.working-directory", [[
+      "\njobs:\n",
+      "\ndefaults:\n  run:\n    working-directory: x\n\njobs:\n",
+    ]]],
+  ] as [string, [string, string][]][]
+) {
+  Deno.test(`(a) refuses ${label} (Issue #5350)`, () => {
+    expectFindings(mutate(...pairs), [WD_NEEDLE]);
+  });
+}
+
+Deno.test("(a) accepts a job-level defaults.run.shell with no working-directory (Issue #5350)", () => {
+  expectFindings(
+    mutate([
+      JOB_TIMEOUT,
+      JOB_TIMEOUT + "    defaults:\n      run:\n        shell: bash\n",
+    ]),
+    [],
+  );
+});
+
+for (
+  const call of [
+    "./x/infra/cloudformation/test-aws-emulator.sh",
+    "/tmp/infra/cloudformation/test-aws-emulator.sh",
+    "bash ./x/infra/cloudformation/test-aws-emulator.sh",
+    "BASH_ENV=/tmp/x bash infra/cloudformation/test-aws-emulator.sh",
+  ]
+) {
+  Deno.test(`(a) refuses the call \`${call}\` (Issue #5350)`, () => {
+    expectFindings(
+      mutate([TEST_STEP_ANCHOR, `\n          ${call}\n`]),
+      [EXACT_NEEDLE],
+    );
+  });
+}
+
+for (
+  const call of [
+    "infra/cloudformation/test-aws-emulator.sh",
+    "./infra/cloudformation/test-aws-emulator.sh",
+    "bash ./infra/cloudformation/test-aws-emulator.sh",
+    "sh infra/cloudformation/test-aws-emulator.sh",
+  ]
+) {
+  Deno.test(`(a) accepts the call \`${call}\` (Issue #5350)`, () => {
+    expectFindings(mutate([TEST_STEP_ANCHOR, `\n          ${call}\n`]), []);
+  });
+}
+
+const CHECKOUT_PERSIST = "          persist-credentials: false\n";
+for (
+  const input of ["ref: other", "repository: someone/fork", "path: sub"]
+) {
+  Deno.test(`(a) refuses the test job checkout gaining ${input} (Issue #5350)`, () => {
+    expectFindings(
+      mutate([CHECKOUT_PERSIST, CHECKOUT_PERSIST + `          ${input}\n`]),
+      [CHECKOUT_NEEDLE],
+    );
+  });
+}
+
+Deno.test("(a) accepts the test job checkout gaining fetch-depth: 0 (Issue #5350)", () => {
+  expectFindings(
+    mutate([CHECKOUT_PERSIST, CHECKOUT_PERSIST + "          fetch-depth: 0\n"]),
+    [],
+  );
+});
+
+// The container job's checkout builds the image and is mounted for the agent run.
+const CONTAINER_CHECKOUT_PERSIST = CHECKOUT_PERSIST +
+  "\n      - name: Install Deno (strips";
+const CONTAINER_CHECKOUT_NEEDLE =
+  "[container-agent-run] every actions/checkout step in job container may set with: only persist-credentials and fetch-depth";
+
+for (
+  const input of ["ref: other", "repository: someone/fork", "path: sub"]
+) {
+  Deno.test(`(container-agent-run) refuses the container job checkout gaining ${input} (Issue #5350)`, () => {
+    const problems = checkContainerBuildRunsAwsEmulator(parseYaml(mutateText(
+      CONTAINER_BUILD,
+      [
+        CONTAINER_CHECKOUT_PERSIST,
+        CHECKOUT_PERSIST + `          ${input}\n` +
+        "\n      - name: Install Deno (strips",
+      ],
+    )));
+    assertEquals(problems.length, 1, JSON.stringify(problems));
+    assert(problems[0]?.includes(CONTAINER_CHECKOUT_NEEDLE), problems[0]);
+  });
+}
+
+Deno.test("(container-agent-run) accepts the container job checkout gaining fetch-depth: 0 (Issue #5350)", () => {
+  assertEquals(
+    checkContainerBuildRunsAwsEmulator(parseYaml(mutateText(
+      CONTAINER_BUILD,
+      [
+        CONTAINER_CHECKOUT_PERSIST,
+        CHECKOUT_PERSIST + "          fetch-depth: 0\n" +
+        "\n      - name: Install Deno (strips",
+      ],
+    ))),
+    [],
+  );
+});

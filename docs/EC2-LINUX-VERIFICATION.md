@@ -43,7 +43,16 @@ every pull request to `Develop`, `main` and `milestone/*` (drafts run when
 marked ready), and a failed, cancelled or skipped run turns `gate` red. The
 `checkAwsEmulatorWorkflow` validator also requires that the test step, its job
 and the workflow set no `env:`, because `SHELLOPTS=noexec` or `BASH_ENV` could
-skip or alter the script.
+skip or alter the script. After an optional leading `set -euo pipefail`, the
+test step must run exactly one of `infra/cloudformation/test-aws-emulator.sh` or
+`./infra/cloudformation/test-aws-emulator.sh`, either one optionally after
+`bash` or `sh`. A path that merely ends with the script path (such as
+`./x/infra/cloudformation/test-aws-emulator.sh`) and a command with an inline
+assignment (such as `BASH_ENV=…`) are refused. No `working-directory` may be set
+on that step or in its job's or the workflow's `defaults.run`. Every
+`actions/checkout` in the test job may set only `persist-credentials` and
+`fetch-depth` in `with:` (no `ref`, `repository` or `path`), because each can
+make the relative path name a look-alike.
 `checkQualityCallsAwsEmulator` in
 [`worker/deno/lib/aws_emulator_workflow_check.ts`](../worker/deno/lib/aws_emulator_workflow_check.ts)
 holds that wiring: `gate` needs `aws-emulator`, has `if: always()` and no soft
@@ -79,7 +88,10 @@ read-only volume holding the entrypoint and no flag outside `--rm`, `--user`,
 `env:` set none of `BASH_ENV`, `ENV`, `PATH`, `SHELLOPTS` or the `DOCKER_*`
 connection variables. The job takes `IMAGE_CHANGED` from the change detector, an
 earlier step runs `docker build -t "${IMAGE}"`, and no step names `GITHUB_ENV`
-or `GITHUB_PATH`. The check also requires job `container` to need `changes`, the
+or `GITHUB_PATH`. Every `actions/checkout` in job `container` may set only
+`persist-credentials` and `fetch-depth` in `with:`, because that tree is built
+into the image and mounted for the agent run. The check also requires job
+`container` to need `changes`, the
 `changes` job to have no `if:` or `continue-on-error` and an `outputs.image` of
 exactly `${{ steps.filter.outputs.image }}`, and its step `id: filter` to have
 no `if:` or `continue-on-error`. That step's `BASE_SHA` and `HEAD_SHA` env must
