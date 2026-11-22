@@ -1433,6 +1433,12 @@ const NOT_EXECUTED: [
     {},
     {},
   ],
+  [
+    "code after an exit in an elif true behind a false test",
+    `if false; then echo a; elif true; then exit 0; fi\n${RUNNER}`,
+    {},
+    {},
+  ],
   ["a false && chain", `false && ${RUNNER}`, {}, {}],
   ["a true || chain", `true || ${RUNNER}`, {}, {}],
   [
@@ -1567,6 +1573,12 @@ const EXECUTED: [
   [
     "code after an exit in an if on a runtime test",
     `if [ -z "$X" ]; then exit 0; fi\n${RUNNER}`,
+    {},
+    {},
+  ],
+  [
+    "code after an exit in an elif true behind a runtime test",
+    `if [ -n "$X" ]; then echo a; elif true; then exit 0; fi\n${RUNNER}`,
     {},
     {},
   ],
@@ -3098,6 +3110,12 @@ Deno.test("checkAwsEmulatorInCI - a set -e that runs only under a run-time condi
       `if false; then echo a; elif true; then set -e; fi\n${tail}`,
     ],
   ];
+  // A `set -e` after a backgrounded command runs in the current shell: only
+  // the command before the `&` is backgrounded.
+  certain.push(
+    ["after a backgrounded command", `sleep 30 &\nset -e\n${tail}`],
+    ["after a backgrounded command, one line", `sleep 30 & set -e\n${tail}`],
+  );
   for (const [label, body] of certain) {
     const script = await checkRepoWith({
       ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),

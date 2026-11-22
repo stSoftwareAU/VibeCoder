@@ -493,8 +493,10 @@ export interface ReachableCommand {
   /**
    * True when the command runs every time the body reaches it: no run-time
    * `&&`/`||` chain, `if`/`elif`/`else` branch, loop body or `case` arm decides
-   * it, and neither the separator before it nor the one after it is `|` or
-   * `&` (`set -e | cat` and `set -e &` run in a subshell). An `elif` or `else`
+   * it, and the separator before it is not `|` and the one after it is not `|`
+   * or `&` (`set -e | cat`, `echo hi | set -e` and `set -e &` run in a
+   * subshell; `sleep 30 & set -e` runs the `set` in the current shell, since
+   * only the command before the `&` is backgrounded). An `elif` or `else`
    * branch is certain only when every earlier test of its `if` is decided
    * statically. A `( )` subshell around it does
    * not clear this (`( set -e; cmd )` runs the `set` whenever the subshell
@@ -1154,7 +1156,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
         subshellsInLoop: subshellsInsideLoops(stack),
         subshellsInCondition: subshellsInsideConditions(stack),
         inUntrackedParen,
-        certain: runs === true && sep !== "|" && sep !== "&" &&
+        certain: runs === true && sep !== "|" &&
           nextSep !== "|" && nextSep !== "&" &&
           stack.every((frame) => frameCertain(frame, true)),
         subshells: stack.filter((frame) => frame.sub).map((frame) => frame.id),
