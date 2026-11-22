@@ -6,8 +6,15 @@
  * throwaway repository is seeded and torn down is exactly the detail that must
  * not be written three ways.
  *
+ * Fixture git calls are shut off from the host's config and hooks (Issue #5309).
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
+
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./no_host_git_config.ts";
 
 /** Run git, returning its exit code and streams rather than throwing. */
 export async function git(
@@ -15,8 +22,9 @@ export async function git(
   cwd: string,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   }).output();

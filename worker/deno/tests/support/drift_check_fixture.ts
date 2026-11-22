@@ -6,6 +6,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./no_host_git_config.ts";
 import { assertEquals } from "@std/assert";
 import {
   DRIFT_VERDICT_CLOSE,
@@ -23,7 +27,7 @@ export interface GitRunResult {
 /** Run git in `dir`, returning its exit code and streams. */
 export async function git(dir: string, args: string[]): Promise<GitRunResult> {
   const cmd = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd: dir,
     stdin: "null",
     stdout: "piped",
@@ -33,6 +37,7 @@ export async function git(dir: string, args: string[]): Promise<GitRunResult> {
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",
       GIT_COMMITTER_EMAIL: "test@example.com",
+      ...NO_HOST_GIT_CONFIG,
     },
   });
   const out = await cmd.output();

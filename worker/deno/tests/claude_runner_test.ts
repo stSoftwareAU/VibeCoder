@@ -7,6 +7,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildClaudeChildEnv,
@@ -1439,10 +1443,11 @@ async function withClippyCheckout<T>(
   try {
     const git = async (...args: string[]) => {
       const out = await new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: dir,
         stdout: "null",
         stderr: "piped",
+        env: { ...NO_HOST_GIT_CONFIG },
       }).output();
       assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
     };

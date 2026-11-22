@@ -15,10 +15,15 @@ import {
 } from "../lib/agent_pre_flight.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
     args: [
+      ...NO_HOST_HOOKS_ARGS,
       "-c",
       "user.name=t",
       "-c",
@@ -28,6 +33,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
       ...args,
     ],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   }).output();

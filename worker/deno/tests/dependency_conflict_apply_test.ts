@@ -17,6 +17,10 @@
  * vibe-allow-conflict-markers
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   applyDependencyConflictRules,
@@ -526,10 +530,18 @@ async function realGit(
   cwd: string,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const out = await new Deno.Command("git", {
-    args: ["-c", "user.email=t@example.com", "-c", "user.name=Test", ...args],
+    args: [
+      ...NO_HOST_HOOKS_ARGS,
+      "-c",
+      "user.email=t@example.com",
+      "-c",
+      "user.name=Test",
+      ...args,
+    ],
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   const decode = new TextDecoder();
   return {

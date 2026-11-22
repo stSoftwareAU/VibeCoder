@@ -44,6 +44,10 @@ import {
 } from "../lib/ignored_path_clean.ts";
 import type { Result } from "../types.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -753,10 +757,11 @@ Deno.test("collectGraftContext - a real git repo never leaves an .md file in the
       args: string[],
     ): Promise<{ code: number; out: string }> => {
       const command = new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: repoDir,
         stdout: "piped",
         stderr: "piped",
+        env: NO_HOST_GIT_CONFIG,
       });
       const { code, stdout } = await command.output();
       return { code, out: new TextDecoder().decode(stdout) };

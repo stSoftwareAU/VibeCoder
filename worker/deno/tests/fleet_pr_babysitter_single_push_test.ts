@@ -5,6 +5,10 @@
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   armBabysitterAutoMerge,
@@ -27,9 +31,10 @@ async function repoWithFeature(): Promise<{
   const dir = await Deno.makeTempDir();
   const git = async (...args: string[]) => {
     const out = await new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd: dir,
       stdin: "null",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     assert(out.success, new TextDecoder().decode(out.stderr));
     return new TextDecoder().decode(out.stdout).trim();

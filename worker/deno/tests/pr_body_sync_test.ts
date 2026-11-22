@@ -25,6 +25,7 @@ import {
   WORKER_PR_MARKER_PREFIX,
 } from "../lib/pr_body.ts";
 import { maskMarkdownCode } from "../lib/markdown_code_spans.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 import {
   APPLIED_BUMP_NOTE_PREFIX,
   MILESTONE_CHILD_BUMP_NOTE,
@@ -945,7 +946,7 @@ const SUMMARY_REL = `docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`;
 
 /** Runs `git` in `cwd`; throws on a failed call or a non-zero exit. */
 async function gitIn(cwd: string, ...args: string[]): Promise<string> {
-  const run = await runGitCommand(args, { cwd });
+  const run = await runFixtureGit(args, { cwd });
   if (!run.ok) throw run.error;
   if (run.value.code !== 0) {
     throw new Error(`git ${args.join(" ")}: ${run.value.stderr}`);

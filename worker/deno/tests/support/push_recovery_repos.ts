@@ -8,11 +8,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { runGitCommand } from "../../lib/git_timeout.ts";
+import { runFixtureGit } from "./no_host_git_config.ts";
 
 /** Run a git command in a repo, failing loudly on a non-zero exit. */
 export async function git(args: string[], cwd: string): Promise<string> {
-  const result = await runGitCommand(args, { cwd });
+  const result = await runFixtureGit(args, { cwd });
   if (!result.ok) throw result.error;
   if (result.value.code !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${result.value.stderr}`);
