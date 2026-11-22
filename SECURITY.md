@@ -574,12 +574,20 @@ and, apart from that check, **only when the separator crossed a line break**:
   from the label's line only when the inner value stays visible (a chained
   label); otherwise from the end of the outer value the base behaviour
   masked, so `credentials: DEPLOY_TOKEN=` then `<value>` keeps the value
-  masked. The base behaviour runs the decode pass after its assignment rule,
-  so a run is read as that pass sees it: cut at the first value the
-  assignment rule masks on a line after the inner value, which ends it at the
-  separator (`API_KEY=`), and `credentials: DEPLOY_TOKEN = <value>` then
-  `API_KEY=abcdefgh1234` masks `<value>`. A next line the rule leaves
-  unmasked (`API_KEY=true`, `USER=bob`) stays in the run. A match inside the inner value that runs past it counts whether or
+  masked. The base behaviour runs the decode pass after every rule, so a run
+  is read as that pass sees it: cut at the first value masked after the
+  inner value by the assignment rule (which ends it at the separator,
+  `API_KEY=`), by `secret-cli-flag` (`--password` then `USER=bob`; the
+  flag's name stays) or by `hex32-credential` (`md5=<32 hex>`). So
+  `credentials: DEPLOY_TOKEN = <value>` then `API_KEY=abcdefgh1234`, or then
+  `md5=<32 hex>`, masks `<value>`. A next line the rules leave unmasked
+  (`API_KEY=true`, `USER=bob` alone) stays in the run. The cut reads at most
+  8 credential keys after the inner value; past that the run is read whole
+  and the base result stands, so eight lines that each hold a credential
+  word with no separator (`GITHUB_TOKEN`, `NPM_TOKEN`, ...) before
+  `ADMIN_TOKEN=abcdefgh1234` still publish `<value>`. Each loop over a
+  shared pattern steps its own copy (`matchAll`), because decoding a run
+  walks the decoded text and reaches the same check again. A match inside the inner value that runs past it counts whether or
   not it is masked, since the base scan resumes after it either way. When the
   outer bare value stopped at a `"` inside a quoted inner value that the text
   runs straight on from (`DEPLOY_TOKEN='"abc"'--token <value>`), the outer

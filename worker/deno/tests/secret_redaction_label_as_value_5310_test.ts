@@ -1572,3 +1572,185 @@ Deno.test("#5310 round 15 hostile: 100,001 chained quoted flags are read linearl
   assertEquals(once === expected, true);
   assertEquals(containsSecret(once), false);
 });
+
+// PR #5322 review round 16, finding 1. A wrapped run whose decoded text
+// reaches the wrapped-run check again: the loop steps a copy of its regex,
+// so the nested walk cannot reset it and `redactSecrets` returns.
+Deno.test("#5310 round 16: a decoded run that reaches the wrapped-run check again returns", () => {
+  const fixture = btoa(`secrets:\n  DEPLOY_TOKEN: 'deploy --token ${R}`);
+  const input = `credentials: DEPLOY_TOKEN = ${fixture.slice(0, 24)}\n${
+    fixture.slice(24)
+  }`;
+  assertFinal(input, `credentials: DEPLOY_TOKEN = ${R}\n${R}`, [
+    fixture.slice(0, 24),
+    fixture.slice(24),
+  ]);
+});
+
+Deno.test("#5310 round 16: a decoded run that is itself a label-as-value shape is masked", () => {
+  const encoded = btoa(`credentials: DEPLOY_TOKEN = ${V}`);
+  const input = `credentials: DEPLOY_TOKEN = ${encoded.slice(0, 24)}\n${
+    encoded.slice(24)
+  }`;
+  assertFinal(input, `credentials: ${R} = ${R}`, [
+    encoded.slice(0, 24),
+    encoded.slice(24),
+  ]);
+});
+
+// PR #5322 review round 16, finding 2. Main's decode pass runs after the
+// `secret-cli-flag` and `hex32-credential` rules too, so the wrapped run is
+// cut at the first value they mask and the inner label is read.
+const HEX = "9f86d081884c7d659a2feaa0c55ad015";
+for (
+  const [index, [input, expected, values]] of ([
+    [
+      `credentials: DEPLOY_TOKEN = ${V}\nmd5=${HEX}`,
+      `credentials: DEPLOY_TOKEN = ${R}\nmd5=${R}`,
+      [V, HEX],
+    ],
+    [
+      `Rotate these credentials:\nDEPLOY_TOKEN = ${V}\ntrace_id=${HEX}`,
+      `Rotate these credentials:\nDEPLOY_TOKEN = ${R}\ntrace_id=${R}`,
+      [V, HEX],
+    ],
+    [
+      `Rotate these credentials:\r\nDEPLOY_TOKEN = ${V}\r\ntrace_id=${HEX}`,
+      `Rotate these credentials:\r\nDEPLOY_TOKEN = ${R}\r\ntrace_id=${R}`,
+      [V, HEX],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = ${V}\r\ntrace_id=${HEX}`,
+      `credentials: DEPLOY_TOKEN = ${R}\r\ntrace_id=${R}`,
+      [V, HEX],
+    ],
+    [
+      `The secret: api_key: ${V}\nsession=${HEX} (expires soon)`,
+      `The secret: api_key: ${R}\nsession=${R} (expires soon)`,
+      [V, HEX],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = pw42x9z\nmd5=${HEX}`,
+      `credentials: DEPLOY_TOKEN = ${R}\nmd5=${R}`,
+      ["pw42x9z", HEX],
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = ${V}\n--password\nUSER=bob`,
+      `credentials: DEPLOY_TOKEN = ${R}\n--password\n${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  api_key: ${V}\ntrace_id=${HEX}`,
+      `secrets:\n  api_key: ${R}\ntrace_id=${R}`,
+      [V, HEX],
+    ],
+    // Round-15 inputs with the lead-in on its own line, LF and CRLF.
+    [
+      `Rotate these credentials:\nDEPLOY_TOKEN = ${V}\nAPI_KEY=abcdefgh1234`,
+      `Rotate these credentials:\nDEPLOY_TOKEN = ${R}\nAPI_KEY=${R}`,
+      [V, "abcdefgh1234"],
+    ],
+    [
+      `Rotate these credentials:\r\nDEPLOY_TOKEN = ${V}\r\nAPI_KEY=abcdefgh1234`,
+      `Rotate these credentials:\r\nDEPLOY_TOKEN = ${R}\r\nAPI_KEY=${R}`,
+      [V, "abcdefgh1234"],
+    ],
+  ] as const).entries()
+) {
+  Deno.test(
+    `#5310 round 16 a later rule masks the next line (${index + 1}): ${
+      JSON.stringify(input.slice(0, 48))
+    }`,
+    () => {
+      assertFinal(input, expected, values);
+    },
+  );
+}
+
+// Round 16: the run is still cut only where a rule really masks. A
+// placeholder already there, a spaced `md5: <hex>` the assignment rule
+// masks, and a further plain line all mask the value as before.
+for (
+  const [index, [input, expected]] of ([
+    [
+      `credentials: DEPLOY_TOKEN = ${V}\nmd5=${R}`,
+      `credentials: DEPLOY_TOKEN = ${R}\nmd5=${R}`,
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = ${V}\nmd5: ${HEX}`,
+      `credentials: DEPLOY_TOKEN = ${R}\nmd5: ${R}`,
+    ],
+    [
+      `credentials: DEPLOY_TOKEN = ${V}\nmd5=${HEX}\nmore`,
+      `credentials: DEPLOY_TOKEN = ${R}\nmd5=${R}\nmore`,
+    ],
+  ] as const).entries()
+) {
+  Deno.test(
+    `#5310 round 16 controls (${index + 1}): ${
+      JSON.stringify(input.slice(68))
+    }`,
+    () => {
+      assertFinal(input, expected, [V]);
+    },
+  );
+}
+
+// Round 16: the cut after the inner value reads at most MAX_INNER_PROBES (8)
+// credential keys; past that the run is read whole and main's result stands
+// (stated in SECURITY.md and under "Not done or not checked").
+Deno.test("#5310 round 16: more than 8 credential words after the inner value keep main's result", () => {
+  const words = [
+    "GITHUB_TOKEN",
+    "NPM_TOKEN",
+    "PYPI_TOKEN",
+    "AWS_TOKEN",
+    "GCP_TOKEN",
+    "AZ_TOKEN",
+    "DO_TOKEN",
+    "CF_TOKEN",
+  ];
+  const tail = `\n${words.join("\n")}\nADMIN_TOKEN=abcdefgh1234`;
+  const input = `credentials: DEPLOY_TOKEN = ${V}${tail}`;
+  assertEquals(
+    redactSecrets(input),
+    `credentials: ${R} = ${V}\n${words.join("\n")}\nADMIN_TOKEN=${R}`,
+  );
+  const seven = `credentials: DEPLOY_TOKEN = ${V}\n${
+    words.slice(0, 7).join("\n")
+  }\nADMIN_TOKEN=abcdefgh1234`;
+  assertFinal(
+    seven,
+    `credentials: DEPLOY_TOKEN = ${R}\n${
+      words.slice(0, 7).join("\n")
+    }\nADMIN_TOKEN=${R}`,
+    [V, "abcdefgh1234"],
+  );
+});
+
+// Round 16 (the round-15 timing finding's test ask): the three units whose
+// flag values run into the next unit, 64,000 repeats each, exact outputs.
+// Each flag's double-quoted value takes the following unit, so two input
+// units give one output unit (Issue #3942: exact outputs, no stopwatch).
+for (
+  const [unit, out] of [
+    [
+      "credentials: api_key: 'x --token \"y ",
+      `credentials: ${R} 'x --token ${R}y `,
+    ],
+    [
+      `--token "a secrets:\n  DEPLOY_TOKEN: 'b --password ${R}; `,
+      `--token ${R}a secrets:\n  DEPLOY_TOKEN: 'b --password ${R}; `,
+    ],
+    [
+      "credentials: credentials: 'x deploy --token \"",
+      `credentials: ${R} 'x deploy --token ${R}`,
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 round 16 hostile size: 64,000 × ${JSON.stringify(unit)}`, () => {
+    const once = redactSecrets(unit.repeat(64_000));
+    assertEquals(once, out.repeat(32_000));
+    assertEquals(redactSecrets(once), once);
+  });
+}

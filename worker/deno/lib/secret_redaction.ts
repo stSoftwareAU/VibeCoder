@@ -1508,11 +1508,12 @@ function mainReadsPastInnerValue(
   // start, so no search leaves the inner value. At most MAX_INNER_PROBES keys
   // are read; past that main's result stands (Issue #3942 linearity).
   const value = text.slice(start, inner.end);
-  const keywords = CREDENTIAL_KEYWORD_ALL;
-  keywords.lastIndex = 0;
+  // `matchAll` steps a copy of the regex: the loop's body can re-enter the
+  // walk (through `verdictOf`), which must not move this loop's position
+  // (PR #5322 review round 16).
   let probes = 0;
   let lastKey = -1;
-  for (let k = keywords.exec(value); k !== null; k = keywords.exec(value)) {
+  for (const k of value.matchAll(CREDENTIAL_KEYWORD_ALL)) {
     const keyStart = keyStartBefore(text, start, start + k.index);
     if (
       keyStart === -1 || keyStart === lastKey ||
@@ -1577,24 +1578,33 @@ function mainReadsPastInnerValue(
   // longer than that keeps main's result, so the work per candidate stays
   // bounded (Issue #3942).
   const window = text.slice(windowStart, inner.end + 4);
-  WRAPPED_RUN_G.lastIndex = 0;
-  for (
-    let found = WRAPPED_RUN_G.exec(window);
-    found !== null && windowStart + found.index < inner.end;
-    found = WRAPPED_RUN_G.exec(window)
-  ) {
+  // `matchAll` steps a copy of the regex. The loop's body decodes the run
+  // and walks the decoded text, which reaches this check again; a shared
+  // `lastIndex` was reset there, and the loop found the same run without end
+  // (PR #5322 review round 16).
+  for (const found of window.matchAll(WRAPPED_RUN_G)) {
+    if (windowStart + found.index >= inner.end) break;
     const runStart = windowStart + found.index;
     const reach = text.slice(runStart, runStart + WRAP_RUN_MAX + 1);
+    WRAPPED_RUN_AT.lastIndex = 0;
     const run = WRAPPED_RUN_AT.exec(reach);
     WRAPPED_RUN_AT.lastIndex = 0;
     if (run === null) continue;
     // Main's decode pass runs after its assignment rule, so it sees the run
     // cut at the first value that rule masks after the inner value (PR #5322
     // review round 15). A run too long to read whole keeps main's result.
+    // The rules after it (`secret-cli-flag`, `hex32-credential`) also run
+    // before that pass, so the run is cut at the first value they mask too
+    // (`<value>\nmd5=<32 hex>`, `<value>\n--password\nUSER=bob`; PR #5322
+    // review round 16).
     const long = run[0].length > WRAP_RUN_MAX;
     const seen = long ? run[0] : run[0].slice(
       0,
-      maskedValueStart(text, inner.end, runStart + run[0].length) - runStart,
+      laterRuleCut(
+        text,
+        Math.max(runStart, inner.end),
+        maskedValueStart(text, inner.end, runStart + run[0].length),
+      ) - runStart,
     );
     const runEnd = runStart + seen.length;
     if (runEnd <= inner.index) continue;
@@ -1614,7 +1624,6 @@ function mainReadsPastInnerValue(
         seen
     ) return true;
   }
-  WRAPPED_RUN_G.lastIndex = 0;
   // A second pass over a first pass's output where a flag after an unclosed
   // quote kept main's result (`'deploy --token ***REDACTED***`): the inner
   // value is now the bare `'deploy`, so read the flag after it as the first
@@ -1633,6 +1642,48 @@ function mainReadsPastInnerValue(
 }
 
 /**
+ * Where the first value the rules after `secret-assignment` mask, inside
+ * `[from, to)`, begins; `to` when there is none. Main's decode-then-rescan
+ * pass runs after every rule, so a run it joins ends before such a value: a
+ * credential flag's value (the flag's name stays visible) or a 32-hex run
+ * (PR #5322 review round 16). `from` is no earlier than the end of the inner
+ * value: text before it lies in the outer or inner value, which the
+ * assignment rule masks before these rules run. Each rule is read over `[from, to)` and at most
+ * {@link LATER_RULE_CONTEXT} characters before it, so a flag named just
+ * before the run still counts; the run is at most {@link WRAP_RUN_MAX} long,
+ * so the work per run stays bounded (Issue #3942).
+ */
+function laterRuleCut(text: string, from: number, to: number): number {
+  if (to <= from) return to;
+  const base = Math.max(0, from - LATER_RULE_CONTEXT);
+  const slice = text.slice(base, to);
+  let cut = to;
+  for (const m of slice.matchAll(CLI_FLAG_RULE_G)) {
+    const valueStart = base + m.index + (m[1]?.length ?? 0);
+    if (valueStart >= to) break;
+    if (valueStart + (m[0].length - (m[1]?.length ?? 0)) > from) {
+      cut = Math.min(cut, Math.max(valueStart, from));
+      break;
+    }
+  }
+  for (const m of slice.matchAll(HEX32_CREDENTIAL_G)) {
+    const at = base + m.index;
+    if (at >= cut) break;
+    if (at + m[0].length > from) {
+      cut = Math.max(at, from);
+      break;
+    }
+  }
+  return cut;
+}
+
+/** How far before a run {@link laterRuleCut} reads for a flag's name. */
+const LATER_RULE_CONTEXT = 256;
+
+/** The `hex32-credential` rule's pattern, for {@link laterRuleCut}. */
+const HEX32_CREDENTIAL_G = /(?<![0-9A-Za-z])[0-9a-f]{32}(?![0-9A-Za-z])/gi;
+
+/**
  * Where the first `secret-assignment` value this walk masks, whose key starts
  * in `[from, to)`, begins; `to` when there is none. Main's decode-then-rescan
  * pass reads the text after that rule's masks, so a run it joins ends at the
@@ -1642,12 +1693,10 @@ function mainReadsPastInnerValue(
  * run is read whole.
  */
 function maskedValueStart(text: string, from: number, to: number): number {
-  const keywords = CREDENTIAL_KEYWORD_ALL;
   const span = text.slice(from, to);
-  keywords.lastIndex = 0;
   let probes = 0;
   let lastKey = -1;
-  for (let k = keywords.exec(span); k !== null; k = keywords.exec(span)) {
+  for (const k of span.matchAll(CREDENTIAL_KEYWORD_ALL)) {
     const keyStart = keyStartBefore(text, from, from + k.index);
     if (keyStart === -1 || keyStart === lastKey) continue;
     lastKey = keyStart;
