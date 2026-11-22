@@ -190,6 +190,12 @@ flowchart LR
   standards review found that the adapter's empty error-run text would otherwise
   stop a rejected Gemini login failing the phase. This keeps the behaviour the
   issue relies on ("in production a rejected login raises …")
+- **unrequested** — `container/Containerfile` `SUDO_VERSION` bumped from
+  `1.9.16p2-3+deb13u2` to `1.9.16p2-3+deb13u5` — reviewer: unrequested —
+  reason: Debian trixie-security dropped the `deb13u2` build, so the exact apt
+  pin failed `container-build / container` (`E: Version '1.9.16p2-3+deb13u2' for
+  'sudo' was not found`). The pin is kept (the manifest test requires one); the
+  failure is on the base branch's Containerfile, not this PR's diff
 
 ## Standards Review
 
