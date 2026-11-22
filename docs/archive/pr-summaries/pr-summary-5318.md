@@ -6,7 +6,7 @@ The operator manuals still described a two-step failure ladder (`failed-once`,
 then `failed`). That ladder was removed by Issue #4158. Every failure is now
 recorded under `failed-once` and the worker never applies `failed`. On the
 coding path the issue stays claimable once the escalating cooldown ends; the
-planning path records no cooldown. This PR rewrites each stale passage to match.
+planning path records no cooldown. The stale passages now describe this.
 Docs only.
 
 Closes #5318.
