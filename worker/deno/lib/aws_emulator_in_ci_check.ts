@@ -30,6 +30,7 @@
 
 import { parse as parseYaml } from "@std/yaml/parse";
 import { loadWorkflows } from "./linter_in_ci_check.ts";
+import { triggersOn as workflowTriggersOn } from "./ci_mutation_contract.ts";
 import { parseCfnDocument } from "./cfn_cost_checks.ts";
 import {
   commandIndex,
@@ -769,13 +770,9 @@ interface WorkflowDoc {
   doc: unknown;
 }
 
-/** True when a workflow's `on:` (a string, an array, or an object's keys) names `event`. */
+/** True when a workflow's `on:` names `event`; delegates to the shared reader. */
 function triggersOn(doc: unknown, event: string): boolean {
-  if (!isRecord(doc)) return false;
-  const on = doc.on;
-  if (typeof on === "string") return on === event;
-  if (Array.isArray(on)) return on.includes(event);
-  return isRecord(on) && Object.hasOwn(on, event);
+  return isRecord(doc) && workflowTriggersOn(doc, event);
 }
 
 /** True when a job of `doc` (not statically disabled) `uses:` the reusable workflow `file`. */
