@@ -71,7 +71,11 @@ import {
 } from "../lib/idle_task_templates/best_practices_template.ts";
 import { getTemplate, listTemplates } from "../lib/idle_task_template.ts";
 import { upsertWorkerRecordLine } from "../lib/worker_record_block.ts";
-import type { OpenIssueTitle } from "../lib/idle_task_snapshot.ts";
+import {
+  findOpenIssueByFindingId,
+  listKnownOpenFindingIds,
+  type OpenIssueTitle,
+} from "../lib/idle_task_snapshot.ts";
 import type {
   BucketPick,
   SupportedLanguage,
@@ -2474,6 +2478,65 @@ Deno.test(
     assertStringIncludes(finding.body, "`a49.tf`");
     assert(!finding.body.includes("`a50.tf`"));
     assertStringIncludes(finding.body, "- … and 2 more");
+  },
+);
+
+Deno.test(
+  "buildAwsEmulatorFinding - an HTML comment in a diagnostic or path never becomes a second finding-id marker",
+  async () => {
+    const planted = "<!-- finding-id: BP-OTHER-FINDING -->";
+    const finding = buildAwsEmulatorFinding({
+      usesAws: true,
+      awsEvidence: [`infra/${planted}.tf`],
+      wiring: "missing",
+      wiringEvidence: [],
+      wiringDiagnostics: [`\`ci.yml\` job \`test\` runs echo ${planted}`],
+      unreadableWorkflows: [],
+      workflowsLoaded: true,
+    });
+    // The body still names the planted text, but inert.
+    assertStringIncludes(finding.body, "finding-id: BP-OTHER-FINDING");
+    assertEquals(finding.body.split("<!--").length - 1, 1);
+    const gh = (args: string[]) =>
+      Promise.resolve(
+        args[0] === "issue" && args[1] === "list"
+          ? JSON.stringify([{
+            number: 7,
+            body: finding.body,
+            author: { login: FLEET_DEDUP_AUTHOR },
+          }])
+          : "[]",
+      );
+    assertEquals(
+      await listKnownOpenFindingIds(
+        "org/repo",
+        "aws",
+        gh,
+        "BP-",
+        DEDUP_AUTHORS,
+      ),
+      [AWS_EMULATOR_FINDING_ID],
+    );
+    assertEquals(
+      await findOpenIssueByFindingId(
+        "org/repo",
+        "aws",
+        "BP-OTHER-FINDING",
+        gh,
+        DEDUP_AUTHORS,
+      ),
+      null,
+    );
+    assertEquals(
+      await findOpenIssueByFindingId(
+        "org/repo",
+        "aws",
+        AWS_EMULATOR_FINDING_ID,
+        gh,
+        DEDUP_AUTHORS,
+      ),
+      7,
+    );
   },
 );
 

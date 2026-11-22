@@ -83,6 +83,7 @@ import {
   type SupportedLanguage as CommentLanguage,
 } from "../suppression_comments.ts";
 import { blameFileLineLogins } from "../suppression_identity.ts";
+import { neutraliseHtmlComments } from "../prompt_delimiter.ts";
 import {
   detectRepoLanguages as defaultDetectLanguages,
   type RepoLanguages,
@@ -656,9 +657,12 @@ const AWS_EVIDENCE_CAP = 50;
 const AWS_INTEGRATION_TESTING_URL =
   "https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#aws-integration-testing";
 
-/** Code-span-safe form of a path or diagnostic: a backtick would break out of the span. */
+/**
+ * Code-span-safe form of a path or diagnostic: a backtick would break out of
+ * the span, and an HTML comment would be read as a body marker.
+ */
 function codeSpanSafe(text: string): string {
-  return text.replaceAll("`", "'");
+  return neutraliseHtmlComments(text.replaceAll("`", "'"));
 }
 
 /**
@@ -668,7 +672,10 @@ function codeSpanSafe(text: string): string {
  * body lists up to {@link AWS_EVIDENCE_CAP} AWS-usage evidence paths, then a
  * `- … and N more` line for the remainder, and the wiring diagnostics under the
  * same cap. Backticks in a path or diagnostic are replaced with `'` so the
- * Markdown code span cannot be broken out of.
+ * Markdown code span cannot be broken out of, and HTML-comment delimiters are
+ * neutralised with {@link neutraliseHtmlComments}: a diagnostic quotes text
+ * from the scanned repository's workflows, so a `<!-- finding-id: … -->`
+ * comment there would otherwise become a second dedup marker in the body.
  */
 export function buildAwsEmulatorFinding(
   check: AwsEmulatorCheckResult,

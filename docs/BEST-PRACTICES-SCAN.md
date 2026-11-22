@@ -399,10 +399,12 @@ Official server mode needs all of the following:
   `{ runner; echo done; } && echo ok` is not. A runner in a `for`, `while`,
   `until` or `select` body is never kept by being the last command, because
   the loop returns its last pass's status; it needs errexit, `exec` or an
-  explicit failing exit. The rules are: it runs via `exec`; it is the last command
+  explicit failing exit (inside a `( )` subshell, the subshell must also
+  fail the body: see Errexit below). The rules are: it runs via `exec`; it is the last command
   (or the rest of the body is an `&&` chain to the end); or errexit is on
   at that point and it is not followed by `&&`. Two explicit-exit idioms
-  are also preserved, whatever errexit is: `runner || exit N` (N not 0, or
+  are also preserved, whatever errexit is (inside a `( )` subshell they end
+  only the subshell, so the Errexit rule below must also hold): `runner || exit N` (N not 0, or
   a bare `exit`; not after a negated `! runner`, whose `!` turns a failure
   into success before the `||`) and `if ! runner; then ...; exit N; fi` (N
   not 0, in a flat `then` branch). Neither counts inside a group swallowed
@@ -429,10 +431,13 @@ it. A command inside a `( )` subshell is kept, by whatever route fails the
 subshell (errexit inside it, `runner || exit 1`, `if ! runner; then …; exit 1;
 fi` or `exec`), only when the subshell's own failure fails the body: errexit
 is on outside it, or the subshell is the last command or has an `&&` chain to
-the end after it and is not a loop body. So `( set -e; runner; echo done )`
-then `echo after`, `( cd infra && exec runner )` then `echo after`, and
-`for d in a b; do ( set -e; cd "$d"; runner ); done`, in a script without a
-top-level `set -e`, earn no credit.
+the end after it and does not itself sit in a loop body. So
+`( set -e; runner; echo done )` then `echo after`, `( cd infra && exec runner )`
+then `echo after`, and `for d in a b; do ( set -e; cd "$d"; runner ); done`, in
+a script without a top-level `set -e`, earn no credit. A loop inside the
+subshell is judged by the rules above, so `( set -e; for d in a b; do runner;
+done )` as the last command is credited: errexit inside the subshell ends it
+on the first failing pass.
 
 The command word, once shell reserved words, `sudo`/`env`/`exec`,
 `VAR=value` and the `time`/`nice`/`timeout`/`command` wrappers are

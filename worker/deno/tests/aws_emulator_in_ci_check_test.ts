@@ -3158,6 +3158,56 @@ Deno.test("checkAwsEmulatorInCI - a subshell's exit, exec or set -e fails the bo
   }
 });
 
+// PR #5332 review round 9: only a loop around the subshell loses the
+// subshell's failure; a loop inside a set -e subshell ends it on the first
+// failing pass, so that subshell as the last command is credited.
+Deno.test("checkAwsEmulatorInCI - a loop inside a set -e subshell that is the last command is credited; a loop around the subshell is not", async () => {
+  const credited: Array<[string, string]> = [
+    ["one line", `( set -e; for d in a b; do ${RUNNER_STEP}; done )`],
+    [
+      "multi-line",
+      `(\n  set -e\n  for d in a b\n  do\n    ${RUNNER_STEP}\n  done\n)`,
+    ],
+    [
+      "|| exit 1 in the loop",
+      `( for d in a b; do ${RUNNER_STEP} || exit 1; done )`,
+    ],
+  ];
+  for (const [label, body] of credited) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "official-server", `script: ${label}`);
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    });
+    assertEquals(step.wiring, "official-server", `step after set +e: ${label}`);
+  }
+  const refused: Array<[string, string]> = [
+    ["no errexit in the subshell", `( for d in a b; do ${RUNNER_STEP}; done )`],
+    [
+      "a line after the subshell",
+      `( set -e; for d in a b; do ${RUNNER_STEP}; done )\necho after`,
+    ],
+    [
+      "then an && chain (errexit is ignored left of &&)",
+      `( set -e; for d in a b; do ${RUNNER_STEP}; done ) && echo ok`,
+    ],
+    [
+      "a subshell inside a loop inside a subshell",
+      `( for d in a b; do ( set -e; ${RUNNER_STEP} ); done )`,
+    ],
+  ];
+  for (const [label, body] of refused) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `script: ${label}`);
+  }
+});
+
 // PR #5332 review round 7: a one-line `$( … )` holding `|`, `;` or `&&`, with
 // more words after it, opens no frame, so later commands are still judged.
 Deno.test("checkAwsEmulatorInCI - a one-line substitution with a separator inside it does not hide a later runner", async () => {

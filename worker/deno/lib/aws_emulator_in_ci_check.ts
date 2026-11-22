@@ -840,28 +840,6 @@ interface KeptCommand {
   kept: boolean;
 }
 
-/**
- * The reachable commands of a `run:` body, in order, each with whether its
- * failure fails the body ("kept").
- *
- * `initialErrexit` says whether the body runs with `-e`; a reachable `set`
- * then updates it (`set -e`, `set -o errexit` on; `set +e`, `set +o errexit`
- * off). A command inside a group or compound swallowed one level out
- * (`ReachableCommand.groupSwallowed`) is never kept, and one inside a
- * compound followed by `&&` is judged with errexit off
- * (`ReachableCommand.errexitIgnored`). A command in a loop body is never
- * kept by being last (`ReachableCommand.inLoop`): the loop's status is its
- * last pass's. A `set` inside a `( )` subshell changes errexit only until
- * that subshell closes (`ReachableCommand.subshells`). A command after a reachable `trap` whose `EXIT` or `ERR`
- * handler may `exit 0` is kept only when it runs via `exec`, which replaces
- * the shell before the handler can run (see {@link applyTrap}). Otherwise a
- * command is
- * kept when a failure always reaches an explicit failing
- * exit (`cmd || exit 1`, `if ! cmd; then ...; exit 1; fi`), or when its failure
- * is not swallowed (see {@link commandStatusNotSwallowed}) and one of these holds: it runs via `exec`;
- * every later reachable command is joined by `&&` (it is last, or the rest is an
- * `&&` chain to the end); or errexit is on and it is not followed by `&&`.
- */
 /** Trap conditions whose handler runs as the shell exits or a command fails. */
 const EXIT_TRAP_CONDITIONS = new Set(["exit", "err"]);
 
@@ -956,6 +934,38 @@ function applyTrap(
   }
 }
 
+/**
+ * The reachable commands of a `run:` body, in order, each with whether its
+ * failure fails the body ("kept").
+ *
+ * `initialErrexit` says whether the body runs with `-e`; a reachable `set`
+ * then updates it (`set -e`, `set -o errexit` on; `set +e`, `set +o errexit`
+ * off). A `set` inside a `( )` subshell changes errexit only until that
+ * subshell closes (`ReachableCommand.subshells`).
+ *
+ * A command is never kept when:
+ *
+ * - it sits in a group or compound swallowed one level out
+ *   (`ReachableCommand.groupSwallowed`);
+ * - it sits in a `( )` subshell whose own failure does not fail the body:
+ *   errexit is off outside the subshell (or ignored there), and the subshell
+ *   is not the body's last command or followed by an `&&` chain to the end, or
+ *   the subshell is itself inside a loop body
+ *   (`ReachableCommand.subshellsInLoop`). Every enclosing subshell is checked,
+ *   whichever route (explicit exit, `exec` or errexit) fails the innermost;
+ * - a reachable `trap` whose `EXIT` or `ERR` handler may `exit 0` came before
+ *   it, unless it runs via `exec`, which replaces the shell before the handler
+ *   can run (see {@link applyTrap}).
+ *
+ * Otherwise a command is kept when a failure always reaches an explicit
+ * failing exit (`cmd || exit 1`, `if ! cmd; then ...; exit 1; fi`), or when its
+ * failure is not swallowed (see {@link commandStatusNotSwallowed}) and one of
+ * these holds: it runs via `exec`; it is not in a loop body
+ * (`ReachableCommand.inLoop`, whose status is its last pass's) and every later
+ * reachable command is joined by `&&` (it is last, or the rest is an `&&`
+ * chain to the end); or errexit is on, not ignored by a compound followed by
+ * `&&` (`ReachableCommand.errexitIgnored`), and it is not followed by `&&`.
+ */
 function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
   const cmds = reachableCommands(body);
   // restAllAnd[k]: every reachable command after k is joined by `&&`.
@@ -986,8 +996,9 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
     // subshell's own failure does, whichever route fails the subshell (an
     // explicit exit, `exec`, or errexit inside it): errexit is on outside the
     // subshell and not ignored, or the subshell is the body's last command or
-    // has an `&&` chain to the end after it, outside any loop body (PR #5332
-    // review).
+    // has an `&&` chain to the end after it, and the subshell is not itself
+    // inside a loop body (PR #5332 review). A loop inside the subshell is
+    // judged by the command's own rule below.
     for (const id of cmd.subshells) {
       if (!entryErrexit.has(id)) entryErrexit.set(id, errexit);
     }
@@ -995,7 +1006,7 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
       const outside = saved.find((entry) => entry.id === id)?.errexit ??
         entryErrexit.get(id) ?? errexit;
       if (outside && !cmd.errexitIgnored) return true;
-      if (cmd.inLoop) return false;
+      if (cmd.subshellsInLoop.includes(id)) return false;
       let last = k;
       while (cmds[last + 1]?.subshells.includes(id)) last++;
       return last === cmds.length - 1 || restAllAnd[last] === true;

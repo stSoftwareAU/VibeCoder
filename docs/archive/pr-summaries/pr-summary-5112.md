@@ -384,6 +384,24 @@ emulator test.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
+- After the ninth review (of `c4c8839a`): the wiring diagnostics and evidence
+  paths in the finding body have HTML-comment delimiters neutralised
+  (`neutraliseHtmlComments`), so a `<!-- finding-id: … -->` comment read from
+  a scanned workflow cannot become a second dedup marker. A new test plants
+  one in a diagnostic and a path and checks that `listKnownOpenFindingIds`
+  returns only `BP-AWS-EMULATOR-MISSING` and `findOpenIssueByFindingId` finds
+  nothing for the planted id. A subshell is now refused as a loop body only
+  when a loop encloses it (`ReachableCommand.subshellsInLoop`), so
+  `( set -e; for d in a b; do runner; done )` and `( for …; do runner ||
+  exit 1; done )` as the last command are credited, while the loop without
+  errexit, the subshell followed by a line or by `&& echo ok` (errexit is
+  ignored there), and a subshell inside a loop inside a subshell stay
+  refused. `docs/BEST-PRACTICES-SCAN.md` now says the loop and explicit-exit
+  rules also need the subshell rule inside a `( )` subshell, and the
+  `keptCommands` doc comment sits on `keptCommands` again and lists the
+  subshell rule. Both new tests fail at `c4c8839a`. The related test files
+  give `801 passed | 1 failed | 1 ignored` (the root-only
+  unreadable-directory test).
 - After the eighth review (of `8f32e27a`): every `( )` subshell around a
   command is judged on all three routes, explicit exit, `exec` and errexit:
   the command is kept only when errexit is on outside the subshell and not

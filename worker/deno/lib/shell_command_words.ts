@@ -389,6 +389,17 @@ function frameCertain(f: Frame): boolean {
   return f.branch === "body" ? f.truth === true : f.truth === false;
 }
 
+/** Ids of the subshell frames in `stack` that are opened inside a loop body. */
+function subshellsInsideLoops(stack: Frame[]): number[] {
+  const ids: number[] = [];
+  let looped = false;
+  for (const frame of stack) {
+    if (frame.sub && looped) ids.push(frame.id);
+    if (frame.iterates) looped = true;
+  }
+  return ids;
+}
+
 const FUNCTION_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*\(\)$/;
 
 /**
@@ -434,6 +445,14 @@ export interface ReachableCommand {
    * earlier pass is lost when a later one succeeds (PR #5332 review).
    */
   inLoop: boolean;
+  /**
+   * Ids of the `( )` subshells and substitutions around the command that sit
+   * inside a loop body (`for d in a b; do ( cmd ); done`): such a subshell's
+   * failure is lost when a later pass succeeds. A loop inside the subshell
+   * (`( set -e; for d in a b; do cmd; done )`) does not list it, because
+   * errexit inside the subshell can still end it on the first failing pass.
+   */
+  subshellsInLoop: number[];
   /**
    * Ids of the `( )` subshells and substitutions open around the command,
    * innermost last: a `set` inside one changes the options only until it
@@ -850,6 +869,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
         groupSwallowed: false,
         errexitIgnored: false,
         inLoop: stack.some((frame) => frame.iterates),
+        subshellsInLoop: subshellsInsideLoops(stack),
         subshells: stack.filter((frame) => frame.sub).map((frame) => frame.id),
       });
       enclosing.push(stack.map((frame) => frame.id));
