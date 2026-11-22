@@ -925,8 +925,8 @@ closes. The release comment says `deferred: depends on owner/repo#N`. No human
 is paged and no work is lost. After a commit this deferral is honoured only
 when the `Depends on` / `Blocked by` line names an issue the worker reads as
 still open; a closed or unreadable dependency does not defer, and the worker
-hands the issue to a human and raises no PR. A CI-fix run is the exception
-for a check already red on the base branch with the same failure as the pull request's log (or the tree-equivalent merged-PR run of the same workflow): `prompts/ci_fix/prompt.md`
+raises no PR and retries the issue as not finished. A CI-fix run is the
+exception for a check already red on the base branch with the same failure as the pull request's log (or the tree-equivalent merged-PR run of the same workflow): `prompts/ci_fix/prompt.md`
 "Base-branch failures" still ends with
 `Depends on owner/repo#N`, and that line defers that check. That CI-fix
 deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
