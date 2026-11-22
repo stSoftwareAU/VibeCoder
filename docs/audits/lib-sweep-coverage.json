@@ -38,6 +38,7 @@
         "worker/deno/lib/phases/bump_deps_phase.ts",
         "worker/deno/lib/pid_guard.ts",
         "worker/deno/lib/pre_flight_gate.ts",
+        "worker/deno/lib/private_repo_pseudonym.ts",
         "worker/deno/lib/purge_stale_workflow_issues.ts",
         "worker/deno/lib/quality_gate.ts",
         "worker/deno/lib/quality_gate_phase.ts",
