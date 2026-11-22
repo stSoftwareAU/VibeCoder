@@ -6,7 +6,8 @@ approved issue. Since Issue #4227 no `needs-human` is applied on any of them.
 The same stale promise is corrected in three other places:
 
 - the doc comments of the loop-guard helpers that file calls
-  (`worker/deno/lib/blocked_deferral.ts`, `worker/deno/lib/planning_handoff.ts`);
+  (`worker/deno/lib/blocked_deferral.ts`,
+  `worker/deno/lib/planning_handoff.ts`);
 - the `CODING-STANDARDS.md` sentence the issue names;
 - its twin in `prompts/coding_guidelines/prompt.md`.
 
@@ -19,10 +20,11 @@ No behaviour change. Closes #5321.
 - Since #4227, a signal the worker cannot honour is not handed to a human. On a
   committed run, `workOnIssueDeclaredHandoff`
   (`worker/deno/lib/phases/declared_handoff_phase.ts`) pushes the branch and
-  calls `retryUnfinishedIssue`. On a no-changes run, `workOnIssueHandleNoChanges`
-  (`worker/deno/lib/phases/handle_no_changes_phase.ts`) runs its usual
-  handling. That handling ends in `finishOrRetry` (a retry, or closing an
-  analysis-only issue) or another retryable failure.
+  calls `retryUnfinishedIssue`. On a no-changes run,
+  `workOnIssueHandleNoChanges`
+  (`worker/deno/lib/phases/handle_no_changes_phase.ts`) runs its usual handling.
+  That handling ends in `finishOrRetry` (a retry, or closing an analysis-only
+  issue) or another retryable failure.
 - A warn-level line saying "handing off to a human" sends an operator looking
   for a label that never arrives. This breaks the rule in `CODING-STANDARDS.md`
   "Log Levels Are a Promise About What the Reader Must Do".
@@ -93,9 +95,12 @@ Sweep on the head:
   Run with `deno task test:unit`: `ok | 156 passed | 0 failed`.
 - The docs tests that read `CODING-STANDARDS.md` or
   `prompts/coding_guidelines/prompt.md`, including
-  `worker/deno/tests/coding_guidelines_twin_drift_test.ts`, pass: `ok | 1103
-  passed | 0 failed` (parallel) and `ok | 141 passed | 0 failed` (serial).
-- `./quality.sh < /dev/null` on commit `214287a1e`: `Result: PASSED (with
-  skipped checks)`, exit 0. Deno tests, semgrep, lint, type check and fmt
-  passed. Config integration (no `.config.json`) and checkov (not installed)
-  were skipped.
+  `worker/deno/tests/coding_guidelines_twin_drift_test.ts`, pass:
+  `ok | 1103
+  passed | 0 failed` (parallel) and `ok | 141 passed | 0 failed`
+  (serial).
+- `./quality.sh < /dev/null` on commit `214287a1e`:
+  `Result: PASSED (with
+  skipped checks)`, exit 0. Deno tests, semgrep, lint,
+  type check and fmt passed. Config integration (no `.config.json`) and checkov
+  (not installed) were skipped.
