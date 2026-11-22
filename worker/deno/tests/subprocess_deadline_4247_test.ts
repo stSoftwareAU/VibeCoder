@@ -21,6 +21,7 @@ import {
   spawnGh,
 } from "../lib/gh_spawn.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 import {
   resetRunTimelineForTests,
   type RunTimeline,
@@ -255,11 +256,11 @@ Deno.test("runWithTimeout - a budget that clamps to nothing names the command an
 Deno.test("runGitCommand - a timeline clamps to the finish, and past it to hard kill minus 300s", async () => {
   const dir = await Deno.makeTempDir({ prefix: "git-deadline-" });
   try {
-    await runGitCommand(["init", "--quiet"], { cwd: dir });
+    await runFixtureGit(["init", "--quiet"], { cwd: dir });
     const hook = `${dir}/slow-fsmonitor.sh`;
     await Deno.writeTextFile(hook, "#!/bin/sh\nsleep 30\n");
     await Deno.chmod(hook, 0o755);
-    await runGitCommand(["config", "core.fsmonitor", hook], { cwd: dir });
+    await runFixtureGit(["config", "core.fsmonitor", hook], { cwd: dir });
 
     pin(timeline({ finishMs: NOW + 200, hardKillMs: NOW + 4_000_000 }));
     const before = runGitCommand(["status", "--porcelain"], {

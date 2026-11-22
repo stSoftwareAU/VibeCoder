@@ -30,6 +30,10 @@ import {
   enableInFlightHostDiskGate,
   registerHeavyBuildDiskProbe,
 } from "../lib/heavy_build_gate.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const PASS_OUT = `running 1 test from ./a_test.ts
 rejects injection attempt ... ok (228µs)
@@ -162,9 +166,17 @@ async function run(
     // into .git after output() resolves, racing withRepo's strict removal.
     // Disable it for fixture setup only, as in the other real-git fixtures.
     args: cmd === "git"
-      ? ["-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args]
+      ? [
+        ...NO_HOST_HOOKS_ARGS,
+        "-c",
+        "gc.auto=0",
+        "-c",
+        "maintenance.auto=false",
+        ...args,
+      ]
       : args,
     cwd,
+    ...(cmd === "git" ? { env: NO_HOST_GIT_CONFIG } : {}),
     stdin: "null",
     stdout: "piped",
     stderr: "piped",

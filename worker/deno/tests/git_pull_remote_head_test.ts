@@ -17,10 +17,10 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { isPrBranchConflictError, updatePrBranch } from "../lib/git_pull.ts";
 import { isLocalAheadOfRemoteError } from "../lib/git_branch_sync.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 
 async function git(args: string[], cwd: string): Promise<string> {
-  const result = await runGitCommand(args, { cwd });
+  const result = await runFixtureGit(args, { cwd });
   return result.ok ? result.value.stdout.trim() : "";
 }
 
@@ -39,49 +39,49 @@ async function setupStaleLocalBranch(): Promise<{
   const localPath = `${tmpDir}/local`;
 
   await Deno.mkdir(remotePath, { recursive: true });
-  await runGitCommand(["init", "--bare"], { cwd: remotePath });
-  await runGitCommand(["symbolic-ref", "HEAD", "refs/heads/main"], {
+  await runFixtureGit(["init", "--bare"], { cwd: remotePath });
+  await runFixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
     cwd: remotePath,
   });
-  await runGitCommand(["clone", remotePath, localPath], { cwd: tmpDir });
-  await runGitCommand(["config", "user.email", "test@example.com"], {
+  await runFixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
+  await runFixtureGit(["config", "user.email", "test@example.com"], {
     cwd: localPath,
   });
-  await runGitCommand(["config", "user.name", "Test User"], { cwd: localPath });
+  await runFixtureGit(["config", "user.name", "Test User"], { cwd: localPath });
 
   await Deno.writeTextFile(`${localPath}/shared.txt`, "base\n");
-  await runGitCommand(["add", "."], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Initial commit"], { cwd: localPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  await runFixtureGit(["add", "."], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Initial commit"], { cwd: localPath });
+  await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
   // The PR branch: touches a different file, so it rebases onto main cleanly.
-  await runGitCommand(["checkout", "-b", "issue-556-fix"], { cwd: localPath });
+  await runFixtureGit(["checkout", "-b", "issue-556-fix"], { cwd: localPath });
   await Deno.writeTextFile(`${localPath}/feature.txt`, "feature\n");
-  await runGitCommand(["add", "."], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Add feature"], { cwd: localPath });
-  await runGitCommand(["push", "-u", "origin", "issue-556-fix"], {
+  await runFixtureGit(["add", "."], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Add feature"], { cwd: localPath });
+  await runFixtureGit(["push", "-u", "origin", "issue-556-fix"], {
     cwd: localPath,
   });
   const remoteHead = await git(["rev-parse", "HEAD"], localPath);
 
   // main moves on, touching shared.txt.
-  await runGitCommand(["checkout", "main"], { cwd: localPath });
+  await runFixtureGit(["checkout", "main"], { cwd: localPath });
   await Deno.writeTextFile(`${localPath}/shared.txt`, "main change\n");
-  await runGitCommand(["add", "."], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Change shared on main"], {
+  await runFixtureGit(["add", "."], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Change shared on main"], {
     cwd: localPath,
   });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
   // The stale local-only commit on the PR branch: collides with main.
-  await runGitCommand(["checkout", "issue-556-fix"], { cwd: localPath });
+  await runFixtureGit(["checkout", "issue-556-fix"], { cwd: localPath });
   await Deno.writeTextFile(`${localPath}/shared.txt`, "stale local change\n");
-  await runGitCommand(["add", "."], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Stale local commit"], {
+  await runFixtureGit(["add", "."], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Stale local commit"], {
     cwd: localPath,
   });
   const staleSha = await git(["rev-parse", "HEAD"], localPath);
-  await runGitCommand(["checkout", "main"], { cwd: localPath });
+  await runFixtureGit(["checkout", "main"], { cwd: localPath });
 
   return { tmpDir, localPath, staleSha, remoteHead };
 }
@@ -125,43 +125,43 @@ Deno.test("updatePrBranch - a genuine conflict on the remote head is still left 
     const remotePath = `${tmpDir}/remote.git`;
     const localPath = `${tmpDir}/local`;
     await Deno.mkdir(remotePath, { recursive: true });
-    await runGitCommand(["init", "--bare"], { cwd: remotePath });
-    await runGitCommand(["symbolic-ref", "HEAD", "refs/heads/main"], {
+    await runFixtureGit(["init", "--bare"], { cwd: remotePath });
+    await runFixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
       cwd: remotePath,
     });
-    await runGitCommand(["clone", remotePath, localPath], { cwd: tmpDir });
-    await runGitCommand(["config", "user.email", "test@example.com"], {
+    await runFixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
+    await runFixtureGit(["config", "user.email", "test@example.com"], {
       cwd: localPath,
     });
-    await runGitCommand(["config", "user.name", "Test User"], {
+    await runFixtureGit(["config", "user.name", "Test User"], {
       cwd: localPath,
     });
 
     await Deno.writeTextFile(`${localPath}/shared.txt`, "base\n");
-    await runGitCommand(["add", "."], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Initial commit"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["add", "."], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Initial commit"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
     // The PR branch really does collide with main — and it is pushed.
-    await runGitCommand(["checkout", "-b", "issue-9-collide"], {
+    await runFixtureGit(["checkout", "-b", "issue-9-collide"], {
       cwd: localPath,
     });
     await Deno.writeTextFile(`${localPath}/shared.txt`, "pr change\n");
-    await runGitCommand(["add", "."], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "PR changes shared"], {
+    await runFixtureGit(["add", "."], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "PR changes shared"], {
       cwd: localPath,
     });
-    await runGitCommand(["push", "-u", "origin", "issue-9-collide"], {
+    await runFixtureGit(["push", "-u", "origin", "issue-9-collide"], {
       cwd: localPath,
     });
 
-    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await runFixtureGit(["checkout", "main"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/shared.txt`, "main change\n");
-    await runGitCommand(["add", "."], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "main changes shared"], {
+    await runFixtureGit(["add", "."], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "main changes shared"], {
       cwd: localPath,
     });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
     const result = await updatePrBranch("issue-9-collide", "main", {
       cwd: localPath,

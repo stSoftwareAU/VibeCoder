@@ -5,6 +5,10 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   BASELINE_WORKTREE_DIR,
@@ -413,10 +417,11 @@ Deno.test("judgeDenoTestCheck: a base-only parallel failure still runs the seria
 
 async function sh(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: { ...NO_HOST_GIT_CONFIG },
   }).output();
   if (!out.success) {
     throw new Error(

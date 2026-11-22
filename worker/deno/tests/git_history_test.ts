@@ -11,6 +11,10 @@ import {
   isShallowRepo,
 } from "../lib/git_history.ts";
 import type { Result } from "../types.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import type {
   GitCommandOptions,
   GitCommandOutput,
@@ -440,7 +444,7 @@ Deno.test(
       cwd: string,
     ): Promise<{ code: number; stdout: string; stderr: string }> => {
       const cmd = new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd,
         stdout: "piped",
         stderr: "piped",
@@ -449,6 +453,7 @@ Deno.test(
           GIT_AUTHOR_EMAIL: "test@example.com",
           GIT_COMMITTER_NAME: "test",
           GIT_COMMITTER_EMAIL: "test@example.com",
+          ...NO_HOST_GIT_CONFIG,
         },
       });
       const out = await cmd.output();

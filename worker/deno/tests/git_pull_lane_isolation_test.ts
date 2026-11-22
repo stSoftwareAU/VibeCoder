@@ -23,7 +23,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { updatePrBranch } from "../lib/git_pull.ts";
 import { classifyCloneContention } from "../lib/clone_contention.ts";
 import { ensureLaneWorktree } from "../lib/lane_worktree.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 
 interface Fixture {
   tmpDir: string;
@@ -34,7 +34,7 @@ interface Fixture {
 }
 
 async function git(args: string[], cwd: string): Promise<string> {
-  const result = await runGitCommand(args, { cwd });
+  const result = await runFixtureGit(args, { cwd });
   return result.ok ? result.value.stdout.trim() : "";
 }
 
@@ -83,7 +83,7 @@ Deno.test("updatePrBranch - a PR branch that exists only on origin is updated, n
   const { tmpDir, clonePath, authorPath } = await setupFixture();
   try {
     // Precondition: the clone genuinely has no local copy of the branch.
-    const localRef = await runGitCommand(
+    const localRef = await runFixtureGit(
       ["rev-parse", "--verify", "--quiet", "refs/heads/issue-373-fix"],
       { cwd: clonePath },
     );
@@ -102,7 +102,7 @@ Deno.test("updatePrBranch - a PR branch that exists only on origin is updated, n
 
     // The rebase really was published: the author's clone sees the PR branch
     // sitting on top of the new base.
-    await runGitCommand(["fetch", "origin"], { cwd: authorPath });
+    await runFixtureGit(["fetch", "origin"], { cwd: authorPath });
     const behind = await git(
       ["rev-list", "--count", "origin/issue-373-fix..origin/main"],
       authorPath,
@@ -149,7 +149,7 @@ Deno.test("updatePrBranch - runs in a lane worktree while the shared clone holds
     );
 
     // And the PR really was rebased onto the published base.
-    await runGitCommand(["fetch", "origin"], { cwd: authorPath });
+    await runFixtureGit(["fetch", "origin"], { cwd: authorPath });
     assertEquals(
       await git(
         ["rev-list", "--count", "origin/issue-373-fix..origin/main"],
@@ -167,15 +167,15 @@ Deno.test("updatePrBranch - unpushed commits another lane left are refused as co
   try {
     // An issue slot's leftovers: the branch checked out locally with a commit
     // origin has never seen.
-    await runGitCommand([
+    await runFixtureGit([
       "fetch",
       "origin",
       "issue-373-fix:refs/heads/issue-373-fix",
     ], { cwd: clonePath });
-    await runGitCommand(["checkout", "issue-373-fix"], { cwd: clonePath });
+    await runFixtureGit(["checkout", "issue-373-fix"], { cwd: clonePath });
     await Deno.writeTextFile(`${clonePath}/wip.txt`, "unpushed work\n");
-    await runGitCommand(["add", "."], { cwd: clonePath });
-    await runGitCommand(["commit", "-m", "slot work in progress"], {
+    await runFixtureGit(["add", "."], { cwd: clonePath });
+    await runFixtureGit(["commit", "-m", "slot work in progress"], {
       cwd: clonePath,
     });
     const beforeRemote = await git(
@@ -197,7 +197,7 @@ Deno.test("updatePrBranch - unpushed commits another lane left are refused as co
     assertStringIncludes(result.error.message, "issue-373-fix");
 
     // Nothing was pushed and the unpushed commit is still there.
-    await runGitCommand(["fetch", "origin"], { cwd: authorPath });
+    await runFixtureGit(["fetch", "origin"], { cwd: authorPath });
     assertEquals(
       await git(["rev-parse", "origin/issue-373-fix"], authorPath),
       beforeRemote,

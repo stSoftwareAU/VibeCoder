@@ -18,6 +18,10 @@ import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import { isConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   isMilestoneSyncBranch,
   mergeMethodFlagForHead,
   raiseMilestoneSyncPr,
@@ -33,8 +37,9 @@ async function git(
   cwd: string,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   }).output();

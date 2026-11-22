@@ -24,6 +24,7 @@ import {
   REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
   resolveRepairPreFlightSpec,
 } from "../lib/git_push.ts";
+import { NO_HOST_GIT_CONFIG } from "./support/no_host_git_config.ts";
 import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 import {
   type PreFlightCommandResult,
@@ -36,14 +37,6 @@ interface GitRunResult {
   stdout: string;
   stderr: string;
 }
-
-/**
- * Keeps every git call away from the host's ambient config: the worker hands
- * agent runs a `core.hooksPath` through `GIT_CONFIG_COUNT`/`KEY`/`VALUE`, and
- * that pre-push hook would refuse the deliberately badly formatted fixtures,
- * so the tests would differ inside and outside an agent run.
- */
-const NO_HOST_GIT_CONFIG = { GIT_CONFIG_COUNT: "0" };
 
 async function runGit(args: string[], cwd: string): Promise<GitRunResult> {
   const cmd = new Deno.Command("git", {
