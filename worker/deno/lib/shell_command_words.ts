@@ -381,7 +381,8 @@ function frameLive(f: Frame): boolean {
 
 /**
  * Whether the frame's current branch runs every time the construct is reached
- * and an `exit` in it ends the script (false for a function body or subshell).
+ * and an `exit` in it ends the script (false for a function body, and for a
+ * subshell unless `allowSub` is set).
  */
 function frameCertain(f: Frame, allowSub = false): boolean {
   if (f.fn || (f.sub && !allowSub) || !f.entryCertain) return false;
@@ -486,7 +487,9 @@ export interface ReachableCommand {
   /**
    * True when the command runs every time the body reaches it: no run-time
    * `&&`/`||` chain, `if`/`elif`/`else` branch, loop body or `case` arm decides
-   * it, and it is not piped or backgrounded. A `( )` subshell around it does
+   * it, and the separator before it is not `|` or `&`
+   * (the separator after it is not checked, so `set -e &` is still certain). A
+   * `( )` subshell around it does
    * not clear this (`( set -e; cmd )` runs the `set` whenever the subshell
    * runs). A `set -e` that is not certain turns errexit on only when its
    * condition holds, so the walk does not credit it (PR #5332 review).

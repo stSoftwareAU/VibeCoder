@@ -169,8 +169,9 @@ emulator test.
   records an unsupported operation as an `aws-emulator-gap` record, and the
   valid, incomplete, disabled-job, push-only, unused-image and ignored-failure
   gap fixtures cover it.
-- **met** — A required test command failure cannot satisfy the workflow
-  contract. — evidence:
+- **partial** — The static scan refuses the required-test-command failure cases
+  the reviews named; it does not prove every shell path, so a failure hidden
+  behind shell control flow it cannot model may still be credited. — evidence:
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts::checkAwsEmulatorInCI - a runner followed by && and another line is refused; as the last && link it is credited`,
   `…::a repository script without set -e that runs the runner then more lines is refused; with set -euo pipefail it is credited`,
   `…::set +e before the runner refuses it when another command follows; set -e or the default shell keeps it`,
@@ -406,16 +407,15 @@ emulator test.
   `deno task test:unit` at the head of this round (an earlier figure of 510
   counted only five of the seven files); `deno lint`, `deno check` and
   `deno fmt --check` on the changed source and test files are clean. The full
-  `./quality.sh` was not run in this round. The criterion "A required test
-  command failure cannot satisfy the workflow contract." stays `met` for the
-  cases the reviews named.
+  `./quality.sh` was not run in this round. The cases the reviews named are
+  refused and tested; the criterion is `partial`, as above.
 - After the sixteenth review (of `23d438a1f`): `keptCommands` turned errexit on
   at every reachable `set -e`, so a `set -e` that ran only under a run-time
-  condition credited a runner followed by more commands. `ReachableCommand`
-  now carries `certain` (computed in `reachableCommands` beside the existing
-  `exit` check, but a `( )` subshell does not clear it), and `keptCommands`
-  turns errexit on only for a certain `set -e` or `set -o errexit`; `set +e`
-  still turns it off wherever it is reachable. The Errexit paragraph of
+  condition credited a runner followed by more commands. `ReachableCommand` now
+  carries `certain` (computed in `reachableCommands` beside the existing `exit`
+  check, but a `( )` subshell does not clear it), and `keptCommands` turns
+  errexit on only for a certain `set -e` or `set -o errexit`; `set +e` still
+  turns it off wherever it is reachable. The Errexit paragraph of
   `docs/BEST-PRACTICES-SCAN.md` and the `keptCommands` comments say the same.
   The new test
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts::checkAwsEmulatorInCI - a set -e that runs only under a run-time condition does not credit a runner followed by more commands`
@@ -426,8 +426,8 @@ emulator test.
   the head. The seven related test files give `674 passed | 0 failed` through
   `deno task test:unit` at the head of this round; `deno lint`, `deno check` and
   `deno fmt --check` on the changed files are clean. The full `./quality.sh` was
-  not run in this round. The criterion stays `met` for the cases the reviews
-  named.
+  not run in this round. The cases the reviews named are refused and tested; the
+  criterion is `partial`, as above.
 - After the fourteenth review (of `90b04627`): a command that starts inside a
   `$( … )` or backtick substitution the walk tracks no frame for
   (`linePending > 0` or an odd backtick count at the command's start) no longer
@@ -467,10 +467,9 @@ emulator test.
   fails at `056c75f2`, and its credited
   `( for …; do X=$(for …; done); runner;
   done )` fixture fails with only the
-  `linePending` guard removed. The criterion "A required test command failure
-  cannot satisfy the workflow contract." stays `met`: the three cases the review
-  named are refused and tested. The seven related test files give
-  `671 passed | 0 failed` through `deno task
+  `linePending` guard removed. The three cases the review named are refused and
+  tested; the criterion is `partial`, as above. The seven related test files
+  give `671 passed | 0 failed` through `deno task
   test:unit`; `deno lint`,
   `deno check` and `deno fmt --check` on the changed source and test files are
   clean. The full `./quality.sh` was not run in this round.
