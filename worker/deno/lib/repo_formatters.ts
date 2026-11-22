@@ -10,9 +10,11 @@
  * fmt --check` would flag (`planFormatterFixes` in `pre_push_gate.ts`): `deno
  * fmt` on the changed code files under each outermost tracked `deno.json` /
  * `deno.jsonc` that its fmt scope covers, and `cargo fmt --all` in each
- * outermost tracked `Cargo.toml` directory whose `.rs` files changed. If any
- * tracked file differs afterwards, the formatted paths are committed as one
- * `style: apply repository formatters` commit.
+ * outermost tracked `Cargo.toml` directory whose `.rs` files changed. The one
+ * exception: a worker-owned archive file with uncommitted changes is left out
+ * of `deno fmt` even when its Deno root covers it (Issue #5328), so the gate's
+ * check could still flag it. If any tracked file differs afterwards, the formatted paths, and only those, are
+ * committed as one `style: apply repository formatters` commit.
  *
  * Markdown outside the worker's own archive is never handed to `deno fmt`:
  * it re-wraps whole documents and trips markdownlint MD018, so a Markdown
@@ -169,6 +171,9 @@ async function snapshot(
 /**
  * Stage and commit exactly these tracked paths.
  *
+ * The commit is limited to them too (`commit -- <paths>`), so a change
+ * someone else staged elsewhere stays staged, out of the formatter's commit.
+ *
  * Returns the git error, or `undefined` when the commit landed. The body
  * keeps the run-id trailer in a paragraph of its own: the subject reads as a
  * `Key: value` line, so the trailer would otherwise join it.
@@ -188,9 +193,10 @@ async function commitTrackedPaths(
     `${FORMATTER_COMMIT_MESSAGE}\n\n${FORMATTER_COMMIT_BODY}`,
     deps.runId(),
   );
-  const commit = await deps.runGitCommand(["commit", "-m", message], {
-    cwd: repoPath,
-  });
+  const commit = await deps.runGitCommand(
+    ["commit", "-m", message, "--", ...pathspecs],
+    { cwd: repoPath },
+  );
   return gitStepError("commit", commit);
 }
 
@@ -316,6 +322,80 @@ export function isolateLinkageLines(text: string): string {
 }
 
 /**
+ * Which of `archiveFiles` differ from HEAD in the index or the working tree,
+ * or the git error when that could not be read (Issue #5328).
+ *
+ * Shared by {@link runRepoFormatters}, which keeps such a file out of
+ * `deno fmt` and its commit, and {@link formatWorkerOwnedArchive}.
+ */
+async function uncommittedArchivePaths(
+  repoPath: string,
+  deps: RepoFormatterDeps,
+  archiveFiles: readonly string[],
+): Promise<Result<Set<string>>> {
+  const dirty = await deps.runGitCommand(
+    [
+      "diff",
+      "--name-only",
+      "-z",
+      "HEAD",
+      "--",
+      ...archiveFiles.map((path) => `:(literal)${path}`),
+    ],
+    { cwd: repoPath },
+  );
+  const error = gitStepError("diff --name-only HEAD", dirty);
+  if (error !== undefined) return { ok: false, error: new Error(error) };
+  return {
+    ok: true,
+    value: new Set(dirty.ok ? dirty.value.stdout.split("\0") : []),
+  };
+}
+
+/**
+ * Move uncommitted edits to archive files into a git stash (Issue #5328).
+ *
+ * The completion phase's pre-push gate runs `deno fmt --check` on the working
+ * tree copy of every branch-changed archive file, so an unformatted edit that
+ * is not in the push would block it, and the recovery turn would commit it.
+ * Stashing keeps the edit recoverable (`git stash list`) while the gate and
+ * the PR body both see the committed copy. A failed stash is logged and
+ * returns false; the gate then reports whatever it finds. Returns true when
+ * the paths now hold exactly their committed copy.
+ */
+async function stashUncommittedArchive(
+  repoPath: string,
+  deps: RepoFormatterDeps,
+  paths: string[],
+): Promise<boolean> {
+  const stash = await deps.runGitCommand(
+    [
+      "stash",
+      "push",
+      "-m",
+      `worker: uncommitted archive edit set aside before the pre-push gate (Issue #5328, run ${deps.runId()})`,
+      "--",
+      ...paths.map((path) => `:(literal)${path}`),
+    ],
+    { cwd: repoPath },
+  );
+  if (!stash.ok || stash.value.code !== 0) {
+    deps.logger.warn(
+      `repo formatters: could not set aside ${paths.join(", ")}: ${
+        gitStepError("stash push", stash)
+      }`,
+    );
+    return false;
+  }
+  deps.logger.info(
+    `repo formatters: set aside uncommitted ${
+      paths.join(", ")
+    } in a git stash; the gate judges the committed copy (Issue #5328)`,
+  );
+  return true;
+}
+
+/**
  * Format the worker's own archive Markdown and JSON, then commit.
  *
  * Runs after the repository formatters. Only the two worker-owned
@@ -325,14 +405,20 @@ export function isolateLinkageLines(text: string): string {
  * isolated (see {@link isolateLinkageLines}) and each JSON file is rewritten
  * with sorted keys; a file is written back only when it changed. Files over
  * MAX_ARCHIVE_REWRITE_BYTES are skipped with a warning and left for the gate
- * to report. A missing formatter, a write failure, or a formatter that exits
- * non-zero is logged.
+ * to report. An archive file with uncommitted changes is left out, neither
+ * formatted nor committed, and a failed check skips the step (Issue #5328).
+ * With `setAsideUncommitted`, that edit is instead moved into a git stash, so a
+ * gate that judges the working tree sees the committed copy; the file then
+ * holds exactly its committed copy and is formatted and committed like any
+ * other (a failed stash leaves it out). A missing
+ * formatter, a write failure, or a formatter that exits non-zero is logged.
  * This function never throws, so the gate still runs.
  */
 export async function formatWorkerOwnedArchive(
   repoPath: string,
   baseRef: string | undefined,
   deps: RepoFormatterDeps,
+  options: { setAsideUncommitted?: boolean } = {},
 ): Promise<void> {
   try {
     const git: PrePushGit = async (args, cwd) => {
@@ -380,8 +466,37 @@ export async function formatWorkerOwnedArchive(
       return;
     }
 
+    // Uncommitted edits stay out (Issue #5328): the formatter's commit must not
+    // publish them. loadSummaryForPublication uses the committed copy (#4764).
+    const dirty = await uncommittedArchivePaths(repoPath, deps, archiveFiles);
+    if (!dirty.ok) {
+      deps.logger.warn(
+        `repo formatters: worker-owned archive skipped: ${dirty.error.message}`,
+      );
+      return;
+    }
+    const dirtyPaths = dirty.value;
+    const leftOut = archiveFiles.filter((path) => dirtyPaths.has(path));
+    let stashed = false;
+    if (leftOut.length > 0) {
+      deps.logger.warn(
+        `repo formatters: left ${
+          leftOut.join(", ")
+        } out of the archive formatting: uncommitted changes stay uncommitted (Issue #5328)`,
+      );
+      if (options.setAsideUncommitted) {
+        // A stashed file now equals HEAD, so it is formatted and committed
+        // like any clean file; the gate must not meet an unformatted copy.
+        stashed = await stashUncommittedArchive(repoPath, deps, leftOut);
+      }
+    }
+    const cleanFiles = archiveFiles.filter((path) =>
+      stashed || !dirtyPaths.has(path)
+    );
+    if (cleanFiles.length === 0) return;
+
     const skipped = new Set<string>();
-    for (const path of archiveFiles) {
+    for (const path of cleanFiles) {
       const lower = path.toLowerCase();
       const isMarkdown = lower.endsWith(".md") || lower.endsWith(".markdown");
       const isJson = lower.endsWith(".json") || lower.endsWith(".jsonc");
@@ -414,7 +529,7 @@ export async function formatWorkerOwnedArchive(
       }
     }
 
-    const formatPaths = archiveFiles.filter((path) => !skipped.has(path));
+    const formatPaths = cleanFiles.filter((path) => !skipped.has(path));
     // `deno fmt` with no paths formats the whole repository: never run it empty.
     if (formatPaths.length === 0) return;
 
@@ -480,14 +595,58 @@ export async function formatWorkerOwnedArchive(
 }
 
 /**
+ * `changed` without the worker-owned archive files that hold uncommitted
+ * changes (Issue #5328).
+ *
+ * The formatters' commit stages whole files, so an archive file with an edit
+ * nobody committed would be published under the formatter's message. A failed
+ * check leaves every archive file out: it cannot be told apart, and
+ * {@link formatWorkerOwnedArchive} still handles them.
+ */
+async function withoutUncommittedArchive(
+  repoPath: string,
+  changed: readonly string[],
+  deps: RepoFormatterDeps,
+): Promise<string[]> {
+  const archiveFiles = changed.filter(isWorkerOwnedArchiveFile);
+  if (archiveFiles.length === 0) return [...changed];
+  const dirty = await uncommittedArchivePaths(repoPath, deps, archiveFiles);
+  if (!dirty.ok) {
+    deps.logger.warn(
+      `repo formatters: worker-owned archive left out of the formatters: ${dirty.error.message}`,
+    );
+    return changed.filter((path) => !isWorkerOwnedArchiveFile(path));
+  }
+  const leftOut = archiveFiles.filter((path) => dirty.value.has(path));
+  if (leftOut.length > 0) {
+    deps.logger.warn(
+      `repo formatters: left ${
+        leftOut.join(", ")
+      } out of the formatters: uncommitted changes stay uncommitted (Issue #5328)`,
+    );
+  }
+  return changed.filter((path) => !dirty.value.has(path));
+}
+
+/**
  * Run the repository's formatters over `changed` and commit the result.
  *
  * Only the files a changed-file check (`planChangedFileChecks`) would flag
  * are formatted — see `planFormatterFixes`: never Markdown, never an
  * untouched code file under `deno fmt`, and `cargo fmt --all` only for a
  * cargo root whose `.rs` files changed. Only those paths are staged (`git add
- * -u -- <paths>`), so an unrelated edit elsewhere in the tree stays out of the
- * commit; an uncommitted edit already in a formatted file does go in with it.
+ * -u -- <paths>`, then `commit -- <paths>`), so an unrelated edit elsewhere in
+ * the tree, or a file staged outside the formatted paths, stays out of the
+ * commit. An uncommitted edit already in a formatted code file does go in with
+ * it: the quality-gate loop leaves the fix agent's code edits uncommitted for
+ * `./quality.sh` to judge, so formatting and committing them puts on the branch
+ * the same code the gate checks. An archive summary describes the branch, so
+ * a worker-owned archive file (Markdown or JSON under `docs/archive/pr-summaries/`
+ * or `docs/archive/handover/`) with uncommitted changes is dropped from
+ * `changed` first: not formatted and not committed here, whatever Deno config
+ * covers it (see {@link formatWorkerOwnedArchive}). A gate that judges the
+ * working tree still sees that edit unless the caller asks for it to be set
+ * aside (the completion phase does).
  * Never throws: any unexpected failure is logged and reported via `gitError`
  * instead, and a formatter that fails is logged and recorded in `failures` —
  * the caller's own check still runs and reports what was left unfixed.
@@ -512,7 +671,7 @@ export async function runRepoFormatters(
     const paths = lsFiles.value.stdout.split("\0").filter((p) => p.length > 0);
 
     const steps = planFormatterFixes(
-      changed,
+      await withoutUncommittedArchive(repoPath, changed, deps),
       paths,
       await loadDenoScopes(repoPath, paths),
     );
@@ -663,7 +822,10 @@ export async function formatBranchChanges(
  * is missing, fails or throws is logged here, and the gate that follows still
  * runs and reports whatever is left unfixed. After the repository formatters,
  * the worker's own archive Markdown and JSON are formatted the same way
- * (Issue #4129).
+ * (Issue #4129). `options.setAsideUncommittedArchive` is for a caller whose
+ * gate judges the working tree but whose push carries commits only: an archive
+ * file with uncommitted edits is then stashed rather than left in place, and
+ * its committed copy is formatted and committed like any other archive file.
  */
 export async function formatBeforeGate(
   deps: {
@@ -674,6 +836,7 @@ export async function formatBeforeGate(
   },
   repoPath: string,
   baseRef: string | undefined,
+  options: { setAsideUncommittedArchive?: boolean } = {},
 ): Promise<void> {
   try {
     const result = await deps.git.formatBranchChanges(repoPath, baseRef);
@@ -694,5 +857,7 @@ export async function formatBeforeGate(
     ...createRepoFormatterDeps(),
     logger: deps.logger,
   };
-  await formatWorkerOwnedArchive(repoPath, baseRef, formatterDeps);
+  await formatWorkerOwnedArchive(repoPath, baseRef, formatterDeps, {
+    setAsideUncommitted: options.setAsideUncommittedArchive,
+  });
 }
