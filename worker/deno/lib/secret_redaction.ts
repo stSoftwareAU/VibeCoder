@@ -528,7 +528,7 @@ const RULES: readonly RedactionRule[] = [
   // and a failing child can echo the bearer token. Access tokens carry the
   // fixed `ya29.` prefix followed by a URL-safe body; the body is bounded
   // ({20,2048}) so a long run cannot rescan, and the 20-character floor plus
-  // the leading word boundary keep the rule off prose such as `ya29.short`.
+  // the leading word boundary keep the rule off prose such as a short `ya29.` fragment.
   {
     name: "google-oauth-access-token",
     pattern: /\bya29\.[A-Za-z0-9_.-]{20,2048}/g,

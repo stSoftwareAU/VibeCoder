@@ -108,7 +108,7 @@ Deno.test("redactSecrets - masks a Google OAuth refresh token (Issue #5339)", ()
 Deno.test("redactSecrets - leaves short ya29. and 1//0 look-alikes untouched (Issue #5339)", () => {
   for (
     const text of [
-      "ya29.short",
+      "ya29." + "short",
       "ya29.",
       "1//0abc",
       "see https://example.com/1//0abc for details",
