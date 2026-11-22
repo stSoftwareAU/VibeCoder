@@ -384,6 +384,29 @@ emulator test.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
+- After the eleventh review (of `d5338565`): the explicit-exit idiom drops an
+  exit's `)` only when it closes the tracked `( )` subshell around the runner,
+  and a `(` or `$(` opened in the `then` branch is a nested construct. A
+  command inside a parenthesis opened earlier on its line with no frame is
+  never credited (`ReachableCommand.inUntrackedParen`). So `time ( cd infra;
+  runner || exit 1 )`, `LOG=$(cd infra && runner 2>&1 || exit 1)` and its `;`
+  form, `OUT=$(cd infra; if ! runner; then exit 1; fi)`, `then (echo bad;
+  exit 1)` on one or several lines, `then MSG=$(echo bad; exit 1)`,
+  `echo $(cd infra; runner || exit 1)`, `! ( cd infra; runner || exit 1 )` and
+  `echo $(cd infra; runner)` earn no credit. Each is checked in a script
+  without `set -e` and in a step after `set +e`, and the argument and negation
+  forms in a default-shell step too. The controls (`( echo bad; exit 1 )` in
+  the branch, `runner || (echo failed; exit 1)`, `time ( cd infra; runner )`
+  refused; top-level `runner || exit 1`, `if ! runner; …; exit 1; fi`, and the
+  round-10 one-line subshells credited) hold. `fi)`, `done)`, `esac)` and
+  `})` now close the compound and then the subshell, so
+  `(if ! runner; then echo bad; exit 1; fi)`, `( if ! …; fi)` and
+  `(for d in a b; do runner || exit 1; done)` are credited as a script's
+  last line and in a default-shell step, and refused when followed by a line
+  without `set -e`. `docs/BEST-PRACTICES-SCAN.md` and the `keptCommands`
+  comment state the rules. Both new tests fail at `d5338565`. The related
+  test files give `805 passed | 1 failed | 1 ignored` (the root-only
+  unreadable-directory test).
 - After the tenth review (of `9d7c2e54`): a `( )` subshell opened as an `if`,
   `elif`, `while` or `until` test is never kept, whatever errexit is outside
   it (`ReachableCommand.subshellsInCondition`). So `if ( cd infra && runner ||

@@ -945,6 +945,9 @@ function applyTrap(
  *
  * A command is never kept when:
  *
+ * - it sits inside a parenthesis opened earlier on its line with no tracked
+ *   frame (`ReachableCommand.inUntrackedParen`: `time ( … )`, `! ( … )`,
+ *   `X=$(… cmd)`, `echo $(cmd)`);
  * - it sits in a group or compound swallowed one level out
  *   (`ReachableCommand.groupSwallowed`);
  * - it sits in a `( )` subshell whose own failure does not fail the body:
@@ -1018,7 +1021,8 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
     });
     // A group swallowed one level out takes even `cmd || exit 1` with it when
     // the group is a subshell, so it is never credited (fails closed).
-    const kept = !cmd.groupSwallowed && subshellFailsBody &&
+    const kept = !cmd.groupSwallowed && !cmd.inUntrackedParen &&
+      subshellFailsBody &&
       (trapped.size === 0 || (viaExec && commandStatusNotSwallowed(cmd))) &&
       (cmd.failureExits ||
         (commandStatusNotSwallowed(cmd) &&

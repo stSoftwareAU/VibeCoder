@@ -474,6 +474,14 @@ export interface ReachableCommand {
    */
   subshellsInCondition: number[];
   /**
+   * True when the command sits inside a parenthesis opened earlier on its
+   * line that the walk tracks no frame for (`time ( cd x; cmd )`,
+   * `! ( cmd )`, `X=$(cd x && cmd)`, `echo $(cmd)`): its status is an
+   * argument, a negation or a substitution's, so it is never credited (PR
+   * #5332 review round 11).
+   */
+  inUntrackedParen: boolean;
+  /**
    * Ids of the `( )` subshells and substitutions open around the command,
    * innermost last: a `set` inside one changes the options only until it
    * closes (PR #5332 review).
@@ -517,17 +525,27 @@ function isFailingExit(words: string[], bare: boolean): boolean {
  *
  * Any other form is false, so the caller falls back to its own rules.
  */
-function failureExits(listed: ShellCommand[], index: number): boolean {
+function failureExits(
+  listed: ShellCommand[],
+  index: number,
+  closePending: number | null,
+): boolean {
   const listedHere = listed[index];
   const listedAfter = listed[index + 1];
   if (listedHere === undefined || listedAfter === undefined) return false;
   // A one-line subshell's `(` and `)` sit in the listed words
   // (`( if ! cmd; …`, `cmd || exit 1 )`, `exit 1)`); they are not part of
-  // the command or the exit (PR #5332 review round 10).
+  // the command or the exit (PR #5332 review round 10). The `)` is dropped
+  // only when it closes the tracked `( )` subshell open around the command
+  // (`closePending` is the line's open-parenthesis count then, null when the
+  // innermost frame is not such a subshell), so an exit that ends a nested
+  // subshell or substitution is never read as the idiom (round 11).
   const here = { ...listedHere, words: withoutSubshellOpen(listedHere.words) };
   const after = {
     ...listedAfter,
-    words: withoutSubshellClose(listedAfter.words),
+    words: closePending === null
+      ? listedAfter.words
+      : withoutSubshellClose(listedAfter.words, closePending),
   };
   if (after.sep === "||" && isFailingExit(after.words, true)) {
     // `! cmd || exit 1` inverts the status first: a failing cmd makes `!`
@@ -546,12 +564,18 @@ function failureExits(listed: ShellCommand[], index: number): boolean {
   for (let j = index + 1; j < listed.length; j++) {
     const entry = listed[j];
     if (entry === undefined) break;
-    const own = withoutSubshellClose(entry.words);
-    const words = j === index + 1 ? own.slice(1) : own;
+    const own = j === index + 1 ? entry.words.slice(1) : entry.words;
+    // `fi)` closes the `if` and then a subshell around it.
+    const words = /^fi\)+$/.test(own[0] ?? "") ? ["fi", ...own.slice(1)] : own;
     const head = words[0];
     if (head === undefined) continue;
     if (head === "fi" || head === "else" || head === "elif") return exits;
-    if (NESTED_OPENERS.has(head) || words.includes("fi")) return false;
+    // A `(` or `$(` opened in the branch is a nested construct too: an exit
+    // inside it ends only that subshell (PR #5332 review round 11).
+    if (
+      NESTED_OPENERS.has(head) || words.includes("fi") ||
+      words.some((word) => word.startsWith("(") || word.includes("$("))
+    ) return false;
     const next = listed[j + 1];
     if (
       isFailingExit(words, false) && !CHAINING_SEPARATORS.has(entry.sep) &&
@@ -584,8 +608,8 @@ function withoutSubshellOpen(words: string[]): string[] {
  * any redirections after it (`exit 1 )`, `exit 1)`, `fi ) >log`), as
  * {@link subshellCloseIndex} reads it.
  */
-function withoutSubshellClose(words: string[]): string[] {
-  const at = subshellCloseIndex(words);
+function withoutSubshellClose(words: string[], pending: number): string[] {
+  const at = subshellCloseIndex(words, pending);
   if (at === -1) return words;
   const word = (words[at] ?? "").replace(/\)+$/, "");
   return word === "" ? words.slice(0, at) : [...words.slice(0, at), word];
@@ -733,6 +757,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
   let linePending = 0;
   for (const [index, { words: all, sep }] of listed.entries()) {
     let words = all;
+    const pendingBefore = linePending;
     // Close the innermost compound, noting whether what follows its closing
     // word (`} || true`, `fi | tee`) can swallow its status.
     const pop = (): Frame | undefined => {
@@ -771,6 +796,16 @@ export function reachableCommands(script: string): ReachableCommand[] {
       const lead = words[0] ?? "";
       if (lead.length > 1 && lead.startsWith("(") && !lead.startsWith("((")) {
         words = ["(", lead.slice(1), ...words.slice(1)];
+      }
+      // `fi)`, `done)`, `esac)` and `})` close the compound and then a
+      // subshell around it, as `fi )` does (PR #5332 review round 11).
+      const closing = /^(fi|done|esac|\})(\)+)$/.exec(words[0] ?? "");
+      if (closing) {
+        words = [
+          closing[1] ?? "",
+          ...Array.from({ length: closing[2]?.length ?? 0 }, () => ")"),
+          ...words.slice(1),
+        ];
       }
       const w = words[0] ?? "";
       const top = stack.at(-1);
@@ -922,12 +957,17 @@ export function reachableCommands(script: string): ReachableCommand[] {
         // A group or subshell inside an `if`/`while` test is a condition
         // too: its status is the test's (PR #5332 review).
         condition: stack.some((frame) => frame.branch === "cond"),
-        failureExits: failureExits(listed, index),
+        failureExits: failureExits(
+          listed,
+          index,
+          stack.at(-1)?.sub && !stack.at(-1)?.subst ? linePending : null,
+        ),
         groupSwallowed: false,
         errexitIgnored: false,
         inLoop: stack.some((frame) => frame.iterates),
         subshellsInLoop: subshellsInsideLoops(stack),
         subshellsInCondition: subshellsInsideConditions(stack),
+        inUntrackedParen: pendingBefore > 0,
         subshells: stack.filter((frame) => frame.sub).map((frame) => frame.id),
       });
       enclosing.push(stack.map((frame) => frame.id));

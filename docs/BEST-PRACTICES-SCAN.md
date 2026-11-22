@@ -391,7 +391,11 @@ Official server mode needs all of the following:
   `( runner; echo done ) 2>&1 | tee log` is swallowed too; a `$(` or `(`
   left open at a line end, such as `VERSION=$(`, is closed by the `)` that
   balances it, not by the subshell's; the balance is carried across one line,
-  so a one-line `$(ls | wc -l)` opens nothing), not in a group or subshell that is itself an `if` or `while` test
+  so a one-line `$(ls | wc -l)` opens nothing; a command inside such a
+  one-line parenthesis, or after `time (`, `! (` or `X=$(` on its line, is
+  never credited, because its status is an argument, a negation or the
+  substitution's; `fi)`, `done)`, `esac)` and `})` close the compound and then
+  the subshell, as `fi )` does), not in a group or subshell that is itself an `if` or `while` test
   (`if ( runner ); then …`), nor by `&&` with more of the body after that
   chain, and one of the following. Bash ignores errexit inside a compound on
   the left of `&&`, so a command there is judged with errexit off:
@@ -406,7 +410,11 @@ Official server mode needs all of the following:
   are also preserved, whatever errexit is (inside a `( )` subshell they end
   only the subshell, so the Errexit rule below must also hold; a one-line
   subshell's own `(` and `)`, as in `( cd infra; runner || exit 1 )` or
-  `(cd infra && runner || exit 1)`, are not part of the idiom's words): `runner || exit N` (N not 0, or
+  `(cd infra && runner || exit 1)`, are not part of the idiom's words, but
+  only when that `)` closes the `( )` subshell around the runner: an exit
+  whose `)` ends a nested `( … )` or `$( … )`, or a `(` or `$(` opened in the
+  `then` branch, as in `then (echo bad; exit 1)` or
+  `then MSG=$(echo bad; exit 1)`, is not the idiom): `runner || exit N` (N not 0, or
   a bare `exit`; not after a negated `! runner`, whose `!` turns a failure
   into success before the `||`) and `if ! runner; then ...; exit N; fi` (N
   not 0, in a flat `then` branch). Neither counts inside a group swallowed
