@@ -673,6 +673,10 @@ Deno.test("parseGitleaksReport handles an empty report and rejects malformed JSO
 });
 
 Deno.test("parseTrufflehogOutput keeps the location and drops the raw value", () => {
+  // Fake AWS key, not a real credential — the parser test needs a key-shaped
+  // value to prove the raw secret is dropped from the findings. nosemgrep keeps
+  // the SAST stage on the finding it is for, following
+  // `handle_no_changes_phase_test.ts`.
   const stdout = [
     "2026-08-18 loading detectors",
     JSON.stringify({
@@ -680,7 +684,9 @@ Deno.test("parseTrufflehogOutput keeps the location and drops the raw value", ()
         Data: { Git: { commit: "def456", file: "cfg/prod.env", line: 3 } },
       },
       DetectorName: "AWS",
+      // nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
       Raw: "AKIAREALLOOKINGVALUE",
+      // nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
       RawV2: "AKIAREALLOOKINGVALUE:secret",
     }),
   ].join("\n");
@@ -690,6 +696,7 @@ Deno.test("parseTrufflehogOutput keeps the location and drops the raw value", ()
   assertEquals(findings[0]?.path, "cfg/prod.env");
   assertEquals(findings[0]?.rule, "AWS");
   assertEquals(
+    // nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
     JSON.stringify(findings).includes("AKIAREALLOOKINGVALUE"),
     false,
   );
