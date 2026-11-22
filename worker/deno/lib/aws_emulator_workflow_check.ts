@@ -12,9 +12,9 @@
  *   position (an `echo` or a comment does not count), and a failure of the
  *   script fails the job: the step's code (comment lines, as Bash reads them,
  *   dropped) has no `|`, `;` or `&`, so nothing follows, pipes or backgrounds
- *   the call; the step
- *   consists only of `set -euo pipefail` (optional) and that one call, so no
- *   `if`, `exit` or second command can skip or replace it; no `!` or
+ *   the call; the step consists only of an optional leading `set -euo pipefail`
+ *   and then that one call as its last command, so no `if`, `exit`, trailing
+ *   `set` or second command can skip or replace it; no `!` or
  *   `if`/`while`/`until` word precedes the call, because `! ./script` turns
  *   a failure into success (PR #5276 review); and neither the
  *   job nor that step sets `continue-on-error` or an `if:` (PR #3478 review);
@@ -242,15 +242,37 @@ function stepInstallsRunner(step: unknown): boolean {
   return segmentsOf(step).some(segmentInstallsRunner);
 }
 
+/** The strict-mode preamble a step may open with. */
+const STRICT_MODE = "set -euo pipefail";
+
 /**
- * Whether the step's code is only `set -euo pipefail` (optional) and exactly
- * one segment invoking `path`.
+ * The step's one command after an optional leading {@link STRICT_MODE}, or
+ * undefined when none or more than one remains. The preamble counts only as
+ * the first command: under a shell with no errexit (`bash {0}`) a step's exit
+ * status is its last command's, so a `set` after the command would replace a
+ * failure with success (Issue #5316).
+ */
+function soleCommandAfterStrictMode<T>(
+  commands: T[],
+  text: (command: T) => string,
+): T | undefined {
+  const first = commands[0];
+  const rest = first !== undefined && text(first) === STRICT_MODE
+    ? commands.slice(1)
+    : commands;
+  return rest.length === 1 ? rest[0] : undefined;
+}
+
+/**
+ * Whether the step's code is only an optional leading `set -euo pipefail` and
+ * exactly one segment invoking `path`, which is the last.
  */
 function stepIsOnlyScript(step: unknown, path: string): boolean {
-  const rest = segmentsOf(step).filter((w) =>
-    w.join(" ") !== "set -euo pipefail"
+  const words = soleCommandAfterStrictMode(
+    segmentsOf(step),
+    (w) => w.join(" "),
   );
-  return rest.length === 1 && segmentInvokes(rest[0] ?? [], path);
+  return words !== undefined && segmentInvokes(words, path);
 }
 
 const SHELL_OPTION_NAMES = ["pipefail", "errexit", "nounset", "xtrace"];
@@ -340,7 +362,7 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
     const testStep = steps[testIndex];
     if (!stepIsOnlyScript(testStep, SCRIPT_PATH)) {
       problems.push(
-        `[test-step] the ${SCRIPT_PATH} step must run only \`set -euo pipefail\` and the script, so nothing can skip or replace the deploy`,
+        `[test-step] the ${SCRIPT_PATH} step must run only an optional leading \`set -euo pipefail\` and then the script, so nothing can skip or replace the deploy`,
       );
     }
     const softFails = [job, testStep].some((o) =>
@@ -624,14 +646,15 @@ function stepMayRetagImage(step: unknown, jobTag: string): boolean {
 }
 
 /**
- * Whether the step's code is only `set -euo pipefail` (optional) and exactly
- * one segment that is the agent `docker run`.
+ * Whether the step's code is only an optional leading `set -euo pipefail` and
+ * exactly one segment that is the agent `docker run`, which is the last.
  */
 function stepIsAgentRun(step: unknown): boolean {
-  const rest = segmentsOf(step).filter((w) =>
-    w.join(" ") !== "set -euo pipefail"
+  const words = soleCommandAfterStrictMode(
+    segmentsOf(step),
+    (w) => w.join(" "),
   );
-  return rest.length === 1 && segmentRunsAwsEmulatorAsAgent(rest[0] ?? []);
+  return words !== undefined && segmentRunsAwsEmulatorAsAgent(words);
 }
 
 /** The path filter script the `changes` job's `filter` step must run. */
@@ -1079,9 +1102,8 @@ const GATE_COMMANDS = GATE_SCRIPT_PATHS.flatMap((
  * lines against an allowlist (Issue #5110).
  */
 function stepRunsGateScript(step: unknown): boolean {
-  const lines = codeLines(step);
-  if (lines[0] === "set -euo pipefail") lines.shift();
-  return lines.length === 1 && GATE_COMMANDS.includes(lines[0] ?? "");
+  const line = soleCommandAfterStrictMode(codeLines(step), (l) => l);
+  return line !== undefined && GATE_COMMANDS.includes(line);
 }
 
 /**

@@ -73,6 +73,8 @@ function expectFindings(text: string, needles: string[]) {
 
 const TEST_STEP_ANCHOR =
   "\n          ./infra/cloudformation/test-aws-emulator.sh\n";
+/** The real test step's preamble plus the call, as one anchor. */
+const TEST_STEP_BLOCK = "\n          set -euo pipefail" + TEST_STEP_ANCHOR;
 const TEST_STEP_NAME =
   "      - name: Test CloudFormation templates against AWS Emulator\n";
 const TOOLCHAIN_ANCHOR = "bash container/toolchains/aws-emulator.sh";
@@ -174,7 +176,7 @@ for (
   Deno.test(`(a) refuses ${label}`, () => {
     expectFindings(
       mutate([
-        TEST_STEP_ANCHOR,
+        TEST_STEP_BLOCK,
         "\n          set -euo pipefail\n          " + prefix +
         "./infra/cloudformation/test-aws-emulator.sh\n",
       ]),
@@ -186,7 +188,7 @@ for (
 Deno.test("(a) accepts the normal call after set -euo pipefail (control for the negated cases)", () => {
   expectFindings(
     mutate([
-      TEST_STEP_ANCHOR,
+      TEST_STEP_BLOCK,
       "\n          set -euo pipefail\n          ./infra/cloudformation/test-aws-emulator.sh\n",
     ]),
     [],
@@ -444,6 +446,31 @@ Deno.test("(a) accepts shell: bash and the GitHub default bash form", () => {
       [],
     );
   }
+});
+
+// Issue #5316: under `shell: bash {0}` (no errexit) a step's status is its last
+// command's, so a `set -euo pipefail` after the script would replace a failure
+// with success. Only a leading preamble is allowed.
+Deno.test("(a) refuses a trailing set -euo pipefail under shell: bash {0} (Issue #5316)", () => {
+  expectFindings(
+    mutate(
+      [TEST_STEP_NAME, TEST_STEP_NAME + "        shell: bash {0}\n"],
+      [
+        "\n          set -euo pipefail\n          ./infra/cloudformation/test-aws-emulator.sh\n",
+        "\n          ./infra/cloudformation/test-aws-emulator.sh\n          set -euo pipefail\n",
+      ],
+    ),
+    [
+      "[test-step] the infra/cloudformation/test-aws-emulator.sh step must run only an optional leading `set -euo pipefail`",
+    ],
+  );
+});
+
+Deno.test("(a) accepts a leading set -euo pipefail under shell: bash {0} (Issue #5316 control)", () => {
+  expectFindings(
+    mutate([TEST_STEP_NAME, TEST_STEP_NAME + "        shell: bash {0}\n"]),
+    [],
+  );
 });
 
 // (b) the pinned install and the runner install precede the test step.
@@ -1209,6 +1236,38 @@ Deno.test("(container-agent-run) refuses set -euo pipefail \\ continued onto # n
     `expected one finding, got: ${JSON.stringify(problems)}`,
   );
   assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+});
+
+// Issue #5316: under `shell: bash {0}` a trailing `set -euo pipefail` after the
+// docker run would replace its failure with success, so only a leading one counts.
+Deno.test("(container-agent-run) refuses a trailing set -euo pipefail under shell: bash {0} (Issue #5316)", () => {
+  const problems = checkContainerBuildRunsAwsEmulator(parseYaml(
+    mutateText(CONTAINER_BUILD, [
+      AGENT_STEP_IF,
+      AGENT_STEP_IF + "        shell: bash {0}\n",
+    ], [
+      "          set -euo pipefail\n" + AGENT_DOCKER_LINE,
+      AGENT_DOCKER_LINE + "          set -euo pipefail\n",
+    ]),
+  ));
+  assertEquals(
+    problems.length,
+    1,
+    `expected one finding, got: ${JSON.stringify(problems)}`,
+  );
+  assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+});
+
+Deno.test("(container-agent-run) accepts a leading set -euo pipefail under shell: bash {0} (Issue #5316 control)", () => {
+  assertEquals(
+    checkContainerBuildRunsAwsEmulator(parseYaml(
+      mutateText(CONTAINER_BUILD, [
+        AGENT_STEP_IF,
+        AGENT_STEP_IF + "        shell: bash {0}\n",
+      ]),
+    )),
+    [],
+  );
 });
 
 const AGENT_ONE_LINE_ARGS = [
