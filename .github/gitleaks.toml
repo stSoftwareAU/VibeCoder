@@ -60,7 +60,7 @@ useDefault = true
 # the key format for any issue number rather than one fixture value, so it does
 # not have to be revisited each time a new dedup key is asserted.
 [allowlist]
-description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115, #1217, #1387, #1695, #1727)"
+description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115, #1217, #1387, #1695, #1727, #5310)"
 regexTarget = "line"
 regexes = [
   # Issue #4767: exact synthetic test fixture in the PR commit history.
@@ -107,6 +107,12 @@ regexes = [
   # The PR summary quoted the same two lines in one commit; the range scan
   # still sees it. Match only the backtick-quoted mention, not the whole file.
   '''`(CLAUDE_CODE_OAUTH_TOKEN: "fixture-claude-5083"|ANTHROPIC_API_KEY: "fixture-anthropic-5083"),`''',
+  # Issue #5310: the label-as-value redaction test first committed this
+  # synthetic YAML child value as a literal and now interpolates its fixture.
+  # Range scans still see that commit. Exempt only the exact line.
+  '''^\s*"secrets:\\n  API_TOKEN: abcdefgh12345",\s*$''',
+  # The PR summary quoted the same value in one commit; match only that backtick-quoted mention.
+  '''`  API_TOKEN: abcdefgh12345`''',
 ]
 paths = [
   '''worker/deno/tests/secret_redaction_test\.ts''',
