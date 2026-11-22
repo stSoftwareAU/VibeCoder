@@ -3089,6 +3089,75 @@ Deno.test("checkAwsEmulatorInCI - a runner in a ( set -e; ... ) subshell followe
   assertEquals(topLevel.wiring, "official-server", "top-level set -e");
 });
 
+// PR #5332 review round 8: every route that fails a `( )` subshell (errexit
+// inside it, an explicit exit, `exec`) fails the body only when the
+// subshell's own failure does; a loop body is never the last command.
+Deno.test("checkAwsEmulatorInCI - a subshell's exit, exec or set -e fails the body only when the subshell's failure does", async () => {
+  const bodies: Array<[string, string]> = [
+    [
+      "(a) a set -e subshell as a loop body",
+      `for d in a b; do ( set -e; cd "$d"; ${RUNNER_STEP} ); done`,
+    ],
+    [
+      "(a) the multi-line loop",
+      `for d in a b\ndo\n  ( set -e; cd "$d"; ${RUNNER_STEP} )\ndone`,
+    ],
+    [
+      "(b) runner || exit 1 in a subshell, then a line",
+      `(\n  cd infra\n  ${RUNNER_STEP} || exit 1\n)\necho after`,
+    ],
+    [
+      "(b) the same subshell as a loop body",
+      `for d in a b; do (\n  cd infra\n  ${RUNNER_STEP} || exit 1\n); done`,
+    ],
+    [
+      "(c) if ! runner; then exit 1; fi in a subshell, then a line",
+      `(\n  cd infra\n  if ! ${RUNNER_STEP}; then\n    echo failed\n    exit 1\n  fi\n)\necho after`,
+    ],
+    [
+      "(d) exec runner in a subshell, then a line",
+      `( cd infra && exec ${RUNNER_STEP} )\necho after`,
+    ],
+  ];
+  for (const [label, body] of bodies) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `script without set -e: ${label}`);
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    });
+    assertEquals(step.wiring, "missing", `step after set +e: ${label}`);
+  }
+  // Controls: the same subshells as the body's last command, or under errexit.
+  const credited: Array<[string, Record<string, string>]> = [
+    ["runner || exit 1 in the last subshell", {
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh":
+        `#!/usr/bin/env bash\n(\n  cd infra\n  ${RUNNER_STEP} || exit 1\n)\n`,
+    }],
+    ["exec runner in the last subshell", {
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n( cd infra && exec ${RUNNER_STEP} )\n`,
+    }],
+    ["the set -e loop under a top-level set -e", {
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh":
+        `#!/usr/bin/env bash\nset -e\nfor d in a b; do ( set -e; cd "$d"; ${RUNNER_STEP} ); done\necho after\n`,
+    }],
+    ["runner || exit 1 in a subshell in a default-shell step", {
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(`(\n  cd infra\n  ${RUNNER_STEP} || exit 1\n)\necho after`),
+      ),
+    }],
+  ];
+  for (const [label, files] of credited) {
+    const result = await checkRepoWith(files);
+    assertEquals(result.wiring, "official-server", label);
+  }
+});
+
 // PR #5332 review round 7: a one-line `$( … )` holding `|`, `;` or `&&`, with
 // more words after it, opens no frame, so later commands are still judged.
 Deno.test("checkAwsEmulatorInCI - a one-line substitution with a separator inside it does not hide a later runner", async () => {

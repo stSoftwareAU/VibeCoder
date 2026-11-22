@@ -207,6 +207,10 @@ emulator test.
   After the seventh review, a runner in a `( set -e; … )` subshell followed by
   more commands, with errexit off outside, is refused:
   `…::a runner in a ( set -e; ... ) subshell followed by more commands, with errexit off outside, earns no credit`;
+  after the eighth review, the same holds whichever route fails the
+  subshell (`|| exit 1`, `if ! …; exit 1; fi`, `exec`) and for a subshell as
+  a loop body:
+  `…::a subshell's exit, exec or set -e fails the body only when the subshell's failure does`;
   and a one-line `$( … )` with a separator inside no longer hides a later
   runner:
   `…::a one-line substitution with a separator inside it does not hide a later runner`.
@@ -380,6 +384,18 @@ emulator test.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
+- After the eighth review (of `8f32e27a`): every `( )` subshell around a
+  command is judged on all three routes, explicit exit, `exec` and errexit:
+  the command is kept only when errexit is on outside the subshell and not
+  ignored, or the subshell is the last command or has an `&&` chain after it
+  and is not a loop body. A new test refuses six forms (a `set -e` subshell as
+  a one-line and multi-line loop body, `|| exit 1` in a subshell then a line
+  and as a loop body, `if ! …; exit 1; fi` in a subshell then a line, and
+  `exec` in a subshell then a line), each in a script without `set -e` and in
+  a step after `set +e`, and credits four controls (the subshell last, under a
+  top-level `set -e`, and in a default-shell step). It fails at `8f32e27a`.
+  The related test files give `799 passed | 1 failed | 1 ignored` (the
+  root-only unreadable-directory test).
 - After the seventh review (of `926c2539`): the parenthesis balance is carried
   across the commands of one line, since the command list splits at a `|`,
   `;` or `&&` inside `$( … )`, and only a parenthesis still open at the line's

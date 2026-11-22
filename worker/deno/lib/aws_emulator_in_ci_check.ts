@@ -974,31 +974,40 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
   // errexit as it was outside each subshell whose `set` changed it, restored
   // when a later command is no longer inside that subshell.
   const saved: Array<{ id: number; errexit: boolean }> = [];
+  // errexit as it was when each subshell was entered.
+  const entryErrexit = new Map<number, boolean>();
   for (const [k, cmd] of cmds.entries()) {
     while (saved.length > 0 && !cmd.subshells.includes(saved.at(-1)!.id)) {
       errexit = saved.pop()!.errexit;
     }
     const at = commandIndex(cmd.words);
     const viaExec = cmd.words.slice(0, at).includes("exec");
-    // errexit switched on inside a `( )` subshell ends the subshell with the
-    // failure, but the body fails only when that subshell's own failure does:
-    // errexit on outside it, the subshell last, or an `&&` chain to the end
-    // after it (PR #5332 review).
-    const subshellFailsBody = saved.every((entry) => {
-      if (entry.errexit || !cmd.subshells.includes(entry.id)) return true;
+    // A command inside a `( )` subshell fails the body only when the
+    // subshell's own failure does, whichever route fails the subshell (an
+    // explicit exit, `exec`, or errexit inside it): errexit is on outside the
+    // subshell and not ignored, or the subshell is the body's last command or
+    // has an `&&` chain to the end after it, outside any loop body (PR #5332
+    // review).
+    for (const id of cmd.subshells) {
+      if (!entryErrexit.has(id)) entryErrexit.set(id, errexit);
+    }
+    const subshellFailsBody = cmd.subshells.every((id) => {
+      const outside = saved.find((entry) => entry.id === id)?.errexit ??
+        entryErrexit.get(id) ?? errexit;
+      if (outside && !cmd.errexitIgnored) return true;
+      if (cmd.inLoop) return false;
       let last = k;
-      while (cmds[last + 1]?.subshells.includes(entry.id)) last++;
+      while (cmds[last + 1]?.subshells.includes(id)) last++;
       return last === cmds.length - 1 || restAllAnd[last] === true;
     });
     // A group swallowed one level out takes even `cmd || exit 1` with it when
     // the group is a subshell, so it is never credited (fails closed).
-    const kept = !cmd.groupSwallowed &&
+    const kept = !cmd.groupSwallowed && subshellFailsBody &&
       (trapped.size === 0 || (viaExec && commandStatusNotSwallowed(cmd))) &&
       (cmd.failureExits ||
         (commandStatusNotSwallowed(cmd) &&
           (viaExec || (!cmd.inLoop && restAllAnd[k] === true) ||
-            (errexit && subshellFailsBody && !cmd.errexitIgnored &&
-              cmd.next !== "&&"))));
+            (errexit && !cmd.errexitIgnored && cmd.next !== "&&"))));
     out.push({ cmd, kept });
     const head = stripQuotes(cmd.words[at] ?? "");
     if (head === "set") {

@@ -425,11 +425,14 @@ or `-o errexit`, and off at the start of a repository script. `set -e` or
 `set -o errexit` turn it on and `set +e` turns it off, at the point each
 appears; inside a `( )` subshell the change lasts only until the subshell
 closes, so `( set -e; make build )` leaves errexit off for the lines after
-it. A runner inside such a subshell is kept by that `set -e` only when the
-subshell's own failure fails the body: errexit is on outside it, the subshell
-is the last command, or an `&&` chain runs to the end after it, so
-`( set -e; runner; echo done )` then `echo after` in a script without a
-top-level `set -e` earns no credit.
+it. A command inside a `( )` subshell is kept, by whatever route fails the
+subshell (errexit inside it, `runner || exit 1`, `if ! runner; then …; exit 1;
+fi` or `exec`), only when the subshell's own failure fails the body: errexit
+is on outside it, or the subshell is the last command or has an `&&` chain to
+the end after it and is not a loop body. So `( set -e; runner; echo done )`
+then `echo after`, `( cd infra && exec runner )` then `echo after`, and
+`for d in a b; do ( set -e; cd "$d"; runner ); done`, in a script without a
+top-level `set -e`, earn no credit.
 
 The command word, once shell reserved words, `sudo`/`env`/`exec`,
 `VAR=value` and the `time`/`nice`/`timeout`/`command` wrappers are
