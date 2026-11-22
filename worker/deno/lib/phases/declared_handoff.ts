@@ -182,8 +182,8 @@ export interface DeclaredOutcomeHandoff {
    * `PLANNING_HANDOFF_ANCHOR` label, the planning image gate withholding it,
    * or the planning hand-off itself failing to apply. Callers use this to
    * decide whether a run that committed code but declared one of these
-   * signals still needs handing to a human, rather than being allowed
-   * straight through to completion (Issue #3088).
+   * signals still needs retrying as not finished (Issue #4227), rather than
+   * being allowed straight through to completion (Issue #3088).
    */
   declared: boolean;
   /**
@@ -191,10 +191,10 @@ export interface DeclaredOutcomeHandoff {
    * filed by this fleet during the current run (Issue #3146). Only set
    * alongside `blocked` on the no-changes trigger — the committed path
    * clears `blocked` instead (via its own `blockedNotOpen` exclusion) and
-   * already hands off through `declared`. The no-changes caller must hand
-   * off on this detection directly rather than falling through to its
+   * already retries through `declared`. The no-changes caller must act on
+   * this detection directly rather than falling through to its
    * described-code-change retry or short-output failure: both return a
-   * `failure` with no `needs-human`, and on the very next run the same
+   * `failure`, and on the very next run the same
    * follow-up falls outside the run-scoped self-filed window, so the issue
    * defers onto a follow-up nothing picks up (Issue #3146 review).
    */
@@ -239,7 +239,7 @@ async function readDeclaredDependency(
  * `executeStartTime` and must not move that start. Depending on that issue
  * after a commit is not a real
  * deferral — the follow-up has no pickup label — so the run stays declared
- * and hands off to a human (Issue #3088).
+ * and the issue is retried as not finished (Issues #3088, #4227).
  */
 function dependencyFiledDuringThisRun(
   issue: GitHubIssue,
@@ -279,12 +279,18 @@ export async function handOffDeclaredOutcome(
   // names a dependency that is still open. A passing mention or a heading
   // with no declaration line still continues. A dependency that is closed,
   // merged, missing a state, or unreadable does not defer, but the run stays
-  // declared and hands off to a human instead of raising a PR (Issue #3088).
+  // declared and the issue is retried as not finished instead of raising a PR
+  // (Issues #3088, #4227).
   // A dependency this fleet filed during the run does not defer on either
   // path: that would park a human-only decision on an issue nothing picks
   // up. The issue record decides that, not wording in the output
   // (Issue #3146). The no-changes path does not consult open/closed state.
   const committed = trigger === "declared_handoff";
+  // What a signal the worker cannot honour falls through to (Issue #4227):
+  // never a human hand-off.
+  const fallThrough = committed
+    ? "retrying the issue as not finished"
+    : "falling through to the no-changes handling";
   let blocked = detectBlockedOutcome(
     claudeOutput,
     { repo, issueNumber },
@@ -309,7 +315,7 @@ export async function handOffDeclaredOutcome(
     if (filedDuringRun && open) {
       logger.info(
         "Committed run depends on an issue this run filed — not deferring, " +
-          "handing off to a human",
+          "retrying the issue as not finished",
         {
           repo,
           issueNumber,
@@ -321,7 +327,7 @@ export async function handOffDeclaredOutcome(
     } else if (!open) {
       logger.info(
         "Committed run names a dependency that is not open — not deferring, " +
-          "handing off to a human",
+          "retrying the issue as not finished",
         {
           repo,
           issueNumber,
@@ -334,7 +340,7 @@ export async function handOffDeclaredOutcome(
   } else if (blocked) {
     // Issue #3146: keep `blocked` set so the already-resolved exclusion
     // below still holds, but skip only the deferral, as a repeat deferral
-    // does, so the caller hands off to a human.
+    // does, so the caller retries the issue instead (Issue #4227).
     const dependency = await readDeclaredDependency(deps, repo, blocked);
     const filedDuringRun = dependency !== undefined &&
       dependencyFiledDuringThisRun(
@@ -344,8 +350,8 @@ export async function handOffDeclaredOutcome(
       );
     if (filedDuringRun) {
       logger.info(
-        "No-changes run depends on an issue this run filed — not deferring, " +
-          "handing off to a human",
+        "No-changes run depends on an issue this run filed — not deferring " +
+          "onto it",
         {
           repo,
           issueNumber,
@@ -358,9 +364,10 @@ export async function handOffDeclaredOutcome(
   // Loop guard: a deferral holds only while the dependency gate skips the
   // issue. Back here on the *same* dependency means it did not hold, and
   // deferring again would spin a fresh agent run on every scan — so the repeat
-  // falls through to the analysis-only hand-off and a human sees it. Reads
-  // the full comment thread rather than the budgeted prompt blob, which drops
-  // the marker on a busy issue (Issue #2936).
+  // is not deferred again: the committed path retries the issue as not
+  // finished, and the no-changes path runs its usual handling (Issue #4227).
+  // Reads the full comment thread rather than the budgeted prompt blob, which
+  // drops the marker on a busy issue (Issue #2936).
   const blockedClient = blocked ? deps.github.createClient(logger) : undefined;
   const repeatDeferral = blocked !== undefined &&
     await hasPriorDeferralOnThread({
@@ -373,8 +380,8 @@ export async function handOffDeclaredOutcome(
     });
   if (blocked && repeatDeferral) {
     logger.warn(
-      "Blocked on a dependency already deferred once — handing off to a " +
-        "human instead of deferring again",
+      "Blocked on a dependency already deferred once — not deferring again, " +
+        fallThrough,
       {
         repo,
         issueNumber,
@@ -431,7 +438,8 @@ export async function handOffDeclaredOutcome(
   if (timeDeferral?.kind === "invalid") {
     logger.warn(
       committed
-        ? "Time-deferral marker present but invalid — handing off to a human"
+        ? "Time-deferral marker present but invalid — " +
+          "retrying the issue as not finished"
         : "Time-deferral marker present but invalid — falling through to " +
           "normal handling",
       { repo, issueNumber, why: timeDeferral.why },
@@ -530,13 +538,14 @@ export async function handOffDeclaredOutcome(
   // Issue #2688 — a run that judged the issue too large for one PR asks for
   // decomposition. The worker applies `planning` itself (audited, and trusted
   // only while the human `work-on` add anchors it). A repeat request, or a
-  // hand-off that fails, falls through to the human hand-off below.
+  // hand-off that fails, falls through to the not-finished handling below
+  // (Issue #4227).
   const planningRequest = blocked ? undefined : detectPlanningHandoff(
     claudeOutput,
   );
   // Label security trusts the worker's `planning` only while a human
   // `work-on` add anchors it, so on any other pickup tier the label would be
-  // flagged and ignored — hand those to a human instead.
+  // flagged and ignored — fall through instead.
   const planningImageGate = gatePlanningHandoff(ctx.untrustedImages);
   // Issue #2942: read the loop guard off the full comment thread, not the
   // budgeted prompt blob, which drops the marker on a busy issue.
@@ -553,8 +562,8 @@ export async function handOffDeclaredOutcome(
     });
   if (planningRequest && repeatPlanning) {
     logger.warn(
-      "Planning requested again after an earlier hand-off — handing off to " +
-        "a human instead",
+      "Planning requested again after an earlier hand-off — not handing off " +
+        `to planning, ${fallThrough}`,
       { repo, issueNumber },
     );
   } else if (
@@ -562,8 +571,8 @@ export async function handOffDeclaredOutcome(
   ) {
     logger.warn(
       `Planning requested on an issue without \`${PLANNING_HANDOFF_ANCHOR}\` ` +
-        "— the hand-off is trusted only on that anchor, so handing off to a " +
-        "human instead",
+        "— the hand-off is trusted only on that anchor, so not handing off " +
+        `to planning, ${fallThrough}`,
       { repo, issueNumber, labels: ctx.issueLabels.join(",") },
     );
   } else if (planningRequest && planningImageGate.withheld) {
@@ -609,9 +618,9 @@ export async function handOffDeclaredOutcome(
 
   // A valid time deferral never reaches here — every `kind === "valid"`
   // branch above returns. An invalid marker, and a planning marker with no
-  // usable reason, still count: on the committed path those must hand off
-  // rather than raise a PR (Issue #3088). The no-changes caller ignores
-  // `declared` and keeps its own fall-through.
+  // usable reason, still count: on the committed path those must be retried
+  // rather than raise a PR (Issues #3088, #4227). The no-changes caller
+  // ignores `declared` and keeps its own fall-through.
   const planningMarker = !blocked && hasPlanningRequestMarker(claudeOutput);
   const declared = blocked !== undefined || planningRequest !== undefined ||
     timeDeferral?.kind === "invalid" || planningMarker || blockedNotOpen;
