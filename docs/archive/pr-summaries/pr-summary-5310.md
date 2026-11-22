@@ -640,9 +640,9 @@ flowchart LR
 - **Existing tests:** none edited. In the new file, the control titled for a
   64-character bound is renamed for what it checks, a 66-character label within
   the 128-character bound. Every test file that mentions `redactSecrets`,
-  `containsSecret` or `secret_redaction` passes at head: 54 files, 1,295 passed,
-  0 failed. This run used a scratch import map in place of the `jsr:@std/*`
-  imports, since jsr.io was unreachable from the host; CI runs the suites as
+  `containsSecret` or `secret_redaction` passes at head: 53 files, 1,466 passed,
+  0 failed (the review round 15 result). This run used a scratch import map
+  in place of the `jsr:@std/*` imports, since jsr.io was unreachable from the host; CI runs the suites as
   written. That includes `secret_redaction_test.ts`, its `_markdown_1727_`,
   `_redos_`, `_bounds_`, `_boolean_setting_`, `_json_structure_` and
   `_prose_heading_5253_` siblings, `fleet_telemetry_redaction_test.ts` and
@@ -675,8 +675,8 @@ flowchart LR
 
 ## Not done or not checked
 
-- Base behaviour applies, and the inner value is published as on base, in four
-  cases:
+- Base behaviour applies, and the inner value is published as on base, in the four
+  cases below, and in a fifth, the 64 `--` run case after them:
   - The inner label's separator or value sits more than 256 characters past the
     outer value. For example, `credentials: DEPLOY_TOKEN` + 300 spaces +
     `= <value>` still leaks.

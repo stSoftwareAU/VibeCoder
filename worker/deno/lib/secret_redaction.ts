@@ -1722,7 +1722,9 @@ const CREDENTIAL_KEYWORD_ANY = new RegExp(CREDENTIAL_KEYWORD.source, "i");
 /**
  * `end`, moved on past the value of every credential flag that starts before
  * it (from `start`) and runs past it, so a mask from `start` to the result
- * never takes a flag's name and leaves its value. Each `--` is read once.
+ * never takes a flag's name and leaves its value. Each `--` is read once, and
+ * at most {@link MAX_FLAG_VISITS} are read: past that it returns
+ * {@link TOO_MANY_FLAGS} instead of an end, and the caller keeps main's result.
  */
 function flagsThrough(text: string, start: number, end: number): number {
   let through = end;
