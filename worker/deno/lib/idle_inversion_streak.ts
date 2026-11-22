@@ -107,7 +107,8 @@ export const IDLE_INVERSION_FAMILY_ID = "idle-inversion";
  * watching the same repo still converge on one issue.
  *
  * This repo is public, so the issue may name a public subject. A private
- * subject is never named on it (Issue #5354).
+ * subject is never named in its title or rendered body (Issue #5354); only the
+ * unrendered dedup marker carries its name.
  */
 export const IDLE_INVERSION_TARGET_REPO = "stSoftwareAU/VibeCoder";
 

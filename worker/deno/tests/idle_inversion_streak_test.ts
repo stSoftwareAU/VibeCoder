@@ -491,7 +491,10 @@ async function fileAtThreshold(
   return { last, calls, logs };
 }
 
-/** Assert the filed title and body carry nothing that names the subject. */
+/**
+ * Assert the title and the rendered body (everything after the marker) carry
+ * nothing that names the subject.
+ */
 function assertOpaqueFiling(title: string, body: string): void {
   assert(!title.includes(SUBJECT), "the title must not name the subject");
   assert(!title.includes("GRQ"), "nor the subject's short name");
@@ -705,7 +708,8 @@ Deno.test("#460 - the body names the per-issue skip reasons when known", () => {
 
 Deno.test("#1277 - filing records an attestation carrying the posted body", async () => {
   await withState(async (statePath) => {
-    // VibeCoder is public, so this attests the public title and body (Issue #5354).
+    // The fake answers the visibility lookup as public, so this attests the
+    // public form (Issue #5354).
     const { fn } = gh([PUBLIC_VISIBILITY, NO_EXISTING, CREATE_OK]);
     const filings: SelfDiagnosticFiling[] = [];
     let createdBody = "";

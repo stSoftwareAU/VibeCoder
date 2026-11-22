@@ -12,8 +12,8 @@
 /**
  * The first 12 hex digits of SHA-256 over the UTF-8 bytes of `text`.
  *
- * The same text always gives the same digest, and different texts give
- * different digests, so callers can key a title on it.
+ * The same text always gives the same digest, and different texts almost
+ * always give different digests (48 bits), so callers can key a title on it.
  */
 export async function privateRepoDigest(text: string): Promise<string> {
   const digest = new Uint8Array(

@@ -336,18 +336,65 @@ for (const [label, token] of PRIVATE_WRAPPINGS) {
   });
 }
 
-Deno.test("#5354 - a multi-segment token withholds its line, as it cannot be confirmed public", async () => {
-  const g = visibilityGh();
-  const out = await withholdPrivateCensusLines(
-    [HEADER, lineNaming("stSoftwareAU/PrivateThing/sub"), PUBLIC_LINE],
-    g.fn,
-  );
-  assertEquals(
-    out,
-    [HEADER, WITHHELD, PUBLIC_LINE],
-    "a token with a second '/' is not a repository, so its line is withheld",
-  );
-});
+/**
+ * Visibility fake that answers `public` for EVERY `gh api repos/...` call. A
+ * line withheld under this fake is withheld by the tokeniser, not by a lookup
+ * that happened to fail. `lookedUp` records each repository asked about.
+ */
+function publicForAllGh() {
+  const calls: string[][] = [];
+  const fn = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "api") return Promise.resolve("public\n");
+    return Promise.reject(new Error(`unrouted: ${args.join(" ")}`));
+  };
+  return {
+    fn,
+    lookedUp: () =>
+      calls
+        .filter((c) => c[0] === "api")
+        .map((c) => c[1]!.replace(/^repos\//, "")),
+  };
+}
+
+/**
+ * Lines whose token names no repository, so none can be confirmed public. Each
+ * is withheld, and its token is never sent to `gh api repos/...`.
+ */
+const UNCONFIRMABLE_LINES: readonly (readonly [string, string])[] = [
+  [
+    "a multi-segment token",
+    lineNaming("stSoftwareAU/PrivateThing/sub"),
+  ],
+  [
+    "a leading-slash token (`/x`)",
+    "[idle-census] path=/stSoftwareAU",
+  ],
+  [
+    "a trailing-slash token (`a/`)",
+    "[idle-census] owner=stSoftwareAU/",
+  ],
+];
+
+for (const [label, line] of UNCONFIRMABLE_LINES) {
+  Deno.test(`#5354 - ${label} withholds its line, with no lookup for it`, async () => {
+    const g = publicForAllGh();
+    const out = await withholdPrivateCensusLines(
+      [HEADER, line, PUBLIC_LINE],
+      g.fn,
+    );
+    assertEquals(
+      out,
+      [HEADER, WITHHELD, PUBLIC_LINE],
+      "the unconfirmable line is withheld even though every lookup answers public",
+    );
+    assertEquals(
+      g.lookedUp(),
+      ["stSoftwareAU/VibeCoder"],
+      "only the public repository is looked up; the token is never sent to gh",
+    );
+  });
+}
 
 Deno.test("#5354 - a public repo wrapped in quotes is still kept (look-alike control)", async () => {
   const g = visibilityGh();
