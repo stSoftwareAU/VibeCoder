@@ -218,7 +218,7 @@ flowchart LR
 
 ## Test Plan
 
-- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 203
+- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 214
   tests**, all through `redactSecrets` and `containsSecret`:
   - **Leak cases** must mask the inner value and keep both labels:
     - `DEPLOY_TOKEN = <40-char value>` on the same line and the next line;
@@ -316,6 +316,30 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
+- **Review round 10** — two more shapes, both now main's result:
+  - **Where the decode pass's run starts.** The wrapped-run test now reads
+    runs as the decode-then-rescan pass reads them on main: from where a run
+    through the inner label can start, walked back up to 1,024 candidate
+    characters and line breaks, so a run beginning at the separator's `=`
+    (`DEPLOY_TOKEN =istoken=` then `hunter2`) or on the label's own line
+    (`token=` then a two-line value) counts, and so does one that covers the
+    inner label (`app.token=` then `DEPLOY_TOKEN = hunter2`). Run starts are
+    found in that window and the inner value alone, and a run longer than
+    4,096 characters keeps main's result, so the check stays linear.
+  - **A flag after an unclosed quote on a second pass.** When the inner value
+    opens with a quote it never closes and a credential flag follows it
+    (`'deploy --token ***REDACTED***`, the first pass's own output), main's
+    result is kept, so the first pass is final.
+  - 11 more tests (203 → 214): the reviewer's ten inputs with the four checks,
+    and a 1 MB wrapped run asserting main's exact output. One round-9
+    expectation changed to main's output:
+    `Rotate these credentials:\napi-key: ,tokenhunter2=\nsecret = token` now
+    keeps `= token` visible, as main does. Every test file importing
+    `secret_redaction.ts`: `1255 passed | 0 failed`. A sweep of 900,000
+    inputs from 30 fragments weighted to wraps, `=` separators, quotes and
+    flags found no head-only change on a second pass, no head-only
+    `containsSecret` and no published value main masked. The round-9 sweep
+    above missed both shapes; it is corrected by this one.
 - **Review round 9** — the round-8 check is made bounded and closes three
   more shapes:
   - **Linear again.** Round 8's flag search ran to the end of the text and

@@ -905,7 +905,7 @@ for (
     ],
     [
       "Rotate these credentials:\napi-key: ,tokenhunter2=\nsecret = token",
-      `Rotate these credentials:\napi-key: ,${R} = ${R}`,
+      `Rotate these credentials:\napi-key: ,${R} = token`,
       ["hunter2"],
     ],
     [
@@ -954,4 +954,76 @@ Deno.test("#5310 a 2.8 MB run of label-as-value lines is masked line by line", (
 Deno.test("#5310 a 512 KB inner value of TOKEN=x, pairs keeps main's result", () => {
   const input = "credentials: DEPLOY_TOKEN = " + "TOKEN=x,".repeat(65_536);
   assertEquals(redactSecrets(input), `credentials: ${R} = TOKEN=${R}`);
+});
+
+// PR #5322 review round 10: the decode-then-rescan pass's run is read from
+// where it starts on main (the separator's `=`, the label's line), and a flag
+// after an unclosed quote is read on a second pass as the first read it.
+for (
+  const [input, expected, values] of [
+    [
+      "secrets:\n  token=\nabcdefgh1234\nZk4Qw8Rt2Lm6Xv0B",
+      `secrets:\n  ${R}`,
+      ["Zk4Qw8Rt2Lm6Xv0B"],
+    ],
+    [
+      "Rotate these credentials:\ntoken=\nabcdefgh1234\nZk4Qw8Rt2Lm6Xv0B",
+      `Rotate these credentials:\n${R}`,
+      ["Zk4Qw8Rt2Lm6Xv0B"],
+    ],
+    [
+      `secrets:\n  passwd=\n${V.slice(0, 20)}\n${V.slice(20)}`,
+      `secrets:\n  ${R}`,
+      [V.slice(20)],
+    ],
+    [
+      `The secret:\nsecret=\n${V.slice(0, 20)}\n${V.slice(20)}`,
+      `The secret:\n${R}`,
+      [V.slice(20)],
+    ],
+    [
+      "credentials: DEPLOY_TOKEN =istoken=\nhunter2",
+      `credentials: ${R} ${R}`,
+      ["hunter2"],
+    ],
+    [
+      "Rotate these credentials:\nDEPLOY_TOKEN =dbtoken=\nhunter2",
+      `Rotate these credentials:\n${R} ${R}`,
+      ["hunter2"],
+    ],
+    [
+      "The secret: app.token=\nDEPLOY_TOKEN = hunter2",
+      `The secret: ${R}\nDEPLOY_TOKEN = ${R}`,
+      ["hunter2"],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'deploy --token '${V}'`,
+      `secrets:\n  DEPLOY_TOKEN: 'deploy --token ${R}`,
+      [V],
+    ],
+    [
+      `secrets:\n  DEPLOY_TOKEN: 'cmd --password '${V}`,
+      `secrets:\n  DEPLOY_TOKEN: 'cmd --password ${R}`,
+      [V],
+    ],
+    [
+      "secrets:\n  DEPLOY_TOKEN: '--token --password ':",
+      `secrets:\n  DEPLOY_TOKEN: '--token --password ${R}`,
+      [],
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 round 10: ${JSON.stringify(input.slice(0, 52))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}
+
+Deno.test("#5310 a 1 MB wrapped run of label-as-value lines keeps main's result", () => {
+  const input = "credentials: DEPLOY_TOKEN = token=\n" +
+    "abcdefgh12345678\n".repeat(60_000);
+  assertEquals(
+    redactSecrets(input),
+    `credentials: ${R} = token=\n${R}\n` +
+      "abcdefgh12345678\n".repeat(59_999),
+  );
 });

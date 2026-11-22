@@ -1346,25 +1346,65 @@ function mainReadsPastInnerValue(
   }
   // The decode-then-rescan pass joins a run that wraps onto the next line
   // (`API_TOKEN=` then `hunter2`) and masks it when the joined text is a
-  // secret. Only the run that ends the inner value can wrap past it; when it
-  // does and the pass would mask it, main's result stands.
-  let tailStart = value.length;
-  while (tailStart > 0 && CANDIDATE_CHAR.test(value[tailStart - 1] ?? "")) {
-    tailStart--;
-  }
-  if (tailStart < value.length) {
-    WRAPPED_RUN_AT.lastIndex = start + tailStart;
-    const run = WRAPPED_RUN_AT.exec(text);
+  // secret. Read the runs as that pass reads them on main: from where a run
+  // through the inner label can start, walked back over the candidate
+  // characters and line breaks (at most WRAP_LOOKBACK of them), so a run that
+  // begins at the separator's `=` or on the label's line counts (PR #5322
+  // review round 10). When a wrapped run the pass would mask reaches past the
+  // inner value, or covers the inner label, main's result stands.
+  let windowStart = inner.index;
+  for (
+    let steps = 0;
+    windowStart > 0 && steps < WRAP_LOOKBACK &&
+    WRAP_WINDOW_CHAR.test(text[windowStart - 1] ?? "");
+    steps++
+  ) windowStart--;
+  // Run starts are found in the window and the inner value alone; each run is
+  // then read from its start over at most WRAP_RUN_MAX characters, and a run
+  // longer than that keeps main's result, so the work per candidate stays
+  // bounded (Issue #3942).
+  const window = text.slice(windowStart, inner.end + 4);
+  WRAPPED_RUN_G.lastIndex = 0;
+  for (
+    let found = WRAPPED_RUN_G.exec(window);
+    found !== null && windowStart + found.index < inner.end;
+    found = WRAPPED_RUN_G.exec(window)
+  ) {
+    const runStart = windowStart + found.index;
+    const reach = text.slice(runStart, runStart + WRAP_RUN_MAX + 1);
+    const run = WRAPPED_RUN_AT.exec(reach);
+    WRAPPED_RUN_AT.lastIndex = 0;
+    if (run === null) continue;
+    const runEnd = runStart + run[0].length;
+    if (runEnd <= inner.index) continue;
+    if (!(runEnd > inner.end || runStart < start) || !/\n/.test(run[0])) {
+      continue;
+    }
+    if (run[0].length > WRAP_RUN_MAX) return true;
     if (
-      run !== null && start + tailStart + run[0].length > inner.end &&
-      /\n/.test(run[0]) &&
       redactTransformedSecrets(
-          run[0],
-          matchesSignatureRule,
-          REDACTION_PLACEHOLDER,
-        ) !==
+        run[0],
+        matchesSignatureRule,
+        REDACTION_PLACEHOLDER,
+      ) !==
         run[0]
     ) return true;
+  }
+  WRAPPED_RUN_G.lastIndex = 0;
+  // A second pass over a first pass's output where a flag after an unclosed
+  // quote kept main's result (`'deploy --token ***REDACTED***`): the inner
+  // value is now the bare `'deploy`, so read the flag after it as the first
+  // pass read it inside the quote (PR #5322 review round 10).
+  const opener = inner.value[0];
+  if (
+    (opener === "'" || opener === '"') &&
+    inner.value.indexOf(opener, 1) === -1
+  ) {
+    const gap = /^[ \t]+/.exec(text.slice(inner.end, inner.end + 64));
+    if (gap !== null) {
+      CLI_FLAG_AT.lastIndex = inner.end + gap[0].length;
+      if (CLI_FLAG_AT.exec(text) !== null) return true;
+    }
   }
   return false;
 }
@@ -1387,8 +1427,17 @@ const MAX_INNER_PROBES = 8;
  */
 const WRAPPED_RUN_AT = /[A-Za-z0-9+/=_-]{4,}(?:\r?\n[A-Za-z0-9+/=_-]{4,})*/y;
 
-/** One character of the decode-then-rescan pass's candidate charset. */
-const CANDIDATE_CHAR = /^[A-Za-z0-9+/=_-]$/;
+/** A candidate character or line break, walked back over to find a run's start. */
+const WRAP_WINDOW_CHAR = /^[A-Za-z0-9+/=_\r\n-]$/;
+
+/** How far back {@link mainReadsPastInnerValue} looks for a run's start. */
+const WRAP_LOOKBACK = 1024;
+
+/** Longest wrapped run {@link mainReadsPastInnerValue} reads before keeping main's result. */
+const WRAP_RUN_MAX = 4096;
+
+/** The decode-then-rescan pass's candidate runs (global). */
+const WRAPPED_RUN_G = /[A-Za-z0-9+/=_-]{4,}(?:\r?\n[A-Za-z0-9+/=_-]{4,})*/g;
 
 /** Every credential keyword in a string (global; reset before each use). */
 const CREDENTIAL_KEYWORD_ALL = new RegExp(CREDENTIAL_KEYWORD.source, "gi");
