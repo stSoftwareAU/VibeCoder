@@ -6,6 +6,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { estimateCost } from "../lib/token_usage.ts";
+import { DEEPSEEK_OUTPUT_ADAPTER } from "../lib/claude_output_adapter.ts";
 import {
   callbackTelemetryAbsenceReason,
   summariseCallbackTelemetry,
@@ -126,11 +127,11 @@ Deno.test("run_callback_telemetry - an adapter-less provider is provider_unsuppo
     callbackTelemetryAbsenceReason([
       {
         runStats: {
-          servedModels: ["deepseek-flash"],
-          requestedModel: "deepseek-flash",
+          servedModels: ["m"],
+          requestedModel: "m",
         },
       },
-    ], "deepseek"),
+    ], "other"),
     "provider_unsupported",
   );
 });
@@ -159,27 +160,27 @@ const noUsage = (provider?: string) => ({
   },
 });
 
-Deno.test("run_callback_telemetry - the invocation's own provider beats the fallback: deepseek served on a claude host (Issue #5295)", () => {
+Deno.test("run_callback_telemetry - the invocation's own provider beats the fallback: an adapter-less provider served on a claude host (Issue #5295)", () => {
   assertEquals(
-    callbackTelemetryAbsenceReason([noUsage("deepseek")], "claude"),
+    callbackTelemetryAbsenceReason([noUsage("other")], "claude"),
     "provider_unsupported",
   );
 });
 
-Deno.test("run_callback_telemetry - the invocation's own provider beats the fallback: claude served on a deepseek host (Issue #5295)", () => {
+Deno.test("run_callback_telemetry - the invocation's own provider beats the fallback: claude served on an adapter-less fallback host (Issue #5295)", () => {
   assertEquals(
-    callbackTelemetryAbsenceReason([noUsage("claude")], "deepseek"),
+    callbackTelemetryAbsenceReason([noUsage("claude")], "other"),
     "usage_not_reported",
   );
 });
 
 Deno.test("run_callback_telemetry - an unnamed or blank provider uses the fallback (Issue #5295)", () => {
   assertEquals(
-    callbackTelemetryAbsenceReason([noUsage()], "deepseek"),
+    callbackTelemetryAbsenceReason([noUsage()], "other"),
     "provider_unsupported",
   );
   assertEquals(
-    callbackTelemetryAbsenceReason([noUsage("  ")], "deepseek"),
+    callbackTelemetryAbsenceReason([noUsage("  ")], "other"),
     "provider_unsupported",
   );
 });
@@ -187,8 +188,8 @@ Deno.test("run_callback_telemetry - an unnamed or blank provider uses the fallba
 Deno.test("run_callback_telemetry - any named provider with an adapter is usage_not_reported (Issue #5295)", () => {
   assertEquals(
     callbackTelemetryAbsenceReason(
-      [noUsage("claude"), noUsage("deepseek")],
-      "deepseek",
+      [noUsage("claude"), noUsage("other")],
+      "other",
     ),
     "usage_not_reported",
   );
@@ -197,11 +198,48 @@ Deno.test("run_callback_telemetry - any named provider with an adapter is usage_
 Deno.test("run_callback_telemetry - unnamed invocations do not drag in the fallback (Issue #5295)", () => {
   assertEquals(
     callbackTelemetryAbsenceReason(
-      [noUsage("deepseek"), noUsage()],
+      [noUsage("other"), noUsage()],
       "claude",
     ),
     "provider_unsupported",
   );
+});
+
+Deno.test("run_callback_telemetry - a DeepSeek run with no usage is usage_not_reported: its adapter parses usage (Issue #5334)", () => {
+  assertEquals(
+    callbackTelemetryAbsenceReason([noUsage("deepseek")], "claude"),
+    "usage_not_reported",
+  );
+  assertEquals(
+    callbackTelemetryAbsenceReason([noUsage()], "deepseek"),
+    "usage_not_reported",
+  );
+  // Control: an unregistered provider still has no usage adapter.
+  assertEquals(
+    callbackTelemetryAbsenceReason([noUsage("other")], "claude"),
+    "provider_unsupported",
+  );
+});
+
+Deno.test("run_callback_telemetry - the DeepSeek adapter decodes token usage from a Claude-shaped result line (Issue #5334)", () => {
+  const stdout = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "done",
+    usage: {
+      input_tokens: 1200,
+      output_tokens: 340,
+      cache_creation_input_tokens: 50,
+      cache_read_input_tokens: 7000,
+    },
+  });
+  assertEquals(DEEPSEEK_OUTPUT_ADAPTER.decode(stdout).usage, {
+    inputTokens: 1200,
+    outputTokens: 340,
+    cacheCreationTokens: 50,
+    cacheReadTokens: 7000,
+  });
 });
 
 // -- Turns and model attribution (Issue #2100, part of #2060) --
