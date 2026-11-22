@@ -474,11 +474,13 @@ export interface ReachableCommand {
    */
   subshellsInCondition: number[];
   /**
-   * True when the command sits inside a parenthesis opened earlier on its
-   * line that the walk tracks no frame for (`time ( cd x; cmd )`,
-   * `! ( cmd )`, `X=$(cd x && cmd)`, `echo $(cmd)`): its status is an
-   * argument, a negation or a substitution's, so it is never credited (PR
-   * #5332 review round 11).
+   * True when the command sits inside a parenthesis or backtick substitution
+   * opened earlier on its line, or by its own words before the command word,
+   * that the walk tracks no frame for (`time ( cd x; cmd )`, `! ( cmd )`,
+   * `X=$( cmd; echo done )`, `X=$(cd x && cmd)`, `echo $(cmd)`): its status is
+   * an argument, a negation or a substitution's, so it is never credited, and
+   * a `set` in it does not change errexit outside (PR #5332 review rounds 11
+   * and 12).
    */
   inUntrackedParen: boolean;
   /**
@@ -493,7 +495,10 @@ export interface ReachableCommand {
 const GROUP_SWALLOWING_SEPARATORS = new Set(["||", "|", "&"]);
 
 const CHAINING_SEPARATORS = new Set(["|", "&", "||", "&&"]);
-/** Words that open a nested construct, which {@link failureExits} does not follow. */
+/**
+ * Words that open a nested construct, which {@link failureExits} does not
+ * follow. A `(` is judged by its parenthesis balance instead.
+ */
 const NESTED_OPENERS = new Set([
   "if",
   "while",
@@ -502,7 +507,6 @@ const NESTED_OPENERS = new Set([
   "case",
   "select",
   "{",
-  "(",
   "function",
 ]);
 
@@ -561,6 +565,11 @@ function failureExits(
     return false;
   }
   let exits = false;
+  // Unquoted parentheses opened in the branch and not yet closed: an exit read
+  // while one is open ends only that subshell or substitution (round 11). A
+  // parenthesis that closes inside its own word or command (`"$(date)"`,
+  // `$(pwd)/log`, `$((n / 60))`) leaves the balance at zero (round 12).
+  let open = 0;
   for (let j = index + 1; j < listed.length; j++) {
     const entry = listed[j];
     if (entry === undefined) break;
@@ -570,18 +579,17 @@ function failureExits(
     const head = words[0];
     if (head === undefined) continue;
     if (head === "fi" || head === "else" || head === "elif") return exits;
-    // A `(` or `$(` opened in the branch is a nested construct too: an exit
-    // inside it ends only that subshell (PR #5332 review round 11).
-    if (
-      NESTED_OPENERS.has(head) || words.includes("fi") ||
-      words.some((word) => word.startsWith("(") || word.includes("$("))
-    ) return false;
+    if (NESTED_OPENERS.has(head) || words.includes("fi")) return false;
     const next = listed[j + 1];
     if (
       isFailingExit(words, false) && !CHAINING_SEPARATORS.has(entry.sep) &&
       (next === undefined || !CHAINING_SEPARATORS.has(next.sep))
     ) {
+      if (open > 0) return false;
       exits = true;
+    }
+    for (const word of words) {
+      open = Math.max(0, open + parenBalance(word).delta);
     }
   }
   return false;
@@ -643,6 +651,27 @@ function parenBalance(word: string): { delta: number; endsClose: boolean } {
     }
   }
   return { delta, endsClose: quote === "" && endsClose };
+}
+
+/** The backticks of a word outside single quotes and not backslash-escaped. */
+function backtickCount(word: string): number {
+  let quote = "";
+  let count = 0;
+  for (let i = 0; i < word.length; i++) {
+    const ch = word[i];
+    if (quote === "'") {
+      if (ch === "'") quote = "";
+    } else if (ch === "\\") {
+      i++;
+    } else if (ch === "'" && quote === "") {
+      quote = "'";
+    } else if (ch === '"') {
+      quote = quote === '"' ? "" : '"';
+    } else if (ch === "`") {
+      count++;
+    }
+  }
+  return count;
 }
 
 /** A redirection operator alone (`>`, `2>>`, `&>`, `<`), its target in the next word. */
@@ -749,12 +778,36 @@ export function reachableCommands(script: string): ReachableCommand[] {
       id: nextFrameId++,
     });
 
+  // Whether `keyword` closes the innermost frame and each of `parens` then
+  // closes a tracked `( )` subshell frame beneath it.
+  const closesInsideSubshell = (keyword: string, parens: string): boolean => {
+    const innermost = stack.at(-1);
+    if (!innermost) return false;
+    const closesIt = keyword === "fi"
+      ? !innermost.sub && !innermost.brace && !innermost.iterates &&
+        !innermost.kase
+      : keyword === "done"
+      ? innermost.iterates
+      : keyword === "esac"
+      ? innermost.kase
+      : innermost.brace && !innermost.sub;
+    if (!closesIt) return false;
+    for (let depth = 1; depth <= parens.length; depth++) {
+      const frame = stack.at(-1 - depth);
+      if (!frame?.sub || frame.subst) return false;
+    }
+    return true;
+  };
+
   const { commands: listed, trailing } = shellCommandList(
     stripHeredocBodies(script),
   );
   // Parentheses opened by earlier commands of the current line and not yet
   // closed (a `$(` split by the command list at a `|`, `;` or `&&`).
   let linePending = 0;
+  // Backticks of the current line's earlier commands, modulo 2: odd while a
+  // backtick substitution is open.
+  let lineTicks = 0;
   for (const [index, { words: all, sep }] of listed.entries()) {
     let words = all;
     const pendingBefore = linePending;
@@ -798,9 +851,14 @@ export function reachableCommands(script: string): ReachableCommand[] {
         words = ["(", lead.slice(1), ...words.slice(1)];
       }
       // `fi)`, `done)`, `esac)` and `})` close the compound and then a
-      // subshell around it, as `fi )` does (PR #5332 review round 11).
+      // subshell around it, as `fi )` does, but only when the innermost frame
+      // is the compound the keyword closes and a tracked `( )` subshell is
+      // open around it for each `)`. Otherwise the `)` closes a `$( ... )`
+      // the walk tracks no frame for (`X=$(for d in a b; do echo $d; done)`),
+      // and the word stays whole so the parenthesis balance closes it (PR
+      // #5332 review rounds 11 and 12).
       const closing = /^(fi|done|esac|\})(\)+)$/.exec(words[0] ?? "");
-      if (closing) {
+      if (closing && closesInsideSubshell(closing[1] ?? "", closing[2] ?? "")) {
         words = [
           closing[1] ?? "",
           ...Array.from({ length: closing[2]?.length ?? 0 }, () => ")"),
@@ -908,6 +966,24 @@ export function reachableCommands(script: string): ReachableCommand[] {
     // command list splits at a `|`, `;` or `&&` inside `$( … )`
     // (`if [ $(ls | wc -l) -gt 0 ]`): only a parenthesis still open at the
     // line's end opens a frame (PR #5332 review).
+    // A parenthesis or backtick still open when this command's own word is
+    // reached (`X=$( runner; …`, `time ( runner )`, `! ( runner )`): the
+    // command runs inside it, with no frame to judge it by (round 12).
+    const prefixWords = words.slice(0, commandIndex(words));
+    let openAtCommand = pendingBefore;
+    let ticksAtCommand = lineTicks;
+    for (const word of prefixWords) {
+      openAtCommand += parenBalance(word).delta;
+      ticksAtCommand += backtickCount(word);
+    }
+    const inUntrackedParen = openAtCommand > 0 || ticksAtCommand % 2 === 1;
+    {
+      const ends = listed[index + 1]?.sep ??
+        (trailing === "\n" ? "" : trailing);
+      let ticks = lineTicks;
+      for (const word of words) ticks += backtickCount(word);
+      lineTicks = ends === "\n" || ends === "" ? 0 : ticks % 2;
+    }
     let opensSubst = false;
     if (closeAfter) {
       linePending = 0;
@@ -967,7 +1043,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
         inLoop: stack.some((frame) => frame.iterates),
         subshellsInLoop: subshellsInsideLoops(stack),
         subshellsInCondition: subshellsInsideConditions(stack),
-        inUntrackedParen: pendingBefore > 0,
+        inUntrackedParen,
         subshells: stack.filter((frame) => frame.sub).map((frame) => frame.id),
       });
       enclosing.push(stack.map((frame) => frame.id));

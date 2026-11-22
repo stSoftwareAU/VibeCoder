@@ -384,11 +384,39 @@ emulator test.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
+- After the twelfth review (of `ffe02656`): (1) `failureExits` carries the
+  unquoted parenthesis balance across the `then` branch and refuses only an
+  `exit` read while it is above zero, so `echo "failed at $(date)"`,
+  `docker logs "$(docker ps -lq)"`, `echo "took $((SECONDS / 60)) min"` and
+  `cat $(pwd)/log.txt` before `exit 1` keep the idiom credited, and
+  `then (echo bad; exit 1)`, `then MSG=$(echo bad; exit 1)` and
+  `( echo bad; exit 1 )` stay refused. (2) A first word `fi)`, `done)`,
+  `esac)` or `})` is split into the keyword and `)` only when the innermost
+  frame is the compound it closes and a tracked `( )` subshell is open around
+  it for each `)`; otherwise the `)` closes the `$( … )` by the parenthesis
+  balance, so `PKGS=$(for …; done)`, the `case`/`esac` and `$({ …; })` forms
+  and `X=$(if …; fi)` inside an `if` no longer make the whole body
+  uncredited. (3) A command is inside an untracked parenthesis or backtick
+  substitution when one is open at its own command word, so a runner that is
+  the first command in `X=$( runner; echo done )`, `time ( runner )` or a
+  backtick substitution earns no credit, and a `set` in such a parenthesis no
+  longer changes errexit outside it. The manual and the `keptCommands` comment
+  state the rules. Three new tests in
+  `worker/deno/tests/aws_emulator_in_ci_check_test.ts` fail without the
+  change. Seven related test files (`aws_emulator_in_ci_check_test.ts`,
+  `best_practices_template_test.ts`, `capability_coverage_scan_4367_test.ts`,
+  `idle_task_scan_dedup_conformance_test.ts`,
+  `issue_5110_aws_emulator_workflow_test.ts`, `linter_in_ci_check_test.ts`,
+  `issue_2315_actionlint_in_ci_test.ts`) give `670 passed | 0 failed`
+  through `deno task test:unit`; `deno lint`, `deno check` and `deno fmt
+  --check` on the changed files are clean. The full `./quality.sh` was not run
+  in this round.
 - After the eleventh review (of `d5338565`): the explicit-exit idiom drops an
   exit's `)` only when it closes the tracked `( )` subshell around the runner,
-  and a `(` or `$(` opened in the `then` branch is a nested construct. A
-  command inside a parenthesis opened earlier on its line with no frame is
-  never credited (`ReachableCommand.inUntrackedParen`). So `time ( cd infra;
+  and a `(` or `$(` opened in the `then` branch and still open when the `exit`
+  is read is a nested construct (round 12 narrowed this from any word holding
+  one). A command inside a parenthesis opened earlier on its line with no
+  frame is never credited (`ReachableCommand.inUntrackedParen`). So `time ( cd infra;
   runner || exit 1 )`, `LOG=$(cd infra && runner 2>&1 || exit 1)` and its `;`
   form, `OUT=$(cd infra; if ! runner; then exit 1; fi)`, `then (echo bad;
   exit 1)` on one or several lines, `then MSG=$(echo bad; exit 1)`,

@@ -392,10 +392,15 @@ Official server mode needs all of the following:
   left open at a line end, such as `VERSION=$(`, is closed by the `)` that
   balances it, not by the subshell's; the balance is carried across one line,
   so a one-line `$(ls | wc -l)` opens nothing; a command inside such a
-  one-line parenthesis, or after `time (`, `! (` or `X=$(` on its line, is
-  never credited, because its status is an argument, a negation or the
-  substitution's; `fi)`, `done)`, `esac)` and `})` close the compound and then
-  the subshell, as `fi )` does), not in a group or subshell that is itself an `if` or `while` test
+  one-line parenthesis or backtick substitution, the first one included
+  (`X=$( runner; echo done )`, `time ( runner )`, `! ( runner )`), or after
+  `time (`, `! (` or `X=$(` on its line, is never credited, because its
+  status is an argument, a negation or the substitution's, and a `set -e`
+  inside one does not turn errexit on outside it; `fi)`, `done)`, `esac)` and
+  `})` close the compound and then a `( )` subshell, as `fi )` does, only
+  when that compound is the innermost one open and a tracked subshell is open
+  around it: in `X=$(for d in a b; do echo $d; done)` the `)` closes the
+  substitution and the line leaves the runner's credit alone), not in a group or subshell that is itself an `if` or `while` test
   (`if ( runner ); then …`), nor by `&&` with more of the body after that
   chain, and one of the following. Bash ignores errexit inside a compound on
   the left of `&&`, so a command there is judged with errexit off:
@@ -413,8 +418,10 @@ Official server mode needs all of the following:
   `(cd infra && runner || exit 1)`, are not part of the idiom's words, but
   only when that `)` closes the `( )` subshell around the runner: an exit
   whose `)` ends a nested `( … )` or `$( … )`, or a `(` or `$(` opened in the
-  `then` branch, as in `then (echo bad; exit 1)` or
-  `then MSG=$(echo bad; exit 1)`, is not the idiom): `runner || exit N` (N not 0, or
+  `then` branch that is still open when the `exit` is read, as in
+  `then (echo bad; exit 1)` or `then MSG=$(echo bad; exit 1)`, is not the
+  idiom; a parenthesis that closes before the `exit`, as in
+  `then echo "failed at $(date)"; exit 1`, leaves it intact): `runner || exit N` (N not 0, or
   a bare `exit`; not after a negated `! runner`, whose `!` turns a failure
   into success before the `||`) and `if ! runner; then ...; exit N; fi` (N
   not 0, in a flat `then` branch). Neither counts inside a group swallowed

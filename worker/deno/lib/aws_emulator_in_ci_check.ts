@@ -945,9 +945,11 @@ function applyTrap(
  *
  * A command is never kept when:
  *
- * - it sits inside a parenthesis opened earlier on its line with no tracked
- *   frame (`ReachableCommand.inUntrackedParen`: `time ( … )`, `! ( … )`,
- *   `X=$(… cmd)`, `echo $(cmd)`);
+ * - it sits inside a parenthesis or backtick substitution with no tracked
+ *   frame, whether opened earlier on its line or by its own words before the
+ *   command word (`ReachableCommand.inUntrackedParen`: `time ( … )`,
+ *   `! ( … )`, `X=$( cmd; … )`, `echo $(cmd)`); a `set` in one changes no
+ *   errexit outside it;
  * - it sits in a group or compound swallowed one level out
  *   (`ReachableCommand.groupSwallowed`);
  * - it sits in a `( )` subshell whose own failure does not fail the body:
@@ -1039,7 +1041,9 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
       ) {
         saved.push({ id: inner, errexit });
       }
-      if (option !== null) errexit = option;
+      // A `set` inside a parenthesis or substitution the walk tracks no frame
+      // for (`X=$( set -e; … )`) cannot change errexit outside it.
+      if (option !== null && !cmd.inUntrackedParen) errexit = option;
     } else if (head === "trap") {
       applyTrap(cmd.words, at, body, trapped);
     }

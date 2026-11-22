@@ -3439,6 +3439,188 @@ Deno.test("checkAwsEmulatorInCI - a one-line subshell closed by fi) or done) is 
   assertEquals(ifInside.wiring, "official-server", "if inside, closed by fi)");
 });
 
+// PR #5332 review round 12: a `$( … )` or `$(( … ))` that opens and closes
+// inside the `then` branch is not a nested construct, so the `exit` after it
+// still ends the shell and the idiom keeps its credit.
+Deno.test("checkAwsEmulatorInCI - a balanced substitution before the exit keeps the if ! runner idiom credited", async () => {
+  const R = RUNNER_STEP;
+  const forms = [
+    `if ! ${R}; then echo "failed at $(date)"; exit 1; fi`,
+    `if ! ${R}; then\n  docker logs "$(docker ps -lq)"\n  exit 1\nfi`,
+    `if ! ${R}; then echo "took $((SECONDS / 60)) min"; exit 1; fi`,
+    `if ! ${R}; then cat $(pwd)/log.txt; exit 1; fi`,
+    `if ! ${R}; then echo "(see the log)"; exit 1; fi`,
+    `if ! ${R}; then echo "tests failed" >&2; exit 1; fi`,
+    `if ! ${R}; then ( echo a ); exit 1; fi`,
+  ];
+  for (const form of forms) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`${form}\necho after`)),
+    });
+    assertEquals(step.wiring, "official-server", `default-shell step: ${form}`);
+    const afterSetPlusE = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(`set +e\n${form}\necho after`),
+      ),
+    });
+    assertEquals(
+      afterSetPlusE.wiring,
+      "official-server",
+      `step after set +e: ${form}`,
+    );
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${form}\necho after\n`,
+    });
+    assertEquals(
+      script.wiring,
+      "official-server",
+      `script without set -e, then a line: ${form}`,
+    );
+  }
+  // Inside a subshell the idiom ends only the subshell, so it is credited
+  // where errexit outside the subshell (or the last line) carries the failure.
+  const subshellForm =
+    `( if ! ${R}; then echo "failed at $(date)"; exit 1; fi )`;
+  const subshellStep = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${subshellForm}\necho after`),
+    ),
+  });
+  assertEquals(
+    subshellStep.wiring,
+    "official-server",
+    "subshell, default shell",
+  );
+  const subshellLast = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\n${subshellForm}\n`,
+  });
+  assertEquals(subshellLast.wiring, "official-server", "subshell, last line");
+  const subshellNoErrexit = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\n${subshellForm}\necho after\n`,
+  });
+  assertEquals(subshellNoErrexit.wiring, "missing", "subshell, no errexit");
+  // The same idiom with an exit inside a parenthesis still open is refused.
+  for (
+    const form of [
+      `if ! ${R}; then (echo bad; exit 1); fi`,
+      `if ! ${R}; then MSG=$(echo bad; exit 1); fi`,
+      `if ! ${R}; then ( echo bad; exit 1 ); fi`,
+      `if ! ${R}; then echo "$(date)" (echo bad; exit 1); fi`,
+    ]
+  ) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${form}\necho after\n`,
+    });
+    assertEquals(script.wiring, "missing", `refused: ${form}`);
+  }
+});
+
+// PR #5332 review round 12: `done)`, `fi)`, `esac)` and `})` that close a
+// `$( … )` the walk tracks no frame for do not stray, so a runner before or
+// after the line is still credited.
+Deno.test("checkAwsEmulatorInCI - a compound closed inside a substitution does not hide the runner", async () => {
+  const R = RUNNER_STEP;
+  const lines = [
+    'PKGS=$(for d in services/*; do basename "$d"; done)',
+    'PKGS=$(for d in services/*; do\n  basename "$d"\ndone)',
+    'MODE=$(case "$X" in\n  a) echo 1 ;;\n  *) echo 2 ;;\nesac)',
+    "OUT=$({ echo a; echo b; })",
+    "OUT=$({\n  echo a\n  echo b\n})",
+  ];
+  for (const line of lines) {
+    const inStep = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`${line}\n${R}`)),
+    });
+    assertEquals(inStep.wiring, "official-server", `step: ${line}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${line}\n${R}\n`,
+    });
+    assertEquals(inScript.wiring, "official-server", `script: ${line}`);
+    const after = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${R} || exit 1\n${line}\n`,
+    });
+    assertEquals(after.wiring, "official-server", `after the runner: ${line}`);
+  }
+  // Inside an `if` block the `fi)` of a substitution must not pop the `if`.
+  const insideIf = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`if true; then\n  X=$(if true; then echo a; fi)\n  ${R}\nfi`),
+    ),
+  });
+  assertEquals(insideIf.wiring, "official-server", "X=$(if …; fi) in an if");
+  // Control: a runner that really is in a subshell swallowed one level out is
+  // still refused, so the credit comes from the substitution rule alone.
+  const swallowed = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`( for d in a b; do ${R}; done ) || true`),
+    ),
+  });
+  assertEquals(swallowed.wiring, "missing", "swallowed subshell");
+});
+
+// PR #5332 review round 12: the command that opens an untracked parenthesis
+// or backtick substitution is inside it, and a `set` in it changes no errexit
+// outside.
+Deno.test("checkAwsEmulatorInCI - a runner that is the first command inside an untracked substitution earns no credit", async () => {
+  const R = RUNNER_STEP;
+  const bodies: Array<[string, string]> = [
+    ["X=$( runner; echo done )", `X=$( ${R}; echo done )\necho "$X"`],
+    [
+      "OUT=$( runner 2>&1; echo rc )",
+      `OUT=$( ${R} 2>&1; echo "rc=$?" )\necho "$OUT"`,
+    ],
+    ["echo done ) on the next line", `X=$( ${R};\necho done )\necho "$X"`],
+    ["X=$( runner )", `X=$( ${R} )\necho "$X"`],
+    ["time ( runner )", `time ( ${R} )\necho done`],
+    ["backtick argument", `echo \`cd infra; ${R}\`\necho done`],
+    ["backtick assignment", `X=\` ${R}; echo done \`\necho "$X"`],
+  ];
+  for (const [label, body] of bodies) {
+    const step = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(step.wiring, "missing", `default-shell step: ${label}`);
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `set -euo pipefail: ${label}`);
+  }
+  // A `set -e` inside an untracked parenthesis does not turn errexit on.
+  for (
+    const body of [
+      `X=$( set -e; cat VERSION )\n${R}\necho done`,
+      `X=$(cd infra; set -e; make build)\n${R}\necho done`,
+      `time ( set -e; cd infra )\n${R}\necho done`,
+    ]
+  ) {
+    const script = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    });
+    assertEquals(script.wiring, "missing", `set -e in a substitution: ${body}`);
+  }
+  // Controls: a tracked subshell's `set -e` still applies inside it only, and
+  // a balanced earlier substitution does not make a later runner untracked.
+  const tracked = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\n( set -e; cd infra )\n${R}\necho done\n`,
+  });
+  assertEquals(tracked.wiring, "missing", "( set -e; … ) then a runner");
+  const balanced = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`X=$(cat VERSION); echo \`date\`; ${R}\necho done`),
+    ),
+  });
+  assertEquals(balanced.wiring, "official-server", "balanced substitutions");
+});
+
 // PR #5332 review round 7: a one-line `$( … )` holding `|`, `;` or `&&`, with
 // more words after it, opens no frame, so later commands are still judged.
 Deno.test("checkAwsEmulatorInCI - a one-line substitution with a separator inside it does not hide a later runner", async () => {
