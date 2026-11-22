@@ -136,11 +136,7 @@ Issues cited as provenance:
   or changed. The `secrets_history_scan_test.ts` edit adds comments only.
 - `runFixtureGit` has no test of its own. The converted files exercise it, for
   example `git_branch_sync_test.ts`, which passes with the hook injected.
-- `./quality.sh < /dev/null` on commit `77ec6a64f` gave `Result: FAILED` on
-  semgrep alone: the three fake-key lines in `secrets_history_scan_test.ts`.
-  Every other stage passed, including `deno tests` (parallel 8m46s, serial
-  3m44s), lint, type check and fmt. Config integration and checkov were skipped.
-  Commit `361ca3adb` adds the `nosemgrep` lines. After it,
-  `semgrep scan --config p/default --error` reports 0 findings on that file.
-  The three files converted after that gate run (`32f2fab42`) passed fmt,
-  lint, check and their own tests, as above.
+- `./quality.sh < /dev/null` on commit `01d25e647`: `Result: PASSED (with
+  skipped checks)`, exit 0. Semgrep passed over the 162 changed files, and
+  `deno tests`, lint, type check and fmt passed. Config integration and checkov
+  were skipped.
