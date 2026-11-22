@@ -9,15 +9,20 @@ shared helper, `worker/deno/tests/support/no_host_git_config.ts`. It exports:
 - `NO_HOST_HOOKS_ARGS`: `-c core.hooksPath=/dev/null`.
 - `runFixtureGit`: a `runGitCommand` wrapper that applies both.
 
-The fixture git calls in 160 test files and shared fixtures now go through it.
+The fixture git calls in 167 test files and shared fixtures now go through it.
 That covers `git_branch_sync_test.ts`, `git_pull_conflict_test.ts`,
 `branch_cleanup_test.ts`, the shared fixtures (`git_repo_fixture.ts`,
 `git_fixture.ts`, `markdown_docs.ts`, `drift_check_fixture.ts`,
 `babysitter_tree_fixture.ts`, `push_recovery_repos.ts`,
-`babysitter_container_fakes_4770.ts`) and every other test file that spawns
-fixture git through `new Deno.Command("git", …)` or `runGitCommand`. The four
-local copies of `NO_HOST_GIT_CONFIG` and the per-file wrappers now import the
-helper. Closes #5309.
+`babysitter_container_fakes_4770.ts`), `git_branch_test.ts` (`runGit`, its local
+`runFixtureGit` and `laneContentionFixture`), the inline closures in
+`fleet_pr_babysitter_test.ts`, and fixtures that spawn git in other forms:
+`new Deno.Command(cmd, …)` in `security_fix_discrimination_test.ts` and
+`git_guard_shim_test.ts`, `runWithTimeout("git", …)` in
+`worktree_progress_test.ts` and `progress_extension_runtime_test.ts`, and
+`run(["git", …])` in `first_run_script_test.ts`. The five local copies of
+`NO_HOST_GIT_CONFIG` (including the one in `pr_round_repo_formatters_test.ts`)
+and the per-file wrappers now import the helper. Closes #5309.
 
 ## Spec
 
@@ -107,6 +112,13 @@ and exit 1. Results:
     directly: `ok | 41 passed | 0 failed`
   - `ok | 561 + 16 passed | 0 failed`
   - `ok | 87 passed | 0 failed`
+- **Last sweep** (the files the pre-PR verifier named, plus
+  `no_host_git_config_test.ts`): `ok | 255 passed | 0 failed` both with and
+  without the injection, marker never printed. The 22 untouched files that name
+  git in another spawn form, run with the injection: `488 passed | 1 failed`.
+  The one failure was the `git_guard_shim_test.ts` commit, now shielded:
+  `ok | 19 passed | 0 failed` both ways. The others use fake runners or scan
+  source text.
 - **Control**: a plain `git commit` with the same injected env printed the
   marker and exited 1.
 
@@ -135,8 +147,13 @@ Issues cited as provenance:
   few fixtures an explicit `init -b main` or identity. These replace defaults
   the global config used to supply. No assertion or expected value was removed
   or changed. The `secrets_history_scan_test.ts` edit adds comments only.
-- `runFixtureGit` has no test of its own. The converted files exercise it, for
-  example `git_branch_sync_test.ts`, which passes with the hook injected.
+- `runFixtureGit` tests in the same file push through it with a caller env
+  carrying the injected hooksPath, and with a hostile `GIT_CONFIG_GLOBAL`:
+  - `runFixtureGit: a caller env carrying the injected hooksPath cannot run the hook`
+  - `runFixtureGit: a hostile GIT_CONFIG_GLOBAL in the caller env cannot run the hook`
+
+  Red check: with the body changed to `return runGitCommand(args, options);`,
+  the file gives `FAILED | 5 passed | 2 failed`. The change was reverted.
 - `./quality.sh < /dev/null` on commit `01d25e647`:
   `Result: PASSED (with
   skipped checks)`, exit 0. Semgrep passed over the 162

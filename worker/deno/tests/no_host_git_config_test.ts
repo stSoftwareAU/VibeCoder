@@ -15,6 +15,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   NO_HOST_GIT_CONFIG,
   NO_HOST_HOOKS_ARGS,
+  runFixtureGit,
 } from "./support/no_host_git_config.ts";
 
 const HOSTILE_MARKER = "HOSTILE_PRE_PUSH_HOOK_RAN";
@@ -266,6 +267,64 @@ Deno.test("system config: a hostile GIT_CONFIG_SYSTEM runs the hook; the helper 
     assertEquals(overlay.code, 0, overlay.stderr);
     assertEquals(overlay.stderr.includes(HOSTILE_MARKER), false);
     assertEquals(await refExists(fx, "case-e-overlay"), true);
+    assertEquals(await fileExists(hook.marker), false);
+  });
+});
+
+/** Push HEAD through `runFixtureGit` with a caller env that tries to re-inject host config. */
+async function pushThroughFixtureGit(
+  fx: Fixture,
+  branch: string,
+  env: Record<string, string>,
+): Promise<RunResult> {
+  const r = await runFixtureGit(
+    ["push", "origin", `HEAD:refs/heads/${branch}`],
+    { cwd: fx.work, env },
+  );
+  assert(r.ok, r.ok ? "" : r.error.message);
+  return r.value;
+}
+
+Deno.test("runFixtureGit: a caller env carrying the injected hooksPath cannot run the hook", async () => {
+  await withFixture(async (fx) => {
+    const hook = await writeHostileHook(fx.root, "fixture-env");
+    const control = await pushHead(
+      fx,
+      "case-f-control",
+      injectedHooksPath(hook.hooksDir),
+    );
+    assert(control.code !== 0, "control push should be refused");
+    await Deno.remove(hook.marker);
+
+    const r = await pushThroughFixtureGit(
+      fx,
+      "case-f",
+      injectedHooksPath(hook.hooksDir),
+    );
+    assertEquals(r.code, 0, r.stderr);
+    assertEquals(r.stderr.includes(HOSTILE_MARKER), false);
+    assertEquals(await refExists(fx, "case-f"), true);
+    assertEquals(await fileExists(hook.marker), false);
+  });
+});
+
+Deno.test("runFixtureGit: a hostile GIT_CONFIG_GLOBAL in the caller env cannot run the hook", async () => {
+  await withFixture(async (fx) => {
+    const hook = await writeHostileHook(fx.root, "fixture-global");
+    const globalConfig = `${fx.root}/hostile-global.gitconfig`;
+    await Deno.writeTextFile(
+      globalConfig,
+      `[core]\n\thooksPath = ${hook.hooksDir}\n`,
+    );
+    const hostile = { GIT_CONFIG_COUNT: "0", GIT_CONFIG_GLOBAL: globalConfig };
+    const control = await pushHead(fx, "case-g-control", hostile);
+    assert(control.code !== 0, "control push should be refused");
+    await Deno.remove(hook.marker);
+
+    const r = await pushThroughFixtureGit(fx, "case-g", hostile);
+    assertEquals(r.code, 0, r.stderr);
+    assertEquals(r.stderr.includes(HOSTILE_MARKER), false);
+    assertEquals(await refExists(fx, "case-g"), true);
     assertEquals(await fileExists(hook.marker), false);
   });
 });

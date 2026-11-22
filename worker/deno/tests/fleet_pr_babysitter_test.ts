@@ -2990,8 +2990,9 @@ Deno.test("babysitter stages resolved merge files and refuses conflict markers",
   const dir = await Deno.makeTempDir();
   const git = async (...args: string[]) =>
     await new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd: dir,
+      env: NO_HOST_GIT_CONFIG,
       stdout: "null",
       stderr: "null",
     }).output();
@@ -3020,8 +3021,9 @@ Deno.test("babysitter stages resolved merge files and refuses conflict markers",
     assert((await git("diff", "--quiet", "HEAD")).success);
     assert((await git("rev-parse", "HEAD^2")).success);
     const author = await new Deno.Command("git", {
-      args: ["show", "-s", "--format=%an <%ae>", "HEAD"],
+      args: [...NO_HOST_HOOKS_ARGS, "show", "-s", "--format=%an <%ae>", "HEAD"],
       cwd: dir,
+      env: NO_HOST_GIT_CONFIG,
     }).output();
     assertEquals(
       new TextDecoder().decode(author.stdout).trim(),
@@ -4047,7 +4049,11 @@ Deno.test("a call that arrives while another is queued still waits for the runni
 Deno.test("a base already merged into the head is detected, a newer base is not", async () => {
   const dir = await Deno.makeTempDir();
   const git = async (...args: string[]) => {
-    const out = await new Deno.Command("git", { args, cwd: dir }).output();
+    const out = await new Deno.Command("git", {
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
+      cwd: dir,
+      env: NO_HOST_GIT_CONFIG,
+    }).output();
     assert(out.success, new TextDecoder().decode(out.stderr));
   };
   try {
