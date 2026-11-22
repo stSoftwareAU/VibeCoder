@@ -175,6 +175,30 @@ Deno.test("entrypoint - execs the Deno driver with the worker permission set", a
   }
 });
 
+/**
+ * Run a probe script under the given allow flags, with the same config and
+ * lock as the worker, and return its last stdout line.
+ */
+async function runDenoProbe(script: string, flags: string[]): Promise<string> {
+  const out = await new Deno.Command(Deno.execPath(), {
+    args: [
+      "run",
+      `--config=${REPO_ROOT}/worker/deno/deno.json`,
+      "--frozen",
+      `--lock=${REPO_ROOT}/worker/deno/deno.lock`,
+      ...flags,
+      script,
+    ],
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const stdout = new TextDecoder().decode(out.stdout);
+  const stderr = new TextDecoder().decode(out.stderr);
+  assert(out.success, `probe run failed: ${stderr}`);
+  return stdout.trim().split("\n").pop() ?? "";
+}
+
 // The memory-pressure probe is Linux-only by design and reads unknown elsewhere.
 Deno.test({
   name:
@@ -205,29 +229,11 @@ Deno.test({
         `import { probeMemoryPressure } from "${probeUrl}"; const warnings: string[] = []; const reading = await probeMemoryPressure({ warn: (m) => warnings.push(m) }); console.log(JSON.stringify({ reading, warnings }));\n`,
       );
 
-      const runProbe = async (flags: string[]) => {
-        const out = await new Deno.Command(Deno.execPath(), {
-          args: [
-            "run",
-            `--config=${REPO_ROOT}/worker/deno/deno.json`,
-            "--frozen",
-            `--lock=${REPO_ROOT}/worker/deno/deno.lock`,
-            ...flags,
-            script,
-          ],
-          stdin: "null",
-          stdout: "piped",
-          stderr: "piped",
-        }).output();
-        const stdout = new TextDecoder().decode(out.stdout);
-        const stderr = new TextDecoder().decode(out.stderr);
-        assert(out.success, `probe run failed: ${stderr}`);
-        const last = stdout.trim().split("\n").pop() ?? "";
-        return JSON.parse(last) as {
+      const runProbe = async (flags: string[]) =>
+        JSON.parse(await runDenoProbe(script, flags)) as {
           reading: { level: string; totalBytes?: number };
           warnings: string[];
         };
-      };
 
       const granted = await runProbe(allowFlags);
       assert(
@@ -248,6 +254,87 @@ Deno.test({
       assertStringIncludes(
         preFix.warnings[0]!,
         'NotCapable: Requires sys access to "systemMemoryInfo"',
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+// The liveness tick reads /proc only through cat, and MemAvailable through
+// Deno.systemMemoryInfo, so both are Linux facts (Issue #5324).
+Deno.test({
+  name:
+    "entrypoint - the driver's permission set lets the liveness tick read MemAvailable and PSI (Issue #5324)",
+  ignore: Deno.build.os !== "linux",
+  fn: async () => {
+    const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+    try {
+      const argvFile = await stubDeno(dir);
+      await fakeRepo(dir);
+      const { code } = await runEntrypoint({
+        dir,
+        path: `${dir}/bin`,
+        env: { VIBE_BASE_DIR: `${dir}/repo` },
+      });
+      assertEquals(code, 0);
+
+      const argv = (await Deno.readTextFile(argvFile)).trim().split("\n");
+      const allowFlags = argv.filter((a) => a.startsWith("--allow-"));
+      assert(allowFlags.length > 0, "no --allow-* flags recorded");
+
+      const livenessUrl = new URL(
+        `file://${REPO_ROOT}/worker/deno/lib/liveness_guard.ts`,
+      ).href;
+      const script = `${dir}/liveness_probe.ts`;
+      await Deno.writeTextFile(
+        script,
+        `import { formatLivenessPressureFields, readLivenessTickPressure, readProcFileWithCat } from "${livenessUrl}"; const line = formatLivenessPressureFields(await readLivenessTickPressure()); const cat = await readProcFileWithCat("/proc/loadavg"); let direct = "ok"; try { await Deno.readTextFile("/proc/loadavg"); } catch (e) { direct = e instanceof Error ? \`\${e.name}: \${e.message}\` : String(e); } let missing = "no error"; try { await readProcFileWithCat("/proc/vibe-5324-missing"); } catch (e) { missing = e instanceof Error ? e.message : String(e); } console.log(JSON.stringify({ line, cat, direct, missing }));\n`,
+      );
+
+      const granted = JSON.parse(await runDenoProbe(script, allowFlags)) as {
+        line: string;
+        cat: string;
+        direct: string;
+        missing: string;
+      };
+      const linePattern =
+        /^mem_available_mib=\d+ pressure_memory=(\S+) pressure_cpu=(\S+)$/;
+      const match = linePattern.exec(granted.line);
+      assert(match, `unexpected tick line: ${granted.line}`);
+      assertEquals(
+        granted.line.includes("mem_available_mib=unavailable"),
+        false,
+      );
+      assert(granted.cat.trim() !== "", "cat read of /proc/loadavg was empty");
+      // The failure branch: a non-zero cat exit throws, naming the cause.
+      assertStringIncludes(
+        granted.missing,
+        "cat /proc/vibe-5324-missing exited 1",
+      );
+      assertStringIncludes(granted.missing, "No such file or directory");
+      // Positive control: the same flags refuse a direct /proc read, so the
+      // cat route is what makes PSI readable.
+      assertStringIncludes(granted.direct, "NotCapable");
+      for (const token of [match[1]!, match[2]!]) {
+        assert(
+          token === "unavailable" || token.startsWith("some,"),
+          `unexpected PSI token ${token}`,
+        );
+      }
+
+      // Negative control: the pre-#5319 grant cannot read systemMemoryInfo.
+      const preFix = JSON.parse(
+        await runDenoProbe(
+          script,
+          allowFlags.map((a) =>
+            a.startsWith("--allow-sys=") ? "--allow-sys=hostname" : a
+          ),
+        ),
+      ) as { line: string };
+      assert(
+        preFix.line.startsWith("mem_available_mib=unavailable "),
+        preFix.line,
       );
     } finally {
       await Deno.remove(dir, { recursive: true });
