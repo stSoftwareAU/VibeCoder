@@ -699,8 +699,8 @@ flowchart TD
     Author -->|No| WorkOn["Add work-on label<br/>(any allowed author can)"]
     Author -->|Yes| Assigned{"Already assigned<br/>to someone else?"}
     Assigned -->|Yes| Unassign["Unassign or wait for<br/>the assignee to finish"]
-    Assigned -->|No| Failed{"Has the failed label?"}
-    Failed -->|Yes| RemoveFailed["Remove failed label<br/>to allow retry"]
+    Assigned -->|No| Failed{"Has a leftover<br/>failed label?"}
+    Failed -->|Yes| RemoveFailed["Nothing to do: the worker<br/>strips it on the next scan"]
     Failed -->|No| NeedsHuman{"Has the<br/>needs-human label?"}
     NeedsHuman -->|Yes| RemoveNeedsHuman["Resolve the blocker,<br/>then remove needs-human"]
     NeedsHuman -->|No| Dependencies{"Has unresolved<br/>dependencies?<br/>(Depends on #N)"}

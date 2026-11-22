@@ -339,8 +339,8 @@ Colours match the seeded definitions in
 
 | Label | Colour | Who adds it | What happens |
 | ----- | ------ | ----------- | ------------ |
-| `failed-once` | `fbca04` | Worker | First failure — will retry |
-| `failed` | `d73a4a` | Worker | Second failure — skipped until you remove it |
+| `failed-once` | `fbca04` | Worker | Non-transient failure — kept on every repeat failure; the issue is unassigned and retried after the escalating cooldown (2 h → 6 h → 24 h) |
+| `failed` | `d73a4a` | Retired | Never applied by the worker (Issue #4158); a leftover one is stripped on the next scan |
 | `documentation` | `0075ca` | Human | Documentation-oriented path / clarification bypass |
 | `needs-screenshot` | `d93f0b` | Worker | Missing screenshot evidence; blocks auto-merge until resolved |
 | `degraded-model` | `e99695` | Worker | Planning/grill-class run used a fallback model |
@@ -388,8 +388,10 @@ posts an answer, removes `question`, adds `needs-human`. Re-add
 comment. The worker updates the issue, removes the label, adds
 `needs-human`.
 
-**`failed-once` / `failed`** — Automatic retry bookkeeping. Remove
-`failed` to give the issue two fresh attempts.
+**`failed-once` / `failed`** — Automatic retry bookkeeping. Every
+non-transient failure is recorded under `failed-once` and the issue is
+retried after the escalating cooldown. `failed` is retired (Issue #4158):
+the worker never applies it, and a leftover one is stripped on the next scan.
 
 **`documentation`** — Marks documentation-oriented work; can bypass
 some clarification friction when paired with clearing `needs-human`.
