@@ -20,7 +20,12 @@ import type { Result } from "../types.ts";
 export const GEMINI_SYSTEM_SETTINGS_ENV_VAR = "GEMINI_CLI_SYSTEM_SETTINGS_PATH";
 
 /**
- * The Gemini CLI tool each mapped denial excludes (v0.68.0 `tool-names.ts`).
+ * The Gemini CLI tool each mapped denial excludes (v0.68.0 `tool-names.ts` and
+ * `definitions/base-declarations.ts`).
+ *
+ * `WebFetch` and `WebSearch` are mapped because the existing deny lists
+ * (summarise, closure verdict, drift check) carry them and Gemini has the
+ * equivalent tools, `web_fetch` and `google_web_search`.
  *
  * `EnterPlanMode` and `ExitPlanMode` are not in the issue's list, but the
  * runner denies them by default and the Quorum judge relies on that, so
@@ -31,6 +36,8 @@ const GEMINI_TOOL_FOR_DENIAL: ReadonlyMap<string, string> = new Map([
   ["MultiEdit", "replace"],
   ["Write", "write_file"],
   ["Bash", "run_shell_command"],
+  ["WebFetch", "web_fetch"],
+  ["WebSearch", "google_web_search"],
   ["EnterPlanMode", "enter_plan_mode"],
   ["ExitPlanMode", "exit_plan_mode"],
 ]);
@@ -82,7 +89,7 @@ export function buildGeminiToolSettings(
         kind: "missing_tool_support",
         message: `gemini cannot enforce the denied tool(s) ${
           unmapped.join(", ")
-        }: the Gemini CLI has no setting that turns them off`,
+        }: no Gemini CLI setting is mapped for them, and a denial is never left as prompt text only`,
       },
     };
   }
@@ -136,7 +143,7 @@ export async function writeGeminiRunSettings(request: {
   const root = configuredRoot === "" ? undefined : configuredRoot;
   const rootLabel = root ?? "the system temporary directory";
   const consequence =
-    "its denied tools would reach the model as prompt text only";
+    "so the spawn is refused rather than leave its denied tools as prompt text only";
 
   let dir: string;
   try {

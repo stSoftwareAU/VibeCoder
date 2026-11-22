@@ -236,8 +236,8 @@ Deno.test("gemini carries the reviewer roles through its per-run settings file, 
   assertEquals(manager?.kind, "unsupported_capability");
   assertStringIncludes(manager?.message ?? "", "cannot compact its stream");
   const unmapped = assertRoleSupported({ provider: "gemini" }, "executor", [
-    "WebFetch",
+    "Bash(git push:*)",
   ]);
   assertEquals(unmapped?.kind, "missing_tool_support");
-  assertStringIncludes(unmapped?.message ?? "", "WebFetch");
+  assertStringIncludes(unmapped?.message ?? "", "Bash(git push:*)");
 });

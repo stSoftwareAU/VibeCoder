@@ -19,7 +19,11 @@ import {
   IMAGE_AGENT_PROVIDERS_ENV,
   type ToolDenialSettings,
 } from "../lib/agent_provider.ts";
-import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import {
+  runClaudeWithTimeout,
+  SUMMARISE_DISALLOWED_TOOLS,
+} from "../lib/claude_runner.ts";
+import { CLOSURE_VERDICT_DISALLOWED_TOOLS } from "../lib/closure_verdict_recovery.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
@@ -103,10 +107,13 @@ Deno.test("the executor list denies only sub-agents and writes no tools key (Iss
 });
 
 Deno.test("an unmapped denied tool is refused as missing_tool_support naming it (Issue #5341)", () => {
-  const refused = buildGeminiToolSettings(["Edit", "WebFetch"]);
-  assert(!refused.ok, "WebFetch has no Gemini setting, so it is refused");
+  const refused = buildGeminiToolSettings(["Edit", "Bash(git push:*)"]);
+  assert(
+    !refused.ok,
+    "Bash(git push:*) has no Gemini setting, so it is refused",
+  );
   assertEquals(refused.refusal.kind, "missing_tool_support");
-  assertStringIncludes(refused.refusal.message, "WebFetch");
+  assertStringIncludes(refused.refusal.message, "Bash(git push:*)");
   // Control: the mapped name alone is admitted.
   assertEquals(settingsOf(buildGeminiToolSettings(["Edit"])), {
     tools: { exclude: ["replace"] },
@@ -118,6 +125,42 @@ Deno.test("the default runner denials map to the plan-mode tools (Issue #5341)",
     settingsOf(buildGeminiToolSettings(["EnterPlanMode", "ExitPlanMode"])),
     {
       tools: { exclude: ["enter_plan_mode", "exit_plan_mode"] },
+    },
+  );
+});
+
+Deno.test("the existing summarise and closure-verdict callers are enforced, not refused (Issue #5341)", () => {
+  assertEquals(
+    settingsOf(buildGeminiToolSettings(SUMMARISE_DISALLOWED_TOOLS)),
+    {
+      tools: {
+        exclude: [
+          "run_shell_command",
+          "write_file",
+          "replace",
+          "web_fetch",
+          "google_web_search",
+          "enter_plan_mode",
+          "exit_plan_mode",
+        ],
+      },
+      experimental: { enableAgents: false },
+    },
+  );
+  assertEquals(
+    settingsOf(buildGeminiToolSettings(CLOSURE_VERDICT_DISALLOWED_TOOLS)),
+    {
+      tools: {
+        exclude: [
+          "write_file",
+          "replace",
+          "web_fetch",
+          "google_web_search",
+          "enter_plan_mode",
+          "exit_plan_mode",
+        ],
+      },
+      experimental: { enableAgents: false },
     },
   );
 });
@@ -273,7 +316,7 @@ Deno.test({
               TMPDIR: root,
             }),
             parentEnv: { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" },
-            disallowedTools: ["WebFetch"],
+            disallowedTools: ["Bash(git push:*)"],
           });
           return { result, ran: await exists(`${stub.dir}/ran`) };
         },
@@ -285,7 +328,7 @@ Deno.test({
         outcome.result.error.message,
         "Refused to start the agent",
       );
-      assertStringIncludes(outcome.result.error.message, "WebFetch");
+      assertStringIncludes(outcome.result.error.message, "Bash(git push:*)");
       assertEquals(outcome.ran, false, "the agent never started");
       assertEquals([...Deno.readDirSync(root)].length, 0);
     } finally {

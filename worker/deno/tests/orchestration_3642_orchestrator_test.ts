@@ -463,11 +463,11 @@ Deno.test("a Gemini executor passes the role check through its settings-file enf
     const outcome = await runExternalOrchestration(
       optionsFor(dir, fake.invoke, {
         executor: { provider: "gemini" },
-        env: {},
       }),
     );
     assertEquals(outcome.state, "refused");
     assertEquals(outcome.refusal?.kind, "metered_billing");
+    assertStringIncludes(outcome.refusal?.message ?? "", "gemini");
     assertEquals(fake.calls.length, 0);
   });
 });
