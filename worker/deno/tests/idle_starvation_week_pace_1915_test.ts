@@ -146,6 +146,8 @@ Deno.test(
         statePath,
         observation: observe({ hour: 24, idleSlotSeconds: 20_000 }),
         ghFn: (args: string[]) => {
+          // A visibility lookup (`gh api repos/...`) is not a create.
+          if (args[0] === "api") return Promise.resolve("public\n");
           if (args[1] === "list") return Promise.resolve("[]");
           created++;
           return Promise.resolve(
