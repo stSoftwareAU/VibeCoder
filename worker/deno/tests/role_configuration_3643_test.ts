@@ -10,6 +10,10 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
 import type { PhaseState } from "../lib/issue_worker_types.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 Deno.test("role settings layer repository fields over the host and clear foreign model defaults", () => {
   assertEquals(
@@ -147,7 +151,11 @@ Deno.test("role dispatch supports same-provider and mixed-provider pairings with
         ["commit", "-q", "--allow-empty", "-m", "base"],
       ]
     ) {
-      const out = await new Deno.Command("git", { args, cwd: dir }).output();
+      const out = await new Deno.Command("git", {
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
+        cwd: dir,
+        env: NO_HOST_GIT_CONFIG,
+      }).output();
       assertEquals(out.success, true, `git ${args.join(" ")}`);
     }
     await Deno.writeTextFile(

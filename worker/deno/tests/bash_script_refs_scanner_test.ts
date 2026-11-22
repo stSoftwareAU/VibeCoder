@@ -9,6 +9,10 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   ancestorDirs,
   type BashRef,
   defaultListTrackedFiles,
@@ -412,7 +416,7 @@ Deno.test("scanBashScriptRefs - real git checkout confines to tracked files", as
   try {
     const git = async (...args: string[]) => {
       const cmd = new Deno.Command("git", {
-        args: ["-C", dir, ...args],
+        args: [...NO_HOST_HOOKS_ARGS, "-C", dir, ...args],
         stdout: "null",
         stderr: "null",
         env: {
@@ -420,6 +424,7 @@ Deno.test("scanBashScriptRefs - real git checkout confines to tracked files", as
           GIT_AUTHOR_EMAIL: "t@e",
           GIT_COMMITTER_NAME: "t",
           GIT_COMMITTER_EMAIL: "t@e",
+          ...NO_HOST_GIT_CONFIG,
         },
       });
       await cmd.output();
@@ -465,7 +470,7 @@ Deno.test("scanBashScriptRefs - real git checkout confines to tracked files", as
 /** Run `git -C <dir> <args...>` with a deterministic identity. */
 async function runGit(dir: string, ...args: string[]): Promise<number> {
   const cmd = new Deno.Command("git", {
-    args: ["-C", dir, ...args],
+    args: [...NO_HOST_HOOKS_ARGS, "-C", dir, ...args],
     stdout: "null",
     stderr: "null",
     env: {
@@ -473,6 +478,7 @@ async function runGit(dir: string, ...args: string[]): Promise<number> {
       GIT_AUTHOR_EMAIL: "t@e",
       GIT_COMMITTER_NAME: "t",
       GIT_COMMITTER_EMAIL: "t@e",
+      ...NO_HOST_GIT_CONFIG,
     },
   });
   const { code } = await cmd.output();

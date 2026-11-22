@@ -11,6 +11,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   assertAdoptedMergeIsSafe,
   describeGitFailure,
   readMergeCommitState,
@@ -18,8 +22,9 @@ import {
 
 async function git(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   }).output();
@@ -52,8 +57,9 @@ async function conflictedRepo(): Promise<
   const preMergeSha = (await git(["rev-parse", "HEAD"], dir)).trim();
   // The merge stops on the conflict, leaving MERGE_HEAD behind.
   await new Deno.Command("git", {
-    args: ["merge", "main", "--no-edit"],
+    args: [...NO_HOST_HOOKS_ARGS, "merge", "main", "--no-edit"],
     cwd: dir,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "null",
     stderr: "null",
   }).output();
@@ -335,8 +341,9 @@ async function conflictedRepoWithHiddenFiles(): Promise<
   await git(["checkout", "topic"], dir);
   const preMergeSha = (await git(["rev-parse", "HEAD"], dir)).trim();
   await new Deno.Command("git", {
-    args: ["merge", "main", "--no-edit"],
+    args: [...NO_HOST_HOOKS_ARGS, "merge", "main", "--no-edit"],
     cwd: dir,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "null",
     stderr: "null",
   }).output();

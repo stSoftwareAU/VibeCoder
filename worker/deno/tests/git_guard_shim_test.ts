@@ -18,6 +18,10 @@ import {
   type GhGuardShimOutcome,
   installGhGuardShim,
 } from "../lib/gh_guard_shim.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 /** A known-shaped fake GitHub token — never a real credential. */
 const FAKE_TOKEN = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
@@ -336,7 +340,7 @@ Deno.test({
 
       const shim = expectInstalled(
         await installGhGuardShim({
-          baseEnv: { ...Deno.env.toObject(), PATH: dir },
+          baseEnv: { ...Deno.env.toObject(), ...NO_HOST_GIT_CONFIG, PATH: dir },
           active: true,
           allowedRepos: ["owner/repo"],
         }),
@@ -443,7 +447,11 @@ Deno.test({
       await Deno.chmod(`${dir}/gh`, 0o755);
 
       const git = async (...args: string[]) => {
-        const out = await new Deno.Command(realGit, { args, cwd: repo })
+        const out = await new Deno.Command(realGit, {
+          args: [...NO_HOST_HOOKS_ARGS, ...args],
+          cwd: repo,
+          env: NO_HOST_GIT_CONFIG,
+        })
           .output();
         assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
       };
@@ -459,7 +467,7 @@ Deno.test({
 
       const shim = expectInstalled(
         await installGhGuardShim({
-          baseEnv: { ...Deno.env.toObject(), PATH: dir },
+          baseEnv: { ...Deno.env.toObject(), ...NO_HOST_GIT_CONFIG, PATH: dir },
           active: true,
           allowedRepos: ["owner/repo"],
         }),
@@ -476,8 +484,9 @@ Deno.test({
       assertEquals(result.code, 0, result.stderr);
 
       const logged = await new Deno.Command(realGit, {
-        args: ["log", "-1", "--format=%B"],
+        args: [...NO_HOST_HOOKS_ARGS, "log", "-1", "--format=%B"],
         cwd: repo,
+        env: NO_HOST_GIT_CONFIG,
       }).output();
       const committed = new TextDecoder().decode(logged.stdout);
       assertStringIncludes(committed, "subject from a heredoc");
@@ -515,7 +524,11 @@ async function realGitIn(
   repo: string,
   args: string[],
 ): Promise<string> {
-  const out = await new Deno.Command(realGit, { args, cwd: repo }).output();
+  const out = await new Deno.Command(realGit, {
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
+    cwd: repo,
+    env: NO_HOST_GIT_CONFIG,
+  }).output();
   assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
   return new TextDecoder().decode(out.stdout);
 }
@@ -568,7 +581,7 @@ Deno.test({
     try {
       const shim = expectInstalled(
         await installGhGuardShim({
-          baseEnv: { ...Deno.env.toObject(), PATH: dir },
+          baseEnv: { ...Deno.env.toObject(), ...NO_HOST_GIT_CONFIG, PATH: dir },
           active: true,
           allowedRepos: ["owner/repo"],
         }),
@@ -616,7 +629,7 @@ Deno.test({
     try {
       const shim = expectInstalled(
         await installGhGuardShim({
-          baseEnv: { ...Deno.env.toObject(), PATH: dir },
+          baseEnv: { ...Deno.env.toObject(), ...NO_HOST_GIT_CONFIG, PATH: dir },
           active: true,
           allowedRepos: ["owner/repo"],
         }),

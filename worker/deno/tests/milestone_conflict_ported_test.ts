@@ -27,6 +27,10 @@ import {
 } from "../lib/milestone_conflict_ladder.ts";
 import type { FileDecision } from "../lib/milestone_conflict_triage.ts";
 import type { DeterministicConflictReport } from "../lib/dependency_conflict_apply.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 // ---------------------------------------------------------------------------
 // Pure
@@ -102,10 +106,11 @@ Deno.test("parseStageBlobs - one entry per path, the blob of each stage", () => 
 
 async function git(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   const decode = new TextDecoder();
   if (out.code !== 0 && !args.includes("merge")) {

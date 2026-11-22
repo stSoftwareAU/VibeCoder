@@ -16,11 +16,16 @@ import {
   sweepSharedClone,
   sweepSharedClones,
 } from "../lib/shared_clone_ref_sweep.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 async function git(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   }).output();
@@ -146,8 +151,14 @@ Deno.test(
 
       // for-each-ref is healthy again.
       const forEachRef = await new Deno.Command("git", {
-        args: ["for-each-ref", "refs/heads", "refs/remotes"],
+        args: [
+          ...NO_HOST_HOOKS_ARGS,
+          "for-each-ref",
+          "refs/heads",
+          "refs/remotes",
+        ],
         cwd: clone,
+        env: NO_HOST_GIT_CONFIG,
         stdout: "piped",
         stderr: "piped",
       }).output();
@@ -231,8 +242,14 @@ Deno.test(
       );
 
       const forEachRef = await new Deno.Command("git", {
-        args: ["for-each-ref", "refs/heads", "refs/remotes"],
+        args: [
+          ...NO_HOST_HOOKS_ARGS,
+          "for-each-ref",
+          "refs/heads",
+          "refs/remotes",
+        ],
         cwd: clone,
+        env: NO_HOST_GIT_CONFIG,
         stdout: "piped",
         stderr: "piped",
       }).output();

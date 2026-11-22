@@ -26,6 +26,7 @@ import {
 import { workOnIssueBaselineQuality } from "../lib/phases/baseline_quality_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { CheckResult } from "../lib/quality_helpers.ts";
@@ -39,7 +40,7 @@ import {
 const BRANCH = "issue-7-resumed";
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  const run = await runGitCommand(args, { cwd });
+  const run = await runFixtureGit(args, { cwd });
   if (!run.ok) throw run.error;
   if (run.value.code !== 0) {
     throw new Error(`git ${args.join(" ")}: ${run.value.stderr}`);

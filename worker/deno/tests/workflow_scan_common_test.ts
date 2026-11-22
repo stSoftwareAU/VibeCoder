@@ -7,6 +7,10 @@
  */
 
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   _resetSuppressionAuthorAllowlist as _clearSuppressionAllowlist,
   _resetSuppressionCommitAuthors as _clearSuppressionCommitAuthors,
   setSuppressionAuthorAllowlist as _setSuppressionAllowlist,
@@ -321,9 +325,9 @@ async function commitAs(
   };
   for (const args of [["add", "-A"], ["commit", "-q", "-m", message]]) {
     const out = await new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd,
-      env,
+      env: { ...env, ...NO_HOST_GIT_CONFIG },
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
@@ -341,9 +345,13 @@ Deno.test("readWorkflowFiles + isFindingSuppressed - a committed marker is honou
     const dir = await Deno.makeTempDir({ prefix: "wsc-e2e-" });
     try {
       const init = await new Deno.Command("git", {
-        args: ["init", "-q", "-b", "main"],
+        args: [...NO_HOST_HOOKS_ARGS, "init", "-q", "-b", "main"],
         cwd: dir,
-        env: { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
+        env: {
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_SYSTEM: "/dev/null",
+          ...NO_HOST_GIT_CONFIG,
+        },
         stdin: "null",
         stdout: "piped",
         stderr: "piped",

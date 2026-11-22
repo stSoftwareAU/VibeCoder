@@ -19,6 +19,10 @@ import {
   TIMEOUT_EXIT_CODE,
 } from "../lib/git_timeout.ts";
 import { envFrom } from "./support/env_lookup.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { buildPushArgs } from "../lib/git_ref_args.ts";
 
 Deno.test("git timeout - push provenance excludes remote owner commits even with a stale tracking ref", async () => {
@@ -30,7 +34,10 @@ Deno.test("git timeout - push provenance excludes remote owner commits even with
     VIBE_AUDIT_DISABLED: "true",
   };
   const git = async (...args: string[]) => {
-    const result = await runGitCommand(args, { cwd, env });
+    const result = await runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
+      cwd,
+      env: { ...env, ...NO_HOST_GIT_CONFIG },
+    });
     assertEquals(result.ok, true);
     if (!result.ok) throw result.error;
     assertEquals(result.value.code, 0, result.value.stderr);
@@ -215,7 +222,10 @@ Deno.test("git timeout - runGitCommand returns non-zero for invalid command", as
 Deno.test("git timeout - runGitCommand reports a killed call as a timeout (Issue #1378)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "git-timeout-" });
   try {
-    await runGitCommand(["init", "--quiet"], { cwd: dir });
+    await runGitCommand([...NO_HOST_HOOKS_ARGS, "init", "--quiet"], {
+      cwd: dir,
+      env: NO_HOST_GIT_CONFIG,
+    });
     // `core.fsmonitor` points at a sleeping hook, so `git status` blocks on
     // it. Aborting the signal kills the child instead of throwing, so the
     // call resolves with git's signal exit code — it must still be reported

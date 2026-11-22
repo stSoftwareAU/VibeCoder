@@ -21,6 +21,10 @@ import type {
   PreFlightCommandResult,
   PreFlightRunner,
 } from "../lib/pre_flight_gate.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const GIT_ENV = ["-c", "user.email=t@e", "-c", "user.name=t"];
 const ZERO = "0".repeat(40);
@@ -218,8 +222,9 @@ const PASS: PreFlightCommandResult = {
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args: [...GIT_ENV, ...args],
+    args: [...NO_HOST_HOOKS_ARGS, ...GIT_ENV, ...args],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   }).output();

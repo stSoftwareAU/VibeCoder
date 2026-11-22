@@ -17,13 +17,20 @@
 import { assertEquals } from "@std/assert";
 import { countUnpushedCommits } from "../lib/git_unpushed.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const DEFAULT_BRANCH = "Develop";
 const FEATURE_BRANCH = "issue-556-feature";
 
 /** Run a git command in a repo, failing loudly on a non-zero exit. */
 async function git(args: string[], cwd: string): Promise<string> {
-  const result = await runGitCommand(args, { cwd });
+  const result = await runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
+    cwd,
+    env: NO_HOST_GIT_CONFIG,
+  });
   if (!result.ok) throw result.error;
   if (result.value.code !== 0) {
     throw new Error(
@@ -127,12 +134,13 @@ Deno.test("countUnpushedCommits - reports 0 after a successful push on a single-
     // feature branch, which is exactly what fooled the old local-only count.
     const trackingRef = await runGitCommand(
       [
+        ...NO_HOST_HOOKS_ARGS,
         "rev-parse",
         "--verify",
         "--quiet",
         `refs/remotes/origin/${FEATURE_BRANCH}`,
       ],
-      { cwd: singleBranchPath },
+      { cwd: singleBranchPath, env: NO_HOST_GIT_CONFIG },
     );
     assertEquals(trackingRef.ok && trackingRef.value.code === 0, false);
 

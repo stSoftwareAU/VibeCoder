@@ -5,6 +5,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { mergeDuplicateRustUses } from "../lib/rust_use_union.ts";
 import { unionMergeConflictedFile } from "../lib/milestone_conflict_git.ts";
@@ -240,10 +244,11 @@ Deno.test(
 /** Run a git command in `dir`, failing the test loudly on a non-zero exit. */
 async function git(dir: string, args: string[]): Promise<string> {
   const cmd = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd: dir,
     stdout: "piped",
     stderr: "piped",
+    env: { ...NO_HOST_GIT_CONFIG },
   });
   const output = await cmd.output();
   const stdout = new TextDecoder().decode(output.stdout);

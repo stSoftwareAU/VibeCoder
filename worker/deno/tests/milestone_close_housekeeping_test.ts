@@ -22,6 +22,10 @@ import {
   saveStreamSession,
   streamSessionPath,
 } from "../lib/resume_state_store.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const REPO = "owner/demo";
 const MILESTONE_TITLE = "#2319 session resume";
@@ -32,8 +36,9 @@ const CHILD_NUMBER = 77;
 /** Run git, failing loud so a broken fixture never masquerades as a pass. */
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   }).output();

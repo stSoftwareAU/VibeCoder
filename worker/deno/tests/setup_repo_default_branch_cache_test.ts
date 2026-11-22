@@ -21,6 +21,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   defaultBranchCachePath,
   setupRepo,
 } from "../commands/git_operations.ts";
@@ -39,7 +43,7 @@ async function gitOutput(
   cwd: string,
 ): Promise<{ code: number; stdout: string }> {
   const cmd = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -48,6 +52,7 @@ async function gitOutput(
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",
       GIT_COMMITTER_EMAIL: "test@example.com",
+      ...NO_HOST_GIT_CONFIG,
     },
   });
   const out = await cmd.output();
@@ -124,10 +129,11 @@ Deno.test(
       // value never reached `git checkout` as an option slot.
       const head = new TextDecoder().decode(
         (await new Deno.Command("git", {
-          args: ["rev-parse", "--abbrev-ref", "HEAD"],
+          args: [...NO_HOST_HOOKS_ARGS, "rev-parse", "--abbrev-ref", "HEAD"],
           cwd: clonePath,
           stdout: "piped",
           stderr: "piped",
+          env: NO_HOST_GIT_CONFIG,
         }).output()).stdout,
       ).trim();
       assertEquals(head, "main");

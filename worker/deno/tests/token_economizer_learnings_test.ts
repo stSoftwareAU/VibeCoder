@@ -20,7 +20,6 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { runGitCommand } from "../lib/git_timeout.ts";
 import {
   githubVisibilityCheck,
   LEARNINGS_CONFIG_CAP_BYTES,
@@ -52,6 +51,11 @@ import {
   resetWriteRepoAllowlist,
   seedWriteRepoAllowlist,
 } from "../lib/write_repo_allowlist.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+  runFixtureGit,
+} from "./support/no_host_git_config.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const SUBJECT = "stSoftwareAU/VibeCoder#4957";
@@ -132,8 +136,8 @@ const hasGitleaks = await runs("gitleaks", ["version"]);
  */
 async function hasObjectLocally(dir: string, object: string): Promise<boolean> {
   const run = await new Deno.Command("git", {
-    args: ["-C", dir, "cat-file", "-e", object],
-    env: { GIT_NO_LAZY_FETCH: "1" },
+    args: [...NO_HOST_HOOKS_ARGS, "-C", dir, "cat-file", "-e", object],
+    env: { ...NO_HOST_GIT_CONFIG, GIT_NO_LAZY_FETCH: "1" },
     stdin: "null",
     stdout: "null",
     stderr: "null",
@@ -180,7 +184,7 @@ function recorder(): {
 
 /** Run one git command, throwing on failure. */
 async function git(args: string[]): Promise<string> {
-  const result = await runGitCommand(args);
+  const result = await runFixtureGit(args);
   if (!result.ok) throw result.error;
   if (result.value.code !== 0) {
     throw new Error(
@@ -250,7 +254,7 @@ async function commitToStore(
 
 /** The files on the store's `main`, sorted. Empty when there is no `main`. */
 async function storeFiles(storeDir: string): Promise<string[]> {
-  const listed = await runGitCommand([
+  const listed = await runFixtureGit([
     "-C",
     storeDir,
     "ls-tree",
@@ -264,7 +268,7 @@ async function storeFiles(storeDir: string): Promise<string[]> {
 
 /** The number of commits on the store's `main`. Zero when there is none. */
 async function commitCount(storeDir: string): Promise<number> {
-  const counted = await runGitCommand([
+  const counted = await runFixtureGit([
     "-C",
     storeDir,
     "rev-list",
@@ -535,7 +539,7 @@ Deno.test("skipped: a removed clone inside a parent repository is skipped, and t
     }
     assertEquals(await exists(scratch), false);
     assertEquals(stops.stops, []);
-    const parentHead = await runGitCommand([
+    const parentHead = await runFixtureGit([
       "-C",
       parent,
       "rev-parse",
@@ -1425,7 +1429,7 @@ Deno.test("repo keys: the upstream goldens, and the origin of a checkout", () =>
 
 /** The HEAD commit of a clone, or null when it has none. */
 async function headOf(dir: string): Promise<string | null> {
-  const run = await runGitCommand([
+  const run = await runFixtureGit([
     "-C",
     dir,
     "rev-parse",

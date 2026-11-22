@@ -23,6 +23,10 @@ import {
 import type { Logger } from "../types.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   _resetMilestoneBehindMemo,
   decideMilestoneBaseMerge,
 } from "../lib/milestone_children_gate.ts";
@@ -1224,8 +1228,9 @@ async function git(
   cwd: string,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   }).output();

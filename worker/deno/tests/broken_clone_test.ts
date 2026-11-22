@@ -11,6 +11,10 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { discardBrokenClone, probeCorruptClone } from "../lib/broken_clone.ts";
 import type { RunOutcome } from "../lib/run_outcome.ts";
 import {
@@ -70,7 +74,8 @@ Deno.test("discardBrokenClone - leaves a real repository untouched", async () =>
     const repoPath = `${workDir}/widget`;
     await Deno.mkdir(repoPath);
     const init = await new Deno.Command("git", {
-      args: ["init", "-q"],
+      args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
+      env: NO_HOST_GIT_CONFIG,
       cwd: repoPath,
     }).output();
     assertEquals(init.code, 0);
@@ -90,7 +95,8 @@ Deno.test("discardBrokenClone - a directory nested in another repository is stil
   const workDir = await Deno.makeTempDir();
   try {
     const init = await new Deno.Command("git", {
-      args: ["init", "-q"],
+      args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
+      env: NO_HOST_GIT_CONFIG,
       cwd: workDir,
     }).output();
     assertEquals(init.code, 0);
@@ -128,7 +134,8 @@ Deno.test("probeCorruptClone - a garbage .git/config line is reported", async ()
     const repoPath = `${workDir}/widget`;
     await Deno.mkdir(repoPath);
     const init = await new Deno.Command("git", {
-      args: ["init", "-q"],
+      args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
+      env: NO_HOST_GIT_CONFIG,
       cwd: repoPath,
     }).output();
     assertEquals(init.code, 0);
@@ -149,7 +156,8 @@ Deno.test("probeCorruptClone - a healthy repository is not corrupt", async () =>
     const repoPath = `${workDir}/widget`;
     await Deno.mkdir(repoPath);
     const init = await new Deno.Command("git", {
-      args: ["init", "-q"],
+      args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
+      env: NO_HOST_GIT_CONFIG,
       cwd: repoPath,
     }).output();
     assertEquals(init.code, 0);
@@ -191,7 +199,8 @@ Deno.test("isCloneCorruption - classifies git failure messages", () => {
 async function initRepo(path: string): Promise<void> {
   await Deno.mkdir(path, { recursive: true });
   const init = await new Deno.Command("git", {
-    args: ["init", "-q"],
+    args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
+    env: NO_HOST_GIT_CONFIG,
     cwd: path,
   }).output();
   assertEquals(init.code, 0);
