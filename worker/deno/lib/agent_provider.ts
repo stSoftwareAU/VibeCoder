@@ -497,8 +497,6 @@ export type ToolDenialSettings =
 export interface AgentRunSettings {
   /** Environment variables that point the child at its settings. */
   env: Readonly<Record<string, string>>;
-  /** The settings file, when the provider keeps its settings in one. */
-  path?: string;
   /** Removes what was written. Safe to call more than once. */
   cleanup(): Promise<void>;
 }

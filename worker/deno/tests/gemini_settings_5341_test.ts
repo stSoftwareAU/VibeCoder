@@ -79,8 +79,8 @@ Deno.test("the reviewer settings file holds the exact literal content and is rem
       env: envFrom({ TMPDIR: root }),
     });
     assert(written.ok, written.ok ? "" : written.error.message);
-    const path = written.value.path;
-    assert(path !== undefined, "the writer reports the settings file path");
+    const path = written.value.env[GEMINI_SYSTEM_SETTINGS_ENV_VAR];
+    assert(path !== undefined, "the writer names the settings file in its env");
     assertEquals(written.value.env, {
       [GEMINI_SYSTEM_SETTINGS_ENV_VAR]: path,
     });

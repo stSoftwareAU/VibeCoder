@@ -3240,7 +3240,7 @@ async function runClaudeWithTimeoutBody(
         await runSettings.cleanup();
       } catch (error) {
         logger?.warn(
-          `gemini settings: the per-run settings file could not be removed: ${
+          `${provider.displayName} settings: the per-run settings file could not be removed: ${
             redactSecrets(
               error instanceof Error ? error.message : String(error),
             )

@@ -97,9 +97,18 @@ function causeOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Removes a directory, ignoring a failure: the caller is already failing. */
-async function removeQuietly(dir: string): Promise<void> {
-  await Deno.remove(dir, { recursive: true }).catch(() => {/* best effort */});
+/**
+ * Removes a directory the writer made after a failed write. Returns the cause
+ * when the removal also fails, so the caller can report it, or undefined when
+ * the directory is gone.
+ */
+async function removeDirectory(dir: string): Promise<string | undefined> {
+  try {
+    await Deno.remove(dir, { recursive: true });
+    return undefined;
+  } catch (error) {
+    return causeOf(error);
+  }
 }
 
 /**
@@ -112,8 +121,9 @@ async function removeQuietly(dir: string): Promise<void> {
  * cause, and removes the directory it made.
  *
  * @param request - The denials to enforce and the environment lookup.
- * @returns The environment that points the CLI at the file, the file path,
- *   and a `cleanup` that removes the directory (safe to call twice).
+ * @returns The environment that points the CLI at the file (its path is the
+ *   value of `GEMINI_CLI_SYSTEM_SETTINGS_PATH`), and a `cleanup` that removes
+ *   the directory (safe to call twice).
  */
 export async function writeGeminiRunSettings(request: {
   disallowedTools: readonly string[];
@@ -155,13 +165,16 @@ export async function writeGeminiRunSettings(request: {
     );
     await Deno.chmod(filePath, 0o600);
   } catch (error) {
-    await removeQuietly(dir);
+    const removalFailure = await removeDirectory(dir);
+    const removalNote = removalFailure === undefined
+      ? ""
+      : `; the directory ${dir} could not be removed either: ${removalFailure}`;
     return {
       ok: false,
       error: new Error(
         `the Gemini settings file could not be written to ${filePath}: ${
           causeOf(error)
-        }; ${consequence}`,
+        }${removalNote}; ${consequence}`,
       ),
     };
   }
@@ -177,7 +190,6 @@ export async function writeGeminiRunSettings(request: {
     ok: true,
     value: {
       env: { [GEMINI_SYSTEM_SETTINGS_ENV_VAR]: filePath },
-      path: filePath,
       cleanup,
     },
   };
