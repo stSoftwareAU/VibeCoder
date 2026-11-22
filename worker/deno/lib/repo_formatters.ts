@@ -11,8 +11,8 @@
  * fmt` on the changed code files under each outermost tracked `deno.json` /
  * `deno.jsonc` that its fmt scope covers, and `cargo fmt --all` in each
  * outermost tracked `Cargo.toml` directory whose `.rs` files changed. If any
- * tracked file differs afterwards, the formatted paths are committed as one
- * `style: apply repository formatters` commit.
+ * tracked file differs afterwards, the formatted paths, and only those, are
+ * committed as one `style: apply repository formatters` commit.
  *
  * Markdown outside the worker's own archive is never handed to `deno fmt`:
  * it re-wraps whole documents and trips markdownlint MD018, so a Markdown
@@ -169,6 +169,9 @@ async function snapshot(
 /**
  * Stage and commit exactly these tracked paths.
  *
+ * The commit is limited to them too (`commit -- <paths>`), so a change
+ * someone else staged elsewhere stays staged, out of the formatter's commit.
+ *
  * Returns the git error, or `undefined` when the commit landed. The body
  * keeps the run-id trailer in a paragraph of its own: the subject reads as a
  * `Key: value` line, so the trailer would otherwise join it.
@@ -188,9 +191,10 @@ async function commitTrackedPaths(
     `${FORMATTER_COMMIT_MESSAGE}\n\n${FORMATTER_COMMIT_BODY}`,
     deps.runId(),
   );
-  const commit = await deps.runGitCommand(["commit", "-m", message], {
-    cwd: repoPath,
-  });
+  const commit = await deps.runGitCommand(
+    ["commit", "-m", message, "--", ...pathspecs],
+    { cwd: repoPath },
+  );
   return gitStepError("commit", commit);
 }
 
@@ -325,8 +329,10 @@ export function isolateLinkageLines(text: string): string {
  * isolated (see {@link isolateLinkageLines}) and each JSON file is rewritten
  * with sorted keys; a file is written back only when it changed. Files over
  * MAX_ARCHIVE_REWRITE_BYTES are skipped with a warning and left for the gate
- * to report. A missing formatter, a write failure, or a formatter that exits
- * non-zero is logged.
+ * to report. An archive file with uncommitted changes is left out, neither
+ * formatted nor committed, and a failed check skips the step (Issue #5328).
+ * A missing formatter, a write failure, or a formatter that exits non-zero is
+ * logged.
  * This function never throws, so the gate still runs.
  */
 export async function formatWorkerOwnedArchive(
@@ -380,8 +386,41 @@ export async function formatWorkerOwnedArchive(
       return;
     }
 
+    // Uncommitted edits stay out (Issue #5328): the formatter's commit must not
+    // publish them. loadSummaryForPublication uses the committed copy (#4764).
+    const dirty = await deps.runGitCommand(
+      [
+        "diff",
+        "--name-only",
+        "-z",
+        "HEAD",
+        "--",
+        ...archiveFiles.map((path) => `:(literal)${path}`),
+      ],
+      { cwd: repoPath },
+    );
+    if (!dirty.ok || dirty.value.code !== 0) {
+      deps.logger.warn(
+        `repo formatters: worker-owned archive skipped: ${
+          gitStepError("diff --name-only HEAD", dirty)
+        }`,
+      );
+      return;
+    }
+    const dirtyPaths = new Set(dirty.value.stdout.split("\0"));
+    const leftOut = archiveFiles.filter((path) => dirtyPaths.has(path));
+    if (leftOut.length > 0) {
+      deps.logger.warn(
+        `repo formatters: left ${
+          leftOut.join(", ")
+        } out of the archive formatting: uncommitted changes stay uncommitted (Issue #5328)`,
+      );
+    }
+    const cleanFiles = archiveFiles.filter((path) => !dirtyPaths.has(path));
+    if (cleanFiles.length === 0) return;
+
     const skipped = new Set<string>();
-    for (const path of archiveFiles) {
+    for (const path of cleanFiles) {
       const lower = path.toLowerCase();
       const isMarkdown = lower.endsWith(".md") || lower.endsWith(".markdown");
       const isJson = lower.endsWith(".json") || lower.endsWith(".jsonc");
@@ -414,7 +453,7 @@ export async function formatWorkerOwnedArchive(
       }
     }
 
-    const formatPaths = archiveFiles.filter((path) => !skipped.has(path));
+    const formatPaths = cleanFiles.filter((path) => !skipped.has(path));
     // `deno fmt` with no paths formats the whole repository: never run it empty.
     if (formatPaths.length === 0) return;
 
@@ -486,8 +525,14 @@ export async function formatWorkerOwnedArchive(
  * are formatted — see `planFormatterFixes`: never Markdown, never an
  * untouched code file under `deno fmt`, and `cargo fmt --all` only for a
  * cargo root whose `.rs` files changed. Only those paths are staged (`git add
- * -u -- <paths>`), so an unrelated edit elsewhere in the tree stays out of the
- * commit; an uncommitted edit already in a formatted file does go in with it.
+ * -u -- <paths>`, then `commit -- <paths>`), so an unrelated edit elsewhere in
+ * the tree, or a file staged outside the formatted paths, stays out of the
+ * commit. An uncommitted edit already in a formatted code file does go in with
+ * it: the quality-gate loop leaves the fix agent's code edits uncommitted for
+ * `./quality.sh` to judge, so formatting and committing them puts on the branch
+ * the same code the gate checks. An archive summary describes the branch and is
+ * not judged by that gate, so one with uncommitted changes is left out instead
+ * (see {@link formatWorkerOwnedArchive}).
  * Never throws: any unexpected failure is logged and reported via `gitError`
  * instead, and a formatter that fails is logged and recorded in `failures` —
  * the caller's own check still runs and reports what was left unfixed.
