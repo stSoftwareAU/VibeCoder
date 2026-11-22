@@ -316,6 +316,45 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
+- **Review round 13** — two items:
+  - **A flag before the lead-in.** A credential flag whose quoted value opens
+    before the outer value and would close at a quote in the outer or inner
+    value (`deploy --token 'alpha <value> credentials: DEPLOY_TOKEN = 'tail`,
+    the next-line, YAML-child and `The secret: api_key:` forms, `ab'cd`, and a
+    quote inside the outer value such as `DEPLOY_TOKEN':`) now gets main's
+    result, so the flag rule masks the whole quoted run again. Quotes an
+    earlier mask took are skipped when finding where the flag's value opens.
+    The quotes come from a per-walk index, so the look-back has no length
+    bound.
+  - **Unclosed quote after a masked assignment.** A flag inside a quoted inner
+    value whose value takes the closing quote is now masked with the inner
+    value on the first call (`secrets:\n  DEPLOY_TOKEN: ***REDACTED***`), so
+    the output holds no unclosed quote. This masks more than main, which left
+    `'deploy` visible. It applies only when nothing else keeps main's result
+    and no credential keyword sits in the flag's value past the quote. The
+    mask also takes any flag value it would cut, and the walk reads on inside
+    it, so a match main masks there is still masked past it. The second-call
+    search for main's own output now reads past an earlier placeholder and
+    has no 256-character bound; it skips an inner value that is itself the
+    chain's next label. 27 existing tests that pinned main's output for this
+    shape now expect the single mask. Each new output is final, publishes no
+    test value, and gives `containsSecret` false.
+  - 30 more tests (239 → 269); 23 of them fail at `8c1224ea`. The other 7
+    guard the new mask's neighbours and bounds. Every test file importing
+    `secret_redaction.ts`: `1310 passed | 0 failed`. Hostile sizes (64,000
+    lines of each new shape, 1 MiB runs) assert exact outputs, and doubling
+    the size doubles the time.
+  - **Sweep claim corrected.** The round-12 claim (no head-only change on a
+    second pass, no published value main masked) was wrong for flag-led
+    inputs. On the same 1,586,149 distinct flag-led inputs (four seeds),
+    `8c1224ea` published a value main masks for 110 and changed on a second
+    pass for 114, where main did not. This head publishes none and changes on
+    a second pass for 6, all also changing at `8c1224ea` and none publishing
+    a value. All 6 are a single-quoted YAML-child value holding glued labels
+    (`'app.token=password:`, `'token=token=`), where main's result stands and
+    a flag then takes the closing quote. On 778,633 distinct general inputs
+    (two seeds), neither head shows either. Values glued to a key-shaped
+    run are not counted, as before.
 - **Review round 12** — three items:
   - **The memo belongs to one walk.** The decode-then-rescan check runs a
     nested walk on a joined run; that walk now saves and restores the outer

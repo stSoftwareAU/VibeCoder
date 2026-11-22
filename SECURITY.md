@@ -582,10 +582,28 @@ and, apart from that check, **only when the separator crossed a line break**:
   read as an inner label (looked ahead at most 16 links), so a chain whose last
   value the base scan reads past gets the base result. An inner value that
   already holds the placeholder after other text, holds more than 8
-  credential keys, opens with a quote it never closes before a credential
-  flag, or touches a wrapped run longer than 4,096 characters, gets the base
-  result too. Every search reads only the inner
-  value and then each match from where it starts, so the check stays linear.
+  credential keys, or touches a wrapped run longer than 4,096 characters,
+  gets the base result too. So does one that opens with a quote it never
+  closes, is not itself the chain's next label, and is followed by a
+  credential flag whose value is the placeholder before the next quote of
+  that kind: the text between may hold anything else, an earlier placeholder
+  included, and has no length bound. A credential flag whose quoted value
+  opens before the outer value and would close at a quote in the outer or
+  inner value (`--token 'alpha credentials: DEPLOY_TOKEN = 'tail`) also
+  gets the base result, because the `secret-cli-flag` rule pairs the quotes
+  the walk leaves; quotes an earlier mask took are skipped, and past 16 such
+  masks the base result stands. When a credential flag inside a quoted inner
+  value has a value that takes the closing quote
+  (`secrets:\n  DEPLOY_TOKEN: 'deploy --token '<value>'`), and nothing above
+  gives the base result, the inner value is masked through the end of that
+  flag's value, and through any flag value that mask would cut, so the
+  output holds no unclosed quote. That is more than the base behaviour masks
+  (it masked from the closing quote on and left `'deploy` visible). When a
+  credential keyword sits in the flag's value past the closing quote, the
+  base result stands instead. Every search reads only the inner value, then
+  each match from where it starts, the text up to the next quote of a kind,
+  or a quote found in a per-walk index of quote positions, each once per
+  position in a walk, so the check stays linear.
   It has no whitespace bound of its own, so past the whitespace bound below
   the base result stands too.
   Label characters before the label are read as part of it, so in

@@ -746,32 +746,32 @@ for (
     ],
     [
       `credentials: DEPLOY_TOKEN = '--token '${V}'`,
-      `credentials: ${R} = '--token ${R}`,
+      `credentials: DEPLOY_TOKEN = ${R}`,
       [V],
     ],
     [
       `credentials: DEPLOY_TOKEN = "--token "${V}"`,
-      `credentials: ${R} = "--token ${R}`,
+      `credentials: DEPLOY_TOKEN = ${R}`,
       [V],
     ],
     [
       `Rotate these credentials: DB_SECRET_ARGS = '--token '${V}`,
-      `Rotate these credentials: ${R} = '--token ${R}`,
+      `Rotate these credentials: DB_SECRET_ARGS = ${R}`,
       [V],
     ],
     [
       `Rotate these credentials:\nDB_SECRET_ARGS = '--token '${V}`,
-      `Rotate these credentials:\n${R} = '--token ${R}`,
+      `Rotate these credentials:\nDB_SECRET_ARGS = ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: "--token " ${V}"`,
-      `secrets:\n  DEPLOY_TOKEN: "--token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `credentials: DEPLOY_TOKEN = "--token abc"${V}`,
-      `credentials: ${R} = "--token ${R}`,
+      `credentials: DEPLOY_TOKEN = ${R}`,
       [V],
     ],
     [
@@ -860,7 +860,7 @@ for (
     ],
     [
       "credentials: DEPLOY_TOKEN = API_TOKEN: 'hunter2 --token 'x",
-      `credentials: ${R} = API_TOKEN: '${R}'x`,
+      `credentials: DEPLOY_TOKEN = API_TOKEN: ${R}`,
       ["hunter2"],
     ],
     [
@@ -910,27 +910,27 @@ for (
     ],
     [
       `credentials: DEPLOY_TOKEN = '--token a --password '${V}'`,
-      `credentials: ${R} = '--token ${R} --password ${R}`,
+      `credentials: DEPLOY_TOKEN = ${R}`,
       [V],
     ],
     [
       `credentials: DEPLOY_TOKEN = '--token a --password '${V}`,
-      `credentials: ${R} = '--token ${R} --password ${R}`,
+      `credentials: DEPLOY_TOKEN = ${R}`,
       [V],
     ],
     [
       `credentials: DEPLOY_TOKEN = "--token a --password "${V}"`,
-      `credentials: ${R} = "--token ${R} --password ${R}`,
+      `credentials: DEPLOY_TOKEN = ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: '--token a --password '${V}`,
-      `secrets:\n  DEPLOY_TOKEN: '--token ${R} --password ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `credentials: DEPLOY_TOKEN = '--api-key k1 --secret s2 --token '${V}`,
-      `credentials: ${R} = '--api-key ${R} --secret ${R} --token ${R}`,
+      `credentials: DEPLOY_TOKEN = ${R}`,
       [V],
     ],
   ] as const
@@ -998,17 +998,17 @@ for (
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: 'deploy --token '${V}'`,
-      `secrets:\n  DEPLOY_TOKEN: 'deploy --token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: 'cmd --password '${V}`,
-      `secrets:\n  DEPLOY_TOKEN: 'cmd --password ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       "secrets:\n  DEPLOY_TOKEN: '--token --password ':",
-      `secrets:\n  DEPLOY_TOKEN: '--token --password ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [],
     ],
   ] as const
@@ -1044,27 +1044,27 @@ for (
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: 'deploy now --token '${V}'`,
-      `secrets:\n  DEPLOY_TOKEN: 'deploy now --token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: 'deploy -v --token '${V}'`,
-      `secrets:\n  DEPLOY_TOKEN: 'deploy -v --token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: 'deploy x--token '${V}'`,
-      `secrets:\n  DEPLOY_TOKEN: 'deploy x--token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: 'a b c --token '${V}'`,
-      `secrets:\n  DEPLOY_TOKEN: 'a b c --token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: 'deploy\n--token '${V}'`,
-      `secrets:\n  DEPLOY_TOKEN: 'deploy\n--token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
@@ -1113,37 +1113,37 @@ for (
     ]],
     [
       `secrets:\n  DEPLOY_TOKEN: 'curl https://example.test --token '${V}`,
-      `secrets:\n  DEPLOY_TOKEN: 'curl https://example.test --token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: 'deploy --env=prod --token '${V}`,
-      `secrets:\n  DEPLOY_TOKEN: 'deploy --env=prod --token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: 'deploy k=v --token '${V}`,
-      `secrets:\n  DEPLOY_TOKEN: 'deploy k=v --token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: 'deploy a:b --token '${V}`,
-      `secrets:\n  DEPLOY_TOKEN: 'deploy a:b --token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: 'deploy *.txt --token '${V}`,
-      `secrets:\n  DEPLOY_TOKEN: 'deploy *.txt --token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: 'deploy "x" --token '${V}`,
-      `secrets:\n  DEPLOY_TOKEN: 'deploy "x" --token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: '"--token '${V}`,
-      `secrets:\n  DEPLOY_TOKEN: '"--token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R}`,
       [V],
     ],
   ] as const
@@ -1165,4 +1165,187 @@ Deno.test("#5310 a chain longer than the look-ahead gives the same output after 
     assertEquals(containsSecret(alone), false);
     assertEquals(alone.includes(V), false);
   }
+});
+
+// PR #5322 review round 13, finding 1. A credential flag's single-quoted
+// value that opens before the lead-in label and closes at a quote in the
+// outer or inner value: the flag rule pairs the quotes of the text the walk
+// leaves, so main's result stands and the whole quoted run stays masked. The
+// same holds when the quote sits inside the inner value (`ab'cd`), inside
+// the outer value (`DEPLOY_TOKEN'`), or after a quote an earlier mask took.
+for (
+  const [input, expected, values] of [
+    [
+      `deploy --token 'alpha ${V} credentials: DEPLOY_TOKEN = 'tail`,
+      `deploy --token ${R}tail`,
+      [V],
+    ],
+    [
+      `deploy --password 'alpha ${V} The secret: api_key: 'tail`,
+      `deploy --password ${R}tail`,
+      [V],
+    ],
+    [
+      `deploy --api-key 'alpha ${V} Rotate these credentials:\nDEPLOY_TOKEN = 'tail`,
+      `deploy --api-key ${R}tail`,
+      [V],
+    ],
+    [
+      `deploy --token 'alpha ${V}\nsecrets:\n  api_key: 'tail`,
+      `deploy --token ${R}tail`,
+      [V],
+    ],
+    [
+      "run --password 'correct horse battery credentials: token: 'x",
+      `run --password ${R}x`,
+      ["horse battery"],
+    ],
+    [
+      `deploy --token 'alpha ${V} credentials: DEPLOY_TOKEN = ab'cd`,
+      `deploy --token ${R}cd`,
+      [V],
+    ],
+    [
+      "run --password '  = secrets:\n  DEPLOY_TOKEN': --env=prod hunter2abc'alpha ",
+      `run --password ${R}alpha `,
+      ["hunter2abc"],
+    ],
+    [
+      "deploy --token 'credentials: x' = hunter2abc-H x-api-key:secrets:\n  '--env=prod abc123def456;",
+      `deploy --token ${R}--env=prod abc123def456;`,
+      ["hunter2abc"],
+    ],
+    [
+      `deploy --token 'alpha ${V}*.txt app.token=password: 'credentials:  = )--password 'Rotate these credentials:\n`,
+      `deploy --token ${R}credentials:  = )--password ${R} these credentials:\n`,
+      [V],
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 round 13 flag before the lead-in: ${JSON.stringify(input.slice(0, 48))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}
+
+// PR #5322 review round 13, finding 2. A flag inside a quoted inner value
+// whose value takes the closing quote is now masked with the inner value on
+// the first call, so the output no longer holds an unclosed quote for a
+// second call to read differently: a masked assignment before the flag, a
+// long run of spaces or words, a URL-ish header, all give one final mask.
+for (
+  const input of [
+    `secrets:\n  DEPLOY_TOKEN: 'deploy token=abc123def --token '${V}`,
+    `secrets:\n  DEPLOY_TOKEN: 'a password=hunter2 --token '${V}`,
+    `secrets:\n  DEPLOY_TOKEN: 'deploy password: hunter2abc --token '${V}'`,
+    `secrets:\n  DEPLOY_TOKEN: 'curl -H x-api-key:abc123def --token '${V}`,
+    `secrets:\n  DEPLOY_TOKEN: 'deploy${" ".repeat(260)}--token '${V}`,
+    `secrets:\n  DEPLOY_TOKEN: 'deploy ${"now ".repeat(60)}--token '${V}`,
+  ]
+) {
+  Deno.test(`#5310 round 13 masked through the flag: ${JSON.stringify(input.slice(0, 52))}`, () => {
+    assertFinal(input, `secrets:\n  DEPLOY_TOKEN: ${R}`, [V, "hunter2"]);
+  });
+}
+
+Deno.test("#5310 round 13: the Rotate-these-credentials form is masked through the flag", () => {
+  assertFinal(
+    `Rotate these credentials:\nDEPLOY_TOKEN: 'deploy token=abc123def --token '${V}`,
+    `Rotate these credentials:\nDEPLOY_TOKEN: ${R}`,
+    [V, "abc123def"],
+  );
+});
+
+// Main's own output for those shapes, or text that already holds it, is
+// final: the second-call search reads past an earlier placeholder and has
+// no length bound (PR #5322 review round 13).
+for (
+  const input of [
+    `secrets:\n  DEPLOY_TOKEN: 'deploy token=${R} --token ${R}`,
+    `secrets:\n  DEPLOY_TOKEN: 'a password=${R} --token ${R}`,
+    `secrets:\n  DEPLOY_TOKEN: 'curl -H x-api-key:${R} --token ${R}`,
+    `secrets:\n  DEPLOY_TOKEN: 'deploy${" ".repeat(260)}--token ${R}`,
+    `secrets:\n  DEPLOY_TOKEN: 'deploy ${"now ".repeat(60)}--token ${R}`,
+  ]
+) {
+  Deno.test(`#5310 round 13 main's output stays final: ${JSON.stringify(input.slice(0, 52))}`, () => {
+    assertEquals(redactSecrets(input), input);
+    assertEquals(containsSecret(input), false);
+  });
+}
+
+// Round 13: the mask taken through a flag never cuts a later flag or a
+// match main masks inside the flag's value, and an unclosed-quote inner value
+// that is itself the chain's next label is read as the chain on both calls.
+for (
+  const [input, expected, values] of [
+    [
+      "secrets:\n  DEPLOY_TOKEN: ')--password 'credentials:  abc123def456,DEPLOY_TOKENtail",
+      `secrets:\n  DEPLOY_TOKEN: ')--password ${R}  ${R}`,
+      ["abc123def456"],
+    ],
+    [
+      "secrets:\n  DEPLOY_TOKEN: ',k=v token=abc123def456--api-key \"tail'--api-key hunter2abc",
+      `secrets:\n  DEPLOY_TOKEN: ',k=v token=${R} "tail'--api-key ${R}`,
+      ["abc123def456", "hunter2abc"],
+    ],
+    [
+      "secrets:\n  DEPLOY_TOKEN: '--token token='x\n'#hunter2abc deployapi_key: ",
+      `secrets:\n  DEPLOY_TOKEN: ${R} deployapi_key: `,
+      ["hunter2abc"],
+    ],
+    [
+      "secrets:\n  DEPLOY_TOKEN: 'hunter2abc--token ' : ;credentials: tail('\nabc123def456'",
+      `secrets:\n  DEPLOY_TOKEN: 'hunter2abc--token ${R}`,
+      ["abc123def456"],
+    ],
+    [
+      "#token=secrets:\n  'api_key: secrets:\n  = --password (,secrets:\n  The secret: ",
+      `#token=secrets:\n  'api_key: ${R}\n  = --password ${R}\n  The secret: `,
+      [],
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 round 13 neighbours of the mask: ${JSON.stringify(input.slice(0, 52))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}
+
+// Hostile sizes for the round-13 checks (Issue #3942: exact outputs, no
+// stopwatch). The quote look-back, the unclosed-run search and the mask
+// through a flag are read once per position in a walk.
+Deno.test("#5310 round 13: 64,000 flag-before-lead-in lines are each masked as main masks them", () => {
+  const line = "deploy --token 'alpha credentials: DEPLOY_TOKEN = 'tail\n";
+  assertEquals(
+    redactSecrets(line.repeat(64_000)),
+    `deploy --token ${R}tail\n`.repeat(64_000),
+  );
+});
+
+Deno.test("#5310 round 13: one flag's quoted value over 64,000 lead-in labels keeps main's result", () => {
+  const input = "deploy --token 'alpha " +
+    "credentials: DEPLOY_TOKEN = abc ".repeat(64_000) + "x: 'tail";
+  assertEquals(redactSecrets(input), `deploy --token ${R}tail`);
+});
+
+Deno.test("#5310 round 13: 32,000 masked-through lines and a 1 MiB quoted run", () => {
+  const line = `secrets:\n  DEPLOY_TOKEN: 'deploy --token '${V}'\n`;
+  assertEquals(
+    redactSecrets(line.repeat(32_000)),
+    `secrets:\n  DEPLOY_TOKEN: ${R}\n`.repeat(32_000),
+  );
+  assertEquals(
+    redactSecrets(
+      `secrets:\n  DEPLOY_TOKEN: 'deploy${" ".repeat(1 << 20)}--token '${V}`,
+    ),
+    `secrets:\n  DEPLOY_TOKEN: ${R}`,
+  );
+});
+
+Deno.test("#5310 round 13: 64,000 unclosed-quote lines and a 1 MiB unclosed run stay final", () => {
+  const lines = `secrets:\n  DEPLOY_TOKEN: 'x --token ${R}\n`.repeat(64_000);
+  assertEquals(redactSecrets(lines), lines);
+  const run = `secrets:\n  DEPLOY_TOKEN: 'deploy ${
+    "x ".repeat(512_000)
+  }--token ${R}`;
+  assertEquals(redactSecrets(run), run);
 });
