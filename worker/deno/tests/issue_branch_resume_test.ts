@@ -10,6 +10,10 @@
  */
 
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   assert,
   assertEquals,
   assertStringIncludes,
@@ -426,10 +430,11 @@ Deno.test("#3033 - a failed abandoned-branch lookup reports lookup-failed", asyn
 /** Run a git command in `cwd`, failing loudly on a non-zero exit. */
 async function git(args: string[], cwd: string): Promise<void> {
   const { code, stderr } = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "null",
     stderr: "piped",
+    env: { ...NO_HOST_GIT_CONFIG },
   }).output();
   if (code !== 0) {
     throw new Error(

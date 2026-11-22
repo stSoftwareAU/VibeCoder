@@ -33,11 +33,9 @@ import {
 import type { GitHubClient, Logger, Result, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createMissingScopeWarner } from "../lib/workflow_scope.ts";
+import { NO_HOST_GIT_CONFIG } from "./support/no_host_git_config.ts";
 
 const BRANCH = "issue-10-tidy-the-worker";
-
-/** Keeps the host's agent-run git config (a pre-push hook) out of the fixture. */
-const NO_HOST_GIT_CONFIG = { GIT_CONFIG_COUNT: "0" };
 
 const UNFORMATTED_TS = "export const   x  =  1\n";
 const FORMATTED_TS = "export const x = 1;\n";

@@ -12,6 +12,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   findSuppressions,
   isSuppressed,
   loginFromGitIdentity,
@@ -59,7 +63,7 @@ async function runGit(
   identity: { name: string; email: string },
 ): Promise<void> {
   const cmd = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -70,6 +74,7 @@ async function runGit(
       GIT_COMMITTER_EMAIL: identity.email,
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_SYSTEM: "/dev/null",
+      ...NO_HOST_GIT_CONFIG,
     },
   });
   const out = await cmd.output();

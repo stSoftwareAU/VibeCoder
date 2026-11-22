@@ -38,6 +38,10 @@ import { SEMGREP_IMAGE, SEMGREP_IMAGE_TAG } from "../lib/pinned_actions.ts";
 import { formatSummary, recordCheck } from "../lib/quality_helpers.ts";
 import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 import { runQualityGate } from "../lib/quality_gate.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -624,7 +628,7 @@ interface GitRunResult {
 /** Run git in a fixture repo. Identity comes from the environment. */
 function runGit(cwd: string, args: string[]): Promise<GitRunResult> {
   const cmd = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -633,6 +637,7 @@ function runGit(cwd: string, args: string[]): Promise<GitRunResult> {
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",
       GIT_COMMITTER_EMAIL: "test@example.com",
+      ...NO_HOST_GIT_CONFIG,
     },
   });
   return cmd.output().then((out) => ({

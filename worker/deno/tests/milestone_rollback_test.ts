@@ -23,6 +23,10 @@ import {
   type RollbackCandidate,
 } from "../lib/milestone_rollback.ts";
 import { syncBranchFor } from "../lib/milestone_sync_pr.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const MILESTONE_BRANCH = "milestone/1730-roll-back";
 
@@ -167,11 +171,14 @@ interface GitResult {
 
 async function runGit(args: string[], cwd: string): Promise<GitResult> {
   const command = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
     env: {
+      // The shield's GIT_CONFIG_COUNT=0 comes first, so the auto-maintenance
+      // entries below (GIT_CONFIG_COUNT=2) are the ones git reads.
+      ...NO_HOST_GIT_CONFIG,
       GIT_AUTHOR_NAME: "test",
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",
