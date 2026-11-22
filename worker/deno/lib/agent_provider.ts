@@ -135,7 +135,12 @@ import {
   deepSeekAuthActionableMessage,
   isDeepSeekAuthError,
 } from "./deepseek_auth.ts";
-import type { RepoConfig } from "../types.ts";
+import type { RepoConfig, Result } from "../types.ts";
+import type { OrchestrationRefusal } from "./orchestration/types.ts";
+import {
+  buildGeminiToolSettings,
+  writeGeminiRunSettings,
+} from "./gemini_settings.ts";
 
 /** Directory, relative to `container/`, holding the per-provider fragments. */
 export const PROVIDER_FRAGMENT_DIR = "providers";
@@ -390,10 +395,11 @@ export interface AgentInvocationRequest {
   effort?: string;
   /**
    * Tool names requested as unavailable. Claude's CLI enforces these through
-   * `--disallowed-tools`; Codex and Gemini receive them as prompt text only.
-   * A caller relying on enforcement must check this adapter and every
-   * permitted fallback. This list does not provide process, filesystem or
-   * network isolation.
+   * `--disallowed-tools`; Gemini enforces them through the run's settings file
+   * (Issue #5341), where an unmapped name or an unwritable file refuses the
+   * spawn; Codex still receives them as prompt text only. A caller relying on
+   * enforcement must check this adapter and every permitted fallback. This
+   * list does not provide process, filesystem or network isolation.
    */
   disallowedTools?: readonly string[];
   /**
@@ -475,6 +481,27 @@ export interface AgentInvocationRequest {
  * gets, with that limit still in force.
  */
 export type PromptTransport = "stdin" | "argv";
+
+/**
+ * What a provider's settings builder makes of a list of denied tools (Issue
+ * #5341). `ok: false` names the denial the provider's settings cannot enforce.
+ */
+export type ToolDenialSettings =
+  | { ok: true; settings: Record<string, unknown> }
+  | { ok: false; refusal: OrchestrationRefusal };
+
+/**
+ * The per-run settings a provider's CLI reads, written before the spawn and
+ * removed after it (Issue #5341).
+ */
+export interface AgentRunSettings {
+  /** Environment variables that point the child at its settings. */
+  env: Readonly<Record<string, string>>;
+  /** The settings file, when the provider keeps its settings in one. */
+  path?: string;
+  /** Removes what was written. Safe to call more than once. */
+  cleanup(): Promise<void>;
+}
 
 /** Everything the worker needs to know about one coding-agent provider. */
 export interface AgentProviderDescriptor {
@@ -599,6 +626,22 @@ export interface AgentProviderDescriptor {
   isAuthError(output: string): boolean;
   /** Operator-facing message for an authentication failure. */
   authActionableMessage(): string;
+  /**
+   * Maps the denied tools into this provider's per-run settings (Issue #5341).
+   * Pure. Absent means the provider has no settings-file enforcement; its
+   * denials then ride the argv, or the role is refused by `capabilities.ts`.
+   */
+  toolDenialSettings?(disallowedTools: readonly string[]): ToolDenialSettings;
+  /**
+   * Writes this run's settings file (Issue #5341). `claude_runner.ts` calls it
+   * after `buildChildEnv`, and merges the returned environment into the child.
+   * An error refuses the spawn: enforcement is a safety control, so it fails
+   * closed.
+   */
+  prepareRunSettings?(request: {
+    disallowedTools: readonly string[];
+    env?: EnvLookup;
+  }): Promise<Result<AgentRunSettings>>;
 }
 
 /** The model and effort one invocation runs with. */
@@ -1130,6 +1173,19 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
 
   authActionableMessage(): string {
     return geminiAuthActionableMessage();
+  },
+
+  // Denials reach Gemini through the per-run settings file (Issue #5341), not
+  // the argv: the CLI reads `GEMINI_CLI_SYSTEM_SETTINGS_PATH` at start-up.
+  toolDenialSettings(disallowedTools: readonly string[]): ToolDenialSettings {
+    return buildGeminiToolSettings(disallowedTools);
+  },
+
+  prepareRunSettings(request: {
+    disallowedTools: readonly string[];
+    env?: EnvLookup;
+  }): Promise<Result<AgentRunSettings>> {
+    return writeGeminiRunSettings(request);
   },
 };
 

@@ -19,8 +19,9 @@
  * The boundary, stated honestly:
  * - The checkout is a `git clone --shared` of the issue checkout with its
  *   `origin` removed, so it has no push destination.
- * - Claude's CLI enforces `disallowedTools`; Codex and Gemini receive the list
- *   as prompt text. Read-only mode explicitly selects Claude and requests
+ * - Claude's CLI enforces `disallowedTools`; Gemini enforces it through its
+ *   per-run settings file (Issue #5341); Codex receives the list as prompt
+ *   text. Read-only mode explicitly selects Claude and requests
  *   Claude config isolation; a non-Claude provider fallback is refused by the
  *   runner before spawn.
  * - Tool denials are not a network sandbox: another program run through

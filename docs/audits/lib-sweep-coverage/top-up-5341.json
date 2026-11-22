@@ -1,0 +1,12 @@
+{
+  "issue": 5341,
+  "chunk": "top-up-5341",
+  "title": "top-up: Gemini per-run settings file",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5341",
+  "definition": "modules added for writing the Gemini CLI per-run settings file that enforces denied tools: gemini_settings.ts (#5341)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/gemini_settings.ts"
+  ],
+  "sweptAt": "73ee219a583845e3c2b91dae3c3fc3736fd19b89"
+}

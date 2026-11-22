@@ -48,8 +48,9 @@ IPv6/DNS probes remain unknown. It is never labelled fully enforced. C12 and C13
 not control general egress.
 
 Provider tool restrictions are separate from execution containment. Claude's
-CLI enforces `--disallowed-tools`; Codex and Gemini receive the list as prompt
-text. Selecting a provider does not disable model-refusal fallback or create
+CLI enforces `--disallowed-tools`; Gemini enforces its denials through a per-run
+settings file (Issue #5341); Codex receives the list as prompt text. Selecting a
+provider does not disable model-refusal fallback or create
 filesystem/network isolation. External orchestration role calls are pinned:
 the gate passes `enableProviderFallback: false`, so a role call never moves to
 `agent_provider_fallback` after a model refusal (Issue #4986). Codex's

@@ -202,6 +202,7 @@ import {
   activeAgentProvider,
   type AgentDefinition,
   type AgentProviderSelector,
+  type AgentRunSettings,
   CLAUDE_PROVIDER_ID,
   selectAgentProvider,
 } from "./agent_provider.ts";
@@ -527,9 +528,10 @@ export interface RunClaudeOptions {
   /**
    * Marks a provider-neutral orchestrator role call, passed through to the
    * provider request. It does not by itself provide a sandbox: Claude roles get
-   * tool denials through `disallowedTools`; Codex roles run unsandboxed in the
-   * container, and a read-only Codex role on the issue-run gate is held only
-   * by checkout restoration (`orchestration/issue_run_gate.ts`).
+   * tool denials through `disallowedTools` (`--disallowed-tools`) and Gemini
+   * roles through the per-run settings file (Issue #5341); Codex roles run
+   * unsandboxed in the container, and a read-only Codex role on the issue-run
+   * gate is held only by checkout restoration (`orchestration/issue_run_gate.ts`).
    */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** Retain each retry's usage for lifecycle follow-on attribution (Issue #3720). */
@@ -637,10 +639,11 @@ export interface RunClaudeOptions {
   logger?: Logger;
   /**
    * Tools Claude's CLI denies with `--disallowed-tools` (default:
-   * `["EnterPlanMode", "ExitPlanMode"]`). Codex and Gemini receive the list
-   * as a prompt request only. Callers relying on enforcement must verify the
-   * adapter and every permitted fallback; this is not process, filesystem or
-   * network isolation.
+   * `["EnterPlanMode", "ExitPlanMode"]`). Gemini enforces them through the
+   * run's settings file (Issue #5341): an unmapped name or an unwritable file
+   * refuses the spawn. Codex receives the list as a prompt request only.
+   * Callers relying on enforcement must verify the adapter and every
+   * permitted fallback; this is not process, filesystem or network isolation.
    */
   disallowedTools?: string[];
   /**
@@ -1593,6 +1596,8 @@ async function runClaudeWithTimeoutBody(
   let hostDiskPoll: TimerHandle | undefined;
   let ghGuard: GhGuardShim | undefined;
   let prePushHook: PrePushHook | undefined;
+  // The provider's per-run settings file (Issue #5341), removed in `finally`.
+  let runSettings: AgentRunSettings | undefined;
   let transcript: AgentTranscriptWriter | undefined;
   // The prompt file (Issue #4385): the prompt is written to disk and
   // streamed from there into the child's stdin — inspectable after the
@@ -1640,6 +1645,26 @@ async function runClaudeWithTimeoutBody(
     // explicit copy with the GitHub App private-key material dropped, so a
     // prompt-injected model running unrestricted bash cannot read the PEM.
     const sanitisedEnv = provider.buildChildEnv(options.parentEnv);
+    // A provider that enforces denials through a settings file writes it here
+    // (Issue #5341). Enforcement is a safety control, so it fails closed: unlike
+    // the MCP config, which logs and continues, a settings file that cannot be
+    // written refuses the spawn.
+    if (provider.prepareRunSettings) {
+      const prepared = await provider.prepareRunSettings({
+        disallowedTools: invocationRequest.disallowedTools ?? [],
+        ...(options.env ? { env: options.env } : {}),
+      });
+      if (!prepared.ok) {
+        return {
+          ok: false,
+          error: new Error(
+            `Refused to start the agent: ${provider.displayName} could not apply its tool denials: ${prepared.error.message} (Issue #5341)`,
+          ),
+        };
+      }
+      runSettings = prepared.value;
+      Object.assign(sanitisedEnv, prepared.value.env);
+    }
     // Scope the agent's own credential to this run (Issue #1423). The
     // write-repo allowlist's second layer — a token GitHub itself refuses to
     // use outside the run's scope (Issue #1391) — reached only the worker's
@@ -3208,6 +3233,21 @@ async function runClaudeWithTimeoutBody(
     // The shim directory is per-spawn — remove it once the child has exited.
     if (ghGuard) await ghGuard.cleanup();
     if (prePushHook) await prePushHook.cleanup();
+    // The settings file is per-run too (Issue #5341). A failed removal is
+    // logged, never a reason to fail the run.
+    if (runSettings) {
+      try {
+        await runSettings.cleanup();
+      } catch (error) {
+        logger?.warn(
+          `gemini settings: the per-run settings file could not be removed: ${
+            redactSecrets(
+              error instanceof Error ? error.message : String(error),
+            )
+          }`,
+        );
+      }
+    }
     // The stdin feed has either completed or broken by now; settle it so
     // no pending write outlives the call, then drop the prompt file unless
     // the transcript tee is keeping evidence (Issue #4385).

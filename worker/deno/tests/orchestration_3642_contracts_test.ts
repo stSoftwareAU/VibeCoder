@@ -205,3 +205,39 @@ Deno.test("a cleanup that finds the temporary file missing is silent and rethrow
     assertEquals(warnings, []);
   });
 });
+
+Deno.test("gemini carries the reviewer roles through its per-run settings file, but not a manager (Issue #5341)", () => {
+  const reviewerTools = [
+    "Edit",
+    "MultiEdit",
+    "Write",
+    "NotebookEdit",
+    "Bash",
+    "Task",
+    "Agent",
+  ];
+  assertEquals(
+    assertRoleSupported({ provider: "gemini" }, "executor", ["Task", "Agent"]),
+    undefined,
+  );
+  for (
+    const role of ["spec_reviewer", "standards_reviewer", "explorer"] as const
+  ) {
+    assertEquals(
+      assertRoleSupported({ provider: "gemini" }, role, reviewerTools),
+      undefined,
+    );
+  }
+  const manager = assertRoleSupported(
+    { provider: "gemini" },
+    "manager",
+    reviewerTools,
+  );
+  assertEquals(manager?.kind, "unsupported_capability");
+  assertStringIncludes(manager?.message ?? "", "cannot compact its stream");
+  const unmapped = assertRoleSupported({ provider: "gemini" }, "executor", [
+    "WebFetch",
+  ]);
+  assertEquals(unmapped?.kind, "missing_tool_support");
+  assertStringIncludes(unmapped?.message ?? "", "WebFetch");
+});
