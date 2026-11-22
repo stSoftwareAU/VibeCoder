@@ -31,6 +31,7 @@ import {
   buildConflictAnalysisComment,
   type MilestoneConflictEscalation,
 } from "./milestone_conflict_triage.ts";
+import { privateRepoDigest } from "./private_repo_pseudonym.ts";
 import { isRepoPublic } from "./repo_visibility.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
@@ -153,17 +154,9 @@ export async function privateGateWedgeDiagnosticTitle(
   repo: string,
   milestoneBranch: string,
 ): Promise<string> {
-  const digest = new Uint8Array(
-    await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(`${repo} ${milestoneBranch}`),
-    ),
-  );
-  const hex = Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join(
-    "",
-  );
   return `Milestone sync gate cannot verify a resolution it keeps ` +
-    `refusing: a private fleet repo (${hex.slice(0, 12)})`;
+    `refusing: a private fleet repo ` +
+    `(${await privateRepoDigest(`${repo} ${milestoneBranch}`)})`;
 }
 
 /**
