@@ -574,13 +574,15 @@ function redirectionsFrom(words: string[], from: number): boolean {
  * across the words up to it, outside quotes, there is one more `)` than `(`
  * (PR #5332 review). So `done)`, `"done")`, `echo 'a')` and `done) 2>&1`
  * close it, while `cd $(git rev-parse --show-toplevel)`, `args=(--foo bar)`
- * and `$(date)` do not.
+ * and `$(date)` do not. `pending` is the balance of `$(` or `(` opened by
+ * earlier commands on the same line (`$(ls | wc -l)` is split at the `|`),
+ * which this command's `)` closes first.
  */
-function subshellCloseIndex(words: string[]): number {
+function subshellCloseIndex(words: string[], pending = 0): number {
   for (let j = words.length - 1; j >= 0; j--) {
     if (!parenBalance(words[j] ?? "").endsClose) continue;
     if (!redirectionsFrom(words, j + 1)) return -1;
-    let depth = 0;
+    let depth = pending;
     for (const word of words.slice(0, j + 1)) {
       depth += parenBalance(word).delta;
     }
@@ -650,6 +652,9 @@ export function reachableCommands(script: string): ReachableCommand[] {
   const { commands: listed, trailing } = shellCommandList(
     stripHeredocBodies(script),
   );
+  // Parentheses opened by earlier commands of the current line and not yet
+  // closed (a `$(` split by the command list at a `|`, `;` or `&&`).
+  let linePending = 0;
   for (const [index, { words: all, sep }] of listed.entries()) {
     let words = all;
     // Close the innermost compound, noting whether what follows its closing
@@ -775,7 +780,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
     // Redirections after the `)` belong to the subshell and are dropped:
     // `( runner; echo done ) 2>&1 | tee log` (PR #5332 review).
     if (!closeAfter && stack.at(-1)?.sub && words.length > 0) {
-      const at = subshellCloseIndex(words);
+      const at = subshellCloseIndex(words, linePending);
       if (at !== -1) {
         closeAfter = true;
         const trimmed = (words[at] ?? "").slice(0, -1);
@@ -788,11 +793,24 @@ export function reachableCommands(script: string): ReachableCommand[] {
     // A `$(` or `(` left open at the line end (`VERSION=$(`, `args=(`)
     // opens a frame that the balancing `)` closes, so that `)` does not close
     // an enclosing subshell instead.
+    // The balance is carried across the commands of one line, because the
+    // command list splits at a `|`, `;` or `&&` inside `$( … )`
+    // (`if [ $(ls | wc -l) -gt 0 ]`): only a parenthesis still open at the
+    // line's end opens a frame (PR #5332 review).
     let opensSubst = false;
-    if (!closeAfter) {
-      let depth = 0;
+    if (closeAfter) {
+      linePending = 0;
+    } else {
+      let depth = linePending;
       for (const word of words) depth += parenBalance(word).delta;
-      opensSubst = depth > 0;
+      const after = listed[index + 1]?.sep ??
+        (trailing === "\n" ? "" : trailing);
+      if (after === "\n" || after === "") {
+        opensSubst = depth > 0;
+        linePending = 0;
+      } else {
+        linePending = Math.max(0, depth);
+      }
     }
     if (words.length === 0) {
       prev = closeAfter ? pop()?.skippedStatus ?? null : closedStatus;

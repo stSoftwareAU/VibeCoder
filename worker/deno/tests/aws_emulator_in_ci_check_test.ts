@@ -3048,6 +3048,85 @@ Deno.test("checkAwsEmulatorInCI - set -e inside a subshell ends with it; a top-l
   );
 });
 
+// PR #5332 review round 7: errexit switched on inside a subshell ends the
+// subshell with the failure, but with errexit off outside it the body carries
+// on, so a runner there is credited only when the subshell's failure fails the
+// body.
+Deno.test("checkAwsEmulatorInCI - a runner in a ( set -e; ... ) subshell followed by more commands, with errexit off outside, earns no credit", async () => {
+  for (
+    const [label, files] of [
+      ["one-line subshell then a line, no top-level set -e", {
+        ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+        "ci/t.sh":
+          `#!/usr/bin/env bash\n( set -e; ${RUNNER_STEP}; echo done )\necho after\n`,
+      }],
+      ["multi-line subshell then two lines, no top-level set -e", {
+        ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+        "ci/t.sh":
+          `#!/usr/bin/env bash\n(\n  set -e\n  cd infra\n  ${RUNNER_STEP}\n)\necho cleaning up\nrm -rf tmp\n`,
+      }],
+      ["workflow step after set +e", {
+        ".github/workflows/ci.yml": prWorkflow(
+          stepYaml(`set +e\n( set -e; ${RUNNER_STEP}; echo done )\necho after`),
+        ),
+      }],
+    ] as Array<[string, Record<string, string>]>
+  ) {
+    const result = await checkRepoWith(files);
+    assertEquals(result.wiring, "missing", label);
+  }
+  // Controls: the subshell as the last command, and under a top-level set -e.
+  const last = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\n( set -e; ${RUNNER_STEP}; echo done )\n`,
+  });
+  assertEquals(last.wiring, "official-server", "subshell last");
+  const topLevel = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh":
+      `#!/usr/bin/env bash\nset -e\n( set -e; ${RUNNER_STEP}; echo done )\necho after\n`,
+  });
+  assertEquals(topLevel.wiring, "official-server", "top-level set -e");
+});
+
+// PR #5332 review round 7: a one-line `$( … )` holding `|`, `;` or `&&`, with
+// more words after it, opens no frame, so later commands are still judged.
+Deno.test("checkAwsEmulatorInCI - a one-line substitution with a separator inside it does not hide a later runner", async () => {
+  for (
+    const line of [
+      "if [ $(ls | wc -l) -gt 0 ]; then echo found; fi",
+      '[[ "$X" =~ ^(a|b)$ ]] && echo matched',
+      "cd $(git rev-parse --show-toplevel | head -1)/infra",
+      "echo started $(date | tr a b) now",
+      "export A=$(cat VERSION | tr -d x) B=2",
+      "test $(git status --porcelain | wc -l) -eq 0",
+      "echo $(cd infra; pwd) done",
+      "echo $(cd infra && pwd) done",
+    ]
+  ) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(
+        stepYaml(`${line}\n${RUNNER_STEP}`),
+      ),
+    });
+    assertEquals(inWorkflow.wiring, "official-server", `workflow: ${line}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh":
+        `#!/usr/bin/env bash\nset -euo pipefail\n${line}\n${RUNNER_STEP}\n`,
+    });
+    assertEquals(inScript.wiring, "official-server", `script: ${line}`);
+  }
+  // A one-line substitution with a separator inside a swallowed subshell does
+  // not close the subshell early.
+  const swallowed = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`( X=$(cat V | tr -d x); ${RUNNER_STEP}; echo done ) || true`),
+    ),
+  });
+  assertEquals(swallowed.wiring, "missing", "swallowed subshell");
+});
+
 // PR #5332 review: the Floci job's test step is read on whole command words.
 // An install-only step beside a valid gap record earns nothing, and the common
 // runners the matcher is meant to accept are credited.

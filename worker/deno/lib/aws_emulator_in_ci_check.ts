@@ -980,6 +980,16 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
     }
     const at = commandIndex(cmd.words);
     const viaExec = cmd.words.slice(0, at).includes("exec");
+    // errexit switched on inside a `( )` subshell ends the subshell with the
+    // failure, but the body fails only when that subshell's own failure does:
+    // errexit on outside it, the subshell last, or an `&&` chain to the end
+    // after it (PR #5332 review).
+    const subshellFailsBody = saved.every((entry) => {
+      if (entry.errexit || !cmd.subshells.includes(entry.id)) return true;
+      let last = k;
+      while (cmds[last + 1]?.subshells.includes(entry.id)) last++;
+      return last === cmds.length - 1 || restAllAnd[last] === true;
+    });
     // A group swallowed one level out takes even `cmd || exit 1` with it when
     // the group is a subshell, so it is never credited (fails closed).
     const kept = !cmd.groupSwallowed &&
@@ -987,7 +997,8 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
       (cmd.failureExits ||
         (commandStatusNotSwallowed(cmd) &&
           (viaExec || (!cmd.inLoop && restAllAnd[k] === true) ||
-            (errexit && !cmd.errexitIgnored && cmd.next !== "&&"))));
+            (errexit && subshellFailsBody && !cmd.errexitIgnored &&
+              cmd.next !== "&&"))));
     out.push({ cmd, kept });
     const head = stripQuotes(cmd.words[at] ?? "");
     if (head === "set") {

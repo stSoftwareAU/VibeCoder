@@ -204,6 +204,12 @@ emulator test.
   `…::a swallowed subshell closed before redirections or holding a multi-line $( earns no credit; a redirected runner does`;
   a `set -e` inside a subshell ends with it:
   `…::set -e inside a subshell ends with it; a top-level set -e keeps the runner credited`.
+  After the seventh review, a runner in a `( set -e; … )` subshell followed by
+  more commands, with errexit off outside, is refused:
+  `…::a runner in a ( set -e; ... ) subshell followed by more commands, with errexit off outside, earns no credit`;
+  and a one-line `$( … )` with a separator inside no longer hides a later
+  runner:
+  `…::a one-line substitution with a separator inside it does not hide a later runner`.
   The Floci test-step matcher reads whole command words, so an install-only
   step beside a gap record earns nothing:
   `…::a gap record whose Floci job only installs a test tool is floci-only; common test runners are floci-gap`.
@@ -374,6 +380,22 @@ emulator test.
   Config integration and checkov were skipped by the gate itself. Deno tests,
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
+- After the seventh review (of `926c2539`): the parenthesis balance is carried
+  across the commands of one line, since the command list splits at a `|`,
+  `;` or `&&` inside `$( … )`, and only a parenthesis still open at the line's
+  end opens a frame. So `if [ $(ls | wc -l) -gt 0 ]; then …; fi`,
+  `[[ "$X" =~ ^(a|b)$ ]]`, `cd $(cmd | head -1)/dir` and five more lines
+  before the runner are credited again, in a workflow step and a
+  `set -euo pipefail` script, while `( X=$(cat V | tr -d x); runner; echo
+  done ) || true` stays refused. A runner kept by a `set -e` inside a
+  subshell now also needs that subshell's failure to fail the body (errexit
+  on outside, the subshell last, or an `&&` chain after it): the one-line and
+  multi-line subshells followed by more lines in a script without
+  `set -e`, and the subshell after `set +e` in a step, are refused; the
+  subshell as the last command and under a top-level `set -e` stay credited.
+  Each new case fails at `926c2539`. The related test files give
+  `798 passed | 1 failed | 1 ignored`; the failure is the root-only
+  unreadable-directory test.
 - After the sixth review (of `83013b2f`), in the same push as the owner
   fix: `&` inside a redirection (`2>&1`, `>&2`, `<&3`, `&>`) is part of the
   word, not a background `&`, and `|&` is a pipe. A subshell closes on its

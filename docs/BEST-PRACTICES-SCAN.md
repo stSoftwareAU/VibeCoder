@@ -390,7 +390,8 @@ Official server mode needs all of the following:
   not; redirections after the `)` belong to the subshell, so
   `( runner; echo done ) 2>&1 | tee log` is swallowed too; a `$(` or `(`
   left open at a line end, such as `VERSION=$(`, is closed by the `)` that
-  balances it, not by the subshell's), not in a group or subshell that is itself an `if` or `while` test
+  balances it, not by the subshell's; the balance is carried across one line,
+  so a one-line `$(ls | wc -l)` opens nothing), not in a group or subshell that is itself an `if` or `while` test
   (`if ( runner ); then …`), nor by `&&` with more of the body after that
   chain, and one of the following. Bash ignores errexit inside a compound on
   the left of `&&`, so a command there is judged with errexit off:
@@ -424,7 +425,11 @@ or `-o errexit`, and off at the start of a repository script. `set -e` or
 `set -o errexit` turn it on and `set +e` turns it off, at the point each
 appears; inside a `( )` subshell the change lasts only until the subshell
 closes, so `( set -e; make build )` leaves errexit off for the lines after
-it.
+it. A runner inside such a subshell is kept by that `set -e` only when the
+subshell's own failure fails the body: errexit is on outside it, the subshell
+is the last command, or an `&&` chain runs to the end after it, so
+`( set -e; runner; echo done )` then `echo after` in a script without a
+top-level `set -e` earns no credit.
 
 The command word, once shell reserved words, `sudo`/`env`/`exec`,
 `VAR=value` and the `time`/`nice`/`timeout`/`command` wrappers are
