@@ -6,7 +6,9 @@ unmapped denied tool, or a settings file that cannot be written, refuses the
 spawn. `assertRoleSupported` reads Gemini's enforcement from the descriptor's
 settings builder, so Gemini is admitted as `executor`, `spec_reviewer`,
 `standards_reviewer` and `explorer`. A Gemini `manager` is still refused with
-`cannot compact its stream`. Closes #5341.
+`cannot compact its stream`. On Gemini, the pre-PR verifier denies `Bash`
+outright in place of its `Bash(<pattern>)` entries, so the run is enforced
+rather than refused. Closes #5341.
 
 ## Spec
 
@@ -41,6 +43,17 @@ settings builder, so Gemini is admitted as `executor`, `spec_reviewer`,
   - So on a Gemini host, the `pr_review` feedback run (`Bash(git push:*)`) and
     the best-practices static scan (`Bash(cargo:*)`, …) are now refused before
     spawn. Before this change they ran with those denials as prompt text only.
+  - The pre-PR verifier is the exception. Its deny list carries `Bash(gh:*)`,
+    `Bash(git push:*)`, `Bash(curl:*)` and `Bash(wget:*)`, so on Gemini it would
+    be refused too, and the completion phase would record it as not checked.
+    Instead, `verifierDisallowedTools` in `worker/deno/lib/pre_pr_verifier.ts`
+    swaps those entries for a plain `Bash` denial when the verifier runs on
+    Gemini. That maps to `run_shell_command`. The Gemini verifier keeps every
+    denial, but it has no shell. Its prompt still asks it to run checks, so it
+    reports a check that needs a command as not run. Claude, Codex and the
+    read-only verifier (always Claude) get the list unchanged. If the runner
+    falls back from Claude to Gemini mid-run, the `Bash(<pattern>)` list is
+    still refused before spawn, so the verifier fails closed as not checked.
 - **Where the file goes.** It is written to
   `<TMPDIR>/vibe-gemini-settings-*/settings.json`. `TMPDIR` is read through the
   run's own env lookup (`options.env`), or the system temp directory is used
@@ -98,8 +111,9 @@ sequenceDiagram
   external orchestration paragraphs; the `capabilities.ts:130` citations are now
   `:154`, where `assertRoleSupported` starts).
 - Doc comments updated: `agent_prompt.ts`, `gemini_executor.ts`,
-  `orchestration/orchestrator.ts`, `pre_pr_verifier.ts`, and `claude_runner.ts`
-  (the `disallowedTools` and `orchestrationRole` docs).
+  `orchestration/orchestrator.ts`, `pre_pr_verifier.ts` (the module boundary
+  note, `PRE_PR_VERIFIER_DISALLOWED_TOOLS` and `activeProviderId`), and
+  `claude_runner.ts` (the `disallowedTools` and `orchestrationRole` docs).
 - Issue numbers cited: #5341 (this issue).
 
 ## Acceptance Criteria
@@ -183,8 +197,10 @@ sequenceDiagram
   reason: fixed in this diff: `WebFetch`/`WebSearch` now map, and the summarise
   and closure-verdict lists are asserted by
   `worker/deno/tests/gemini_settings_5341_test.ts::the existing summarise and closure-verdict callers are enforced, not refused (Issue #5341)`;
-  `Bash(<pattern>)` callers are refused as the issue requires, and that decision
-  is recorded under Essential Design Decisions
+  `Bash(<pattern>)` callers are refused as the issue requires, except the pre-PR
+  verifier, which denies `Bash` outright on Gemini (added after the reviews,
+  from the pre-PR verifier's finding); both decisions are recorded under
+  Essential Design Decisions
 - **violation** — A test named for one step must reach that step: the Gemini
   executor billing test was refused by the Claude manager's billing check first
   — evidence: `worker/deno/tests/orchestration_3642_orchestrator_test.ts:470` —
@@ -217,6 +233,20 @@ sequenceDiagram
     removed, temp root empty), a missing `TMPDIR` (no spawn; the message names
     the path and `No such file or directory`), and an unmapped tool (no spawn;
     the message names it).
+- `worker/deno/tests/pre_pr_verifier_3395_test.ts`: two tests added; existing
+  tests unchanged.
+  - A unit test checks the literal lists for Gemini, Claude and Codex:
+    `worker/deno/tests/pre_pr_verifier_3395_test.ts::verifierDisallowedTools denies Bash outright on Gemini and leaves other providers' lists alone (Issue #5341)`.
+  - A runner test runs the verifier with Gemini active. It sends the verifier's
+    own denied tools through the real `runClaudeWithTimeout` and a stub
+    `gemini`. It checks four things: the runner did not refuse, the result is
+    `checked`, the denied list is exact, and the settings file the stub read is
+    exact (`enter_plan_mode`, `exit_plan_mode`, `web_fetch`,
+    `google_web_search`, `run_shell_command`, `enableAgents: false`):
+    `worker/deno/tests/pre_pr_verifier_3395_test.ts::runPrePrVerifier on Gemini spawns with a settings file that denies the shell, and is checked rather than refused (Issue #5341)`.
+  - Red-checked: with `verifierDisallowedTools` returning the list unchanged,
+    both tests fail. The runner test's message is `Refused to start the agent`,
+    naming `Bash(gh:*)`, `Bash(git push:*)`, `Bash(curl:*)` and `Bash(wget:*)`.
 - Red first: the new module failed to resolve before it existed. The contracts
   test failed on Gemini reviewer admission before `capabilities.ts` changed. The
   summarise and closure test failed with
@@ -243,7 +273,11 @@ sequenceDiagram
   filesystem fault seam:
   - the branch where the directory is created but the file write fails;
   - the warning when cleanup's removal fails.
-- Final results at head `8ac109d0f`:
+- After the verifier fix: `deno test -A` on `tests/pre_pr_verifier_3395_test.ts`
+  and `tests/gemini_settings_5341_test.ts` gave 90 passed, 0 failed. `deno fmt`,
+  `deno lint` and `deno check` were clean on both changed files. The worker
+  re-runs `./quality.sh` on the new head.
+- Earlier results at head `8ac109d0f`:
   - `deno task test:unit` on the touched test files: passed.
   - `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`. Skipped:
     checkov (not on PATH) and config integration (no `.config.json`).
