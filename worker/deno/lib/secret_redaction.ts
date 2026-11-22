@@ -894,10 +894,10 @@ function walkAssignments(text: string): AssignmentVerdict[] {
   INNER_MEMO.text = text;
   INNER_MEMO.results = new Map();
   INNER_MEMO.quotes = null;
-  INNER_MEMO.flagHeads = new Map();
   INNER_MEMO.unclosedFlags = new Map();
   INNER_MEMO.masks = [];
   INNER_MEMO.maskThrough = new Map();
+  INNER_MEMO.flagValueStarts = null;
   try {
     return walkAssignmentsMemoised(text);
   } finally {
@@ -1261,18 +1261,18 @@ const INNER_MEMO: {
   text: string | null;
   results: Map<string, InnerLabel | null>;
   quotes: QuoteIndex | null;
-  flagHeads: Map<number, boolean>;
   unclosedFlags: Map<number, boolean>;
   masks: Array<{ start: number; end: number }>;
   maskThrough: Map<number, number>;
+  flagValueStarts: Set<number> | null;
 } = {
   text: null,
   results: new Map(),
   quotes: null,
-  flagHeads: new Map(),
   unclosedFlags: new Map(),
   masks: [],
   maskThrough: new Map(),
+  flagValueStarts: null,
 };
 
 /** Sorted positions of each quote kind in a text, read once per walk. */
@@ -1464,7 +1464,14 @@ function mainReadsPastInnerValue(
   // quote closes the flag's value and the rule would mask only its first word
   // (PR #5322 review round 13). Main's result stands then; this comes before
   // the masked-through flag below, whose mask would take that quote too.
-  if (flagQuoteReaches(text, outerStart, inner.end)) return true;
+  if (
+    flagQuoteReaches(
+      text,
+      outerStart,
+      inner,
+      quotedValueFlagEnd(text, inner, start) === -1,
+    )
+  ) return true;
   // An inner value already holding the placeholder after other text
   // (`,***REDACTED***`) is a first pass's output where main's result stood, so
   // a second pass keeps main's result too and changes nothing (PR #5322 review
@@ -1679,7 +1686,7 @@ function flagsThrough(text: string, start: number, end: number): number {
 /**
  * Whether the text after an inner value that opens with `opener` and never
  * closes it, up to the next `opener` (or the end of the text), holds a
- * credential flag whose value is the placeholder: the first pass found that
+ * credential flag whose value starts with the placeholder: the first pass found that
  * flag inside the quoted run and kept main's result, so the second keeps it
  * too (PR #5322 review rounds 10, 12 and 13). Every character but `opener`,
  * an earlier placeholder included, may sit inside the original quoted run,
@@ -1701,7 +1708,13 @@ function unclosedRunHasMaskedFlag(
   for (let at = run.indexOf("--"); at !== -1; at = run.indexOf("--", at + 1)) {
     CLI_FLAG_AT.lastIndex = from + at;
     const flag = CLI_FLAG_AT.exec(text);
-    if (flag !== null && flag[0].endsWith(REDACTION_PLACEHOLDER)) {
+    // The flag's value starts with the placeholder; text may run on after it
+    // (`--token ***REDACTED***;`), as the flag rule's `\S+` took it on the
+    // first call (PR #5322 review round 14).
+    if (
+      flag !== null &&
+      flag[0].replace(/^\S+\s+/, "").startsWith(REDACTION_PLACEHOLDER)
+    ) {
       found = true;
       break;
     }
@@ -1712,29 +1725,71 @@ function unclosedRunHasMaskedFlag(
 
 /**
  * Whether a credential flag's quoted value, as the `secret-cli-flag` rule
- * reads it after the walk, opens before `from` and would close at a quote in
- * `from`..`to` (PR #5322 review round 13). For each quote kind with a quote
- * in that span, the last quote of that kind before `from` that no earlier
- * mask of this walk covers is where such a value opens; masked quotes are
- * gone by the time the rule runs, so they are skipped. More than
+ * reads it after the walk, opens before `outerStart` and closes at a quote
+ * the walk's mask would remove: one in the outer value (main masked it, the
+ * walk keeps it) or inside the inner value's mask (PR #5322 review rounds 13
+ * and 14). For each quote kind, the last quote of that kind before
+ * `outerStart` that no earlier mask of this walk covers must be where the
+ * rule opens a flag's value (a quote that closes an earlier flag's value,
+ * as in `--token 'x --password '`, does not count), and the next quote of
+ * that kind must lie in that span. A closed quoted inner value keeps both its
+ * quotes when masked (`keepsQuotes`: it is not masked through a flag), so
+ * its opening quote does not count. More than
  * {@link MAX_MASK_HOPS} masks to skip keeps main's result (Issue #3942).
  */
-function flagQuoteReaches(text: string, from: number, to: number): boolean {
+function flagQuoteReaches(
+  text: string,
+  outerStart: number,
+  inner: AssignmentVerdict,
+  keepsQuotes: boolean,
+): boolean {
+  const start = inner.end - inner.value.length;
+  const opener = inner.value[0];
+  const closedQuoted = keepsQuotes && (opener === "'" || opener === '"') &&
+    inner.value.length > 1 && inner.value.endsWith(opener);
+  const maskStart = closedQuoted ? start + 1 : start;
+  const maskEnd = closedQuoted ? inner.end - 1 : inner.end;
   for (const quote of ["'", '"']) {
-    const first = quoteFrom(text, quote, from);
-    if (first === -1 || first >= to) continue;
-    let open = quoteBefore(text, quote, from);
+    const next = quoteFrom(text, quote, outerStart);
+    if (
+      next === -1 ||
+      !(next < start || (next >= maskStart && next < maskEnd))
+    ) continue;
+    let open = quoteBefore(text, quote, outerStart);
     for (let hops = 0; open !== -1; hops++) {
       const mask = maskCovering(open);
       if (mask === null) break;
       if (hops >= MAX_MASK_HOPS) return true;
       open = quoteBefore(text, quote, mask.start);
     }
-    if (open !== -1 && first > open + 1 && flagHeadEndsAt(text, open)) {
+    if (open !== -1 && next > open + 1 && flagValueStartsAt(text, open)) {
       return true;
     }
   }
   return false;
+}
+
+/**
+ * The `secret-cli-flag` rule's pattern, read once over the walk's text to
+ * find where it opens each flag's value.
+ */
+const CLI_FLAG_RULE_G =
+  /(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+)(?!-)(?!\*\*\*REDACTED)(?:"[^"]+"|'[^']+'|\S+)/gi;
+
+/**
+ * Whether the `secret-cli-flag` rule, reading `text` from the start, opens a
+ * flag's value at `at`. The rule's matches are read once per walk.
+ */
+function flagValueStartsAt(text: string, at: number): boolean {
+  let starts = INNER_MEMO.text === text ? INNER_MEMO.flagValueStarts : null;
+  if (starts === null) {
+    starts = new Set();
+    for (const m of text.matchAll(CLI_FLAG_RULE_G)) {
+      starts.add(m.index + (m[1]?.length ?? 0));
+    }
+    if (INNER_MEMO.text === text) INNER_MEMO.flagValueStarts = starts;
+  }
+  return starts.has(at);
 }
 
 /** Most earlier masks {@link flagQuoteReaches} skips back over. */
@@ -1752,34 +1807,6 @@ function maskCovering(at: number): { start: number; end: number } | null {
   }
   const mask = masks[lo];
   return mask !== undefined && mask.start <= at ? mask : null;
-}
-
-/**
- * A credential flag name and the whitespace before its value, ending where
- * the value starts, as the `secret-cli-flag` rule reads them.
- */
-const CLI_FLAG_HEAD_END =
-  /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}$/i;
-
-/** Longest flag name {@link CLI_FLAG_HEAD_END} can match. */
-const CLI_FLAG_HEAD_MAX = 2 + 63 + 14 + 63;
-
-/**
- * Whether a credential flag and its whitespace end right before `valueStart`,
- * so the `secret-cli-flag` rule reads the value from there. The whitespace
- * before the value is walked back over once per position in a walk; the
- * flag name is bounded.
- */
-function flagHeadEndsAt(text: string, valueStart: number): boolean {
-  const memo = INNER_MEMO.text === text ? INNER_MEMO.flagHeads : null;
-  const hit = memo?.get(valueStart);
-  if (hit !== undefined) return hit;
-  let at = valueStart;
-  while (at > 0 && /\s/.test(text.charAt(at - 1))) at--;
-  const found = at < valueStart &&
-    CLI_FLAG_HEAD_END.test(text.slice(Math.max(0, at - CLI_FLAG_HEAD_MAX), at));
-  memo?.set(valueStart, found);
-  return found;
 }
 
 /** How many chain links {@link mainReadsPastInnerValue} looks ahead. */
@@ -1846,7 +1873,11 @@ interface InnerLabel {
  * Mask every `secret-assignment` value {@link walkAssignments} judges masked
  * (Issue #5310). The walk itself decides each shape so that its output is
  * final: a second walk over it masks nothing, `redactSecrets` is idempotent on
- * this rule and `containsSecret` is false on its output. The shapes where a
+ * this rule and `containsSecret` is false on its output. One known shape is
+ * not yet final (PR #5322 review round 14): a single-quoted value of glued
+ * labels that the walk reads as the next chain link (`'app.token=password:`),
+ * whose closing quote a later flag takes. A second walk masks that value too;
+ * nothing is published. The shapes where a
  * mask changes how the next walk reads the text around it are decided in the
  * walk — {@link quotedRunOn}, `keepsOuter`, the leading-`-` rule in
  * {@link LABEL_PREFIX} and the placeholder reach of {@link innerAssignment}.

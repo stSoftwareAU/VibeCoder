@@ -436,8 +436,9 @@ documents, the generated codebase map, recent-activity summaries, PR review
 comments, the optional `fleet_run_archive` repository name — so it **redacts
 before it scrubs**. Redaction first, because the
 scrub substitutes fullwidth characters mid-string and could otherwise split a
-secret across a signature-rule boundary; and it is idempotent, so a call site
-that already redacted its own text (`fenceQualityOutput`,
+secret across a signature-rule boundary; and it is idempotent (bar one
+label-as-value shape under Issue #5310 below, where a second call only masks
+more), so a call site that already redacted its own text (`fenceQualityOutput`,
 `formatConflictIssueContextSection`, the CI-failure issue body) is unaffected.
 
 This is defence-in-depth, not a replacement: an outbound sink still owes its own
@@ -585,14 +586,20 @@ and, apart from that check, **only when the separator crossed a line break**:
   credential keys, or touches a wrapped run longer than 4,096 characters,
   gets the base result too. So does one that opens with a quote it never
   closes, is not itself the chain's next label, and is followed by a
-  credential flag whose value is the placeholder before the next quote of
-  that kind: the text between may hold anything else, an earlier placeholder
+  credential flag whose value starts with the placeholder (text may run on
+  after it, as in `--token ***REDACTED***;`) before the next quote of that
+  kind: the text between may hold anything else, an earlier placeholder
   included, and has no length bound. A credential flag whose quoted value
-  opens before the outer value and would close at a quote in the outer or
-  inner value (`--token 'alpha credentials: DEPLOY_TOKEN = 'tail`) also
-  gets the base result, because the `secret-cli-flag` rule pairs the quotes
-  the walk leaves; quotes an earlier mask took are skipped, and past 16 such
-  masks the base result stands. When a credential flag inside a quoted inner
+  opens before the outer value and would close at a quote the walk's mask
+  removes (one in the outer value, or inside the inner value's mask, as in
+  `--token 'alpha credentials: DEPLOY_TOKEN = 'tail`) also gets the base
+  result, because the `secret-cli-flag` rule pairs the quotes the walk
+  leaves. The quote before the outer value counts only where that rule,
+  reading the text from the start, really opens a flag's value, so the quote
+  that closes an earlier flag's value (`--token 'x --password '`) does not.
+  A closed quoted inner value keeps both its quotes when masked, so its
+  opening quote does not count either. Quotes an earlier mask took are
+  skipped, and past 16 such masks the base result stands. When a credential flag inside a quoted inner
   value has a value that takes the closing quote
   (`secrets:\n  DEPLOY_TOKEN: 'deploy --token '<value>'`), and nothing above
   gives the base result, the inner value is masked through the end of that
@@ -600,7 +607,11 @@ and, apart from that check, **only when the separator crossed a line break**:
   output holds no unclosed quote. That is more than the base behaviour masks
   (it masked from the closing quote on and left `'deploy` visible). When a
   credential keyword sits in the flag's value past the closing quote, the
-  base result stands instead. Every search reads only the inner value, then
+  base result stands instead. One shape is still not final: a single-quoted
+  value made of glued labels (`'app.token=password:`, `'token=API_TOKEN:`)
+  that the walk reads as the next chain link, where a flag later in the text
+  takes its closing quote. A second call then masks the value too. It
+  publishes nothing. Every search reads only the inner value, then
   each match from where it starts, the text up to the next quote of a kind,
   or a quote found in a per-walk index of quote positions, each once per
   position in a walk, so the check stays linear.

@@ -1349,3 +1349,110 @@ Deno.test("#5310 round 13: 64,000 unclosed-quote lines and a 1 MiB unclosed run 
   }--token ${R}`;
   assertEquals(redactSecrets(run), run);
 });
+
+// PR #5322 review round 14, finding 1. A quote that closes an earlier flag's
+// value (`--token 'x --password '`) opens no flag value, so the inner label
+// is read again and the issue's own leak stays fixed; a closed quoted inner
+// value keeps both quotes when masked, so its opening quote does not count.
+for (
+  const [input, expected, values] of [
+    [
+      `deploy --token 'x --password ' then\nRotate these credentials:\nDEPLOY_TOKEN = '${V}'`,
+      `deploy --token ${R} then\nRotate these credentials:\nDEPLOY_TOKEN = '${R}'`,
+      [V],
+    ],
+    [
+      `deploy --token 'x --password ' then\nThe secret: api_key: '${V}'`,
+      `deploy --token ${R} then\nThe secret: api_key: '${R}'`,
+      [V],
+    ],
+    [
+      `deploy --token 'x --password ' then\nsecrets:\n  API_TOKEN: '${V}'`,
+      `deploy --token ${R} then\nsecrets:\n  API_TOKEN: '${R}'`,
+      [V],
+    ],
+    [
+      `deploy --token 'x --password ' then\nsecrets:\n  API_TOKEN: "${V}"`,
+      `deploy --token ${R} then\nsecrets:\n  API_TOKEN: "${R}"`,
+      [V],
+    ],
+    [
+      "run --password 'a --token ' secrets:\n  credentials: 'abc",
+      `run --password ${R} secrets:\n  credentials: ${R}`,
+      ["'abc"],
+    ],
+    [
+      `deploy --token 'x credentials: DEPLOY_TOKEN = '${V}'`,
+      `deploy --token ${R}${R}'`,
+      [V],
+    ],
+    [
+      `deploy --token 'x --password ' then\n${
+        "filler line\n".repeat(4_000)
+      }Rotate these credentials:\nDEPLOY_TOKEN = '${V}'`,
+      `deploy --token ${R} then\n${
+        "filler line\n".repeat(4_000)
+      }Rotate these credentials:\nDEPLOY_TOKEN = '${R}'`,
+      [V],
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 round 14 closed flag value before the lead-in: ${JSON.stringify(input.slice(0, 48))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}
+
+// PR #5322 review round 14, finding 2. Where a credential keyword in the
+// flag's value keeps main's result, text after the flag's placeholder
+// (`;`, `/v1`, `,`, a key) no longer hides it from a second call.
+for (
+  const [input, expected, values] of [
+    [
+      "secrets:\n  DEPLOY_TOKEN: 'deploy --token '$API_TOKEN';",
+      `secrets:\n  DEPLOY_TOKEN: 'deploy --token ${R};`,
+      ["$API_TOKEN"],
+    ],
+    [
+      "secrets:\n  DEPLOY_TOKEN: 'deploy --token '$API_TOKEN'/v1",
+      `secrets:\n  DEPLOY_TOKEN: 'deploy --token ${R}/v1`,
+      ["$API_TOKEN"],
+    ],
+    [
+      "secrets:\n  DEPLOY_TOKEN: 'deploy --token 'my-secret-value',",
+      `secrets:\n  DEPLOY_TOKEN: 'deploy --token ${R},`,
+      ["my-secret-value"],
+    ],
+    [
+      "secrets:\n  DEPLOY_TOKEN: 'deploy --password 'my_password_1';",
+      `secrets:\n  DEPLOY_TOKEN: 'deploy --password ${R};`,
+      ["my_password_1"],
+    ],
+    [
+      "secrets:\n  DEPLOY_TOKEN: 'alpha --token 'token'api_key",
+      `secrets:\n  DEPLOY_TOKEN: 'alpha --token ${R}api_key`,
+      [],
+    ],
+    [
+      "Rotate these credentials:\nDEPLOY_TOKEN: 'deploy --password 'secret123';",
+      `Rotate these credentials:\nDEPLOY_TOKEN: 'deploy --password ${R};`,
+      ["secret123"],
+    ],
+  ] as const
+) {
+  Deno.test(`#5310 round 14 text after the flag's placeholder: ${JSON.stringify(input.slice(0, 52))}`, () => {
+    assertFinal(input, expected, values);
+  });
+}
+
+Deno.test("#5310 round 14: main's output with text after the flag's placeholder is final", () => {
+  for (
+    const input of [
+      `secrets:\n  DEPLOY_TOKEN: 'deploy --token ${R};`,
+      `secrets:\n  DEPLOY_TOKEN: 'deploy --token ${R}/v1`,
+      `Rotate these credentials:\nDEPLOY_TOKEN: 'deploy --password ${R};`,
+    ]
+  ) {
+    assertEquals(redactSecrets(input), input);
+    assertEquals(containsSecret(input), false);
+  }
+});

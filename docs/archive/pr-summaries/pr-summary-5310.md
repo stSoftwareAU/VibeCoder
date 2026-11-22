@@ -316,6 +316,43 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
+- **Review round 14** — two items:
+  - **The issue's leak after a closed flag value.** The flag-quote look-back
+    now counts the quote before the outer value only where the
+    `secret-cli-flag` rule, reading the text from the start, opens a flag's
+    value there (one pass of the rule's pattern per walk), so the quote that
+    closes `--token 'x --password '` no longer blocks the inner label. Only
+    quotes the walk's mask removes count: a closed quoted inner value keeps
+    both quotes unless it is masked through a flag. `deploy --token 'x
+    --password ' then` before `Rotate these credentials:\nDEPLOY_TOKEN =
+    '<value>'`, `The secret: api_key: '<value>'`, the YAML-child form (single-
+    and double-quoted) and 44,000 characters of filler between them all mask
+    the value on the first call again. `deploy --token 'x credentials:
+    DEPLOY_TOKEN = '<value>'` gives `deploy --token ***REDACTED******REDACTED***'`
+    again, and `run --password 'a --token ' secrets:\n  credentials: 'abc` is
+    final.
+  - **Text after the flag's placeholder.** The second-call search accepts a
+    flag whose value starts with the placeholder, so `'deploy --token
+    '$API_TOKEN';`, `'$API_TOKEN'/v1`, `'my-secret-value',`,
+    `'my_password_1';`, `'token'api_key` and the `Rotate these credentials:`
+    form keep main's output on a second call, and main's own output with text
+    after the placeholder is unchanged.
+  - 14 more tests (269 → 283); 13 fail at `06ddcdae`. Every test file
+    importing `secret_redaction.ts`: `1324 passed | 0 failed`.
+  - **Sweeps, head against `06ddcdae` on the same inputs.** Flag-led (597,829
+    distinct, the reviewer's `then`, `$API_TOKEN`, `/v1` and `;` fragments
+    added): no published value at either; 1 second-pass change here against
+    12. Unclosed-quote-weighted (597,287): no published value at either; 8
+    against 9. General (590,593): none of either. Each of the 9 remaining
+    second-pass changes gives the same first output at `06ddcdae` and changes
+    there too. All 9 are a single-quoted value of glued labels that the walk
+    reads as the next chain link (`'app.token=password:`, `'token=API_TOKEN:`,
+    `'my-secret-valueapp.token=`), whose closing quote a later flag takes,
+    and none publishes a value. This is not done: `SECURITY.md` and the
+    `redactAssignments` comment now say so. The round-13 entry's sweep claim
+    (6 flag-led, none in general inputs) did not cover the unclosed-quote
+    shape the reviewer found (`'deploy --token '$API_TOKEN';`), which this
+    round fixes.
 - **Review round 13** — two items:
   - **A flag before the lead-in.** A credential flag whose quoted value opens
     before the outer value and would close at a quote in the outer or inner
