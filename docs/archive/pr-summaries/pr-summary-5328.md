@@ -8,13 +8,13 @@ The worker's archive formatter no longer commits an edit nobody committed.
 HEAD (staged or unstaged) and leaves those out of the rewrite, `deno fmt` and
 the commit. An interrupted recovery turn's rewrite of the PR summary therefore
 stays uncommitted, and `loadSummaryForPublication` publishes the copy committed
-at HEAD, as #4764 intended. The completion phase's own call also stashes that edit
-before its pre-push gate, because that gate runs `deno fmt --check` on the
+at HEAD, as #4764 intended. The completion phase's own call also stashes that
+edit before its pre-push gate, because that gate runs `deno fmt --check` on the
 working-tree copy of every branch-changed archive file: left in place, an
 unformatted edit would block the gate on content that is not in the push, and
-the one pre-push recovery turn would commit it. The formatters' shared commit helper also names its
-paths (`git commit -- <paths>`), so a file someone else staged stays out of the
-`style: apply repository formatters` commit.
+the one pre-push recovery turn would commit it. The formatters' shared commit
+helper also names its paths (`git commit -- <paths>`), so a file someone else
+staged stays out of the `style: apply repository formatters` commit.
 
 Closes #5328.
 
@@ -41,19 +41,20 @@ Closes #5328.
   formatted code file (the issue allowed either, if the comment says why). The
   quality-gate loop leaves the fix agent's code edits uncommitted for
   `./quality.sh` to judge, so formatting them puts on the branch the same code
-  the gate checks. An archive summary describes the branch, so it is left out
-  of the formatter's commit. The pre-push gate does judge the working tree, so
-  the completion phase sets the edit aside (next point); the doc comment now
-  says this.
+  the gate checks. An archive summary describes the branch, so it is left out of
+  the formatter's commit. The pre-push gate does judge the working tree, so the
+  completion phase sets the edit aside (next point); the doc comment now says
+  this.
 - `formatBeforeGate` takes `{ setAsideUncommittedArchive: true }` from the
   completion phase's `gateBeforePush` only: its gate judges the working tree
-  while its push (`pushUnpushedCommits`) carries commits only and the PR body
-  is read from HEAD for a dirty summary. The edit goes into `git stash push --
-  <paths>` (recoverable with `git stash list`), so the gate sees the committed
-  copy and the recovery turn has no edit to commit. A failed stash is logged
-  and the gate reports what it finds. The other callers (the quality-gate loop
-  and the `commitAndPushPending` hook) do not set it, so they only leave the
-  edit out of the formatting and the commit.
+  while its push (`pushUnpushedCommits`) carries commits only and the PR body is
+  read from HEAD for a dirty summary. The edit goes into
+  `git stash push --
+  <paths>` (recoverable with `git stash list`), so the gate
+  sees the committed copy and the recovery turn has no edit to commit. A failed
+  stash is logged and the gate reports what it finds. The other callers (the
+  quality-gate loop and the `commitAndPushPending` hook) do not set it, so they
+  only leave the edit out of the formatting and the commit.
 - A left-out archive file is logged with a warning naming it, so the uncommitted
   edit is visible in the run log.
 
@@ -124,26 +125,28 @@ shared by `formatSeededSummary` and `formatSeededFiles` was moved into one
 
 Review round (PR #5387): the reviewer read that the pre-push gate blocks on a
 left-out file. Reproduced: with `{ setAsideUncommittedArchive: false }` in
-`gateBeforePush`, the new completion test failed with `[PRE_PUSH_BLOCKED] ...
+`gateBeforePush`, the new completion test failed with
+`[PRE_PUSH_BLOCKED] ...
 deno fmt --check ... pr-summary-10.md`. New tests:
 
 - `worker/deno/tests/completion_phase_repo_formatters_test.ts` —
   `completion - an archive summary with an uncommitted unformatted edit is set
-  aside: the gate passes and the committed copy stays (Issue #5328)`: real
-  `workOnIssueCompletion`, real gate, `deno.json` at the repository root; a
+  aside: the gate passes and the committed copy stays (Issue #5328)`:
+  real `workOnIssueCompletion`, real gate, `deno.json` at the repository root; a
   bare-gate positive control fails on the edit, the run then pushes once, HEAD
   is unchanged, the working copy equals HEAD's, and the stash holds the edit.
 - `worker/deno/tests/repo_formatters_4129_test.ts` —
   `formatBeforeGate stashes an uncommitted archive summary when asked, and still
-  formats and commits the clean files (Issue #5328)` and
+  formats and commits the clean files (Issue #5328)`
+  and
   `formatBeforeGate logs a stash that fails and leaves the uncommitted summary
   in place (Issue #5328)`.
 
 Results on the final head:
 
 - `deno test -A tests/repo_formatters_4129_test.ts
-  tests/completion_phase_repo_formatters_test.ts` (from `worker/deno`) — 33
-  passed, 0 failed.
+  tests/completion_phase_repo_formatters_test.ts`
+  (from `worker/deno`) — 33 passed, 0 failed.
 - `deno lint`, `deno check` on the changed library files and `deno fmt` on the
   changed TypeScript — clean. Full `./quality.sh` was not re-run after the
   review round.
@@ -154,8 +157,8 @@ gate attempt in an issue run" paragraph). The doc comments of
 `commitTrackedPaths`, `formatWorkerOwnedArchive`, `runRepoFormatters` and the
 module header in `worker/deno/lib/repo_formatters.ts` now match the code.
 
-Not done or not checked: the pre-push recovery turn itself (an agent run) was not
-exercised; the completion test shows the gate no longer blocks, so that turn
+Not done or not checked: the pre-push recovery turn itself (an agent run) was
+not exercised; the completion test shows the gate no longer blocks, so that turn
 does not start. The full `./quality.sh` was not re-run after the review round.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
