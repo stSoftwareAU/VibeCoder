@@ -178,8 +178,14 @@ registers the new module.
 - Targeted run on the final head:
   `deno test -A tests/idle_inversion_streak_test.ts tests/idle_starvation_private_census_5354_test.ts tests/idle_starvation_escalation_1052_test.ts tests/idle_starvation_week_pace_1915_test.ts tests/lib_sweep_coverage_test.ts tests/alert_dedup_author_verification_test.ts`
   gave 131 passed, 0 failed. `deno task check:manifests` passed.
-- `./quality.sh`: the first run failed only on the unregistered sweep-slice
-  module (`lib_sweep_coverage_test.ts`), now fixed.
+- `./quality.sh < /dev/null` on the final code: `Result: PASSED (with skipped
+  checks)`. Every check passed, including deno tests, completeness checks,
+  semgrep and markdownlint. Two were skipped: config integration (no
+  `.config.json` here) and checkov (not installed). An earlier run failed only
+  because the new module was not registered in a sweep slice
+  (`lib_sweep_coverage_test.ts`); that is fixed in this diff.
+- `deno task pr-summary-check`: 0 gates blocked, 0 not checked.
 
-Not done or not checked: `docs/IDLE-TASK-FRAMEWORK.md` was not reflowed with
-`deno fmt` (markdownlint covers it in the gate).
+Not done or not checked: checkov and config integration (skipped by the gate,
+as above). `docs/IDLE-TASK-FRAMEWORK.md` was not reflowed with `deno fmt`;
+markdownlint passed on it.
