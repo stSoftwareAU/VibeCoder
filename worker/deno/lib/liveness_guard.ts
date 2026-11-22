@@ -65,6 +65,7 @@ import { runGhCommand } from "./github.ts";
 import { latestIdleTaskActivity } from "./idle_task_activity.ts";
 import { latestProductiveWorkEpoch } from "./productive_work_check.ts";
 import { atomicWrite } from "./file_utils.ts";
+import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
 
 /** Default liveness threshold in hours. */
 export const DEFAULT_LIVENESS_THRESHOLD_HOURS = 8;
@@ -443,6 +444,9 @@ export function formatLivenessPressureFields(
     `pressure_cpu=${reading.pressureCpu}`;
 }
 
+/** Bound on each `cat` of a PSI file, so a stuck read cannot hold the tick (Issue #5324). */
+const LIVENESS_PROC_CAT_TIMEOUT_MS = 5_000;
+
 /**
  * Read a `/proc` file through `cat` (Issue #5324).
  *
@@ -451,15 +455,17 @@ export function formatLivenessPressureFields(
  * --allow-all flag`). The driver holds `--allow-run`, so the file is read
  * through `cat`, as `captureHardKillEvidence` in `hard_kill_evidence.ts`
  * already reads PSI. Throws when `cat` exits non-zero, with its first stderr
- * line.
+ * line, and throws the timeout helper's error (naming `cat`) when `cat` runs
+ * longer than 5 s.
  */
 export async function readProcFileWithCat(path: string): Promise<string> {
-  const { code, stdout, stderr } = await new Deno.Command("cat", {
+  const { code, stdout, stderr } = await commandOutputWithTimeout("cat", {
     args: [path],
     stdin: "null",
     stdout: "piped",
     stderr: "piped",
-  }).output();
+    timeoutMs: LIVENESS_PROC_CAT_TIMEOUT_MS,
+  });
   if (code === 0) return new TextDecoder().decode(stdout);
   const firstLine = new TextDecoder().decode(stderr).trim().split("\n")[0] ??
     "";
