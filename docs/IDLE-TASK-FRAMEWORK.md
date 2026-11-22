@@ -1490,7 +1490,19 @@ worker's repo, whatever repo it is *about*. Scan findings (security,
 best-practices, dead-code, …) are the opposite case and stay in the repo they
 describe.
 
-The body now names the issues the census counted and, where the scan recorded
+Since Issue #5354 a subject repository that is not public is never named on the
+escalation issue, and neither is one whose visibility lookup fails, since a
+failed lookup counts as private. Visibility is looked up only on the path that
+files a new issue. Such a subject is filed under an opaque title,
+`fix: idle-inversion on a private fleet repo (<12-hex SHA-256 digest of owner/repo>) — …`,
+with a body that carries only the counts and the generic guidance. The
+`<!-- VIBE_IDLE_INVERSION:owner/repo -->` marker still keeps the real name, since
+it is not rendered and dedup depends on it; the full report goes to the host
+log. Public repositories keep today's title and body, except that a public
+subject's body withholds any census line naming a repository that is not
+positively public (the same rule as the idle-starvation census).
+
+For a public subject, the body now names the issues the census counted and, where the scan recorded
 one, the gate that refused each — `FindIssuesResult.blockedDetails` carries the
 per-issue reasons the same way Issue #219's counts ride the result. GRQ#4465
 carried a bare count, and the scan logged only aggregate top-3 reasons, so which
@@ -1669,7 +1681,10 @@ carries the evidence — the `slot-utilisation:` line, the last `[idle-hooks]`
 refusal reason with its `claimable_total`, the per-repo census, and how long the
 fleet has gone without an idle task — so the alert arrives diagnosable rather
 than asking a human to reproduce what the machine already saw
-(Issues #1019 and #1020).
+(Issues #1019 and #1020). Since Issue #5354 the body withholds any census line
+that names a repository not positively public (each named repo is looked up, and
+a failed lookup counts as private), replacing it with a placeholder line; the
+census lines remain on the host log every cycle.
 
 Every observation emits one line, so "the detector ran and decided nothing"
 stays distinguishable from "the detector never ran":
