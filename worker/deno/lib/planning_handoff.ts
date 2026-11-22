@@ -12,7 +12,7 @@
  * ```mermaid
  * flowchart TD
  *   R["Run emits vibe-needs-planning"] --> P{"Prior hand-off marker on the thread?"}
- *   P -->|yes| H["needs-human (loop guard)"]
+ *   P -->|yes| H["Retried as not finished (Issue #4227)"]
  *   P -->|no| G{"Guard allows planning?"}
  *   G -->|no| H
  *   G -->|yes| L{"addLabel planning ok?"}
@@ -67,11 +67,11 @@ export interface PlanningHandoffRequest {
  * True when the output carries a `vibe-needs-planning` marker, even with no
  * usable `reason` (Issue #3088).
  *
- * {@link detectPlanningHandoff} ignores a reasonless marker so the run can
- * fall through to a human. On a committed run that fall-through must still
- * be a hand-off, not a PR, so the caller needs the marker's presence on its
- * own. A marker inside a code fence or span is the prompt's template, not a
- * request.
+ * {@link detectPlanningHandoff} ignores a reasonless marker so the run falls
+ * through to the not-finished retry (Issue #4227). On a committed run that
+ * fall-through must still stop the PR, so the caller needs the marker's
+ * presence on its own. A marker inside a code fence or span is the prompt's
+ * template, not a request.
  */
 export function hasPlanningRequestMarker(output: string): boolean {
   return execMarkerOutsideCode(output, REQUEST_RE) !== undefined;
@@ -79,7 +79,8 @@ export function hasPlanningRequestMarker(output: string): boolean {
 
 /**
  * Detect a `vibe-needs-planning` request in the run output. A marker without
- * a non-blank `reason` is ignored, so the run falls through to `needs-human`.
+ * a non-blank `reason` is ignored, so the run falls through to the
+ * not-finished retry (Issue #4227).
  */
 export function detectPlanningHandoff(
   output: string,
@@ -122,7 +123,7 @@ export function hasPriorPlanningHandoff(comments: string): boolean {
  * — so the worker hands the same issue off to planning again on every scan.
  * This fetches the issue's whole comment history instead and checks every
  * comment, from every author: a forged marker from an untrusted author can
- * only force the safe `needs-human` fallback early, never suppress a real
+ * only force the safe not-finished retry early, never suppress a real
  * repeat, so scanning every author costs nothing on the downside.
  *
  * @returns true when a prior hand-off marker is found anywhere on the thread.
@@ -220,7 +221,8 @@ export interface PlanningHandoffResult {
 /**
  * Apply `planning`, post the hand-off comment and release the claim. A
  * refused guard or a failed label add is logged and returns
- * `applied: false` without releasing, so the caller escalates instead.
+ * `applied: false` without releasing, so the caller falls through to its
+ * not-finished handling instead (Issue #4227).
  */
 export async function handOffToPlanning(
   options: PlanningHandoffOptions,

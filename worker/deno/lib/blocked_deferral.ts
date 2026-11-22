@@ -68,8 +68,9 @@ export function buildDeferralMarker(ref: string): string {
  * is back here on the *same* dependency, the gate did not hold (the dependency
  * closed and the work is still reported blocked, or the record was lost), and
  * deferring again would spin an expensive agent run every scan. The caller
- * escalates instead, so the loop fails loud to a human rather than quietly
- * repeating.
+ * does not defer again: the issue is retried as not finished on the failure
+ * ladder (Issue #4227), whose cooldown spaces the attempts, rather than
+ * quietly repeating.
  *
  * @param comments - Comment text to search — the full thread where available,
  *   the budgeted prompt blob otherwise (see {@link hasPriorDeferralOnThread}).
@@ -103,9 +104,9 @@ export interface PriorDeferralLookup {
  * issue's whole comment history instead and checks every comment, from every
  * author: a fleet runs several worker accounts, so restricting the scan to one
  * login would miss a marker a different account posted. A forged marker from
- * an untrusted author can only escalate this issue to a human early (the
- * repeat-deferral branch), never suppress a real one, so scanning every author
- * costs nothing on the downside.
+ * an untrusted author can only stop this issue's deferral early (the
+ * repeat-deferral branch, which retries it as not finished), never suppress a
+ * real one, so scanning every author costs nothing on the downside.
  *
  * @returns true when a prior deferral for `ref` is found anywhere on the
  *   thread.

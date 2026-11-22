@@ -107,8 +107,9 @@ export function gateAlreadyResolvedClose(
  *
  * Same signal and direction as {@link gateAlreadyResolvedClose}: the hand-off
  * retires the issue into sub-issues with no human step, so an untrusted image
- * in front of the agent withholds it and the run falls through to the
- * analysis-only hand-off.
+ * in front of the agent withholds it. The issue stays open and is retried as
+ * not finished (Issue #4227); it is never handed to a human, and on the
+ * no-changes path the analysis-only close is withheld too (Issue #4298).
  */
 export function gatePlanningHandoff(
   untrustedImages?: readonly ImageReference[],
@@ -124,6 +125,7 @@ export function gatePlanningHandoff(
       `body carried ${imageCount} image reference(s), so a conclusion the ` +
       `worker would act on may have been drawn from an image whose ` +
       `instructions the agent can be told not to report (Issue #2688). ` +
-      `Handing off for human review instead — the issue stays open.`,
+      `Withholding the hand-off — the issue stays open and is retried as ` +
+      `not finished (Issue #4227).`,
   };
 }
