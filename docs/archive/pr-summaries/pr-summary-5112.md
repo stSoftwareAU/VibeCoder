@@ -385,23 +385,23 @@ emulator test.
   lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks passed.
 
 - After the fifteenth review (verifier findings on `da5a937f7`): (1) an `exit`
-  or `set -n` in a command inside an untracked `$( … )` or backtick
-  substitution no longer ends the body (`exited` is set only when the command
-  is not inside one), so `VERSION=$(cat VERSION || { echo "no version" >&2; exit 1; })`
-  keeps a later runner credited. (2) A `for`, C-style `for` or `select` header
-  dropped inside an untracked substitution still adds its `$(` and backtick
-  balance to the line's pending parentheses, and a `case` inside one is counted
+  or `set -n` in a command inside an untracked `$( … )` or backtick substitution
+  no longer ends the body (`exited` is set only when the command is not inside
+  one), so `VERSION=$(cat VERSION || { echo "no version" >&2; exit 1; })` keeps
+  a later runner credited. (2) A `for`, C-style `for` or `select` header dropped
+  inside an untracked substitution still adds its `$(` and backtick balance to
+  the line's pending parentheses, and a `case` inside one is counted
   (`untrackedCases`) so an arm's pattern `)` closes nothing; the substitution's
   own `)` therefore closes it, and a runner swallowed by `|| true`, `| tee` or
   after `exit 0` is refused. The new test
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts::checkAwsEmulatorInCI - an exit or a compound header inside an untracked substitution does not end the body or hide a swallowed runner`
   fails at `da5a937f7` (the `exit` form is `missing`) and passes at the head, in
-  a default-shell step, after `set +e` and in scripts with and without
-  `set -e`. The seven related test files give `510 passed | 0 failed` through
-  `deno task test:unit`; `deno lint`, `deno check` and `deno fmt --check` on
-  the changed source and test files are clean. The full `./quality.sh` was not
-  run in this round. The criterion "A required test command failure cannot satisfy the
-  workflow contract." stays `met` for the cases the reviews named.
+  a default-shell step, after `set +e` and in scripts with and without `set -e`.
+  The seven related test files give `510 passed | 0 failed` through
+  `deno task test:unit`; `deno lint`, `deno check` and `deno fmt --check` on the
+  changed source and test files are clean. The full `./quality.sh` was not run
+  in this round. The criterion "A required test command failure cannot satisfy
+  the workflow contract." stays `met` for the cases the reviews named.
 - After the fourteenth review (of `90b04627`): a command that starts inside a
   `$( … )` or backtick substitution the walk tracks no frame for
   (`linePending > 0` or an odd backtick count at the command's start) no longer
