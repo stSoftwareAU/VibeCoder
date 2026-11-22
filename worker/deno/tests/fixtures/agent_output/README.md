@@ -2,10 +2,11 @@
 
 Inputs for the provider-neutral output adapters
 (`worker/deno/lib/agent_output.ts`, `claude_output_adapter.ts`,
-`codex_output_adapter.ts`). Every fixture states its provenance below —
-**recorded** means it came out of the pinned CLI on this machine, **derived**
-means it was written to the CLI's documented event shape because that CLI could
-not be run here. Nothing is presented as a recording that is not one.
+`codex_output_adapter.ts`, `gemini_output_adapter.ts`). Every fixture states its
+provenance below — **recorded** means it came out of the pinned CLI on this
+machine, **derived** means it was written to the CLI's documented event shape
+because that CLI could not be run here. Nothing is presented as a recording that
+is not one.
 
 No fixture carries a credential: the recordings were made with no provider
 credential present, which is exactly why several of them are authentication
@@ -65,3 +66,24 @@ accepts **both** envelope generations, which is why one fixture is the legacy
 When a Codex CLI becomes runnable here, replace the derived files with
 recordings and move their rows into a "Recorded" table above — the tests read
 the files, so nothing else changes.
+
+## Derived — Gemini CLI 0.68.0 (`--output-format stream-json`)
+
+The Gemini CLI is not installed in this environment (the default image installs
+Claude alone — `installedProviders` in `container/tools.json`), and no Gemini
+credential is present, so these are written to the event shape the pinned CLI
+emits rather than recorded. That shape was read from the published 0.68.0 bundle
+(`bundle/gemini-Q2FNZWQG.js` and `chunk-2OHBIZ5H.js`), whose sha256
+(`325099dd…`) matches the pin in `container/tools.json`. Every `result` line
+carries a `stats` object shaped as `gemini_token_usage.ts` documents.
+
+| Fixture                              | Exit | What it shows                                                                                                                                                                                                                   |
+| ------------------------------------ | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gemini-0.68.0-success.jsonl`        | 0    | `init` → the echoed user `message` → assistant deltas → `tool_use` / `tool_result` → the final turn in two delta chunks → `result` `success`. The final turn quotes quota and login text; it is still a success.                |
+| `gemini-0.68.0-quota-reset.jsonl`    | 173  | A `warning` `error` event (HTTP 429, retried) then a `result` `error` of class `TerminalQuotaError`: "exhausted your capacity", reset after `2h30m15s`. 173 is a 429 on Linux. The retry warning must not make it a rate limit. |
+| `gemini-0.68.0-quota-no-reset.jsonl` | 173  | A `result` `error` of class `TerminalQuotaError` for an exhausted daily quota, with no reset stated. The reset is never invented.                                                                                               |
+| `gemini-0.68.0-auth-rejected.jsonl`  | 1    | A `result` `error` of class `UnauthorizedError` (HTTP 401) with Google's "invalid authentication credentials" text: authentication, not an unavailable model.                                                                   |
+
+When a Gemini CLI becomes runnable here, replace the derived files with
+recordings and move their rows into a "Recorded" section — the tests read the
+files, so nothing else changes.

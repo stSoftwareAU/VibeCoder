@@ -64,6 +64,7 @@ import {
   DEEPSEEK_OUTPUT_ADAPTER,
 } from "./claude_output_adapter.ts";
 import { CODEX_OUTPUT_ADAPTER } from "./codex_output_adapter.ts";
+import { GEMINI_OUTPUT_ADAPTER } from "./gemini_output_adapter.ts";
 import {
   buildSessionResumeArgs,
   buildSessionResumeFlags,
@@ -1021,11 +1022,9 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
  * delegates to the Gemini-owned modules (`gemini_executor.ts`,
  * `gemini_env.ts`, `gemini_auth.ts`), so no Gemini CLI knowledge lives here.
  *
- * It carries **no** `output` adapter (Issue #1695): its event shapes were not
- * confirmable against the pinned CLI here, and decoding them with Claude's
- * parser is exactly the guesswork this seam exists to end. The runner keeps
- * the shared text extraction for it and reports no normalised result — an
- * absent decode, never a fabricated one.
+ * Its `output` adapter is `gemini_output_adapter.ts` (Issue #5340), which
+ * decodes the CLI's `stream-json` events into the answer, the session, the
+ * usage and a typed failure.
  */
 const GEMINI_PROVIDER: AgentProviderDescriptor = {
   id: GEMINI_PROVIDER_ID,
@@ -1079,6 +1078,10 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
   },
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/gemini.sh` },
   promptTransport: "argv",
+  // The stream-json decoder and failure classifier (Issue #5340), deferred for the same import cycle as Claude's above.
+  get output(): AgentOutputAdapter {
+    return GEMINI_OUTPUT_ADAPTER;
+  },
 
   // Gemini routes `phase` to a model through its own table (Issue #364), the
   // way Claude and Codex do; the chain lives in `gemini_executor.ts` and is
