@@ -3965,6 +3965,7 @@ async function runRetryLadder(
         const rejectedId = currentOptions.sessionResumeState.sessionId;
         const rejectingProviderName = selectAgentProvider(
           currentOptions.agentProvider,
+          currentOptions.env ? { env: currentOptions.env } : {},
         ).displayName;
         currentOptions.logger?.warn(
           `${rejectingProviderName} rejected the session flags for "${rejectedId}" ` +
