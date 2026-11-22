@@ -75,3 +75,5 @@ Issues cited as provenance:
 
 - This changes documentation only, so no test was added or changed.
 - `markdownlint-cli2` from the repository root: `Summary: 0 issues in 0 files`.
+- `./quality.sh < /dev/null` with the final doc edits: `Result: PASSED (with
+  skipped checks)`, exit 0. Config integration and checkov were skipped.
