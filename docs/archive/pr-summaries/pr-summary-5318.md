@@ -6,6 +6,7 @@ The operator manuals still described a two-step failure ladder (`failed-once`,
 then `failed`). That ladder was removed by Issue #4158. Every failure is now
 recorded under `failed-once`, and the issue stays claimable once the escalating
 cooldown ends. This PR rewrites each stale passage to match. Docs only.
+
 Closes #5318.
 
 ## Spec
@@ -15,9 +16,9 @@ Closes #5318.
 - `worker/deno/lib/label_failure.ts` (header, lines 9-12) and
   `worker/deno/lib/coding_failure_ladder.ts` (header) state that the worker
   never applies `failed`. The manual contradicted both, and its own line 781.
-- The issue's suggested grep covered "then failed" and "Replace with
-  `failed`". The same stale claim also appears as `failed-once` → `failed`, so
-  that spelling was swept too.
+- The issue's suggested grep covered "then failed" and "Replace with `failed`".
+  The same stale claim also appears as `failed-once` → `failed`, so that
+  spelling was swept too.
 
 ### Essential Design Decisions
 
@@ -41,8 +42,8 @@ Closes #5318.
 Documentation-only change, so there is no runtime behaviour to test. Behaviour
 claims were checked against the code:
 
-- `worker/deno/lib/label_failure.ts:9-12` and `:420-421`: a repeat failure
-  keeps `failed-once` and stays claimable. Pinned by
+- `worker/deno/lib/label_failure.ts:9-12` and `:420-421`: a repeat failure keeps
+  `failed-once` and stays claimable. Pinned by
   `worker/deno/tests/prompt_too_long_2682_test.ts` ("a repeat refusal after
   failed-once is recorded again, never parked (Issue #4158)") and
   `worker/deno/tests/never_park_4158_test.ts`.
@@ -51,11 +52,11 @@ claims were checked against the code:
 
 Passages rewritten:
 
-| File | Passage |
-| --- | --- |
-| `docs/workflows/issue-processing.md` | Implementation-failure decision-point bullet; "retried within the normal `failed-once` → `failed` budget" in the analysis-only bullet; prompt-too-long bullet; its Mermaid `Ladder` node |
-| `docs/INTERNALS.md` | #2220 Mermaid `F` node; `coding_failure_ladder.ts` table row |
-| `docs/workflows/planning-and-questions.md` | Loud-failure paragraph and its Mermaid `C` node |
+| File                                       | Passage                                                                                                                                                                                  |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/workflows/issue-processing.md`       | Implementation-failure decision-point bullet; "retried within the normal `failed-once` → `failed` budget" in the analysis-only bullet; prompt-too-long bullet; its Mermaid `Ladder` node |
+| `docs/INTERNALS.md`                        | #2220 Mermaid `F` node; `coding_failure_ladder.ts` table row                                                                                                                             |
+| `docs/workflows/planning-and-questions.md` | Loud-failure paragraph and its Mermaid `C` node                                                                                                                                          |
 
 ```mermaid
 flowchart LR
@@ -73,17 +74,19 @@ already cited in the table row).
 ## Test Plan
 
 - No tests added or edited (docs only).
-- `grep -rnE "then \`?failed\`?\b|Replace with \`failed\`|failed-once\`? (→|->|then) \`?failed" README.md docs --include=*.md`,
-  ignoring `docs/archive/`, on the final head: the remaining hits are the
-  historical #2220 paragraph (`docs/INTERNALS.md:5856`), the dated audit record
-  `docs/audits/security-sweep-2682-prompt-too-long.md:34`, and unrelated uses
-  of "then failed".
+- `grep -rnE "then \`?failed\`?\b|Replace with \`failed\`|failed-once\`?
+  (→|->|then) \`?failed" README.md docs
+  --include=*.md`,
+  ignoring`docs/archive/`, on the final head: the remaining hits are the
+  historical #2220 paragraph (`docs/INTERNALS.md:5856`), the dated audit record`docs/audits/security-sweep-2682-prompt-too-long.md:34`,
+  and unrelated uses of "then failed".
 - `markdownlint-cli2` on the three edited files: `Summary: 0 issues in 0 files`.
 - `./quality.sh` on the final docs head: `Result: PASSED (with skipped checks)`.
-  Config integration was skipped (no `.config.json`) and checkov was skipped (not
-  installed). Mermaid, markdownlint, deno tests, lint, type check and fmt all
-  passed. The first attempt hit its own 900 s bound and was re-run with 1700 s.
+  Config integration was skipped (no `.config.json`) and checkov was skipped
+  (not installed). Mermaid, markdownlint, deno tests, lint, type check and fmt
+  all passed. The first attempt hit its own 900 s bound and was re-run with 1700
+  s.
 - Not done: the doc comment on `ESCALATING_COOLDOWN_LADDER_SECONDS` in
   `worker/deno/lib/cooldown_state.ts` still says the third failure "also
-  escalates to a human". That is a source doc comment outside this issue's
-  docs scope, so it is left unchanged.
+  escalates to a human". That is a source doc comment outside this issue's docs
+  scope, so it is left unchanged.
