@@ -8,11 +8,15 @@
  * argv keeps.
  *
  * Enforcement rule (Issue #3641 section 6): a denied tool counts as enforced
- * only when the argv itself carries the denial. Only the Claude Code CLI
- * carries `--disallowed-tools`, so Claude and DeepSeek (the same CLI on a
- * different endpoint) enforce it; a denial folded into the prompt is not
- * enforcement. Gemini receives the list as prompt text and is refused. Codex
- * is the stated exception: its branch skips both the role-capability and the
+ * only when the provider's own mechanism carries the denial. A provider whose
+ * descriptor has a settings builder (Gemini, Issue #5341) counts a denial as
+ * enforced when the builder maps it into the per-run settings file the CLI
+ * reads; an unmapped name is refused as `missing_tool_support`. Every other
+ * provider must carry the denial in its argv. Only the Claude Code CLI carries
+ * `--disallowed-tools`, so Claude and DeepSeek (the same CLI on a different
+ * endpoint) enforce it; a denial folded into the prompt is not enforcement.
+ * Gemini's manager is still refused, because Gemini cannot compact its stream.
+ * Codex is the stated exception: its branch skips both the role-capability and the
  * argv-enforcement checks, admitting Edit, MultiEdit, Write, NotebookEdit,
  * Bash, Task and Agent after only the delegation-off probe and the
  * denied-tool allow-list. A Codex manager is therefore admitted although
@@ -126,7 +130,8 @@ export function providerCapabilities(
  *
  * Checks, in order: the provider is a known target with a descriptor; the
  * role's required capabilities are present; and the denied tools in
- * `requiredTools` are enforced through the argv or the selection is refused.
+ * `requiredTools` are enforced through the argv or the provider's settings
+ * file, or the selection is refused.
  * The Codex branch below returns before both the role-capability and the
  * argv-enforcement checks: it admits Edit, MultiEdit, Write, NotebookEdit,
  * Bash, Task and Agent after only the delegation-off probe and the
@@ -134,9 +139,12 @@ export function providerCapabilities(
  * cannot compact its stream and `Bash` is not denied. Never throws for an
  * unsupported selection.
  *
- * `--disallowed-tools` enforcement holds only for the Claude CLI — Claude,
- * and DeepSeek through the same CLI. Gemini receives the list as prompt text
- * and is refused.
+ * A provider whose descriptor has a settings builder (Gemini) counts a denial
+ * as enforced when its builder maps it into the per-run settings file; an
+ * unmapped name is refused as `missing_tool_support`. Gemini's manager is still
+ * refused, because Gemini cannot compact its stream. Otherwise
+ * `--disallowed-tools` enforcement holds only for the Claude CLI — Claude, and
+ * DeepSeek through the same CLI.
  *
  * @param selection - The provider, model and effort the role would run with.
  * @param role - The role the call plays.
@@ -200,6 +208,14 @@ export function assertRoleSupported(
       kind: "unsupported_capability",
       message:
         `${provider} cannot compact its stream, which the ${role} role requires`,
+    };
+  }
+  const descriptor = agentProviderById(provider)!;
+  if (descriptor.toolDenialSettings) {
+    const built = descriptor.toolDenialSettings(requiredTools);
+    return built.ok ? undefined : {
+      kind: "missing_tool_support",
+      message: `${built.refusal.message}, so it cannot carry the ${role} role`,
     };
   }
   if (

@@ -19,10 +19,13 @@
  * The boundary, stated honestly:
  * - The checkout is a `git clone --shared` of the issue checkout with its
  *   `origin` removed, so it has no push destination.
- * - Claude's CLI enforces `disallowedTools`; Codex and Gemini receive the list
- *   as prompt text. Read-only mode explicitly selects Claude and requests
- *   Claude config isolation; a non-Claude provider fallback is refused by the
- *   runner before spawn.
+ * - Claude's CLI enforces `disallowedTools`; Codex receives the list as
+ *   prompt text. Gemini enforces it through its per-run settings file
+ *   (Issue #5341), which cannot hold a `Bash(<pattern>)` entry, so on Gemini
+ *   the verifier denies `Bash` outright in their place
+ *   ({@link verifierDisallowedTools}) and runs with no shell. Read-only mode
+ *   explicitly selects Claude and requests Claude config isolation; a
+ *   non-Claude provider fallback is refused by the runner before spawn.
  * - Tool denials are not a network sandbox: another program run through
  *   `Bash` could still reach the network. The gh guard below is the backstop
  *   for `gh`.
@@ -40,7 +43,11 @@
  * @module
  */
 
-import { CLAUDE_PROVIDER_ID, selectAgentProvider } from "./agent_provider.ts";
+import {
+  CLAUDE_PROVIDER_ID,
+  GEMINI_PROVIDER_ID,
+  selectAgentProvider,
+} from "./agent_provider.ts";
 import { PROVIDER_MODEL_TIERS } from "./config_defaults.ts";
 import type { Logger, Result } from "../types.ts";
 import type { TestChangeKind, TestChangeNote } from "./fleet_review_log.ts";
@@ -371,7 +378,8 @@ export const PRE_PR_VERIFIER_TIMEOUT_SECONDS = 1800;
 /**
  * Tools the verifier must never call. Edit, Write and Bash stay allowed: it
  * may flip a line in its disposable copy and rerun a test. A read-only verifier
- * ({@link PrePrVerifierInput.readOnly}) loses those too.
+ * ({@link PrePrVerifierInput.readOnly}) loses those too, and on Gemini the
+ * `Bash(<pattern>)` entries become `Bash` ({@link verifierDisallowedTools}).
  */
 export const PRE_PR_VERIFIER_DISALLOWED_TOOLS: readonly string[] = [
   "EnterPlanMode",
@@ -385,6 +393,26 @@ export const PRE_PR_VERIFIER_DISALLOWED_TOOLS: readonly string[] = [
   "Bash(curl:*)",
   "Bash(wget:*)",
 ];
+
+/**
+ * The verifier's denied tools on `providerId` (Issue #5341). Gemini's settings
+ * file cannot deny a `Bash(<pattern>)` entry, and the runner refuses a Gemini
+ * spawn that carries one, so on Gemini those entries become `Bash`: the
+ * verifier loses its shell rather than the denial. Every other provider gets
+ * the list unchanged.
+ */
+export function verifierDisallowedTools(
+  tools: readonly string[],
+  providerId: string,
+): string[] {
+  if (providerId !== GEMINI_PROVIDER_ID) return [...tools];
+  const out: string[] = [];
+  for (const tool of tools) {
+    const entry = /^Bash\(.*\)$/.test(tool) ? "Bash" : tool;
+    if (!out.includes(entry)) out.push(entry);
+  }
+  return out;
+}
 
 /**
  * Tools a read-only verifier (Issue #4657) also loses: nothing it can run or
@@ -467,7 +495,8 @@ export interface PrePrVerifierDeps {
   releaseBuildArtefacts: (checkoutPath: string) => Promise<ReleasedTargetDirs>;
   /**
    * The provider a non-read-only verifier runs on, so its default model is
-   * that provider's top tier. Defaults to the active provider.
+   * that provider's top tier and its denied tools are in a form that provider
+   * enforces. Defaults to the active provider.
    */
   activeProviderId?: () => string;
 }
@@ -1164,6 +1193,11 @@ async function verifyInCheckout(
     callerChecks: callers.state,
   });
 
+  // The provider the verifier runs on: Claude when read-only, else the active
+  // one. It picks the default model and the form of the denied tools.
+  const providerId = input.readOnly
+    ? CLAUDE_PROVIDER_ID
+    : (deps.activeProviderId ?? (() => selectAgentProvider().id))();
   const asked = await deps.ask({
     prompt,
     lifecycleRole: "reviewer",
@@ -1178,18 +1212,14 @@ async function verifyInCheckout(
     // Issue #5081: a code review takes the reviewer's top-tier model, not the
     // issue manager's, unless the host pins one — the top tier of the provider
     // that runs it, since Codex refuses a Claude alias.
-    model: input.model ?? reviewerModelFor(
-      input.readOnly
-        ? CLAUDE_PROVIDER_ID
-        : (deps.activeProviderId ?? (() => selectAgentProvider().id))(),
-    ),
+    model: input.model ?? reviewerModelFor(providerId),
     cwd: checkout,
     logger: input.logger,
-    disallowedTools: [
+    disallowedTools: verifierDisallowedTools([
       ...PRE_PR_VERIFIER_DISALLOWED_TOOLS,
       ...(input.readOnly ? PRE_PR_VERIFIER_READ_ONLY_DENIED_TOOLS : []),
       ...(input.extraDisallowedTools ?? []),
-    ],
+    ], providerId),
     ...(input.readOnly
       ? { isolateClaudeConfig: true, agentProvider: CLAUDE_PROVIDER_ID }
       : {}),

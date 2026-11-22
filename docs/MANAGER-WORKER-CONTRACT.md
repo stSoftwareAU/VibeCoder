@@ -148,7 +148,7 @@ current.
 | Issue-reviewer switch  | `worker/deno/lib/config.ts:1013-1014`                                                                      | `issue_reviewer_agents` (host only, default `true`) toggles the two reviewer definitions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | PR review claim lease  | `worker/deno/lib/pr_review_claim_lease.ts:29`, `:33`, `:70`, `:102`                                        | A `pr_review` claim comment is a lease, not a dismissal. `createClaimLeaseRenewer` (`:102`) renews it every `PR_REVIEW_CLAIM_RENEW_MS` (five minutes, `:33`) by editing the comment body, and `isLeaseLive` (`:70`) deems it live while its last beat is inside `PR_REVIEW_CLAIM_LEASE_MS` (`:29`, the fleet heartbeat live window). A host that stops renewing lets the lease lapse, and the review becomes reclaimable by another host.                                                                                                                                                                                                              |
 | Post-PR reviewer model | `worker/deno/lib/config_defaults.ts:1136`, `:1247`, `worker/deno/lib/pr_feedback_processor.ts:803`         | PR feedback and review runs resolve their model from the phase default: `PHASE_MODEL_DEFAULTS.pr_feedback` is `DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = "sonnet"`, not the host `claude_model`. `processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL` is only the fallback model passed to `estimatePhaseRunUsd` for cost estimation.                                                                                                                                                                                                                                                                                                                          |
-| External review gate   | `worker/deno/lib/orchestration/issue_run_gate.ts:178`, `worker/deno/lib/orchestration/capabilities.ts:130` | With external orchestration on, the reviewer is a separate read-only call that fails closed before any paid work: `assertRoleSupported` (`:130`) refuses an unsupported provider or a tool denial the provider cannot enforce on the argv (Gemini, which receives the list only as prompt text); Codex is the stated exception, admitted with `Bash` still not denied because delegation is off and the read-only checkout restoration applies. The subscription/CLI preflight (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI, unproved entitlement or exhausted quota. An unsupported reviewer provider is refused, not run. |
+| External review gate   | `worker/deno/lib/orchestration/issue_run_gate.ts:178`, `worker/deno/lib/orchestration/capabilities.ts:154` | With external orchestration on, the reviewer is a separate read-only call that fails closed before any paid work: `assertRoleSupported` (`:154`) refuses an unsupported provider, a Gemini `manager` (Gemini cannot compact its stream), or a tool denial the provider cannot enforce (Gemini enforces its denials through a per-run settings file, Issue #5341); Codex is the stated exception, admitted with `Bash` still not denied because delegation is off and the read-only checkout restoration applies. The subscription/CLI preflight (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI, unproved entitlement or exhausted quota. An unsupported reviewer provider is refused, not run. |
 
 The code has no `pr_review` key: `PHASE_MODEL_DEFAULTS`
 (`worker/deno/lib/config_defaults.ts:1236`) lists `pr_feedback` instead, pinned
@@ -436,7 +436,7 @@ when external orchestration is off
 orchestration path never sets `--agents`
 (`worker/deno/lib/orchestration/issue_run_gate.ts:120`) and refuses a provider
 that cannot carry a role before any paid work: `assertRoleSupported`
-(`worker/deno/lib/orchestration/capabilities.ts:130`) refuses an unsupported
+(`worker/deno/lib/orchestration/capabilities.ts:154`) refuses an unsupported
 provider and, for providers other than Codex, a capability or tool-denial gap;
 the Codex branch skips both checks and admits only the allow-listed tools after
 a delegation-off probe. The subscription/CLI preflight
@@ -447,7 +447,9 @@ change it makes to the checkout put back by the worker
 (`worker/deno/lib/orchestration/read_only_guard.ts`, Issue #4356). That
 restoration does not deny Bash or prevent commands and builds outside the
 checkout; Codex receives tool-denial lists as prompt text, not as enforced CLI
-restrictions. Gemini and DeepSeek fail closed. A role call never moves to
+restrictions. Gemini roles other than `manager` enforce their denials through a
+per-run settings file (Issue #5341); a Gemini `manager` and DeepSeek fail
+closed. A role call never moves to
 `agent_provider_fallback` after a model refusal, because the gate pins its
 provider through the retry ladder (Issue #4986), but provider selection alone
 does not provide filesystem/network isolation. See
@@ -476,7 +478,7 @@ does not provide filesystem/network isolation. See
   See [Configuration Reference](CONFIGURATION.md), rows for these keys.
 - **Invariant (delivered).** On the external orchestration path, a provider that
   cannot carry a role fails loud before any paid work: `assertRoleSupported`
-  (`worker/deno/lib/orchestration/capabilities.ts:130`) refuses an unsupported
+  (`worker/deno/lib/orchestration/capabilities.ts:154`) refuses an unsupported
   provider and, for providers other than Codex, a capability or tool-denial gap
   (the Codex branch skips both checks and admits only the allow-listed tools
   after a delegation-off probe), and the subscription/CLI preflight

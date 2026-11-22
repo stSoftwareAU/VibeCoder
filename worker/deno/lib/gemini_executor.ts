@@ -22,7 +22,8 @@
  * - **There is no `--system-prompt` and no per-tool disable flag.** Both are
  *   composed into the single prompt by the shared composer rather than
  *   dropped — the sandboxed-environment guidance of Issue #4070 reaches this
- *   provider through that prompt.
+ *   provider through that prompt. The tool denials are also enforced through
+ *   the per-run settings file (`gemini_settings.ts`, Issue #5341).
  * - **There is no reasoning-effort option.** An effort the caller supplies is
  *   therefore not translated into a flag the CLI does not have: inventing one
  *   would fail the run outright. It is not dropped in silence either
