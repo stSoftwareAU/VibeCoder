@@ -82,6 +82,10 @@ import {
   setSuppressionAuthorAllowlist,
 } from "../lib/suppression_comments.ts";
 import type { Logger, Result } from "../types.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 /**
  * The fleet identity the finding-id dedup verifies against (Issue #1243).
@@ -2115,7 +2119,7 @@ async function gitAs(
 ): Promise<void> {
   const email = `${login}@users.noreply.github.com`;
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -2126,6 +2130,7 @@ async function gitAs(
       GIT_COMMITTER_EMAIL: email,
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_SYSTEM: "/dev/null",
+      ...NO_HOST_GIT_CONFIG,
     },
   }).output();
   assertEquals(

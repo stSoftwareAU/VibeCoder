@@ -4,6 +4,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assertEquals } from "@std/assert";
 import { validateRepoState } from "../lib/git_repo_validation.ts";
 
@@ -13,10 +17,11 @@ async function createTempRepo(): Promise<string> {
 
   const run = async (args: string[]) => {
     const cmd = new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd: dir,
       stdout: "piped",
       stderr: "piped",
+      env: { ...NO_HOST_GIT_CONFIG },
     });
     await cmd.output();
   };
@@ -49,10 +54,11 @@ Deno.test("git repo validation - passes on clean repo with correct branch", asyn
   try {
     const run = async (args: string[]) => {
       const cmd = new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: dir,
         stdout: "piped",
         stderr: "piped",
+        env: { ...NO_HOST_GIT_CONFIG },
       });
       await cmd.output();
     };
@@ -101,10 +107,11 @@ Deno.test("git repo validation - fails with uncommitted changes without recovery
   try {
     const run = async (args: string[]) => {
       const cmd = new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: dir,
         stdout: "piped",
         stderr: "piped",
+        env: { ...NO_HOST_GIT_CONFIG },
       });
       await cmd.output();
     };
@@ -136,10 +143,11 @@ Deno.test("git repo validation - recovers from dirty working directory", async (
   try {
     const run = async (args: string[]) => {
       const cmd = new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: dir,
         stdout: "piped",
         stderr: "piped",
+        env: { ...NO_HOST_GIT_CONFIG },
       });
       await cmd.output();
     };
@@ -171,10 +179,11 @@ Deno.test("git repo validation - recovers from detached HEAD", async () => {
   try {
     const run = async (args: string[]) => {
       const cmd = new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: dir,
         stdout: "piped",
         stderr: "piped",
+        env: { ...NO_HOST_GIT_CONFIG },
       });
       return await cmd.output();
     };

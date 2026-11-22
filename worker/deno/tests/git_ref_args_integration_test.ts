@@ -21,6 +21,7 @@ import {
   buildPullArgs,
   buildRebaseArgs,
 } from "../lib/git_ref_args.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 
 /** Initialise a bare "remote" plus a working clone with one commit on main. */
 async function setupRepos(
@@ -30,20 +31,20 @@ async function setupRepos(
   const localPath = `${tmpDir}/local`;
 
   await Deno.mkdir(remotePath, { recursive: true });
-  await runGitCommand(["init", "--bare"], { cwd: remotePath });
-  await runGitCommand(["symbolic-ref", "HEAD", "refs/heads/main"], {
+  await runFixtureGit(["init", "--bare"], { cwd: remotePath });
+  await runFixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
     cwd: remotePath,
   });
-  await runGitCommand(["clone", remotePath, localPath], { cwd: tmpDir });
-  await runGitCommand(["config", "user.email", "test@example.com"], {
+  await runFixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
+  await runFixtureGit(["config", "user.email", "test@example.com"], {
     cwd: localPath,
   });
-  await runGitCommand(["config", "user.name", "Test User"], { cwd: localPath });
+  await runFixtureGit(["config", "user.name", "Test User"], { cwd: localPath });
 
   await Deno.writeTextFile(`${localPath}/README.md`, "# Test Repo\n");
-  await runGitCommand(["add", "README.md"], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Initial commit"], { cwd: localPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  await runFixtureGit(["add", "README.md"], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Initial commit"], { cwd: localPath });
+  await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
   return { localPath };
 }

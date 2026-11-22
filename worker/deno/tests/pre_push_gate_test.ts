@@ -60,6 +60,10 @@ import {
   STUB_SHELLCHECK_VERSION,
   stubShellcheck,
 } from "./support/shellcheck_support.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
@@ -409,16 +413,8 @@ const GIT_ENV = [
   "user.email=t@e",
   "-c",
   "user.name=t",
-  "-c",
-  "core.hooksPath=/dev/null",
+  ...NO_HOST_HOOKS_ARGS,
 ];
-
-/** Shuts out the host's git config and hooks, so a fixture push never runs a host hook (Issue #5254). */
-const NO_HOST_GIT_CONFIG = {
-  GIT_CONFIG_COUNT: "0",
-  GIT_CONFIG_GLOBAL: "/dev/null",
-  GIT_CONFIG_NOSYSTEM: "1",
-};
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {

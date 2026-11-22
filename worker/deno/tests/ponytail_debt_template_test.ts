@@ -7,6 +7,10 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { getTemplate, listTemplates } from "../lib/idle_task_template.ts";
 import {
@@ -35,6 +39,7 @@ function okLabel(): Promise<{ ok: true; value: undefined }> {
 async function git(cwd: string, args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
     args: [
+      ...NO_HOST_HOOKS_ARGS,
       "-c",
       "user.email=ponytail-debt@example.com",
       "-c",
@@ -44,6 +49,7 @@ async function git(cwd: string, args: string[]): Promise<string> {
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   const stdout = new TextDecoder().decode(out.stdout).trim();
   const stderr = new TextDecoder().decode(out.stderr).trim();

@@ -16,8 +16,8 @@ import {
   type ConflictTakeoverPr,
   runConflictTakeover,
 } from "../lib/conflict_takeover.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
 import type { Logger, Result } from "../types.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers — real git repos, mirroring worker/deno/tests/git_pull_conflict_test.ts
@@ -36,23 +36,23 @@ async function setupTestRepos(
   const localPath = `${tmpDir}/local`;
 
   await Deno.mkdir(remotePath, { recursive: true });
-  await runGitCommand(["init", "--bare"], { cwd: remotePath });
-  await runGitCommand(
+  await runFixtureGit(["init", "--bare"], { cwd: remotePath });
+  await runFixtureGit(
     ["symbolic-ref", "HEAD", "refs/heads/main"],
     { cwd: remotePath },
   );
-  await runGitCommand(["clone", remotePath, localPath], { cwd: tmpDir });
-  await runGitCommand(
+  await runFixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
+  await runFixtureGit(
     ["config", "user.email", "test@example.com"],
     { cwd: localPath },
   );
-  await runGitCommand(["config", "user.name", "Test User"], {
+  await runFixtureGit(["config", "user.name", "Test User"], {
     cwd: localPath,
   });
   await Deno.writeTextFile(`${localPath}/README.md`, "# Test Repo\n");
-  await runGitCommand(["add", "README.md"], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Initial commit"], { cwd: localPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  await runFixtureGit(["add", "README.md"], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Initial commit"], { cwd: localPath });
+  await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
   return { remotePath, localPath };
 }
@@ -66,7 +66,7 @@ async function cleanup(tmpDir: string): Promise<void> {
 }
 
 async function headSha(cwd: string, ref: string): Promise<string> {
-  const result = await runGitCommand(["rev-parse", ref], { cwd });
+  const result = await runFixtureGit(["rev-parse", ref], { cwd });
   return result.ok ? result.value.stdout.trim() : "";
 }
 
@@ -91,19 +91,19 @@ Deno.test("resolveOnFixBranch - a clean merge lands on the fix branch and never 
     const { remotePath, localPath } = await setupTestRepos(tmpDir);
 
     // Gated head branch, diverging from main with its own commit.
-    await runGitCommand(["checkout", "-b", "milestone/x"], { cwd: localPath });
+    await runFixtureGit(["checkout", "-b", "milestone/x"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/head.ts`, "export const h = 1;\n");
-    await runGitCommand(["add", "head.ts"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Head change"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "milestone/x"], { cwd: localPath });
+    await runFixtureGit(["add", "head.ts"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Head change"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "milestone/x"], { cwd: localPath });
     const headCommit = await headSha(localPath, "milestone/x");
 
     // Main advances with a non-conflicting change.
-    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await runFixtureGit(["checkout", "main"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/main.ts`, "export const m = 1;\n");
-    await runGitCommand(["add", "main.ts"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["add", "main.ts"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Main change"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
     const resolvers = bindConflictTakeoverResolvers({
       checkout: () => Promise.resolve(localPath),
@@ -115,19 +115,19 @@ Deno.test("resolveOnFixBranch - a clean merge lands on the fix branch and never 
     assertEquals(outcome.resolved, true, outcome.detail);
 
     // The fix branch exists on origin and carries both histories.
-    const fixOnOrigin = await runGitCommand(
+    const fixOnOrigin = await runFixtureGit(
       ["show", "origin/milestone-fix/x-1:head.ts"],
       { cwd: localPath },
     );
     assertEquals(fixOnOrigin.ok && fixOnOrigin.value.code, 0);
-    const fixMain = await runGitCommand(
+    const fixMain = await runFixtureGit(
       ["show", "origin/milestone-fix/x-1:main.ts"],
       { cwd: localPath },
     );
     assertEquals(fixMain.ok && fixMain.value.code, 0);
 
     // The PR's own head branch on origin is untouched.
-    const remoteHead = await runGitCommand(
+    const remoteHead = await runFixtureGit(
       ["rev-parse", "refs/heads/milestone/x"],
       { cwd: remotePath },
     );
@@ -147,22 +147,22 @@ Deno.test("resolveOnFixBranch - a genuine conflict is left unresolved, aborted, 
     const { remotePath, localPath } = await setupTestRepos(tmpDir);
 
     await Deno.writeTextFile(`${localPath}/shared.ts`, "base\n");
-    await runGitCommand(["add", "shared.ts"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Add shared"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["add", "shared.ts"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Add shared"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
-    await runGitCommand(["checkout", "-b", "milestone/x"], { cwd: localPath });
+    await runFixtureGit(["checkout", "-b", "milestone/x"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/shared.ts`, "head version\n");
-    await runGitCommand(["add", "shared.ts"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Head change"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "milestone/x"], { cwd: localPath });
+    await runFixtureGit(["add", "shared.ts"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Head change"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "milestone/x"], { cwd: localPath });
     const headCommit = await headSha(localPath, "milestone/x");
 
-    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await runFixtureGit(["checkout", "main"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/shared.ts`, "main version\n");
-    await runGitCommand(["add", "shared.ts"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["add", "shared.ts"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Main change"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
     const resolvers = bindConflictTakeoverResolvers({
       checkout: () => Promise.resolve(localPath),
@@ -175,14 +175,14 @@ Deno.test("resolveOnFixBranch - a genuine conflict is left unresolved, aborted, 
     assertStringIncludes(outcome.detail, "conflicted");
 
     // No merge left in progress.
-    const merging = await runGitCommand(
+    const merging = await runFixtureGit(
       ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
       { cwd: localPath },
     );
     assertEquals(merging.ok && merging.value.code !== 0, true, "merge aborted");
 
     // The fix branch was never pushed.
-    const fixOnOrigin = await runGitCommand(
+    const fixOnOrigin = await runFixtureGit(
       [
         "rev-parse",
         "--verify",
@@ -194,7 +194,7 @@ Deno.test("resolveOnFixBranch - a genuine conflict is left unresolved, aborted, 
     assertEquals(fixOnOrigin.ok && fixOnOrigin.value.code !== 0, true);
 
     // The PR's own head branch on origin is untouched.
-    const remoteHead = await runGitCommand(
+    const remoteHead = await runFixtureGit(
       ["rev-parse", "refs/heads/milestone/x"],
       { cwd: remotePath },
     );
@@ -339,22 +339,22 @@ Deno.test("a gated takeover resolves a genuine conflict into a fix PR (Issue #30
     const { localPath } = await setupTestRepos(tmpDir);
 
     await Deno.writeTextFile(`${localPath}/shared.ts`, "base\n");
-    await runGitCommand(["add", "shared.ts"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Add shared"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["add", "shared.ts"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Add shared"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
-    await runGitCommand(["checkout", "-b", "milestone/x"], { cwd: localPath });
+    await runFixtureGit(["checkout", "-b", "milestone/x"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/shared.ts`, "head version\n");
-    await runGitCommand(["add", "shared.ts"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Head change"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "milestone/x"], { cwd: localPath });
+    await runFixtureGit(["add", "shared.ts"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Head change"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "milestone/x"], { cwd: localPath });
     const headCommit = await headSha(localPath, "milestone/x");
 
-    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await runFixtureGit(["checkout", "main"], { cwd: localPath });
     await Deno.writeTextFile(`${localPath}/shared.ts`, "main version\n");
-    await runGitCommand(["add", "shared.ts"], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+    await runFixtureGit(["add", "shared.ts"], { cwd: localPath });
+    await runFixtureGit(["commit", "-m", "Main change"], { cwd: localPath });
+    await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
     const calls: string[][] = [];
     const gh = (args: string[]): Promise<string> => {
@@ -404,7 +404,7 @@ Deno.test("a gated takeover resolves a genuine conflict into a fix PR (Issue #30
           `${request.workDir}/shared.ts`,
           "head version\nmain version\n",
         );
-        await runGitCommand(["add", "shared.ts"], { cwd: request.workDir });
+        await runFixtureGit(["add", "shared.ts"], { cwd: request.workDir });
         return { ok: true, value: { terminated: false } };
       },
     });
@@ -431,7 +431,7 @@ Deno.test("a gated takeover resolves a genuine conflict into a fix PR (Issue #30
     assertEquals(created.length, 1);
     assertEquals(created[0]![created[0]!.indexOf("--base") + 1], "milestone/x");
     const fixRef = created[0]![created[0]!.indexOf("--head") + 1]!;
-    const fixed = await runGitCommand(
+    const fixed = await runFixtureGit(
       ["show", `origin/${fixRef}:shared.ts`],
       { cwd: localPath },
     );
@@ -441,7 +441,7 @@ Deno.test("a gated takeover resolves a genuine conflict into a fix PR (Issue #30
     );
     assertStringIncludes(fixed.ok ? fixed.value.stdout : "", "head version");
     assertStringIncludes(fixed.ok ? fixed.value.stdout : "", "main version");
-    const remoteHead = await runGitCommand(
+    const remoteHead = await runFixtureGit(
       ["rev-parse", "refs/heads/milestone/x"],
       { cwd: `${tmpDir}/remote.git` },
     );
@@ -457,22 +457,22 @@ async function divergeOnShared(
   branch: string,
 ): Promise<string> {
   await Deno.writeTextFile(`${localPath}/shared.ts`, "base\n");
-  await runGitCommand(["add", "shared.ts"], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Add shared"], { cwd: localPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  await runFixtureGit(["add", "shared.ts"], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Add shared"], { cwd: localPath });
+  await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
-  await runGitCommand(["checkout", "-b", branch], { cwd: localPath });
+  await runFixtureGit(["checkout", "-b", branch], { cwd: localPath });
   await Deno.writeTextFile(`${localPath}/shared.ts`, "head version\n");
-  await runGitCommand(["add", "shared.ts"], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Head change"], { cwd: localPath });
-  await runGitCommand(["push", "origin", branch], { cwd: localPath });
+  await runFixtureGit(["add", "shared.ts"], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Head change"], { cwd: localPath });
+  await runFixtureGit(["push", "origin", branch], { cwd: localPath });
   const headCommit = await headSha(localPath, branch);
 
-  await runGitCommand(["checkout", "main"], { cwd: localPath });
+  await runFixtureGit(["checkout", "main"], { cwd: localPath });
   await Deno.writeTextFile(`${localPath}/shared.ts`, "main version\n");
-  await runGitCommand(["add", "shared.ts"], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  await runFixtureGit(["add", "shared.ts"], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Main change"], { cwd: localPath });
+  await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
   return headCommit;
 }
 
@@ -481,7 +481,7 @@ function resolvingAgent(localContents: string) {
     request: { workDir: string },
   ): Promise<Result<{ terminated: boolean }>> => {
     await Deno.writeTextFile(`${request.workDir}/shared.ts`, localContents);
-    await runGitCommand(["add", "shared.ts"], { cwd: request.workDir });
+    await runFixtureGit(["add", "shared.ts"], { cwd: request.workDir });
     return { ok: true, value: { terminated: false } };
   };
 }
@@ -505,7 +505,7 @@ Deno.test("resolveViaLadder - the agent resolves a genuine conflict and the head
     );
 
     assertEquals(outcome.resolved, true);
-    const shown = await runGitCommand(
+    const shown = await runFixtureGit(
       ["show", "origin/feature/x:shared.ts"],
       { cwd: localPath },
     );
@@ -545,7 +545,7 @@ Deno.test("resolveViaLadder - an agent that leaves the conflict unresolved pushe
     assertEquals(outcome.disrupted, undefined);
     assert(agentCalled);
     assertEquals(await headSha(localPath, "origin/feature/x"), headCommit);
-    const merging = await runGitCommand(
+    const merging = await runFixtureGit(
       ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
       { cwd: localPath },
     );
@@ -629,17 +629,17 @@ Deno.test("resolveOnFixBranch - an agent that cannot resolve pushes nothing (Iss
 
     assertEquals(outcome.resolved, false);
     assertEquals(outcome.disrupted, undefined);
-    const remoteHead = await runGitCommand(
+    const remoteHead = await runFixtureGit(
       ["rev-parse", "refs/heads/milestone/x"],
       { cwd: remotePath },
     );
     assertEquals(remoteHead.ok && remoteHead.value.stdout.trim(), headCommit);
-    const fixRef = await runGitCommand(
+    const fixRef = await runFixtureGit(
       ["rev-parse", "refs/heads/milestone-fix/x/pr-42-takeover-abc"],
       { cwd: remotePath },
     );
     assert(!fixRef.ok || fixRef.value.code !== 0);
-    const merging = await runGitCommand(
+    const merging = await runFixtureGit(
       ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
       { cwd: localPath },
     );

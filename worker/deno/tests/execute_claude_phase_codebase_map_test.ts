@@ -8,6 +8,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type ExecuteClaudePhaseDeps,
@@ -89,10 +93,11 @@ function createTestOptions(
 
 async function git(dir: string, args: string[]): Promise<void> {
   const cmd = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd: dir,
     stdout: "piped",
     stderr: "piped",
+    env: { ...NO_HOST_GIT_CONFIG },
   });
   const result = await cmd.output();
   if (result.code !== 0) throw new Error(`git ${args.join(" ")} failed`);

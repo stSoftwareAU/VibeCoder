@@ -14,6 +14,10 @@ import {
 } from "../lib/branch_cleanup.ts";
 import { branchCleanupCommand } from "../commands/branch_cleanup.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { mergedSweepWatermarkPath } from "../lib/merged_sweep_watermark.ts";
 
@@ -1353,7 +1357,7 @@ async function runCleanupGit(
   cwd: string,
 ): Promise<{ code: number; stdout: string }> {
   const cmd = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -1362,6 +1366,7 @@ async function runCleanupGit(
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",
       GIT_COMMITTER_EMAIL: "test@example.com",
+      ...NO_HOST_GIT_CONFIG,
     },
   });
   const out = await cmd.output();
@@ -1482,10 +1487,11 @@ Deno.test("branch cleanup - a gone-upstream branch -d refuses is force-deleted o
       await runCleanupGit(["checkout", "-b", name, "main"], clone);
       await Deno.writeTextFile(`${clone}/${name}.txt`, "y\n");
       await runCleanupGit(["add", `${name}.txt`], clone);
-      // Inherit the environment (HOME, PATH, the harness's git identity):
-      // `env` replaces it wholesale, and a bare git on CI exits 128.
+      // Inherit the environment (HOME, PATH): `env` replaces it wholesale, and
+      // a bare git on CI exits 128. The identity comes from the `-c` flags.
       const commit = new Deno.Command("git", {
         args: [
+          ...NO_HOST_HOOKS_ARGS,
           "-c",
           "user.name=branch-cleanup-test",
           "-c",
@@ -1497,6 +1503,7 @@ Deno.test("branch cleanup - a gone-upstream branch -d refuses is force-deleted o
         cwd: clone,
         env: {
           ...Deno.env.toObject(),
+          ...NO_HOST_GIT_CONFIG,
           GIT_COMMITTER_DATE: committedAt,
           GIT_AUTHOR_DATE: committedAt,
         },
