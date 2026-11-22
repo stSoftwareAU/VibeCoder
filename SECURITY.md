@@ -519,12 +519,23 @@ direct conflict with "redact before you truncate" above.
 ### An assignment's value is judged, not only its label
 
 The `*_TOKEN=`/`*_SECRET=` rule matches a key, a separator and a value, and its
-separator (`["']?\s*[=:]\s*`) spans line breaks. A prose line ending in a
+separator (an optional quote, optional Markdown markers, then `:` or `=`, and
+trailing whitespace) spans line breaks. A prose line ending in a
 credential-ish label therefore adopted the **next** non-blank line as the
 assignment's value: a PR body reading `… now picks a credential:` had the
 Mermaid fence beneath it published as `***REDACTED***`, and the diagram
 `CODING-STANDARDS.md` requires stopped rendering (Issue #1727). The prose
 variant masked the following sentence's first word.
+
+Markdown emphasis, code-span or angle-bracket markers around a label (up to
+three before the separator, as in `**PASSWORD**: <value>`,
+`` `API_KEY`=<value> `` or `<PASSWORD>: <value>`, and up to three `*` or `_`
+emphasis markers after it, as in `**PASSWORD:** <value>`) are read as
+rendering, not as text that breaks the assignment (Issue #5326). Two limits: a
+code span that includes the colon (`` `PASSWORD:` <value> ``) is not matched,
+because that is how prose names a key, and a corpus run over the archived PR
+summaries showed it masking the next prose word; and `<TOKEN>=<value>`, a `>`
+straight before `=`, is not matched, because that is the `>=` comparison.
 
 The label side stays deliberately blunt — it catches real secrets — apart from
 the prose-heading check below. The value is judged before the mask is applied,
@@ -664,8 +675,11 @@ though `GithubToken` and `Userpassword` do), the value is a single plain word of
 at most 15 letters, and a further word follows it on the same line, so the
 heading leads into a sentence. It is the one judgement made on a single line,
 and it looks at the key, the value and what follows rather than a line break. A
-key ending in a credential word keeps its mask whatever its value, a
-`Key: word` that ends its line (`SecretString: hunter`) stays masked, and `=`,
+key ending in a credential word keeps its mask whatever its value, except under
+Markdown markers (Issue #5326): a key ending in a plural credential noun such as
+`Tokens` or `Secrets`, with a plain-word value followed by more text on the
+line, is a heading for a count or list (the run-stats line
+`- **Tokens:** input 27 · output 11`). A `Key: word` that ends its line (`SecretString: hunter`) stays masked, and `=`,
 quoted keys, underscore keys and lower-camel identifiers are never exempt.
 
 The accepted costs are two rules. The first: a credential shorter than eight
@@ -676,7 +690,9 @@ sentence ended in a credential label. A credential in that position still
 carrying a provider prefix is masked by its own signature rule regardless. The
 second: a credential that is a single plain word of at most 15 letters, sitting
 after a PascalCase heading that does not end in a credential word, on the same
-line after `: `, with a further word after it on that line.
+line after `: `, with a further word after it on that line; or, under Markdown
+markers, after a plural credential noun (`**Tokens:** sunshine and more`) with
+any further text after it on that line.
 
 ### Transformed secrets are decoded, then re-scanned
 
