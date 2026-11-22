@@ -1663,7 +1663,9 @@ async function runClaudeWithTimeoutBody(
         };
       }
       runSettings = prepared.value;
-      Object.assign(sanitisedEnv, prepared.value.env);
+      for (const [name, value] of Object.entries(prepared.value.env)) {
+        sanitisedEnv[name] = value;
+      }
     }
     // Scope the agent's own credential to this run (Issue #1423). The
     // write-repo allowlist's second layer — a token GitHub itself refuses to
