@@ -218,7 +218,7 @@ flowchart LR
 
 ## Test Plan
 
-- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 299
+- **Added `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`, 324
   tests at this head**, all through `redactSecrets` and `containsSecret`:
   - **Leak cases** must mask the inner value and keep both labels:
     - `DEPLOY_TOKEN = <40-char value>` on the same line and the next line;
@@ -318,6 +318,37 @@ flowchart LR
     - `credentials:` + 100,000 repeats of `TOKEN` (500 KB) with four tails: `!`,
       nothing, `: x` and `= x`. As in `secret_redaction_redos_test.ts` there is
       no stopwatch; the size is the detector.
+- **Review round 17** — a second non-final shape, found by the round-16 review:
+  - **A glued run the decode pass masks.** A credential label with a dotted
+    prefix glued to a run that decodes to a credential
+    (`credentials:app.password<base64 of password=…>: secret:`,
+    `password: app.password<base64> = x`, with `hunter2.` for `app.`) gave
+    `app.***REDACTED***` on the first call: the walk gave the outer value up
+    for the label and masked the inner value, and the decode pass then masked
+    the label's run. A second call read `app.***REDACTED***` as a plain value
+    of the outer label and masked it whole. Main is final on these inputs
+    (`password: ***REDACTED*** = x`) and the head was not, which also made
+    `gh api --input` refuse such a body (`maskedJsonBody` masks again and
+    throws when the text changes). `redactSecrets` now walks the assignments
+    once more after the decode pass (`redactAssignments`, itself bounded by
+    `MAX_ASSIGNMENT_PASSES`), and decodes again only when that walk changed
+    the text. The first call now gives `password: ***REDACTED*** = ***REDACTED***`,
+    and a second call changes nothing. The post-decode walk is the same
+    `secret-assignment` walk a second call runs, so on this shape the first
+    call now equals the earlier second call. `SECURITY.md` and the
+    `redactAssignments` and `redactSecrets` comments say so; the one shape
+    still not final is unchanged.
+  - **Tests.** 6 more tests (318 → 324): the four inputs through
+    `assertFinal` (first-call output, second-call output, `containsSecret`
+    false on the output and true on the input, no value published), a control
+    (`password: app.hunter2value = x` keeps its output), and `redactGhBodyArgs`
+    with `api … --input` posting the masked body. 5 of the 6 fail with the
+    walk removed (the four `assertFinal` inputs and the `--input` one); the
+    control passes either way.
+  - **Sweep.** 400,000 random inputs of 2-6 pieces (labels, separators,
+    `app.`/`hunter2.` prefixes, base64 and reversed credential runs, newlines)
+    behind five lead-ins: 229 changed on a second call before the walk, none
+    after.
 - **Review round 16** — two items, and the round-15 test and docs asks:
   - **A run that never returned.** The wrapped-run loop stepped the shared
     `WRAPPED_RUN_G` and called the decode pass, which walks the decoded text
@@ -680,8 +711,8 @@ flowchart LR
 - **Existing tests:** none edited. In the new file, the control titled for a
   64-character bound is renamed for what it checks, a 66-character label within
   the 128-character bound. Every test file that mentions `redactSecrets`,
-  `containsSecret` or `secret_redaction` passes at head: 53 files, 1,466 passed,
-  0 failed (the review round 15 result). This run used a scratch import map in
+  `containsSecret` or `secret_redaction` passes at head: 53 files, 1,491 passed,
+  0 failed (the review round 17 result: 1,447 in the parallel pass, 44 in the serial one). This run used a scratch import map in
   place of the `jsr:@std/*` imports, since jsr.io was unreachable from the host;
   CI runs the suites as written. That includes `secret_redaction_test.ts`, its
   `_markdown_1727_`, `_redos_`, `_bounds_`, `_boolean_setting_`,

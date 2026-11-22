@@ -1986,7 +1986,9 @@ interface InnerLabel {
  * not yet final (PR #5322 review round 14): a single-quoted value of glued
  * labels that the walk reads as the next chain link (`'app.token=password:`),
  * whose closing quote a later flag takes. A second walk masks that value too;
- * nothing is published. The shapes where a
+ * nothing is published. The decode pass that follows can mask a run a label's
+ * value was glued to, so {@link redactSecrets} walks the assignments once
+ * more after it (PR #5322 review round 17). The shapes where a
  * mask changes how the next walk reads the text around it are decided in the
  * walk — {@link quotedRunOn}, `keepsOuter`, the leading-`-` rule in
  * {@link LABEL_PREFIX} and the placeholder reach of {@link innerAssignment}.
@@ -2032,7 +2034,8 @@ function redactAssignmentsOnce(text: string): string {
  *
  * Signature rules run first, then the decode-then-rescan pass
  * ({@link redactTransformedSecrets}) masks anything hidden under a reversible
- * transform — base64, hex, `rev`, or a credential split across lines.
+ * transform — base64, hex, `rev`, or a credential split across lines. A last
+ * assignment walk then reads what that pass left of a label's value.
  *
  * @param text - Arbitrary text destined for a log sink.
  * @returns The text with any detected secrets replaced by
@@ -2048,8 +2051,19 @@ export function redactSecrets(text: string): string {
       rule.replace as (substring: string, ...args: unknown[]) => string,
     );
   }
-  return redactTransformedSecrets(
+  const decoded = redactTransformedSecrets(
     out,
+    matchesSignatureRule,
+    REDACTION_PLACEHOLDER,
+  );
+  // The decode pass can mask the run a label's value was glued to
+  // (`credentials:app.password<base64>`), which the walk had read as the
+  // inner value: what stays of the outer value is then a plain value of its
+  // label. Walk the assignments once more so the output is final (PR #5322
+  // review round 17).
+  const walked = redactAssignments(decoded);
+  return walked === decoded ? decoded : redactTransformedSecrets(
+    walked,
     matchesSignatureRule,
     REDACTION_PLACEHOLDER,
   );

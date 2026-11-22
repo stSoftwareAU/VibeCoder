@@ -625,7 +625,11 @@ and, apart from that check, **only when the separator crossed a line break**:
   value made of glued labels (`'app.token=password:`, `'token=API_TOKEN:`)
   that the walk reads as the next chain link, where a flag later in the text
   takes its closing quote. A second call then masks the value too. It
-  publishes nothing. Every search reads only the inner value, then
+  publishes nothing. The decode pass can mask a run a label's value was glued
+  to (`credentials:app.password<base64>`, where the run decodes to a
+  credential), leaving `app.***REDACTED***` as a plain value of the outer
+  label; `redactSecrets` walks the assignments once more after that pass, so
+  such a first call is final too. Every search reads only the inner value, then
   each match from where it starts, the text up to the next quote of a kind,
   or a quote found in a per-walk index of quote positions, each once per
   position in a walk, so the check stays linear.

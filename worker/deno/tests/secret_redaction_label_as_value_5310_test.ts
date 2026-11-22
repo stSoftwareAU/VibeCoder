@@ -10,7 +10,9 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { redactGhBodyArgs } from "../lib/gh_body_redaction.ts";
 import { containsSecret, redactSecrets } from "../lib/secret_redaction.ts";
+import { capturingWriter, readerFor } from "./support/gh_body_fixtures.ts";
 
 const V = "q7Lm2Xv9Rk4Tz8Pw1Hn6Bc3Df5Gj0Ys2Ua7Ne4Mi";
 const R = "***REDACTED***";
@@ -1754,3 +1756,63 @@ for (
     assertEquals(redactSecrets(once), once);
   });
 }
+
+// Round 17: a credential label's value glued to a run the decode pass masks
+// with its label (`app.password<base64>`). The walk read that run as the inner
+// value; once the decode pass masks it, what stays of the outer value is a
+// plain value, so `redactSecrets` walks the assignments once more after that
+// pass and the first call's output is final. The expected outputs are
+// literals; base is `credentials:app.***REDACTED***: ***REDACTED***`, which a
+// second call changed.
+const GLUED_RUN = btoa("password=hunter2hunter2hunter2");
+for (
+  const [input, expected] of [
+    [
+      `credentials:app.password${GLUED_RUN}: secret:`,
+      `credentials:${R} ${R}`,
+    ],
+    [`password: app.password${GLUED_RUN} = x`, `password: ${R} = ${R}`],
+    [`password: hunter2.password${GLUED_RUN} = x`, `password: ${R} = ${R}`],
+    [
+      `credentials:app.hunter2.password${GLUED_RUN}: api_key`,
+      `credentials:${R} ${R}`,
+    ],
+  ] as const
+) {
+  Deno.test(
+    `#5310 round 17 decode pass masks the glued run: ${
+      JSON.stringify(input.slice(0, 40))
+    }`,
+    () => {
+      assertFinal(input, expected, ["app.", "hunter2.", GLUED_RUN]);
+    },
+  );
+}
+
+// Round 17 control: the same text with the run not glued to a label leaves
+// the outer value to the walk alone, and the post-decode walk changes
+// nothing, so the output is unchanged by it.
+Deno.test("#5310 round 17 control: a lone label value is masked as before", () => {
+  assertEquals(
+    redactSecrets("password: app.hunter2value = x"),
+    `password: ${R} = x`,
+  );
+});
+
+// Round 17: `gh api --input` masks the body, masks the re-serialised text
+// again and refuses when that changes it. With the first call's output final,
+// the glued-run body is posted masked instead of refused.
+Deno.test("#5310 round 17 gh api --input posts a glued-run body masked", () => {
+  const { writer, written } = capturingWriter();
+  const out = redactGhBodyArgs(
+    ["api", "repos/o/r/issues/1/comments", "--input", "/tmp/c.json"],
+    readerFor({
+      "/tmp/c.json": JSON.stringify({
+        body: `password: app.password${GLUED_RUN} = x`,
+      }),
+    }),
+    writer,
+  );
+  assertEquals(out[2], "--input");
+  assertEquals(JSON.parse(written[0] ?? "{}").body, `password: ${R} = ${R}`);
+});
