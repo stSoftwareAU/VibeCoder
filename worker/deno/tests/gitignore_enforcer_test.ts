@@ -11,6 +11,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   ensureGitattributesPatterns,
   ensureGitignorePatterns,
   REQUIRED_GITIGNORE_PATTERNS,
@@ -47,7 +51,11 @@ async function initGitRepo(dir: string): Promise<void> {
       ["config", "user.name", "test"],
     ]
   ) {
-    const cmd = new Deno.Command("git", { args, cwd: dir, env });
+    const cmd = new Deno.Command("git", {
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
+      cwd: dir,
+      env: { ...env, ...NO_HOST_GIT_CONFIG },
+    });
     const result = await cmd.output();
     if (result.code !== 0) {
       throw new Error(`git ${args.join(" ")} failed`);
@@ -57,8 +65,9 @@ async function initGitRepo(dir: string): Promise<void> {
 
 async function gitCheckIgnore(dir: string, path: string): Promise<boolean> {
   const cmd = new Deno.Command("git", {
-    args: ["check-ignore", "-q", path],
+    args: [...NO_HOST_HOOKS_ARGS, "check-ignore", "-q", path],
     cwd: dir,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   });

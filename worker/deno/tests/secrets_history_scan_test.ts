@@ -16,6 +16,10 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { createDefaultRegistry } from "../mod.ts";
 import { secretsHistoryScanCommand } from "../commands/secrets_history_scan.ts";
@@ -51,7 +55,7 @@ const BENIGN_FILE = "docs/example.md";
 /** Run a real git command in `cwd`, throwing loudly on failure. */
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const output = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -62,6 +66,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
       GIT_COMMITTER_EMAIL: "fixture@example.com",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_SYSTEM: "/dev/null",
+      ...NO_HOST_GIT_CONFIG,
     },
   }).output();
   const stdout = new TextDecoder().decode(output.stdout);

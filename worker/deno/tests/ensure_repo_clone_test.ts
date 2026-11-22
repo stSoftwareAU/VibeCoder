@@ -12,6 +12,10 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { ensureRepoClone } from "../lib/ensure_repo_clone.ts";
 import type { CommandResult } from "../types.ts";
 import { waitUntil } from "./support/rendezvous.ts";
@@ -120,7 +124,8 @@ Deno.test(
       await Deno.mkdir(`${workDir}/widget`);
       // A real repository — a bare directory is re-cloned (Issue #2848).
       const init = await new Deno.Command("git", {
-        args: ["init", "-q"],
+        args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
+        env: NO_HOST_GIT_CONFIG,
         cwd: `${workDir}/widget`,
         stdin: "null",
       }).output();
@@ -175,7 +180,8 @@ Deno.test(
     try {
       await Deno.mkdir(`${workDir}/widget`);
       const init = await new Deno.Command("git", {
-        args: ["init", "-q"],
+        args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
+        env: NO_HOST_GIT_CONFIG,
         cwd: `${workDir}/widget`,
         stdin: "null",
       }).output();
@@ -214,7 +220,8 @@ Deno.test(
     try {
       await Deno.mkdir(`${workDir}/widget`);
       const init = await new Deno.Command("git", {
-        args: ["init", "-q"],
+        args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
+        env: NO_HOST_GIT_CONFIG,
         cwd: `${workDir}/widget`,
         stdin: "null",
       }).output();
@@ -248,7 +255,8 @@ Deno.test(
     try {
       await Deno.mkdir(`${workDir}/widget`);
       const init = await new Deno.Command("git", {
-        args: ["init", "-q"],
+        args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
+        env: NO_HOST_GIT_CONFIG,
         cwd: `${workDir}/widget`,
         stdin: "null",
       }).output();

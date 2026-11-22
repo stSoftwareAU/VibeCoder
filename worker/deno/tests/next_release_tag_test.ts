@@ -19,6 +19,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const SCRIPT_PATH =
   new URL("../../../.github/scripts/next-release-tag.sh", import.meta.url)
@@ -46,7 +50,14 @@ interface PlanRun {
 /** Run a git command in `cwd`, returning its trimmed stdout. */
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args: ["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...args],
+    args: [
+      ...NO_HOST_HOOKS_ARGS,
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "tag.gpgsign=false",
+      ...args,
+    ],
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -55,6 +66,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",
       GIT_COMMITTER_EMAIL: "test@example.com",
+      ...NO_HOST_GIT_CONFIG,
     },
   }).output();
   assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
@@ -463,10 +475,11 @@ Deno.test("next-release-tag - the repository's contract record is committed, not
   // `.gitignore` ignores much by default. The tagger reads the record from
   // git, so an ignored record would fail every merge's tag step.
   const out = await new Deno.Command("git", {
-    args: ["check-ignore", "-q", CONTRACT],
+    args: [...NO_HOST_HOOKS_ARGS, "check-ignore", "-q", CONTRACT],
     cwd: REPO_ROOT,
     stdout: "null",
     stderr: "null",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   assertEquals(out.code, 1, `${CONTRACT} must be committed, not ignored`);
 });

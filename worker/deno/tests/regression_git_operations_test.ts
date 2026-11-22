@@ -8,6 +8,10 @@
  * Uses Australian English spelling throughout (behaviour, colour, organisation, etc.)
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createBranchName,
@@ -225,11 +229,11 @@ const GIT_ENV = {
 
 async function runGit(args: string[], cwd: string): Promise<number> {
   const cmd = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
-    env: GIT_ENV,
+    env: { ...GIT_ENV, ...NO_HOST_GIT_CONFIG },
   });
   return (await cmd.output()).code;
 }

@@ -17,6 +17,7 @@ import {
   usesStdinMessage,
 } from "../lib/git_message_redaction.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 
 /** A known-shaped fake GitHub token — never a real credential. */
 const FAKE_TOKEN = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
@@ -462,7 +463,7 @@ async function makeRepo(): Promise<string> {
       ["config", "commit.gpgsign", "false"],
     ]
   ) {
-    const result = await runGitCommand(args, { cwd: dir });
+    const result = await runFixtureGit(args, { cwd: dir });
     assert(result.ok && result.value.code === 0, `git ${args[0]} failed`);
   }
   return dir;
@@ -470,7 +471,7 @@ async function makeRepo(): Promise<string> {
 
 /** The subject and body of `HEAD` in `dir`. */
 async function headMessage(dir: string): Promise<string> {
-  const result = await runGitCommand(["log", "-1", "--format=%B"], {
+  const result = await runFixtureGit(["log", "-1", "--format=%B"], {
     cwd: dir,
   });
   assert(result.ok, "git log failed");

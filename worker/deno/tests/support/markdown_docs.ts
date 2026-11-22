@@ -14,6 +14,10 @@
  * Australian English spelling used throughout (behaviour, recognised, etc.).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./no_host_git_config.ts";
 import { assert } from "@std/assert";
 
 declare const docSectionBrand: unique symbol;
@@ -285,10 +289,11 @@ async function runGit(
   cwd: string | URL,
 ): Promise<{ code: number; stdout: string }> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "null",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   return { code: out.code, stdout: new TextDecoder().decode(out.stdout) };
 }

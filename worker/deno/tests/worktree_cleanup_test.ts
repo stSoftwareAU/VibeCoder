@@ -10,6 +10,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   branchExists,
   cleanupOrphanedWorktrees,
   DEFAULT_MAX_AGE_HOURS,
@@ -28,7 +32,7 @@ async function runGit(
   args: string[],
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const cmd = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -39,6 +43,7 @@ async function runGit(
       GIT_COMMITTER_EMAIL: "test@example.com",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_SYSTEM: "/dev/null",
+      ...NO_HOST_GIT_CONFIG,
     },
   });
   const out = await cmd.output();

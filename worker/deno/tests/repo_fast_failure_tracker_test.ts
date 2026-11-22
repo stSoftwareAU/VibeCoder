@@ -6,6 +6,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   backedOffRepos,
   clearRepoFastFailures,
   createFleetDiagnosticCache,
@@ -356,8 +360,9 @@ Deno.test("diagnosticErrorLine - Git checkout's Aborting trailer preserves its c
     await Deno.mkdir(repo);
     const runGit = async (args: string[]) => {
       const result = await new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: repo,
+        env: NO_HOST_GIT_CONFIG,
         stdout: "piped",
         stderr: "piped",
       }).output();
@@ -377,7 +382,8 @@ Deno.test("diagnosticErrorLine - Git checkout's Aborting trailer preserves its c
     await Deno.writeTextFile(`${repo}/tracked.txt`, "local edit\n");
 
     const refusal = await new Deno.Command("git", {
-      args: ["checkout", "-B", "feature", "other"],
+      args: [...NO_HOST_HOOKS_ARGS, "checkout", "-B", "feature", "other"],
+      env: NO_HOST_GIT_CONFIG,
       cwd: repo,
       stdout: "piped",
       stderr: "piped",
@@ -403,8 +409,9 @@ Deno.test("diagnosticErrorLine - a checkout refused over untracked files keeps i
     await Deno.mkdir(repo);
     const runGit = async (args: string[], expectedCode = 0) => {
       const result = await new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: repo,
+        env: NO_HOST_GIT_CONFIG,
         stdout: "piped",
         stderr: "piped",
       }).output();
@@ -447,8 +454,9 @@ Deno.test("diagnosticErrorLine - a refusal listing more paths than the window ke
     await Deno.mkdir(repo);
     const runGit = async (args: string[], expectedCode = 0) => {
       const result = await new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: repo,
+        env: NO_HOST_GIT_CONFIG,
         stdout: "piped",
         stderr: "piped",
       }).output();
