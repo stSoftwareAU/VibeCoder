@@ -57,13 +57,13 @@ claims were checked against the code:
 
 Passages rewritten:
 
-| File                                       | Passage                                                                                                                                                                                  |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `docs/workflows/issue-processing.md`       | Implementation-failure decision-point bullet; "retried within the normal `failed-once` → `failed` budget" in the analysis-only bullet; prompt-too-long bullet; its Mermaid `Ladder` node |
-| `docs/INTERNALS.md`                        | #2220 Mermaid `F` node; `coding_failure_ladder.ts` table row                                                                                                                             |
-| `docs/workflows/planning-and-questions.md` | Loud-failure paragraph and its Mermaid `C` node                                                                                                                                          |
-| `docs/workflows/label-flows.md`            | `failed-once` and `failed` rows of the state table; the `failed-once` / `failed` short card                                                                                              |
-| `docs/TROUBLESHOOTING.md`                  | Pickup flowchart's "Has the failed label?" decision and its "Remove failed label" node                                                                                                   |
+| File                                       | Passage                                                                                                                                                                                      |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/workflows/issue-processing.md`       | Implementation-failure decision-point bullet; "retried within the normal `failed-once` → `failed` budget" in the analysis-only bullet; prompt-too-long bullet; its Mermaid `Ladder` node     |
+| `docs/INTERNALS.md`                        | #2220 Mermaid `F` node; `coding_failure_ladder.ts` table row                                                                                                                                 |
+| `docs/workflows/planning-and-questions.md` | Loud-failure paragraph and its Mermaid `C` node                                                                                                                                              |
+| `docs/workflows/label-flows.md`            | `failed-once` and `failed` rows of the state table; the `failed-once` / `failed` short card                                                                                                  |
+| `docs/TROUBLESHOOTING.md`                  | Pickup flowchart's "Has the failed label?" decision and its "Remove failed label" node, deleted: a leftover `failed` label never blocks pickup (`issue_filter.ts`), so it is not a diagnosis |
 
 ```mermaid
 flowchart LR

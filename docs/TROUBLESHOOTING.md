@@ -699,9 +699,7 @@ flowchart TD
     Author -->|No| WorkOn["Add work-on label<br/>(any allowed author can)"]
     Author -->|Yes| Assigned{"Already assigned<br/>to someone else?"}
     Assigned -->|Yes| Unassign["Unassign or wait for<br/>the assignee to finish"]
-    Assigned -->|No| Failed{"Has a leftover<br/>failed label?"}
-    Failed -->|Yes| RemoveFailed["Nothing to do: the worker<br/>strips it on the next scan"]
-    Failed -->|No| NeedsHuman{"Has the<br/>needs-human label?"}
+    Assigned -->|No| NeedsHuman{"Has the<br/>needs-human label?"}
     NeedsHuman -->|Yes| RemoveNeedsHuman["Resolve the blocker,<br/>then remove needs-human"]
     NeedsHuman -->|No| Dependencies{"Has unresolved<br/>dependencies?<br/>(Depends on #N)"}
     Dependencies -->|Yes| ResolveDeps["Close dependency issues<br/>first"]
@@ -720,7 +718,6 @@ flowchart TD
     style Labels fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Author fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Assigned fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-    style Failed fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style NeedsHuman fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Dependencies fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style OpenPR fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -731,7 +728,6 @@ flowchart TD
     style AddLabel fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style WorkOn fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style Unassign fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-    style RemoveFailed fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style RemoveNeedsHuman fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style ResolveDeps fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style MergePR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
