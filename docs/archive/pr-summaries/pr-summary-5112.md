@@ -434,22 +434,24 @@ emulator test.
   subshell, so `sleep 30 & set -e` and `sleep 30 &` then `set -e` run the `set`
   in the current shell. A `set -e` before a `&` (`set -e &`), on either side of
   a `|`, stays refused; the `exit`/`set -n` stop check is unchanged in this
-  round. `worker/deno/tests/aws_emulator_in_ci_check_test.ts::checkAwsEmulatorInCI - a set -e that runs only under a run-time condition does not credit a runner followed by more commands`
+  round.
+  `worker/deno/tests/aws_emulator_in_ci_check_test.ts::checkAwsEmulatorInCI - a set -e that runs only under a run-time condition does not credit a runner followed by more commands`
   gains two credited controls (`set -e` on the line after a backgrounded
   command, and after `cmd &` on one line), each in a script and in a step after
   `set +e`; with `shell_command_words.ts` from `683721e95` it fails at
   `script, after a backgrounded command` and passes at the head. The
-  `NOT_EXECUTED` and reachable lists gain `if false; …; elif true; then exit 0;
-  fi` (runner unreachable) and `if [ -n "$X" ]; …; elif true; then exit 0; fi`
-  (runner reachable), which pin the stop check's `frameCertain` outcome; both
-  pass at `683721e95` and at the head. `docs/BEST-PRACTICES-SCAN.md` is
-  restored to its `340bd7b94` text with only the Errexit paragraph edited
-  (CONTRIBUTING.md: Markdown outside `worker/deno/**` is hand-wrapped, and a
-  re-wrap buries the change), and now names the backgrounded-command case. The
-  seven related test files give `676 passed | 0 failed` through
-  `deno task test:unit` at the head of this round; `deno lint`, `deno check` and
-  `deno fmt --check` on the changed source and test files are clean. The full
-  `./quality.sh` was not run in this round.
+  `NOT_EXECUTED` and reachable lists gain
+  `if false; …; elif true; then exit 0;
+  fi` (runner unreachable) and
+  `if [ -n "$X" ]; …; elif true; then exit 0; fi` (runner reachable), which pin
+  the stop check's `frameCertain` outcome; both pass at `683721e95` and at the
+  head. `docs/BEST-PRACTICES-SCAN.md` is restored to its `340bd7b94` text with
+  only the Errexit paragraph edited (CONTRIBUTING.md: Markdown outside
+  `worker/deno/**` is hand-wrapped, and a re-wrap buries the change), and now
+  names the backgrounded-command case. The seven related test files give
+  `676 passed | 0 failed` through `deno task test:unit` at the head of this
+  round; `deno lint`, `deno check` and `deno fmt --check` on the changed source
+  and test files are clean. The full `./quality.sh` was not run in this round.
 - After the pre-PR verifier round on the sixteenth-review fix (`340bd7b94`):
   `certain` still credited a `set -e` that never reaches the shell it is judged
   in. `reachableCommands` now also requires the separator after the command not
@@ -460,8 +462,8 @@ emulator test.
   function now also calls `frameCertain`, which returns false for a frame with
   `earlierUnknown`, so an `exit 0` in an `elif true` after a run-time test no
   longer ends the body (the runner after it stays reachable, as after
-  `else exit 0`). The Errexit paragraph of `docs/BEST-PRACTICES-SCAN.md`
-  and the `keptCommands` and `ReachableCommand` comments say the same. The test
+  `else exit 0`). The Errexit paragraph of `docs/BEST-PRACTICES-SCAN.md` and the
+  `keptCommands` and `ReachableCommand` comments say the same. The test
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts::checkAwsEmulatorInCI - a set -e that runs only under a run-time condition does not credit a runner followed by more commands`
   gains refusal fixtures for the left side of a pipe, a backgrounded `set -e`,
   `elif true` and `else` after a run-time test, each in a script and in a step
