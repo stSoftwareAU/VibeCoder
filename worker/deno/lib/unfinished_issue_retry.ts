@@ -122,8 +122,10 @@ export async function retryUnfinishedIssue(
     reason: formatDetailedFailureMessage(
       // "without making any changes" is the wording `detectFailureCategory`
       // reads as `no_changes`, so the ladder classifies the retry correctly.
+      // The approved-issue retry is Issue #4227; the posted reason carries no
+      // VibeCoder number as GitHub would link it in the target repo (#5315).
       `Not finished — ${why}. The run ended without making any changes that ` +
-        `deliver the issue; retrying the approved issue (Issue #4227)`,
+        `deliver the issue; retrying the approved issue`,
       options.diagnostics,
     ),
   };
