@@ -339,14 +339,15 @@ worker is the only thing that may raise it. The label and its apply helper live
 in `worker/deno/lib/failure_detection_repair_label.ts`.
 
 The **loud failure path is unchanged for genuine planning failures** — a prompt
-failure, a timeout, or a publish failure still drives `handlePlanningFailure()`
-with the `failed-once` → `failed` progression. This change narrows *when* the
-gate fails a run, not the failure machinery itself.
+failure, a timeout, or a publish failure still drives `handlePlanningFailure()`,
+which records the failure under `failed-once` through `handleIssueFailure` and
+unassigns the issue; the worker never applies `failed` (Issue #4158). This
+change narrows *when* the gate fails a run, not the failure machinery itself.
 
 ```mermaid
 flowchart TD
     A[Planning run] --> B{Publish succeeded?}
-    B -->|no — prompt/publish failure| C["handlePlanningFailure()<br/>failed-once → failed"]
+    B -->|no — prompt/publish failure| C["handlePlanningFailure()<br/>failed-once kept, never failed"]
     B -->|yes| D[Gate + self-repair]
     D --> E{Every sub-issue compliant?}
     E -->|yes| F[Close parent as completed]

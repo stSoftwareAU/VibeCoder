@@ -7,6 +7,10 @@
  */
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   assertRepairTreeSafe,
   cloneForRepair,
   isValidRepoName,
@@ -110,6 +114,7 @@ Deno.test("run puts the hook and fsmonitor neutralising flags before the git sub
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
     args: [
+      ...NO_HOST_HOOKS_ARGS,
       "-c",
       "user.name=Fixture",
       "-c",
@@ -120,6 +125,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
     stdin: "null",
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   if (!out.success) {
     throw new Error(
@@ -539,10 +545,11 @@ Deno.test("the committed-summary read ignores a planted replacement object", asy
     const sha = await git(root, "rev-parse", "HEAD");
     const blob = await git(root, "rev-parse", `HEAD:${path}`);
     const forged = await new Deno.Command("git", {
-      args: ["hash-object", "-w", "--stdin"],
+      args: [...NO_HOST_HOOKS_ARGS, "hash-object", "-w", "--stdin"],
       cwd: root,
       stdin: "piped",
       stdout: "piped",
+      env: NO_HOST_GIT_CONFIG,
     }).spawn();
     const writer = forged.stdin.getWriter();
     await writer.write(new TextEncoder().encode("forged summary\n"));

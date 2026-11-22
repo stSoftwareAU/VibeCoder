@@ -403,10 +403,10 @@ The script does the rest, so do not post anything yourself:
 - It files each of the reviewer's `unrelatedIssues` first: they are already on
   the base branch, so they are filed even if the PR has since moved or
   merged. One with `existingIssue` naming an open issue is added to that
-  issue as a comment instead; if it is closed or cannot be read, the
-  finding is filed as new, never dropped (Issue #3598). These follow-ups
-  carry no label, because the fleet discovers open issues without one; only
-  step 3's guidance issues get `idle-task`.
+  issue as a comment instead; if it is closed, closes when this PR merges, or
+  cannot be read, the finding is filed as new, never dropped (Issues #3598,
+  #5338). These follow-ups carry no label, because the fleet discovers open
+  issues without one; only step 3's guidance issues get `idle-task`.
 - It re-checks the head commit and posts no review if it moved or the PR
   closed; the next gate pass picks up the new commit.
 - It decides the outcome: reviewer findings mean **request changes** (the

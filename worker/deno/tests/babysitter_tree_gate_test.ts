@@ -7,6 +7,10 @@
  * except through the temp repositories these tests create.
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   BABYSITTER_GATE_BLOCKED_MARKER,
@@ -690,11 +694,18 @@ Deno.test("a conflict the agent resolves on top of an uncommitted merge is check
     await git(clone, "add", "-A");
     await git(clone, "commit", "-q", "-m", "PR change");
     const merge = await new Deno.Command("git", {
-      args: ["merge", "--no-commit", "--no-ff", "refs/remotes/origin/main"],
+      args: [
+        ...NO_HOST_HOOKS_ARGS,
+        "merge",
+        "--no-commit",
+        "--no-ff",
+        "refs/remotes/origin/main",
+      ],
       cwd: clone,
       stdin: "null",
       stdout: "null",
       stderr: "null",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     assertEquals(merge.code, 1, "the base merge conflicts on docs/SHARED.md");
     await Deno.writeTextFile(

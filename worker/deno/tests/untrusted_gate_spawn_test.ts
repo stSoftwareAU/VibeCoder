@@ -17,6 +17,10 @@ import { checkMergedTree } from "../lib/milestone_merge_gate.ts";
 import { cargoTargetDirForCheckout } from "../lib/ephemeral_build_cache.ts";
 import { makeAgentReachableTempDir } from "./support/gate_child_env.ts";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   ALLOWED_ENV_NAMES,
   asUntrustedUser,
   canRunAsUntrustedUser,
@@ -321,10 +325,11 @@ Deno.test("real sudo: an agent git command runs in a worker-owned checkout (Issu
   const cwd = await makeAgentReachableTempDir("issue-4927-");
   try {
     const init = await new Deno.Command("git", {
-      args: ["init", "-q"],
+      args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
       cwd,
       stdout: "null",
       stderr: "null",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     assertEquals(init.code, 0);
     const result = await runRepositoryCommand(
@@ -344,10 +349,11 @@ Deno.test("real sudo: an agent git command runs from a subdirectory of a worker-
   const root = await makeAgentReachableTempDir("issue-4927-sub-");
   try {
     const init = await new Deno.Command("git", {
-      args: ["init", "-q"],
+      args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
       cwd: root,
       stdout: "null",
       stderr: "null",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     assertEquals(init.code, 0);
     const cwd = `${root}/crates/app`;

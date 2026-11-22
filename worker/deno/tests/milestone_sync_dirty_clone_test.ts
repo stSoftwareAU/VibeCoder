@@ -22,7 +22,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 
 /** A clone carrying `main` and a milestone branch, both pushed. */
 async function setupCloneWithMilestone(): Promise<{
@@ -36,12 +36,12 @@ async function setupCloneWithMilestone(): Promise<{
   const milestone = "milestone/1-collection";
 
   await Deno.mkdir(remotePath, { recursive: true });
-  await runGitCommand(["init", "--bare"], { cwd: remotePath });
-  await runGitCommand(["symbolic-ref", "HEAD", "refs/heads/main"], {
+  await runFixtureGit(["init", "--bare"], { cwd: remotePath });
+  await runFixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
     cwd: remotePath,
   });
-  await runGitCommand(["clone", remotePath, localPath], { cwd: tmpDir });
-  const git = (args: string[]) => runGitCommand(args, { cwd: localPath });
+  await runFixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
+  const git = (args: string[]) => runFixtureGit(args, { cwd: localPath });
   await git(["config", "user.email", "test@example.com"]);
   await git(["config", "user.name", "Test User"]);
 
@@ -66,7 +66,7 @@ Deno.test("syncMilestoneBranchWithDefault - a dirty shared clone is reset rather
   try {
     // What a timed-out claim leaves behind: parked on its own branch with an
     // uncommitted edit to a file the checkout needs to change.
-    await runGitCommand(["checkout", "-b", "issue-42-abandoned"], {
+    await runFixtureGit(["checkout", "-b", "issue-42-abandoned"], {
       cwd: localPath,
     });
     await Deno.writeTextFile(
@@ -89,7 +89,7 @@ Deno.test("syncMilestoneBranchWithDefault - a dirty shared clone is reset rather
     assertStringIncludes(result.value.message, "shared.txt");
 
     // The branch really is on the milestone line with main integrated.
-    const branch = await runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], {
+    const branch = await runFixtureGit(["rev-parse", "--abbrev-ref", "HEAD"], {
       cwd: localPath,
     });
     assert(branch.ok);
@@ -105,7 +105,7 @@ Deno.test("syncMilestoneBranchWithDefault - a dirty shared clone is reset rather
 Deno.test("syncMilestoneBranchWithDefault - an untracked file does not block the checkout either", async () => {
   const { tmpDir, localPath, milestone } = await setupCloneWithMilestone();
   try {
-    await runGitCommand(["checkout", "-b", "issue-43-abandoned"], {
+    await runFixtureGit(["checkout", "-b", "issue-43-abandoned"], {
       cwd: localPath,
     });
     await Deno.writeTextFile(`${localPath}/scratch-output.log`, "leftover\n");

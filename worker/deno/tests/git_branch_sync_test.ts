@@ -22,20 +22,23 @@ import {
   syncFeatureBranchWithDefault,
   updatePrBranch,
 } from "../lib/git_pull.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
 import {
   isForcedPush,
   recordedPushes,
   recordedRebase,
   startGitTrace,
 } from "./support/git_trace.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 
 const DEFAULT_BRANCH = "Develop";
 const FEATURE_BRANCH = "issue-556-sync";
 
-/** Run a git command in a repo, failing loudly on a non-zero exit. */
+/**
+ * Run a git command in a repo, failing loudly on a non-zero exit. Fixture
+ * git ignores the host's config and hooks (Issue #5309).
+ */
 async function git(args: string[], cwd: string): Promise<string> {
-  const result = await runGitCommand(args, { cwd });
+  const result = await runFixtureGit(args, { cwd });
   if (!result.ok) throw result.error;
   if (result.value.code !== 0) {
     throw new Error(

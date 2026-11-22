@@ -65,6 +65,7 @@ import { runGhCommand } from "./github.ts";
 import { latestIdleTaskActivity } from "./idle_task_activity.ts";
 import { latestProductiveWorkEpoch } from "./productive_work_check.ts";
 import { atomicWrite } from "./file_utils.ts";
+import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
 
 /** Default liveness threshold in hours. */
 export const DEFAULT_LIVENESS_THRESHOLD_HOURS = 8;
@@ -381,23 +382,22 @@ export async function checkLivenessWindow(
   };
 }
 
-/** `/proc/meminfo`, read for `MemAvailable` on the liveness tick (Issue #4225). */
-const LIVENESS_MEMINFO_PATH = "/proc/meminfo";
-
-/** Kernel PSI files read on the liveness tick (Issue #4225). */
+/**
+ * Kernel PSI files read on the liveness tick (Issue #4225), through
+ * `readProcFileWithCat` (Issue #5324).
+ */
 const LIVENESS_PRESSURE_MEMORY_PATH = "/proc/pressure/memory";
 const LIVENESS_PRESSURE_CPU_PATH = "/proc/pressure/cpu";
-
-const MEM_AVAILABLE_KB_RE = /^MemAvailable:\s+(\d+)\s+kB/m;
 
 /**
  * Pressure fields appended to the `[liveness] tick=` line (Issue #4225).
  *
- * `memAvailableMib` is an integer. `"unavailable"` means `/proc/meminfo`
- * could not be read or contained no `MemAvailable:` line — not a reading
- * of zero. `pressureMemory` and `pressureCpu` are the pressure files with
- * whitespace collapsed to commas, the token `empty` when the file was
- * readable but blank, or `unavailable` when the file could not be read.
+ * `memAvailableMib` is an integer MiB. `"unavailable"` means
+ * `Deno.systemMemoryInfo()` failed or returned a non-finite or negative
+ * figure, not a reading of zero. `pressureMemory` and `pressureCpu` are the
+ * pressure files with whitespace collapsed to commas, the token `empty` when
+ * the file was readable but blank, or `unavailable` when the file could not be
+ * read.
  */
 export interface LivenessTickPressure {
   memAvailableMib: number | "unavailable";
@@ -417,20 +417,17 @@ export function collapseProcPressureText(text: string): string {
 }
 
 /**
- * `MemAvailable` from `/proc/meminfo` text, in MiB.
+ * `MemAvailable` in MiB, from a byte count such as
+ * `Deno.systemMemoryInfo().available`.
  *
- * The kernel reports kibibytes. This divides by 1024 and rounds to an
- * integer. `0` is a real reading. A missing `MemAvailable:` line is
- * `"unavailable"`, including when `MemTotal:` is present on its own.
+ * Divides by 1024 * 1024 and rounds to an integer, so 0.5 MiB rounds up to 1.
+ * `0` is a real reading. A non-finite or negative count is `"unavailable"`.
  */
-export function memAvailableMibFromProcMeminfo(
-  text: string,
+export function memAvailableMibFromBytes(
+  bytes: number,
 ): number | "unavailable" {
-  const match = MEM_AVAILABLE_KB_RE.exec(text);
-  if (!match) return "unavailable";
-  const kib = Number(match[1]);
-  if (!Number.isFinite(kib)) return "unavailable";
-  return Math.round(kib / 1024);
+  if (!Number.isFinite(bytes) || bytes < 0) return "unavailable";
+  return Math.round(bytes / (1024 * 1024));
 }
 
 /**
@@ -447,6 +444,34 @@ export function formatLivenessPressureFields(
     `pressure_cpu=${reading.pressureCpu}`;
 }
 
+/** Bound on each `cat` of a PSI file, so a stuck read cannot hold the tick (Issue #5324). */
+const LIVENESS_PROC_CAT_TIMEOUT_MS = 5_000;
+
+/**
+ * Read a `/proc` file through `cat` (Issue #5324).
+ *
+ * Deno refuses every `/proc` read short of `--allow-all`
+ * (`NotCapable: Requires all access to "/proc/meminfo", run again with the
+ * --allow-all flag`). The driver holds `--allow-run`, so the file is read
+ * through `cat`, as `captureHardKillEvidence` in `hard_kill_evidence.ts`
+ * already reads PSI. Throws when `cat` exits non-zero, with its first stderr
+ * line, and throws the timeout helper's error (naming `cat`) when `cat` runs
+ * longer than 5 s.
+ */
+export async function readProcFileWithCat(path: string): Promise<string> {
+  const { code, stdout, stderr } = await commandOutputWithTimeout("cat", {
+    args: [path],
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+    timeoutMs: LIVENESS_PROC_CAT_TIMEOUT_MS,
+  });
+  if (code === 0) return new TextDecoder().decode(stdout);
+  const firstLine = new TextDecoder().decode(stderr).trim().split("\n")[0] ??
+    "";
+  throw new Error(`cat ${path} exited ${code}: ${firstLine}`);
+}
+
 async function readPressureToken(
   path: string,
   readFile: (path: string) => Promise<string>,
@@ -458,35 +483,46 @@ async function readPressureToken(
   }
 }
 
+/** Injectable readers for {@link readLivenessTickPressure}. */
+export interface LivenessTickPressureReaders {
+  /** Defaults to `Deno.systemMemoryInfo`. */
+  systemMemoryInfo?: () => { available: number };
+  /** Reads one PSI file. Defaults to `readProcFileWithCat`. */
+  readPressureFile?: (path: string) => Promise<string>;
+}
+
 /**
  * Read MemAvailable and the two PSI files for one liveness tick.
  *
- * Each file is read on its own. A missing or unreadable file becomes
- * `unavailable` for that field and does not skip the others, and it is
- * not reported as zero pressure. The function does not throw.
+ * Memory comes from `Deno.systemMemoryInfo().available`, which needs
+ * `--allow-sys=systemMemoryInfo` (the driver grants it). On Linux Deno takes
+ * that figure from the kernel's `MemAvailable`. The PSI files are read through
+ * `cat`, because Deno refuses every `/proc` read short of `--allow-all`
+ * (Issue #5324).
  *
- * @param readFile - Injectable reader. Production reads the path with
- *   `Deno.readTextFile`, the same way other `/proc` probes in this repo do.
+ * Each field is read on its own. A failed read becomes `unavailable` for that
+ * field and does not skip the others, and it is not reported as zero pressure.
+ * The function does not throw.
  */
 export async function readLivenessTickPressure(
-  readFile: (path: string) => Promise<string> = (path) =>
-    Deno.readTextFile(path),
+  readers: LivenessTickPressureReaders = {},
 ): Promise<LivenessTickPressure> {
   let memAvailableMib: number | "unavailable";
   try {
-    memAvailableMib = memAvailableMibFromProcMeminfo(
-      await readFile(LIVENESS_MEMINFO_PATH),
+    memAvailableMib = memAvailableMibFromBytes(
+      (readers.systemMemoryInfo ?? (() => Deno.systemMemoryInfo()))().available,
     );
   } catch {
     memAvailableMib = "unavailable";
   }
+  const readPressureFile = readers.readPressureFile ?? readProcFileWithCat;
   const pressureMemory = await readPressureToken(
     LIVENESS_PRESSURE_MEMORY_PATH,
-    readFile,
+    readPressureFile,
   );
   const pressureCpu = await readPressureToken(
     LIVENESS_PRESSURE_CPU_PATH,
-    readFile,
+    readPressureFile,
   );
   return { memAvailableMib, pressureMemory, pressureCpu };
 }

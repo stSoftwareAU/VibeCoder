@@ -2135,7 +2135,8 @@ the core deliverable is genuinely blocked on another open issue after work
 is committed: a `## Blocked:` heading followed by a `Depends on owner/repo#N`
 (or `Blocked by`) line naming an issue that is still open then defers the
 issue and raises no PR. A closed or unreadable dependency does not defer;
-the committed run hands off to a human and raises no PR.
+the committed run raises no PR and the issue is retried as not finished
+(Issue #4227).
 The worker enforces this itself, not only a reviewer, because a PR into a
 milestone branch merges unreviewed on green CI (Issue #3177): a summary
 whose `## Acceptance Criteria` block marks any criterion `partial` or `missing` is raised

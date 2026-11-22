@@ -25,6 +25,10 @@
  */
 
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   assert,
   assertEquals,
   assertRejects,
@@ -633,7 +637,7 @@ const gitleaksAvailable = (await probe("gitleaks", ["version"])) !== null;
 /** Run git in the given cwd with a clean, non-interactive environment. */
 async function runGit(cwd: string, args: string[]): Promise<void> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -644,6 +648,7 @@ async function runGit(cwd: string, args: string[]): Promise<void> {
       GIT_COMMITTER_EMAIL: "test@example.com",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_SYSTEM: "/dev/null",
+      ...NO_HOST_GIT_CONFIG,
     },
   }).output();
   if (out.code !== 0) {

@@ -8,6 +8,10 @@
  */
 
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   assert,
   assertEquals,
   assertNotEquals,
@@ -510,11 +514,12 @@ Deno.test("runDenoCheck - a cached PASS is reused on the second run with the sam
     );
     // The key includes the working tree (PR #3522 review), so it needs a repo.
     const init = await new Deno.Command("git", {
-      args: ["init", "-q"],
+      args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
       cwd: tmpDir,
       stdin: "null",
       stdout: "null",
       stderr: "null",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     assert(init.success, "git init failed");
     const config: QualityGateConfig = {
@@ -553,11 +558,12 @@ Deno.test("runDenoCheck - editing a .ts outside worker/deno that a test imports 
   const cacheDir = await Deno.makeTempDir({ prefix: "qg_check_cache_" });
   const git = async (...args: string[]) => {
     const out = await new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd: root,
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     assert(out.success, `git ${args.join(" ")} failed`);
   };
@@ -617,11 +623,12 @@ Deno.test("runDenoCheck - a FAILED result is never cached: the next run re-check
     // The key includes the working tree, so without a repo it is null and
     // caching is off — the test could then never see a cached FAIL.
     const init = await new Deno.Command("git", {
-      args: ["init", "-q"],
+      args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
       cwd: tmpDir,
       stdin: "null",
       stdout: "null",
       stderr: "null",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     assert(init.success, "git init failed");
     const config: QualityGateConfig = {
@@ -1058,11 +1065,12 @@ Deno.test("denoTestsDigest - keys the whole working tree, so a docs-only edit bu
   const cacheDir = await Deno.makeTempDir({ prefix: "qg_digest_cache_" });
   const git = async (...args: string[]) => {
     const out = await new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd: root,
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     assert(out.success, `git ${args.join(" ")} failed`);
   };
@@ -1105,11 +1113,12 @@ Deno.test("runDenoTests - reuses a cached PASS until a .md edit changes the work
   const cacheDir = await Deno.makeTempDir({ prefix: "qg_wiring_cache_" });
   const git = async (...args: string[]) => {
     const out = await new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd: root,
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     assert(out.success, `git ${args.join(" ")} failed`);
   };
@@ -1157,11 +1166,12 @@ Deno.test("denoTestsDigest - null when no cache dir is set", async () => {
   const cacheDir = await Deno.makeTempDir({ prefix: "qg_nocache_cache_" });
   const git = async (...args: string[]) => {
     const out = await new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd: root,
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     assert(out.success, `git ${args.join(" ")} failed`);
   };
@@ -1201,11 +1211,12 @@ Deno.test("denoCheckDigest - null when no cache dir is set, a tree+sources key w
   const cacheDir = await Deno.makeTempDir({ prefix: "qg_checkkey_cache_" });
   try {
     const init = await new Deno.Command("git", {
-      args: ["init", "-q"],
+      args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
       cwd: root,
       stdin: "null",
       stdout: "null",
       stderr: "null",
+      env: { ...NO_HOST_GIT_CONFIG },
     }).output();
     assert(init.success, "git init failed");
     await Deno.writeTextFile(`${root}/a.ts`, "export {};\n");

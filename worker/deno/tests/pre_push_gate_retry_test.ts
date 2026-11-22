@@ -35,6 +35,7 @@ import {
   runPrePushGateRecoveryTurn,
 } from "../lib/pre_push_gate_retry.ts";
 import type { Result, WorkerConfig } from "../types.ts";
+import { NO_HOST_GIT_CONFIG } from "./support/no_host_git_config.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const ISSUE = 4128;
@@ -697,7 +698,8 @@ async function gitRun(
     stdout: "piped",
     stderr: "piped",
     env: {
-      GIT_CONFIG_COUNT: "0",
+      // No hooks args: the fixture points core.hooksPath at its own no-hooks dir.
+      ...NO_HOST_GIT_CONFIG,
       GIT_AUTHOR_NAME: "Fixture",
       GIT_AUTHOR_EMAIL: "fixture@example.com",
       GIT_COMMITTER_NAME: "Fixture",

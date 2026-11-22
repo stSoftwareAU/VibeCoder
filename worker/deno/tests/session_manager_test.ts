@@ -10,6 +10,10 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   cleanupSessionStore,
   getSessionStorePath,
   getWorkStreamSessionPath,
@@ -459,10 +463,11 @@ Deno.test("session_manager - old-style migration drops settings.json", async () 
 /** Run git in a fixture and fail the test loudly on a non-zero exit. */
 async function mustGit(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   const stderr = new TextDecoder().decode(out.stderr);
   if (out.code !== 0) throw new Error(`git ${args.join(" ")}: ${stderr}`);

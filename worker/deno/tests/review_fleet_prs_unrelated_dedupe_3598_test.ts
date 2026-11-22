@@ -2,7 +2,9 @@
  * review-fleet-prs files the reviewer's out-of-scope findings as issues. A new
  * instance of a defect class that already has an open issue is added to that
  * issue as a comment instead of filed again, and a filed body carries the
- * footer exactly once (Issue #3598).
+ * footer exactly once (Issue #3598). An issue the reviewed PR closes on merge
+ * is filed as new rather than commented on, since the comment would go with it
+ * (Issue #5338).
  */
 import { assert, assertEquals } from "@std/assert";
 import {
@@ -110,6 +112,7 @@ Deno.test("an unrelated issue naming an open existing issue is added there as a 
       url: "https://github.com/owner/repo/issues/3568",
       title: "Umbrella",
       state: "OPEN",
+      closedByPullRequestsReferences: [],
     },
   });
   const filed = await fileUnrelatedIssues(
@@ -132,7 +135,15 @@ Deno.test("an unrelated issue naming an open existing issue is added there as a 
 Deno.test("an existingIssue that is closed, or cannot be read, still files a new issue (Issue #3598)", async () => {
   for (
     const answers of [
-      { view: { number: 3568, url: "u", title: "t", state: "CLOSED" } },
+      {
+        view: {
+          number: 3568,
+          url: "u",
+          title: "t",
+          state: "CLOSED",
+          closedByPullRequestsReferences: [],
+        },
+      },
       { viewThrows: true },
     ]
   ) {
@@ -146,6 +157,114 @@ Deno.test("an existingIssue that is closed, or cannot be read, still files a new
     assertEquals(stub.did("create").length, 1, "the finding is never lost");
     assertEquals(filed.map((f) => f.number), [900]);
   }
+});
+
+Deno.test("an existingIssue the reviewed PR closes is filed as a new issue, with no comment on it (Issue #5338)", async () => {
+  const stub = ghStub({
+    view: {
+      number: 3568,
+      url: "https://github.com/owner/repo/issues/3568",
+      title: "Umbrella",
+      state: "OPEN",
+      closedByPullRequestsReferences: [
+        {
+          number: 7,
+          url: "https://github.com/owner/repo/pull/7",
+          repository: { name: "repo", owner: { login: "owner" } },
+        },
+      ],
+    },
+  });
+  const filed = await fileUnrelatedIssues(
+    PR,
+    review([issue({ existingIssue: 3568 })]),
+    stub.gh,
+  );
+  assertEquals(stub.did("comment").length, 0, "no comment on the umbrella");
+  assertEquals(stub.did("create").length, 1, "the finding is filed as new");
+  assertEquals(filed.map((f) => f.number), [900]);
+  assert(!filed.some((f) => "addedTo" in f), "nothing is added to an issue");
+});
+
+Deno.test("the closing check matches the repository case-insensitively (Issue #5338)", async () => {
+  const stub = ghStub({
+    view: {
+      number: 3568,
+      url: "https://github.com/owner/repo/issues/3568",
+      title: "Umbrella",
+      state: "OPEN",
+      closedByPullRequestsReferences: [
+        {
+          number: 7,
+          url: "https://github.com/Owner/Repo/pull/7",
+          repository: { name: "Repo", owner: { login: "Owner" } },
+        },
+      ],
+    },
+  });
+  const filed = await fileUnrelatedIssues(
+    PR,
+    review([issue({ existingIssue: 3568 })]),
+    stub.gh,
+  );
+  assertEquals(stub.did("comment").length, 0, "no comment on the umbrella");
+  assertEquals(stub.did("create").length, 1, "the finding is filed as new");
+  assertEquals(filed.map((f) => f.number), [900]);
+});
+
+Deno.test("an open existingIssue closed only by another PR, or by PR 7 of another repository, still gets the comment (Issue #5338)", async () => {
+  const stub = ghStub({
+    view: {
+      number: 3568,
+      url: "https://github.com/owner/repo/issues/3568",
+      title: "Umbrella",
+      state: "OPEN",
+      closedByPullRequestsReferences: [
+        {
+          number: 8,
+          url: "https://github.com/owner/repo/pull/8",
+          repository: { name: "repo", owner: { login: "owner" } },
+        },
+        {
+          number: 7,
+          url: "https://github.com/owner/other/pull/7",
+          repository: { name: "other", owner: { login: "owner" } },
+        },
+      ],
+    },
+  });
+  const filed = await fileUnrelatedIssues(
+    PR,
+    review([issue({ existingIssue: 3568 })]),
+    stub.gh,
+  );
+  const comments = stub.did("comment");
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]![2], "3568");
+  assertEquals(stub.did("create").length, 0);
+  assertEquals(filed.map((f) => f.addedTo), [true]);
+});
+
+Deno.test("an issue view without closedByPullRequestsReferences is filed as new rather than commented (Issue #5338)", async () => {
+  const stub = ghStub({
+    view: {
+      number: 3568,
+      url: "https://github.com/owner/repo/issues/3568",
+      title: "Umbrella",
+      state: "OPEN",
+    },
+  });
+  await fileUnrelatedIssues(
+    PR,
+    review([issue({ existingIssue: 3568 })]),
+    stub.gh,
+  );
+  assertEquals(
+    stub.did("comment").length,
+    0,
+    "a malformed view is not commented on",
+  );
+  assertEquals(stub.did("create").length, 1, "the finding is filed as new");
 });
 
 Deno.test("with no existingIssue, an open issue with the same title is linked and nothing is filed (Issue #3598)", async () => {
