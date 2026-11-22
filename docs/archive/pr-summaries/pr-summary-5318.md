@@ -6,8 +6,8 @@ The operator manuals still described a two-step failure ladder (`failed-once`,
 then `failed`). That ladder was removed by Issue #4158. Every failure is now
 recorded under `failed-once` and the worker never applies `failed`. On the
 coding path the issue stays claimable once the escalating cooldown ends; the
-planning path records no cooldown. The stale passages now describe this.
-Docs only.
+planning path records no cooldown. The stale passages now describe this. Docs
+only.
 
 Closes #5318.
 
@@ -63,7 +63,7 @@ Passages rewritten:
 | `docs/INTERNALS.md`                        | #2220 Mermaid `F` node; `coding_failure_ladder.ts` table row                                                                                                                             |
 | `docs/workflows/planning-and-questions.md` | Loud-failure paragraph and its Mermaid `C` node                                                                                                                                          |
 | `docs/workflows/label-flows.md`            | `failed-once` and `failed` rows of the state table; the `failed-once` / `failed` short card                                                                                              |
-| `docs/TROUBLESHOOTING.md`                  | Pickup flowchart's "Has the failed label?" decision and its "Remove failed label" node                                                                                                  |
+| `docs/TROUBLESHOOTING.md`                  | Pickup flowchart's "Has the failed label?" decision and its "Remove failed label" node                                                                                                   |
 
 ```mermaid
 flowchart LR
@@ -83,12 +83,15 @@ already cited in the table row).
 
 - No tests added or edited (docs only).
 - `grep -rnE "then \`?failed\`?\b|Replace with \`failed\`|failed-once\`?
-  (→|->|then) \`?failed|Second failure — skipped until|two fresh attempts|First failure — will retry" README.md docs
+  (→|->|then) \`?failed|Second failure — skipped until|two fresh attempts|First
+  failure — will retry" README.md docs
   --include=*.md`,
   ignoring`docs/archive/`, on the final head: the remaining hits are the
   historical #2220 paragraph (`docs/INTERNALS.md:5856`), the dated audit record`docs/audits/security-sweep-2682-prompt-too-long.md:34`,
   and unrelated uses of "then failed".
-- `markdownlint-cli2` on the five edited manuals (the three first rewritten plus `label-flows.md` and `TROUBLESHOOTING.md`) and this summary: `Summary: 0 issues in 0 files`.
+- `markdownlint-cli2` on the five edited manuals (the three first rewritten plus
+  `label-flows.md` and `TROUBLESHOOTING.md`) and this summary:
+  `Summary: 0 issues in 0 files`.
 - `./quality.sh` on the final docs head: `Result: PASSED (with skipped checks)`.
   Config integration was skipped (no `.config.json`) and checkov was skipped
   (not installed). Mermaid, markdownlint, deno tests, lint, type check and fmt
