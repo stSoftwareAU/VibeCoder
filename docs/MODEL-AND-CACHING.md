@@ -2408,8 +2408,8 @@ concurrent slots share a working directory and would otherwise resume each
 other's sessions (Issue #1699). A stored Claude UUID is never fed to Codex,
 and a Codex thread is never passed as Claude's `--resume`.
 
-Gemini takes the worker-generated UUID, the same one Claude does (Issue
-#5342). The first Gemini phase of an issue starts its session with
+Gemini takes the worker-generated UUID, the same one Claude does
+(Issue #5342). The first Gemini phase of an issue starts its session with
 `--session-id <uuid>`; a later phase sends `--resume <id>` only when the
 recorded state names `gemini` as its provider, using the id the Gemini CLI
 reported back (adopted by `adoptProviderSession`). State recorded by another
