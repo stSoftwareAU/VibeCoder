@@ -21,6 +21,10 @@ import {
   rebaseOntoBase,
   unexplainedDeletions,
 } from "../lib/stale_branch_lineage.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 Deno.test("classifyBranchLineage preserves an unavailable shared lookup as an explicit unknown (Issue #3977)", async () => {
   const observation = await Promise.allSettled([classifyBranchLineage({
@@ -159,11 +163,12 @@ interface GitRunResult {
 /** Run git in `cwd` with a deterministic identity. */
 async function git(args: string[], cwd: string): Promise<GitRunResult> {
   const cmd = new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
     env: {
+      ...NO_HOST_GIT_CONFIG,
       GIT_AUTHOR_NAME: "test",
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",

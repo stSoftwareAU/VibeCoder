@@ -1,3 +1,7 @@
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   checkCloneOwnership,
@@ -81,7 +85,8 @@ Deno.test("setup refuses a clone planted after the entry check", async () => {
       if (checks === 1) {
         await Deno.mkdir(path);
         const init = await new Deno.Command("git", {
-          args: ["init", "-q", path],
+          args: [...NO_HOST_HOOKS_ARGS, "init", "-q", path],
+          env: NO_HOST_GIT_CONFIG,
         }).output();
         assert(init.success);
         return null;

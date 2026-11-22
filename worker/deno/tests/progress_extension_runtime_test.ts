@@ -10,6 +10,10 @@
 import { assert, assertEquals } from "@std/assert";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   buildProgressExtension,
   createRollingDescendantProbe,
   createRollingTreeProbe,
@@ -19,7 +23,11 @@ import { WIND_DOWN_NOTICE_FILENAME } from "../lib/wind_down_notice.ts";
 
 /** Run a git command in `cwd`, failing loudly when it does not succeed. */
 async function git(cwd: string, ...args: string[]): Promise<void> {
-  const result = await runWithTimeout("git", args, { cwd, timeoutMs: 20_000 });
+  const result = await runWithTimeout("git", [...NO_HOST_HOOKS_ARGS, ...args], {
+    cwd,
+    env: { ...NO_HOST_GIT_CONFIG },
+    timeoutMs: 20_000,
+  });
   if (!result.ok || !result.value.success) {
     throw new Error(`git ${args.join(" ")} failed in ${cwd}`);
   }

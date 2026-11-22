@@ -17,6 +17,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { cloneGitFixture, seedGitRemote } from "./support/git_fixture.ts";
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -34,10 +38,11 @@ async function git(
   cwd: string,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   const decode = new TextDecoder();
   return {

@@ -8,15 +8,13 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { commitAndPushPending } from "../lib/git_push.ts";
 import { recoverFromPushRejection } from "../lib/git_push_recovery.ts";
+import { NO_HOST_GIT_CONFIG } from "./support/no_host_git_config.ts";
 
 interface GitRunResult {
   code: number;
   stdout: string;
   stderr: string;
 }
-
-/** Keeps the host's injected git config (hooks included) out of the fixture. */
-const NO_HOST_GIT_CONFIG = { GIT_CONFIG_COUNT: "0" };
 
 async function runGit(args: string[], cwd: string): Promise<GitRunResult> {
   const cmd = new Deno.Command("git", {

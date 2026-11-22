@@ -9,8 +9,8 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { runGitCommand } from "../lib/git_timeout.ts";
 import { findResumableIssueBranch } from "../lib/git_issue_branch_resume.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 
 /** Initialise a bare "remote" plus a working clone with one commit on main. */
 async function setupRepos(tmpDir: string): Promise<string> {
@@ -18,20 +18,20 @@ async function setupRepos(tmpDir: string): Promise<string> {
   const localPath = `${tmpDir}/local`;
 
   await Deno.mkdir(remotePath, { recursive: true });
-  await runGitCommand(["init", "--bare"], { cwd: remotePath });
-  await runGitCommand(["symbolic-ref", "HEAD", "refs/heads/main"], {
+  await runFixtureGit(["init", "--bare"], { cwd: remotePath });
+  await runFixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
     cwd: remotePath,
   });
-  await runGitCommand(["clone", remotePath, localPath], { cwd: tmpDir });
-  await runGitCommand(["config", "user.email", "test@example.com"], {
+  await runFixtureGit(["clone", remotePath, localPath], { cwd: tmpDir });
+  await runFixtureGit(["config", "user.email", "test@example.com"], {
     cwd: localPath,
   });
-  await runGitCommand(["config", "user.name", "Test User"], { cwd: localPath });
+  await runFixtureGit(["config", "user.name", "Test User"], { cwd: localPath });
 
   await Deno.writeTextFile(`${localPath}/README.md`, "# Test Repo\n");
-  await runGitCommand(["add", "README.md"], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Initial commit"], { cwd: localPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  await runFixtureGit(["add", "README.md"], { cwd: localPath });
+  await runFixtureGit(["commit", "-m", "Initial commit"], { cwd: localPath });
+  await runFixtureGit(["push", "origin", "main"], { cwd: localPath });
 
   return localPath;
 }
@@ -43,22 +43,22 @@ async function pushWipBranch(
   file: string,
   epochSec?: number,
 ): Promise<void> {
-  await runGitCommand(["checkout", "-b", branch, "main"], { cwd });
+  await runFixtureGit(["checkout", "-b", branch, "main"], { cwd });
   await Deno.writeTextFile(`${cwd}/${file}`, `work in progress on ${branch}\n`);
-  await runGitCommand(["add", file], { cwd });
+  await runFixtureGit(["add", file], { cwd });
   const env = epochSec === undefined ? undefined : {
     GIT_AUTHOR_DATE: `${epochSec} +0000`,
     GIT_COMMITTER_DATE: `${epochSec} +0000`,
   };
-  await runGitCommand(["commit", "-m", `wip: ${branch}`], {
+  await runFixtureGit(["commit", "-m", `wip: ${branch}`], {
     cwd,
     ...(env ? { env } : {}),
   });
-  await runGitCommand(["push", "origin", branch], { cwd });
-  await runGitCommand(["checkout", "main"], { cwd });
+  await runFixtureGit(["push", "origin", branch], { cwd });
+  await runFixtureGit(["checkout", "main"], { cwd });
   // Drop the local ref so the lookup has to go to the remote, exactly as a
   // freshly reset clone would.
-  await runGitCommand(["branch", "-D", branch], { cwd });
+  await runFixtureGit(["branch", "-D", branch], { cwd });
 }
 
 async function withRepo(fn: (cwd: string) => Promise<void>): Promise<void> {
@@ -129,7 +129,7 @@ Deno.test("issue #220 - no branch for the issue reports none-found", async () =>
 Deno.test("issue #220 - a branch that is not ahead of base is not resumed", async () => {
   await withRepo(async (cwd) => {
     // Branch pushed at base — e.g. what a merged-and-squashed PR leaves behind.
-    await runGitCommand(["push", "origin", "main:issue-220-already-merged"], {
+    await runFixtureGit(["push", "origin", "main:issue-220-already-merged"], {
       cwd,
     });
 
@@ -185,7 +185,7 @@ Deno.test("issue #220 - a persisted branch outside the naming convention is stil
 
 Deno.test("issue #220 - an unreachable remote fails loud rather than reporting 'nothing to resume'", async () => {
   await withRepo(async (cwd) => {
-    await runGitCommand(
+    await runFixtureGit(
       ["remote", "set-url", "origin", `${cwd}/no-such-remote.git`],
       { cwd },
     );

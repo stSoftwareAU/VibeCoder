@@ -13,6 +13,10 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { assert, assertEquals, assertFalse } from "@std/assert";
 import { buildCodexArgs } from "../lib/codex_executor.ts";
 import { assertRoleSupported } from "../lib/orchestration/capabilities.ts";
@@ -101,10 +105,11 @@ Deno.test("Codex can still carry every orchestration role (Issue #4356)", () => 
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   if (!out.success) {
     throw new Error(

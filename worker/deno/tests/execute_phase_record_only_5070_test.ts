@@ -15,6 +15,10 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   changesOnlyRunRecords,
   readBranchChangedPaths,
 } from "../lib/run_record_only.ts";
@@ -40,8 +44,9 @@ const GIT_ID = [
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const out = await new Deno.Command("git", {
-    args: [...GIT_ID, ...args],
+    args: [...NO_HOST_HOOKS_ARGS, ...GIT_ID, ...args],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdin: "null",
     stdout: "piped",
     stderr: "piped",

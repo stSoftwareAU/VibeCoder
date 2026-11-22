@@ -17,6 +17,7 @@ import {
 } from "../lib/pr_ci_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { runFixtureGit } from "./support/no_host_git_config.ts";
 import type { LogContext, Logger } from "../types.ts";
 import type {
   ClaudeDeps,
@@ -65,7 +66,7 @@ function makeInput(): CiFixInput {
 
 /** Runs a git command in `cwd` and returns stdout, throwing on failure. */
 async function gitOut(cwd: string, args: string[]): Promise<string> {
-  const result = await runGitCommand(args, { cwd });
+  const result = await runFixtureGit(args, { cwd });
   if (!result.ok || result.value.code !== 0) {
     const detail = result.ok ? result.value.stderr : result.error.message;
     throw new Error(`git ${args.join(" ")} failed: ${detail}`);

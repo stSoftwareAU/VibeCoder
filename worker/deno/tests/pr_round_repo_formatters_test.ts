@@ -52,13 +52,14 @@ import {
 } from "../lib/repo_formatters.ts";
 import type { Logger, RepoConfig } from "../types.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const REPO = "org/repo";
 const BRANCH = "issue-2524-feedback";
-
-/** Keeps the host's agent-run git config (a pre-push hook) out of the fixture. */
-const NO_HOST_GIT_CONFIG = { GIT_CONFIG_COUNT: "0" };
 
 const UNFORMATTED_TS = "export const   x  =  1\n";
 const FORMATTED_TS = "export const x = 1;\n";
@@ -74,7 +75,7 @@ const GATED: Record<string, RepoConfig> = {
 
 async function git(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
