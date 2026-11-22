@@ -275,10 +275,10 @@ flowchart LR
     masked as `credentials: ***REDACTED*** = ***REDACTED***` and so on, with the
     same four checks.
   - **Hyphenated keyword labels** (review round 6), each with its exact output
-    (label kept, value masked), an unchanged second pass, `containsSecret`
-    false on the output and no value published:
-    `Rotate these credentials: api-key = <token>` on the same line and the
-    next, `The secret:\napi-key: <token>`, `secrets:\n  access-key: <token>`,
+    (label kept, value masked), an unchanged second pass, `containsSecret` false
+    on the output and no value published:
+    `Rotate these credentials: api-key = <token>` on the same line and the next,
+    `The secret:\napi-key: <token>`, `secrets:\n  access-key: <token>`,
     `The secret: api-key: pw42`, `credentials: private-key = hunter2` and
     `credentials: x-api-key: <token>`.
   - **Quoted inner value ending in a spaced label** (review round 6):
@@ -288,8 +288,10 @@ flowchart LR
     forms. Each gives `DEPLOY_TOKEN = '***REDACTED***'***REDACTED***` (the value
     after the closing quote masked), with the same four checks. Main masked
     `DEPLOY_TOKEN` and then the value; the previous head published the value.
-  - **A flag after label text** (review round 6): `credentials: x--token =
-    <token>`, `password:\n  DEPLOY_TOKEN--token = abc`,
+  - **A flag after label text** (review round 6):
+    `credentials: x--token =
+    <token>`,
+    `password:\n  DEPLOY_TOKEN--token = abc`,
     `credentials: my-tool--token = "<token>"` and `secret: a.--token = hunter2`
     keep the outer mask (`credentials: ***REDACTED*** = ***REDACTED***`), with
     the same four checks.
@@ -328,169 +330,170 @@ flowchart LR
     the `The secret: api_key: <value>\npassword=…` form, all mask the inner
     value. A next line the rule leaves unmasked (`API_KEY=`, `API_KEY=true`,
     `USER=bob`, a blank line, a same-line key, a colon key) and the bare
-    `DEPLOY_TOKEN = API_TOKEN=` then `hunter2zzzz` keep their output.
-    Other paths checked: the same run read for a run that starts before the
-    inner label uses the same cut (only keys after the inner value count);
-    matrix of 6 lead-ins × 7 inner shapes × 2 values × 21 next-line texts
-    (1,764 inputs) and 14 more next-line shapes (`ghp_`, `AKIA`, `sk-`,
-    `--password=`, `export`, three stacked keys, quoted keys): the value is
-    published at head by none, a second call changes none and
-    `containsSecret` is false on every output; before this round 648 of the
-    1,764 published the value.
-  - **Quadratic time on chained flags.** `quotedValueFlagEnd` was run twice
-    per candidate and its `flagsThrough` walked every later `--` whose flag
-    reached past the last, so a text of repeated
-    `"DEPLOY_TOKEN = secrets:'x --token ` took 29, 91, 336 and 1,303 ms at
-    500, 1,000, 2,000 and 4,000 repeats at the previous head (shared host,
-    indicative), against 6, 6, 9 and 18 ms at `0de6b1f81`. The call is now made once per candidate, and
-    both loops read at most 64 `--` runs, past which main's result stands
-    (`TOO_MANY_FLAGS`; `SECURITY.md` states it). After the fix the same inputs
-    take 9, 11, 18 and 34 ms. A random search of 1,000 repeated units drawn
-    from 13 fragments found no case growing faster than linearly. Other
-    regexes in the module checked for the shared-quantifier shape:
-    `CLI_FLAG_AT`, `CLI_FLAG_RULE_G`, `WRAPPED_RUN_AT` and `WRAPPED_RUN_G`
-    (each bounded by `{0,63}` classes or disjoint classes); none changed.
+    `DEPLOY_TOKEN = API_TOKEN=` then `hunter2zzzz` keep their output. Other
+    paths checked: the same run read for a run that starts before the inner
+    label uses the same cut (only keys after the inner value count); matrix of 6
+    lead-ins × 7 inner shapes × 2 values × 21 next-line texts (1,764 inputs) and
+    14 more next-line shapes (`ghp_`, `AKIA`, `sk-`, `--password=`, `export`,
+    three stacked keys, quoted keys): the value is published at head by none, a
+    second call changes none and `containsSecret` is false on every output;
+    before this round 648 of the 1,764 published the value.
+  - **Quadratic time on chained flags.** `quotedValueFlagEnd` was run twice per
+    candidate and its `flagsThrough` walked every later `--` whose flag reached
+    past the last, so a text of repeated `"DEPLOY_TOKEN = secrets:'x --token`
+    took 29, 91, 336 and 1,303 ms at 500, 1,000, 2,000 and 4,000 repeats at the
+    previous head (shared host, indicative), against 6, 6, 9 and 18 ms at
+    `0de6b1f81`. The call is now made once per candidate, and both loops read at
+    most 64 `--` runs, past which main's result stands (`TOO_MANY_FLAGS`;
+    `SECURITY.md` states it). After the fix the same inputs take 9, 11, 18 and
+    34 ms. A random search of 1,000 repeated units drawn from 13 fragments found
+    no case growing faster than linearly. Other regexes in the module checked
+    for the shared-quantifier shape: `CLI_FLAG_AT`, `CLI_FLAG_RULE_G`,
+    `WRAPPED_RUN_AT` and `WRAPPED_RUN_G` (each bounded by `{0,63}` classes or
+    disjoint classes); none changed.
   - 16 more tests (283 → 299); the 8 next-line leak tests fail at `61d60fdd9`
     and the hostile test (100,001 repeats, 3.4 MB) did not return in 100 s
     there; it passes in about 1 s at this head. The controls pass at both. Every
-    test file naming `redactSecrets`, `containsSecret` or `secret_redaction`
-    (53 files by that grep): `1466 passed | 0 failed`.
+    test file naming `redactSecrets`, `containsSecret` or `secret_redaction` (53
+    files by that grep): `1466 passed | 0 failed`.
 - **Review round 14** — two items:
-  - **The issue's leak after a closed flag value.** The flag-quote look-back
-    now counts the quote before the outer value only where the
-    `secret-cli-flag` rule, reading the text from the start, opens a flag's
-    value there (one pass of the rule's pattern per walk), so the quote that
-    closes `--token 'x --password '` no longer blocks the inner label. Only
-    quotes the walk's mask removes count: a closed quoted inner value keeps
-    both quotes unless it is masked through a flag. `deploy --token 'x
-    --password ' then` before `Rotate these credentials:\nDEPLOY_TOKEN =
-    '<value>'`, `The secret: api_key: '<value>'`, the YAML-child form (single-
-    and double-quoted) and 44,000 characters of filler between them all mask
-    the value on the first call again. `deploy --token 'x credentials:
-    DEPLOY_TOKEN = '<value>'` gives `deploy --token ***REDACTED******REDACTED***'`
-    again, and `run --password 'a --token ' secrets:\n  credentials: 'abc` is
-    final.
-  - **Text after the flag's placeholder.** The second-call search accepts a
-    flag whose value starts with the placeholder, so `'deploy --token
-    '$API_TOKEN';`, `'$API_TOKEN'/v1`, `'my-secret-value',`,
-    `'my_password_1';`, `'token'api_key` and the `Rotate these credentials:`
-    form keep main's output on a second call, and main's own output with text
-    after the placeholder is unchanged.
-  - 14 more tests (269 → 283); 13 fail at `06ddcdae`. Every test file
-    importing `secret_redaction.ts`: `1324 passed | 0 failed`.
+  - **The issue's leak after a closed flag value.** The flag-quote look-back now
+    counts the quote before the outer value only where the `secret-cli-flag`
+    rule, reading the text from the start, opens a flag's value there (one pass
+    of the rule's pattern per walk), so the quote that closes
+    `--token 'x --password '` no longer blocks the inner label. Only quotes the
+    walk's mask removes count: a closed quoted inner value keeps both quotes
+    unless it is masked through a flag.
+    `deploy --token 'x
+    --password ' then` before
+    `Rotate these credentials:\nDEPLOY_TOKEN =
+    '<value>'`,
+    `The secret: api_key: '<value>'`, the YAML-child form (single- and
+    double-quoted) and 44,000 characters of filler between them all mask the
+    value on the first call again.
+    `deploy --token 'x credentials:
+    DEPLOY_TOKEN = '<value>'` gives
+    `deploy --token ***REDACTED******REDACTED***'` again, and
+    `run --password 'a --token ' secrets:\n  credentials: 'abc` is final.
+  - **Text after the flag's placeholder.** The second-call search accepts a flag
+    whose value starts with the placeholder, so
+    `'deploy --token
+    '$API_TOKEN';`, `'$API_TOKEN'/v1`,
+    `'my-secret-value',`, `'my_password_1';`, `'token'api_key` and the
+    `Rotate these credentials:` form keep main's output on a second call, and
+    main's own output with text after the placeholder is unchanged.
+  - 14 more tests (269 → 283); 13 fail at `06ddcdae`. Every test file importing
+    `secret_redaction.ts`: `1324 passed | 0 failed`.
   - **Sweeps, head against `06ddcdae` on the same inputs.** Flag-led (597,829
     distinct, the reviewer's `then`, `$API_TOKEN`, `/v1` and `;` fragments
-    added): no published value at either; 1 second-pass change here against
-    12. Unclosed-quote-weighted (597,287): no published value at either; 8
+    added): no published value at either; 1 second-pass change here against 12.
+    Unclosed-quote-weighted (597,287): no published value at either; 8
     against 9. General (590,593): none of either. Each of the 9 remaining
     second-pass changes gives the same first output at `06ddcdae` and changes
     there too. All 9 are a single-quoted value of glued labels that the walk
     reads as the next chain link (`'app.token=password:`, `'token=API_TOKEN:`,
-    `'my-secret-valueapp.token=`), whose closing quote a later flag takes,
-    and none publishes a value. This is not done: `SECURITY.md` and the
-    `redactAssignments` comment now say so. The round-13 entry's sweep claim
-    (6 flag-led, none in general inputs) did not cover the unclosed-quote
-    shape the reviewer found (`'deploy --token '$API_TOKEN';`), which this
-    round fixes.
+    `'my-secret-valueapp.token=`), whose closing quote a later flag takes, and
+    none publishes a value. This is not done: `SECURITY.md` and the
+    `redactAssignments` comment now say so. The round-13 entry's sweep claim (6
+    flag-led, none in general inputs) did not cover the unclosed-quote shape the
+    reviewer found (`'deploy --token '$API_TOKEN';`), which this round fixes.
 - **Review round 13** — two items:
   - **A flag before the lead-in.** A credential flag whose quoted value opens
     before the outer value and would close at a quote in the outer or inner
     value (`deploy --token 'alpha <value> credentials: DEPLOY_TOKEN = 'tail`,
     the next-line, YAML-child and `The secret: api_key:` forms, `ab'cd`, and a
     quote inside the outer value such as `DEPLOY_TOKEN':`) now gets main's
-    result, so the flag rule masks the whole quoted run again. Quotes an
-    earlier mask took are skipped when finding where the flag's value opens.
-    The quotes come from a per-walk index, so the look-back has no length
-    bound.
+    result, so the flag rule masks the whole quoted run again. Quotes an earlier
+    mask took are skipped when finding where the flag's value opens. The quotes
+    come from a per-walk index, so the look-back has no length bound.
   - **Unclosed quote after a masked assignment.** A flag inside a quoted inner
-    value whose value takes the closing quote is now masked with the inner
-    value on the first call (`secrets:\n  DEPLOY_TOKEN: ***REDACTED***`), so
-    the output holds no unclosed quote. This masks more than main, which left
-    `'deploy` visible. It applies only when nothing else keeps main's result
-    and no credential keyword sits in the flag's value past the quote. The
-    mask also takes any flag value it would cut, and the walk reads on inside
-    it, so a match main masks there is still masked past it. The second-call
-    search for main's own output now reads past an earlier placeholder and
-    has no 256-character bound; it skips an inner value that is itself the
-    chain's next label. 27 existing tests that pinned main's output for this
-    shape now expect the single mask. Each new output is final, publishes no
-    test value, and gives `containsSecret` false.
-  - 30 more tests (239 → 269); 23 of them fail at `8c1224ea`. The other 7
-    guard the new mask's neighbours and bounds. Every test file importing
-    `secret_redaction.ts`: `1310 passed | 0 failed`. Hostile sizes (64,000
-    lines of each new shape, 1 MiB runs) assert exact outputs, and doubling
-    the size doubles the time.
+    value whose value takes the closing quote is now masked with the inner value
+    on the first call (`secrets:\n  DEPLOY_TOKEN: ***REDACTED***`), so the
+    output holds no unclosed quote. This masks more than main, which left
+    `'deploy` visible. It applies only when nothing else keeps main's result and
+    no credential keyword sits in the flag's value past the quote. The mask also
+    takes any flag value it would cut, and the walk reads on inside it, so a
+    match main masks there is still masked past it. The second-call search for
+    main's own output now reads past an earlier placeholder and has no
+    256-character bound; it skips an inner value that is itself the chain's next
+    label. 27 existing tests that pinned main's output for this shape now expect
+    the single mask. Each new output is final, publishes no test value, and
+    gives `containsSecret` false.
+  - 30 more tests (239 → 269); 23 of them fail at `8c1224ea`. The other 7 guard
+    the new mask's neighbours and bounds. Every test file importing
+    `secret_redaction.ts`: `1310 passed | 0 failed`. Hostile sizes (64,000 lines
+    of each new shape, 1 MiB runs) assert exact outputs, and doubling the size
+    doubles the time.
   - **Sweep claim corrected.** The round-12 claim (no head-only change on a
-    second pass, no published value main masked) was wrong for flag-led
-    inputs. On the same 1,586,149 distinct flag-led inputs (four seeds),
-    `8c1224ea` published a value main masks for 110 and changed on a second
-    pass for 114, where main did not. This head publishes none and changes on
-    a second pass for 6, all also changing at `8c1224ea` and none publishing
-    a value. All 6 are a single-quoted YAML-child value holding glued labels
-    (`'app.token=password:`, `'token=token=`), where main's result stands and
-    a flag then takes the closing quote. On 778,633 distinct general inputs
-    (two seeds), neither head shows either. Values glued to a key-shaped
-    run are not counted, as before.
+    second pass, no published value main masked) was wrong for flag-led inputs.
+    On the same 1,586,149 distinct flag-led inputs (four seeds), `8c1224ea`
+    published a value main masks for 110 and changed on a second pass for 114,
+    where main did not. This head publishes none and changes on a second pass
+    for 6, all also changing at `8c1224ea` and none publishing a value. All 6
+    are a single-quoted YAML-child value holding glued labels
+    (`'app.token=password:`, `'token=token=`), where main's result stands and a
+    flag then takes the closing quote. On 778,633 distinct general inputs (two
+    seeds), neither head shows either. Values glued to a key-shaped run are not
+    counted, as before.
 - **Review round 12** — three items:
-  - **The memo belongs to one walk.** The decode-then-rescan check runs a
-    nested walk on a joined run; that walk now saves and restores the outer
-    walk's memo instead of clearing it. A chain of 18 or 30 labels gives the
-    same output with and without an earlier wrapped run (new test), and
-    `secrets:\n  DEPLOY_TOKEN: 'a --token ` repeated takes the same time
-    with that prefix as without (about 1 s at 1.1 MB here).
+  - **The memo belongs to one walk.** The decode-then-rescan check runs a nested
+    walk on a joined run; that walk now saves and restores the outer walk's memo
+    instead of clearing it. A chain of 18 or 30 labels gives the same output
+    with and without an earlier wrapped run (new test), and
+    `secrets:\n  DEPLOY_TOKEN: 'a --token` repeated takes the same time with
+    that prefix as without (about 1 s at 1.1 MB here).
   - **Unclosed quote.** The second-pass flag search stops only at a closing
-    quote of the same kind or an earlier placeholder, so `=`, `:`, `*`, a URL
-    or the other quote before the flag (`'deploy --env=prod --token `,
-    `'curl https://example.test --token `, `'deploy "x" --token `) stays
-    final.
+    quote of the same kind or an earlier placeholder, so `=`, `:`, `*`, a URL or
+    the other quote before the flag (`'deploy --env=prod --token`,
+    `'curl https://example.test --token`, `'deploy "x" --token`) stays final.
   - **Tests** for the remaining label-`=`-line-break inputs
     (`The secret:\napi_key=`, `secrets:\n  API_TOKEN=`,
-    `credentials: DEPLOY_TOKEN\n=`, `credentials=\nDEPLOY_TOKEN = `, and the
-    15- and 16-character joined values).
-  - 14 more tests (225 → 239). Every test file importing
-    `secret_redaction.ts`: `1280 passed | 0 failed`. Sweeps of 450,000
-    general and 450,000 quote-and-flag-weighted inputs (the latter now with
-    `k=v`, `a:b`, `*.txt` and a URL) found no head-only change on a second
-    pass, no head-only `containsSecret` and no published value main masked,
-    other than values joined to a label by `.` or `-`, which `SECURITY.md`
-    documents. The round-11 sweep claim missed the `=`/`:`/`*` shapes.
+    `credentials: DEPLOY_TOKEN\n=`, `credentials=\nDEPLOY_TOKEN =`, and the 15-
+    and 16-character joined values).
+  - 14 more tests (225 → 239). Every test file importing `secret_redaction.ts`:
+    `1280 passed | 0 failed`. Sweeps of 450,000 general and 450,000
+    quote-and-flag-weighted inputs (the latter now with `k=v`, `a:b`, `*.txt`
+    and a URL) found no head-only change on a second pass, no head-only
+    `containsSecret` and no published value main masked, other than values
+    joined to a label by `.` or `-`, which `SECURITY.md` documents. The round-11
+    sweep claim missed the `=`/`:`/`*` shapes.
 - **Review round 11** — the four partial items:
   - **The #5310 leak across `=` and a line break.** A run covering the inner
     label counts only when the inner value stays visible (a chained label);
-    otherwise runs start no earlier than the end of the outer value main
-    masked. `credentials: DEPLOY_TOKEN=` then `<token>` gives
+    otherwise runs start no earlier than the end of the outer value main masked.
+    `credentials: DEPLOY_TOKEN=` then `<token>` gives
     `credentials: DEPLOY_TOKEN=` then `***REDACTED***` again, and
     `The secret: app.token=` then `DEPLOY_TOKEN = hunter2` stays final.
   - **Unclosed quote, flag later.** The second-pass check reads every `--`
     within 256 characters after the inner value, up to the first quote,
-    separator or earlier placeholder, so `'deploy now --token `,
-    `'deploy -v --token `, `'deploy x--token `, `'a b c --token ` and
-    `'deploy` + line break + `--token ` are final.
+    separator or earlier placeholder, so `'deploy now --token`,
+    `'deploy -v --token`, `'deploy x--token`, `'a b c --token` and `'deploy` +
+    line break + `--token` are final.
   - **Chains.** A `secret-assignment` match inside the inner value that runs
-    past it counts whether or not it is masked, so the three line-break
-    chain inputs give main's result; the `DB_PASSWORD=` line-break form has
-    a test now.
+    past it counts whether or not it is masked, so the three line-break chain
+    inputs give main's result; the `DB_PASSWORD=` line-break form has a test
+    now.
   - **SECURITY.md** states the round-9 `"`-inside-a-quoted-value outcome.
   - **Linearity.** A per-walk memo of the inner-label answer stops a long
     chain's look-ahead from being repeated per link:
-    `secrets:\n  DEPLOY_TOKEN: 'a --token ` repeated (1.1 MB) takes about
-    1.1 s here, where the previous head took 5.4 s.
+    `secrets:\n  DEPLOY_TOKEN: 'a --token` repeated (1.1 MB) takes about 1.1 s
+    here, where the previous head took 5.4 s.
   - 11 more tests (214 → 225); one round-10 expectation reverts to its round-9
     output (`api-key: ,***REDACTED*** = ***REDACTED***`, which masks more than
     main and is final). Every test file importing `secret_redaction.ts`:
     `1266 passed | 0 failed`. Sweeps of 900,000 general and 900,000
-    quote-and-flag-weighted inputs found no head-only change on a second
-    pass, no head-only `containsSecret` and no published value main masked.
+    quote-and-flag-weighted inputs found no head-only change on a second pass,
+    no head-only `containsSecret` and no published value main masked.
 - **Review round 10** — two more shapes, both now main's result:
-  - **Where the decode pass's run starts.** The wrapped-run test now reads
-    runs as the decode-then-rescan pass reads them on main: from where a run
-    through the inner label can start, walked back up to 1,024 candidate
-    characters and line breaks, so a run beginning at the separator's `=`
+  - **Where the decode pass's run starts.** The wrapped-run test now reads runs
+    as the decode-then-rescan pass reads them on main: from where a run through
+    the inner label can start, walked back up to 1,024 candidate characters and
+    line breaks, so a run beginning at the separator's `=`
     (`DEPLOY_TOKEN =istoken=` then `hunter2`) or on the label's own line
     (`token=` then a two-line value) counts, and so does one that covers the
     inner label (`app.token=` then `DEPLOY_TOKEN = hunter2`). Run starts are
-    found in that window and the inner value alone, and a run longer than
-    4,096 characters keeps main's result, so the check stays linear.
+    found in that window and the inner value alone, and a run longer than 4,096
+    characters keeps main's result, so the check stays linear.
   - **A flag after an unclosed quote on a second pass.** When the inner value
     opens with a quote it never closes and a credential flag follows it
     (`'deploy --token ***REDACTED***`, the first pass's own output), main's
@@ -500,68 +503,67 @@ flowchart LR
     expectation changed to main's output:
     `Rotate these credentials:\napi-key: ,tokenhunter2=\nsecret = token` now
     keeps `= token` visible, as main does. Every test file importing
-    `secret_redaction.ts`: `1255 passed | 0 failed`. A sweep of 900,000
-    inputs from 30 fragments weighted to wraps, `=` separators, quotes and
-    flags found no head-only change on a second pass, no head-only
-    `containsSecret` and no published value main masked. The round-9 sweep
-    above missed both shapes; it is corrected by this one.
-- **Review round 9** — the round-8 check is made bounded and closes three
-  more shapes:
-  - **Linear again.** Round 8's flag search ran to the end of the text and
-    its assignment search re-ran from every match, so two inputs were
-    quadratic. Now keys are found by their credential keyword inside the
-    inner value and matched from where they start (at most 8, past which
-    main's result stands), flags by their `--` inside the inner value, and
-    the wrapped-run test reads only the run that ends the inner value. Two
-    hostile-size tests assert exact output: 64,000 lines of
-    `credentials: DEPLOY_TOKEN = abcdefgh12345678` (2.8 MB, about 1.2 s here)
-    and `credentials: DEPLOY_TOKEN = ` + 65,536 `TOKEN=x,` (512 KB, about
-    20 ms).
-  - **Chains.** The label ending the inner value is exempt only when the
-    walk's next step reads it as an inner label (looked ahead up to 16
-    links), so `credentials: DEPLOY_TOKEN = API_TOKEN: hunter2,--token x`
-    gives main's `credentials: ***REDACTED*** = API_TOKEN: ***REDACTED*** x`.
-  - **A `"` inside a quoted inner value.** When the outer bare value stopped
-    at a `"` inside the inner quoted value, the outer mask is kept, so
+    `secret_redaction.ts`: `1255 passed | 0 failed`. A sweep of 900,000 inputs
+    from 30 fragments weighted to wraps, `=` separators, quotes and flags found
+    no head-only change on a second pass, no head-only `containsSecret` and no
+    published value main masked. The round-9 sweep above missed both shapes; it
+    is corrected by this one.
+- **Review round 9** — the round-8 check is made bounded and closes three more
+  shapes:
+  - **Linear again.** Round 8's flag search ran to the end of the text and its
+    assignment search re-ran from every match, so two inputs were quadratic. Now
+    keys are found by their credential keyword inside the inner value and
+    matched from where they start (at most 8, past which main's result stands),
+    flags by their `--` inside the inner value, and the wrapped-run test reads
+    only the run that ends the inner value. Two hostile-size tests assert exact
+    output: 64,000 lines of `credentials: DEPLOY_TOKEN = abcdefgh12345678` (2.8
+    MB, about 1.2 s here) and `credentials: DEPLOY_TOKEN =` + 65,536 `TOKEN=x,`
+    (512 KB, about 20 ms).
+  - **Chains.** The label ending the inner value is exempt only when the walk's
+    next step reads it as an inner label (looked ahead up to 16 links), so
+    `credentials: DEPLOY_TOKEN = API_TOKEN: hunter2,--token x` gives main's
+    `credentials: ***REDACTED*** = API_TOKEN: ***REDACTED*** x`.
+  - **A `"` inside a quoted inner value.** When the outer bare value stopped at
+    a `"` inside the inner quoted value, the outer mask is kept, so
     `credentials: DEPLOY_TOKEN='"abc"'--token <token>` gives
     `credentials: ***REDACTED******REDACTED***--token ***REDACTED***`.
-  - **Second pass.** An inner value already holding the placeholder after
-    other text (`,***REDACTED***`) keeps main's result, so
+  - **Second pass.** An inner value already holding the placeholder after other
+    text (`,***REDACTED***`) keeps main's result, so
     `secrets:\n  DEPLOY_TOKEN: ,API_TOKEN=\nhunter2` is final.
   - **Several flags.** Every `--` inside the inner value is tested, so
     `'--token a --password '<token>` masks the value.
   - 21 more tests (182 → 203 in the file); every test file importing
-    `secret_redaction.ts`: `1244 passed | 0 failed`. A random sweep of
-    900,000 inputs from 29 fragments, compared with main, found no output
-    that changed on a second pass, reported a secret, or published a value
-    where main's did not, other than a value glued onto key characters.
-- **Review round 8** — one general check replaces the round-7 flag test:
-  before an inner label is read, `mainReadsPastInnerValue` asks whether
-  main's own scan, resuming after the inner label as main did, would mask
-  text past the inner value: a masked `secret-assignment` match or a
-  credential flag (the `secret-cli-flag` shape, placeholder allowed so a
-  second pass reads the same) that starts inside the inner value and ends
-  past it, other than the label that ends the inner value (the walk's next
-  step in a chain), or a run the decode-then-rescan pass would join across a
-  line break and mask. If so, no inner label is read and main's result
-  stands. It has no whitespace or length bound, so the flag shape with 256
-  spaces or a line break, and the spaced separator past 256 spaces, now give
-  main's result. 20 more tests, each with the four checks: the reviewer's ten
-  label-or-flag-inside-a-quoted-value inputs, the two `API_TOKEN=` then
-  `hunter2` forms, the flag at 255 and 256 spaces and across a line break,
-  and the spaced separator at 256 and 257 spaces (both sides, double quotes,
-  300 spaces, YAML child).
+    `secret_redaction.ts`: `1244 passed | 0 failed`. A random sweep of 900,000
+    inputs from 29 fragments, compared with main, found no output that changed
+    on a second pass, reported a secret, or published a value where main's did
+    not, other than a value glued onto key characters.
+- **Review round 8** — one general check replaces the round-7 flag test: before
+  an inner label is read, `mainReadsPastInnerValue` asks whether main's own
+  scan, resuming after the inner label as main did, would mask text past the
+  inner value: a masked `secret-assignment` match or a credential flag (the
+  `secret-cli-flag` shape, placeholder allowed so a second pass reads the same)
+  that starts inside the inner value and ends past it, other than the label that
+  ends the inner value (the walk's next step in a chain), or a run the
+  decode-then-rescan pass would join across a line break and mask. If so, no
+  inner label is read and main's result stands. It has no whitespace or length
+  bound, so the flag shape with 256 spaces or a line break, and the spaced
+  separator past 256 spaces, now give main's result. 20 more tests, each with
+  the four checks: the reviewer's ten label-or-flag-inside-a-quoted-value
+  inputs, the two `API_TOKEN=` then `hunter2` forms, the flag at 255 and 256
+  spaces and across a line break, and the spaced separator at 256 and 257 spaces
+  (both sides, double quotes, 300 spaces, YAML child).
   - Red runs on this head's 182-test file: `origin/main` (`e1d1190c1`)
     `96 passed | 86 failed`; the previous head (`adc68366`)
-    `164 passed | 18 failed`; this head `182 passed | 0 failed`. Every test
-    file importing `secret_redaction.ts` (47 files): `1223 passed |
-    0 failed`; `secret_redaction_redos_test.ts`: `14 passed`.
+    `164 passed | 18 failed`; this head `182 passed | 0 failed`. Every test file
+    importing `secret_redaction.ts` (47 files): `1223 passed |
+    0 failed`;
+    `secret_redaction_redos_test.ts`: `14 passed`.
   - A random sweep of 900,000 inputs from 27 fragments (lead-ins, labels,
-    `--token `, `--password `, `=\n`, quotes, `'token:x'`, values, a 40-space
+    `--token`, `--password`, `=\n`, quotes, `'token:x'`, values, a 40-space
     run), compared with main: no output changed on a second pass where main's
-    did not, none reported a secret where main's did not, and none published
-    a value main masked other than a value glued onto key characters, which
-    is read as part of a label as `SECURITY.md` states.
+    did not, none reported a secret where main's did not, and none published a
+    value main masked other than a value glued onto key characters, which is
+    read as part of a label as `SECURITY.md` states.
 - **Review round 7** — 16 more tests, each with the four checks:
   - **A flag as the inner label's value:**
     `Rotate these credentials: DEPLOY_TOKEN = --token <token>` (same line and
@@ -573,41 +575,39 @@ flowchart LR
     Each gives main's output, for example
     `Rotate these credentials: ***REDACTED*** = --token ***REDACTED***`: when
     the inner value ends in a credential flag followed by whitespace and a
-    value, no inner label is read, so the `secret-cli-flag` rule still sees
-    the flag.
+    value, no inner label is read, so the `secret-cli-flag` rule still sees the
+    flag.
   - **A line break, CRLF or more than 32 spaces in the separator before the
-    closing quote:** `'API_TOKEN =\n'`, `'API_TOKEN:\n  '` and its
-    double-quoted form, `'API_TOKEN\n= '`, the YAML child, `=\r\n`, and 33
-    spaces before or after `=`. Each gives
-    `DEPLOY_TOKEN = '***REDACTED***'***REDACTED***`. The separator's whitespace
-    is now `\s`, walked back by hand up to 256 characters either side (the
-    walk's own span bound), never by a regular-expression scan.
+    closing quote:** `'API_TOKEN =\n'`, `'API_TOKEN:\n  '` and its double-quoted
+    form, `'API_TOKEN\n= '`, the YAML child, `=\r\n`, and 33 spaces before or
+    after `=`. Each gives `DEPLOY_TOKEN = '***REDACTED***'***REDACTED***`. The
+    separator's whitespace is now `\s`, walked back by hand up to 256 characters
+    either side (the walk's own span bound), never by a regular-expression scan.
   - Red runs on this head's 162-test file: `origin/main` (`0e9de4ad2`)
     `78 passed | 84 failed`; the previous head (`8b009936`)
     `146 passed | 16 failed`, the 16 above; this head `162 passed | 0 failed`.
     Every test file importing `secret_redaction.ts` (47 files):
     `1203 passed | 0 failed`.
   - A random sweep of 1,200,000 inputs from 29 fragments, now including
-    `--token `, `--password `, `=\n`, `:\n  `, CRLF and a 33-space run: no
-    output changed on a second pass and none reported a secret. 4 published a
-    value main masked, all a value glued straight onto a credential keyword
+    `--token`, `--password`, `=\n`, `:\n`, CRLF and a 33-space run: no output
+    changed on a second pass and none reported a secret. 4 published a value
+    main masked, all a value glued straight onto a credential keyword
     (`hunter2API_TOKEN…`, `<token>credentials:`), which is read as part of the
     label as it was at the previous head; `SECURITY.md` states it. Before the
-    flag fix was widened to a value ending in a flag, the same sweep also
-    found `credentials:token =\n=--password <token>`; it now gives main's
-    output.
-- **Red runs for review round 6** — this head's 146-test file against an
-  older `worker/deno/lib/secret_redaction.ts`:
+    flag fix was widened to a value ending in a flag, the same sweep also found
+    `credentials:token =\n=--password <token>`; it now gives main's output.
+- **Red runs for review round 6** — this head's 146-test file against an older
+  `worker/deno/lib/secret_redaction.ts`:
   - From `origin/main` (`26af9a4cb`): `70 passed | 76 failed`.
   - From the previous head (`ef2daa59`): `128 passed | 18 failed`, the 18 new
     inputs above.
   - At head: `146 passed | 0 failed`. Every test file that imports
     `secret_redaction.ts` (47 files): `1187 passed | 0 failed`.
-  - A random sweep of 1,100,000 inputs built from 29 fragments (lead-ins,
-    labels including the hyphenated and `--` forms, separators, quotes and
-    values): no output changed on a second pass, none reported a secret, and
-    4 published `hunter2` where main masked it. All 4 are label characters
-    before a hyphenated inner label, such as
+  - A random sweep of 1,100,000 inputs built from 29 fragments (lead-ins, labels
+    including the hyphenated and `--` forms, separators, quotes and values): no
+    output changed on a second pass, none reported a secret, and 4 published
+    `hunter2` where main masked it. All 4 are label characters before a
+    hyphenated inner label, such as
     `credentials:hunter2private-keyaccess-key= …`: the run before `access-key`
     is read as part of the label, as `credentials: hunter2-DEPLOY_TOKEN = …`
     already was at the previous head. `SECURITY.md` now states this.
@@ -641,12 +641,12 @@ flowchart LR
   64-character bound is renamed for what it checks, a 66-character label within
   the 128-character bound. Every test file that mentions `redactSecrets`,
   `containsSecret` or `secret_redaction` passes at head: 53 files, 1,466 passed,
-  0 failed (the review round 15 result). This run used a scratch import map
-  in place of the `jsr:@std/*` imports, since jsr.io was unreachable from the host; CI runs the suites as
-  written. That includes `secret_redaction_test.ts`, its `_markdown_1727_`,
-  `_redos_`, `_bounds_`, `_boolean_setting_`, `_json_structure_` and
-  `_prose_heading_5253_` siblings, `fleet_telemetry_redaction_test.ts` and
-  `run_stats_redaction_test.ts`.
+  0 failed (the review round 15 result). This run used a scratch import map in
+  place of the `jsr:@std/*` imports, since jsr.io was unreachable from the host;
+  CI runs the suites as written. That includes `secret_redaction_test.ts`, its
+  `_markdown_1727_`, `_redos_`, `_bounds_`, `_boolean_setting_`,
+  `_json_structure_` and `_prose_heading_5253_` siblings,
+  `fleet_telemetry_redaction_test.ts` and `run_stats_redaction_test.ts`.
 - **Full gate:** `./quality.sh < /dev/null` passed on an earlier head
   (`be3317ae0`) with `Result: PASSED (with skipped checks)`. The gate itself
   skipped `config integration` (no `.config.json`) and `checkov` (no checkov on
@@ -675,8 +675,8 @@ flowchart LR
 
 ## Not done or not checked
 
-- Base behaviour applies, and the inner value is published as on base, in the four
-  cases below, and in a fifth, the 64 `--` run case after them:
+- Base behaviour applies, and the inner value is published as on base, in the
+  four cases below, and in a fifth, the 64 `--` run case after them:
   - The inner label's separator or value sits more than 256 characters past the
     outer value. For example, `credentials: DEPLOY_TOKEN` + 300 spaces +
     `= <value>` still leaks.
@@ -691,8 +691,8 @@ flowchart LR
     (run at head). The earlier head tried any label inside the value. No test
     covers this shape.
 - A quoted inner value read through more than 64 `--` runs (a chain of flags
-  each reaching past the last) also keeps the base result, so its inner value
-  is published as on base. A test pins a 3.4 MB chain's exact output.
+  each reaching past the last) also keeps the base result, so its inner value is
+  published as on base. A test pins a 3.4 MB chain's exact output.
 - An inner label opened by a backtick (`` `PASSWORD: <value>` ``) counts as text
   before the label, so the outer value, label included, is masked whole with the
   inner value. Nothing is published, but the label is not kept.
