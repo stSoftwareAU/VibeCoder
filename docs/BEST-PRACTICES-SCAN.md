@@ -410,7 +410,11 @@ Official server mode needs all of the following:
   nothing, and its `fi`, `done`, `esac` and `}` close only a compound of their
   own kind that the walk opened, so the `)` after one, attached or spaced,
   closes the substitution and the line leaves the runner's credit alone,
-  whether the runner comes after it, in the same group or after an `exit`),
+  whether the runner comes after it, in the same group or after an `exit`; a
+  `$(` or backtick in a `for` or `select` header (`for f in $(ls | sort)`,
+  `for ((i=0; i<3; i++))`) still counts for the substitution's parenthesis
+  balance, a `case` arm's pattern `)` does not, and an `exit` or `set -n`
+  inside the substitution ends only that substitution, not the body),
   not in a group or subshell that is itself an `if` or `while` test
   (`if ( runner ); then …`), nor by `&&` with more of the body after that
   chain, and one of the following. Bash ignores errexit inside a compound on

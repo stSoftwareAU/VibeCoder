@@ -3780,6 +3780,65 @@ Deno.test("checkAwsEmulatorInCI - a compound inside an untracked substitution le
   }
 });
 
+// PR #5332 review round 15: an `exit` inside a one-line substitution ends the
+// substitution only, and a `for`, C-style `for` or multi-pattern `case` header
+// inside an untracked `$( … )` keeps the substitution's parenthesis balance.
+Deno.test("checkAwsEmulatorInCI - an exit or a compound header inside an untracked substitution does not end the body or hide a swallowed runner", async () => {
+  const R = RUNNER_STEP;
+  const contexts = async (body: string) => {
+    const wirings: Record<string, string> = {};
+    wirings["default step"] = (await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    })).wiring;
+    wirings["after set +e"] = (await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(`set +e\n${body}`)),
+    })).wiring;
+    for (const header of ["", "set -euo pipefail\n"]) {
+      wirings[`script (${header.trim() || "no set -e"})`] =
+        (await checkRepoWith({
+          ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+          "ci/t.sh": `#!/usr/bin/env bash\n${header}${body}\n`,
+        })).wiring;
+    }
+    return wirings;
+  };
+  const credited = [
+    'VERSION=$(cat VERSION || { echo "no version" >&2; exit 1; })',
+    "X=$(echo a; exit 0)",
+    "X=$(cat a || (echo bad >&2; exit 1))",
+    "X=$(cd a; if [ -f x ]; then exit 1; fi )",
+    "X=`echo a; exit 1`",
+    "X=$(cd a; for f in $(ls | sort); do echo $f; done)",
+    "X=$(cd a; for ((i=0; i<3; i++)); do echo $i; done)",
+    'X=$(cd a; case "$x" in a) echo 1 ;; b) echo 2 ;; esac)',
+    'X=$(cd a; case "$x" in a|b) echo 1 ;; *) echo 2 ;; esac )',
+    'X=$(cd a; case "$x" in\n  a) echo 1 ;;\n  b) echo $(date | tr a b) ;;\nesac)',
+    "X=$(cd a; for f in `ls | sort`; do echo $f; done)",
+  ];
+  for (const line of credited) {
+    for (
+      const [context, wiring] of Object.entries(await contexts(`${line}\n${R}`))
+    ) {
+      assertEquals(wiring, "official-server", `${context}: ${line}`);
+    }
+  }
+  // The runner stays swallowed or unreached when such a line comes first.
+  const refused = [
+    `{ X=$(cd a; for f in $(ls | sort); do echo $f; done); ${R}; } || true`,
+    `{ X=$(cd a; for ((i=0; i<3; i++)); do echo $i; done); ${R}; } || true`,
+    `{ X=$(cd a; case "$x" in a) echo 1 ;; b) echo 2 ;; esac); ${R}; } || true`,
+    `{ X=$(cd a; case "$x" in\n  a) echo 1 ;;\n  b) echo 2 ;;\nesac); ${R}; } | tee log`,
+    `X=$(cd a; for f in $(ls | sort); do echo $f; done)\nexit 0\n${R}`,
+    `X=$(echo a; exit 0)\nexit 0\n${R}`,
+  ];
+  for (const body of refused) {
+    for (const context of ["default step", "script (set -euo pipefail)"]) {
+      const wiring = (await contexts(body))[context];
+      assertEquals(wiring, "missing", `${context}: ${body}`);
+    }
+  }
+});
+
 // PR #5332 review round 7: a one-line `$( … )` holding `|`, `;` or `&&`, with
 // more words after it, opens no frame, so later commands are still judged.
 Deno.test("checkAwsEmulatorInCI - a one-line substitution with a separator inside it does not hide a later runner", async () => {

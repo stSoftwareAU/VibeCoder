@@ -832,6 +832,11 @@ export function reachableCommands(script: string): ReachableCommand[] {
   // Backticks of the earlier commands, modulo 2: odd while a backtick
   // substitution is open, across lines.
   let lineTicks = 0;
+  // `case` statements opened inside an untracked substitution and not yet
+  // closed by their `esac`, and whether the next command is their first arm's
+  // pattern (the header ended at `in`).
+  let untrackedCases = 0;
+  let patternNext = false;
   for (const [index, { words: all, sep }] of listed.entries()) {
     let words = all;
     const pendingBefore = linePending;
@@ -875,6 +880,13 @@ export function reachableCommands(script: string): ReachableCommand[] {
     // the frame stack; a closer, `(` or `)` stays a plain word for the
     // parenthesis balance (round 14).
     const untrackedHere = pendingBefore > 0 || lineTicks % 2 === 1;
+    let droppedParens = 0;
+    let droppedTicks = 0;
+    // The first word of a `case` arm inside an untracked `$( … )` is a pattern
+    // whose `)` closes nothing (`a) echo 1 ;; b) echo 2 ;; esac)`).
+    const patternHere = untrackedHere && untrackedCases > 0 &&
+      (sep === ";;" || patternNext) && !/^esac\)*$/.test(all[0] ?? "");
+    patternNext = false;
     while (words.length > 0) {
       if (untrackedHere) {
         const first = words[0] ?? "";
@@ -883,6 +895,19 @@ export function reachableCommands(script: string): ReachableCommand[] {
           continue;
         }
         if (UNTRACKED_HEADER_KEYWORDS.has(first)) {
+          // The header is dropped, but a `$(` or backtick it opens (`for f in
+          // $(ls | sort)`) still counts for the substitution balance, and a
+          // `case` pattern's `)` closes nothing (round 15).
+          for (const word of words) {
+            droppedParens += first === "case"
+              ? Math.max(0, parenBalance(word).delta)
+              : parenBalance(word).delta;
+            droppedTicks += backtickCount(word);
+          }
+          if (first === "case") {
+            untrackedCases++;
+            patternNext = words.at(-1) === "in";
+          }
           words = [];
           break;
         }
@@ -1037,13 +1062,15 @@ export function reachableCommands(script: string): ReachableCommand[] {
     // A backtick substitution may span lines, so the parity is carried to the
     // closing backtick, and every command up to it is untracked (round 13).
     for (const word of words) lineTicks += backtickCount(word);
-    lineTicks %= 2;
+    lineTicks = (lineTicks + droppedTicks) % 2;
+    if (untrackedCases > 0 && /^esac\)*$/.test(all[0] ?? "")) untrackedCases--;
     let opensSubst = false;
     if (closeAfter) {
       linePending = 0;
     } else {
-      let depth = linePending;
+      let depth = linePending + droppedParens;
       for (const word of words) depth += parenBalance(word).delta;
+      if (patternHere && parenBalance(words[0] ?? "").delta < 0) depth++;
       const after = listed[index + 1]?.sep ??
         (trailing === "\n" ? "" : trailing);
       if (after === "\n" || after === "") {
@@ -1110,7 +1137,9 @@ export function reachableCommands(script: string): ReachableCommand[] {
         stack.every(frameCertain);
       const stops = head === "exit" ||
         (head === "set" && readShellOptions(words.slice(at + 1)).noexec);
-      if (stops && certain) exited = true;
+      // An `exit` or `set -n` inside a `$( … )` or backtick substitution ends
+      // the substitution's subshell, not the body (PR #5332 review round 15).
+      if (stops && certain && !inUntrackedParen) exited = true;
     }
     if (closeAfter) prev = pop()?.skippedStatus ?? prev;
     pushSubst();
