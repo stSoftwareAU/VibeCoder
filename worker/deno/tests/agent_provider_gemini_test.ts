@@ -16,10 +16,10 @@
 import {
   assert,
   assertEquals,
+  assertMatch,
   assertNotEquals,
   assertStringIncludes,
 } from "@std/assert";
-import { isValidSessionId } from "../lib/session_resume.ts";
 import {
   agentProviderIds,
   CLAUDE_PROVIDER_ID,
@@ -227,7 +227,10 @@ Deno.test("gemini provider - a later phase recorded by another provider starts a
   });
   assertEquals(codex.includes("--resume"), false);
   const codexId = codex[codex.indexOf("--session-id") + 1];
-  assert(isValidSessionId(codexId!));
+  assertMatch(
+    codexId!,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
   assertNotEquals(codexId, "thread-abc");
 
   const legacy = gemini.buildInvocation({

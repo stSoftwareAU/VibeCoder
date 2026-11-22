@@ -329,7 +329,7 @@ Deno.test("buildGeminiArgs - both session ids is refused", () => {
         resumeSessionId: GEMINI_UUID,
       }),
     Error,
-    "--resume",
+    "together with --resume",
   );
 });
 

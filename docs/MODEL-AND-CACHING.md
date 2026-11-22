@@ -2417,7 +2417,11 @@ provider starts a fresh Gemini session with `--session-id` — a non-UUID
 foreign id, such as a Codex thread, is replaced by a fresh UUID. The two flags
 are never sent together (the CLI rejects the pair) and `latest` is never sent,
 so concurrent slots never resume each other's session: continuity is per
-issue, not per container. `geminiSessionFlags` in
+issue, not per container. When the CLI refuses the flags at start-up —
+`--session-id` naming a session that already exists, or `--resume` naming one
+missing from the Gemini home (a re-claim on a new container) — the run is
+retried once without session flags, as Claude's refusals are, so it loses
+continuity rather than failing. `geminiSessionFlags` in
 `worker/deno/lib/session_resume.ts` chooses the flags and `buildGeminiArgs` in
 `worker/deno/lib/gemini_executor.ts` emits them.
 

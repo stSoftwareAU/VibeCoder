@@ -1110,8 +1110,9 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
       // silently (Issue #364, fail-loud standard #3234).
       effort: routing.effort,
       phase: request.phase,
-      // The first phase opens a session under the worker-generated UUID; later
-      // phases resume the id Gemini reported (Issue #5342).
+      // No state: neither flag. First phase or another provider's state:
+      // `--session-id`. A later phase Gemini reported: `--resume <id>`
+      // (Issue #5342).
       ...geminiSessionFlags(request.sessionResumeState),
     });
   },
