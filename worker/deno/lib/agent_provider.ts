@@ -69,6 +69,7 @@ import {
   buildSessionResumeArgs,
   buildSessionResumeFlags,
   codexResumeSessionId,
+  geminiSessionFlags,
   sessionResumeForProvider,
   type SessionResumeState,
 } from "./session_resume.ts";
@@ -1109,9 +1110,10 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
       // silently (Issue #364, fail-loud standard #3234).
       effort: routing.effort,
       phase: request.phase,
-      // Gemini resumes its own most recent session; the first phase of an
-      // issue starts one instead (`phaseCount === 0`).
-      resumeSession: buildSessionResumeFlags(request.sessionResumeState).resume,
+      // No state: neither flag. First phase or another provider's state:
+      // `--session-id`. A later phase Gemini reported: `--resume <id>`
+      // (Issue #5342).
+      ...geminiSessionFlags(request.sessionResumeState),
     });
   },
 
