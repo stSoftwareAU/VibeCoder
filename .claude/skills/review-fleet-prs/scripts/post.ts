@@ -193,9 +193,9 @@ async function notify(title: string, message: string) {
 // Best effort: a failure to file one issue never stops the review being
 // posted. An issue already open under the same title is linked, not refiled.
 // An issue the reviewer named as covering the same defect class gets the new
-// instance as a comment (Issue #3598); if that issue is closed or cannot be
-// read, the finding is filed as new, never dropped. Exported, with `gh`
-// injectable, for its tests.
+// instance as a comment (Issue #3598); if that issue is closed, or the reviewed
+// PR closes it on merge, or it cannot be read, the finding is filed as new,
+// never dropped (Issue #5338). Exported, with `gh` injectable, for its tests.
 export async function fileUnrelatedIssues(
   pr: Pick<Input["pr"], "repo" | "number" | "url">,
   review: FableReview,
@@ -272,9 +272,28 @@ async function findOrFileIssue(
   };
 }
 
+/** One PR in `gh issue view`'s closedByPullRequestsReferences (Issue #5338). */
+type ClosingRef = {
+  number: number;
+  repository?: { name?: string; owner?: { login?: string } };
+};
+
+/** Whether a closing reference is the reviewed PR itself (Issue #5338). */
+function closesPr(
+  ref: ClosingRef,
+  pr: Pick<Input["pr"], "repo" | "number">,
+): boolean {
+  const repo = `${ref.repository?.owner?.login}/${ref.repository?.name}`;
+  return ref.number === pr.number &&
+    repo.toLowerCase() === pr.repo.toLowerCase();
+}
+
 /**
  * Comment a new instance onto the open issue the reviewer named, or return
- * null so the caller files it as a new issue instead.
+ * null so the caller files it as a new issue instead. An issue the reviewed
+ * PR closes on merge gets no comment, since the comment would go with it
+ * (Issue #5338), and a view without closedByPullRequestsReferences fails
+ * closed to filing.
  */
 async function addToExistingIssue(
   pr: Pick<Input["pr"], "repo" | "number" | "url">,
@@ -288,6 +307,7 @@ async function addToExistingIssue(
       url: string;
       title: string;
       state: string;
+      closedByPullRequestsReferences: ClosingRef[];
     } = JSON.parse(
       await gh([
         "issue",
@@ -296,10 +316,21 @@ async function addToExistingIssue(
         "-R",
         pr.repo,
         "--json",
-        "number,url,title,state",
+        "number,url,title,state,closedByPullRequestsReferences",
       ]),
     );
     if (existing.state !== "OPEN") return null;
+    if (!Array.isArray(existing.closedByPullRequestsReferences)) {
+      throw new Error("issue view returned no closedByPullRequestsReferences");
+    }
+    if (
+      existing.closedByPullRequestsReferences.some((ref) => closesPr(ref, pr))
+    ) {
+      console.error(
+        `#${number} closes when ${pr.url} merges; filing "${issue.title}" as new instead`,
+      );
+      return null;
+    }
     const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
     await Deno.writeTextFile(bodyFile, unrelatedInstanceComment(issue, pr));
     try {
