@@ -78,7 +78,8 @@
  *    of the oldest commit on no remote when no base is known. That is the
  *    commit set CI's `gitleaks.yml` scans (`<base tip>..<head>`), every commit
  *    the PR has ahead of its base and not only the commits this push adds, so
- *    a secret a review round added to an older commit is met before the push.
+ *    a secret an earlier, already-pushed commit of the PR added is still met
+ *    before the next push.
  *    It runs only where the repository tracks `.github/workflows/gitleaks.yml`,
  *    as the quality gate's gitleaks stage does. The babysitter tree gate turns
  *    it off (`secretScan: "off"`), because it runs its own scan of the range

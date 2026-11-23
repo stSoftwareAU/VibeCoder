@@ -40,8 +40,8 @@
  * {@link runGitleaksRangeCheck} over each pushed branch's range `<fork>..<head>`,
  * where `<fork>` is the merge-base with the PR's base. That is the commit set
  * CI's `gitleaks.yml` scans (`<base tip>..<head>`), not only the commits one
- * push adds, so a secret a review round added to a commit the PR already has
- * is met before the push. The babysitter tree gate turns that stage off,
+ * push adds, so a secret an earlier, already-pushed commit of the PR added is
+ * still met before the next push. The babysitter tree gate turns that stage off,
  * because {@link runGitleaksTreeCheck} runs its own scan.
  *
  * Australian English spelling used throughout (behaviour, licence, etc.).

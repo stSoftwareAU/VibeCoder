@@ -1,8 +1,9 @@
 /**
  * Behaviour tests for the pre-push gate's gitleaks stage (Issue #5430).
  *
- * PR #5322 merged 21 secret-shaped findings that the three PR-feedback pushes
- * added, because the pre-push gate ran no gitleaks and only `./quality.sh` did.
+ * PR #5322 merged secret-shaped findings from commits pushed after the PR was
+ * raised, and the pre-push gate that guards the fleet's pushes to an open PR
+ * ran no gitleaks — only `./quality.sh` did.
  * The stage scans each pushed branch's commit range `<fork>..<head>`, the range
  * CI's `gitleaks.yml` scans (`<base tip>..<head>`), through `runPrePushGate`.
  *
