@@ -395,16 +395,17 @@ flowchart LR
     head was left out because it does not return on some of these inputs.
 - **Review round 15** — two items:
   - **A masked assignment on the line after the inner value.** The wrapped-run
-    check read `<value>` followed by an `API_KEY` assignment of another value from the unmasked text and kept
-    main's result, but main runs the decode pass after the assignment rule, so
-    it sees `<value>\nAPI_KEY=` and masks nothing. The run is now cut at the
-    first value the walk masks after the inner value (`maskedValueStart`), so
-    the inner label is read. `credentials: DEPLOY_TOKEN = <value>` followed by
-    `\nAPI_KEY=…`, `\r\nAPI_KEY=…`, `\nDB_PASSWORD=…`, `\ntoken=… and more`,
-    `\nprivate-key=…`, `\nPASSWORD_FILE=…`, with a short value (`pw42x9z`) and
-    the `The secret: api_key: <value>\npassword=…` form, all mask the inner
-    value. A next line the rule leaves unmasked (`API_KEY=`, `API_KEY=true`,
-    `USER=bob`, a blank line, a same-line key, a colon key) and the bare
+    check read `<value>` followed by an `API_KEY` assignment of another value
+    from the unmasked text and kept main's result, but main runs the decode pass
+    after the assignment rule, so it sees `<value>\nAPI_KEY=` and masks nothing.
+    The run is now cut at the first value the walk masks after the inner value
+    (`maskedValueStart`), so the inner label is read.
+    `credentials: DEPLOY_TOKEN = <value>` followed by `\nAPI_KEY=…`,
+    `\r\nAPI_KEY=…`, `\nDB_PASSWORD=…`, `\ntoken=… and more`, `\nprivate-key=…`,
+    `\nPASSWORD_FILE=…`, with a short value (`pw42x9z`) and the
+    `The secret: api_key: <value>\npassword=…` form, all mask the inner value. A
+    next line the rule leaves unmasked (`API_KEY=`, `API_KEY=true`, `USER=bob`,
+    a blank line, a same-line key, a colon key) and the bare
     `DEPLOY_TOKEN = API_TOKEN=` then `hunter2zzzz` keep their output. Other
     paths checked: the same run read for a run that starts before the inner
     label uses the same cut (only keys after the inner value count); matrix of 6
@@ -772,9 +773,10 @@ flowchart LR
     covers this shape.
 - When more than 8 credential keys sit between the inner value and the first
   value masked after it (eight lines such as `GITHUB_TOKEN`, `NPM_TOKEN`, ...
-  with no separator, then an `ADMIN_TOKEN` assignment of another value), the wrapped run is read
-  whole and keeps the base result, so the inner value is published as on base. A
-  test pins that output, and seven such lines mask the value.
+  with no separator, then an `ADMIN_TOKEN` assignment of another value), the
+  wrapped run is read whole and keeps the base result, so the inner value is
+  published as on base. A test pins that output, and seven such lines mask the
+  value.
 - One label-as-value shape is still not final, and publishes nothing: a
   single-quoted value of glued labels that the walk reads as the next chain link
   (`'app.token=password:`), whose closing quote a later flag takes. A second
