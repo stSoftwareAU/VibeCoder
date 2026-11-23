@@ -516,22 +516,34 @@ only when it is the repository's test, in one of three forms:
   `deno task <test-named task>`, `npm test` or `npm run test:aws`,
   `make <test-named target>`, a Maven or Gradle test goal, or a
   repository script whose file name names a test
-  (`./scripts/run-tests.sh`). Probes such as `pytest --version` and
-  install steps never count;
+  (`./scripts/run-tests.sh`). A test-named repository script must exist
+  in the checkout (an absent or out-of-checkout relative script path earns nothing; an absolute tool path such as `/usr/local/bin/pytest` is judged as a command) and
+  is credited by its name; the scan does not read it to judge test
+  adequacy. Probes such as `pytest --version` and install steps never
+  count;
 - (b) a repository script that itself has a test command of that kind
   whose failure fails the script, one level only
   (`aws-emulator-run -- ./ci/run.sh`, where `run.sh` runs
-  `deno task test` under `set -euo pipefail`); or
+  `deno task test` under `set -euo pipefail`). It is followed only when
+  the runner is in the step itself: one script is read per step, so a
+  step script whose own runner COMMAND is another script does not follow
+  that script; or
 - (c) a test-named script the step ran that re-executes itself under the
-  runner (`exec aws-emulator-run -- "$0"`, or a variable assigned from
-  `${BASH_SOURCE[0]}` or `$0`), as VibeCoder's own
-  `infra/cloudformation/test-aws-emulator.sh` does.
+  runner (`exec aws-emulator-run -- "$0"`, or a variable). The variable's
+  last assignment in the script must be exactly the script's own path:
+  `$0`, `${BASH_SOURCE[0]}`, a `$DIR/${BASH_SOURCE[0]##*/}` form (one
+  `$DIR/` or `${DIR}/` directory), or the `realpath` / `readlink -f` of
+  one of those. `V="echo $0"`, or a variable reassigned afterwards, earns
+  nothing. VibeCoder's own `infra/cloudformation/test-aws-emulator.sh`
+  does this.
 
 Anything else earns no credit: `echo ok`, `aws --version`, a `curl`
 health probe, `sleep`, `sh -c 'exit 0'`, or `bash -c '… || true'` (a
 `-c` command string is never followed). The finding's diagnostics then
 say ``… runs `<COMMAND>` through aws-emulator-run, which is not a
-recognised repository test command``. A no-op COMMAND (`true`, `:`) is not
+recognised repository test command`` (or, when the runner is inside a
+script the step ran, ``… runs `<COMMAND>` through aws-emulator-run in
+`<script path>`, which is not a recognised repository test command``). A no-op COMMAND (`true`, `:`) is not
 recognised as a runner invocation at all, so it earns no credit and adds no
 diagnostic.
 

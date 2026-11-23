@@ -538,9 +538,33 @@ function assignmentValues(text: string, name: string): string[] {
     .map((m) => m[2] ?? "");
 }
 
-/** A value ending in the script's own path expansion, then only closing quotes/parens. */
-const SELF_VALUE =
-  /(?:\$\{BASH_SOURCE(?:\[0\])?(?:##\*\/)?\}|\$BASH_SOURCE|\$\{0(?:##\*\/)?\}|\$0)["')]*$/;
+/** Exactly the script's own path expansion. */
+const SELF_PLAIN =
+  /^(?:\$(?:0|BASH_SOURCE)|\$\{(?:0|BASH_SOURCE(?:\[0\])?)\})$/;
+/** Exactly one `$VAR/` or `${VAR}/` directory, then the script's own basename. */
+const SELF_DIR_BASENAME =
+  /^\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})\/\$\{(?:0|BASH_SOURCE\[0\])##\*\/\}$/;
+/** Exactly `$(realpath X)` or `$(readlink -f X)`, capturing X. */
+const SELF_RESOLVED = /^\$\((?:realpath|readlink -f) ([^()]*)\)$/;
+
+/** One layer of surrounding double quotes removed. */
+function unquoteOnce(value: string): string {
+  return value.length >= 2 && value.startsWith('"') && value.endsWith('"')
+    ? value.slice(1, -1)
+    : value;
+}
+
+/**
+ * True when the value of a variable is exactly the script's own path: `$0`,
+ * `${BASH_SOURCE[0]}`, a `$DIR/${BASH_SOURCE[0]##*\/}` form, or the
+ * `realpath` / `readlink -f` of one of the plain forms.
+ */
+function isSelfValue(raw: string): boolean {
+  const value = unquoteOnce(raw.trim());
+  if (SELF_PLAIN.test(value) || SELF_DIR_BASENAME.test(value)) return true;
+  const resolved = SELF_RESOLVED.exec(value);
+  return resolved !== null && SELF_PLAIN.test(unquoteOnce(resolved[1] ?? ""));
+}
 
 /** A command word that is the running script itself, with no variable name. */
 const SELF_WORD = /^\$(?:0|BASH_SOURCE)$|^\$\{(?:0|BASH_SOURCE(?:\[0\])?)\}$/;
@@ -559,10 +583,9 @@ function commandIsSelfReference(
   if (SELF_WORD.test(word)) return true;
   const m = VARIABLE_WORD.exec(word);
   const name = m?.[1] ?? m?.[2];
-  return name !== undefined &&
-    assignmentValues(scriptText, name).some((v) =>
-      SELF_VALUE.test(v.trimEnd())
-    );
+  if (name === undefined) return false;
+  const last = assignmentValues(scriptText, name).at(-1);
+  return last !== undefined && isSelfValue(last);
 }
 
 /** The script a step ran and its text, for the self re-exec rule. */
@@ -582,10 +605,18 @@ function runnerRunsRepositoryTest(
   readScript: ScriptReader | undefined,
   containing?: ContainingScript,
 ): boolean {
+  const path = segmentScriptPath(commandWords);
+  const text = readScript === undefined || path === null
+    ? null
+    : readScript(path);
+  // A relative, unexpanded repository script the checkout does not hold (or
+  // the reader refuses) earns nothing; an absolute tool path is not judged here.
+  if (
+    readScript !== undefined && path !== null && text === null &&
+    !path.startsWith("/") && !path.includes("$")
+  ) return false;
   if (looksLikeTestCommand(commandWords)) return true;
   if (readScript !== undefined) {
-    const path = segmentScriptPath(commandWords);
-    const text = path === null ? null : readScript(path);
     if (
       text !== null &&
       keptCommands(text, false).some((k) =>
@@ -1267,7 +1298,7 @@ function serverHits(
     if (inner.length === 0) continue;
     const containing = { stepWords: cmd.words, text };
     const tests = inner.filter((k) =>
-      runnerRunsRepositoryTest(k.command, readScript, containing)
+      runnerRunsRepositoryTest(k.command, undefined, containing)
     );
     const keptInner = inner.filter((k) => k.kept);
     hits.push({
