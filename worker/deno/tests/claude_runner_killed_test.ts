@@ -40,6 +40,7 @@ import {
 import { type AgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 import { DEFAULT_ORPHAN_COLLECTOR_DEPS } from "../lib/orphan_collector.ts";
+import { DEFAULT_LEFTOVER_REAPER_DEPS } from "../lib/agent_leftover_reaper.ts";
 
 // ---------------------------------------------------------------------------
 // Stub harness — a fake agent, named by path (Issue #959), that records how
@@ -823,6 +824,11 @@ Deno.test({
           streamDrainCapSeconds: 2,
           onActivity: signals.onActivity,
           probeMemoryPressure: () => Promise.resolve({ level: "ok" as const }),
+          // The reaper (Issue #4815) would terminate the holder after settling; this test isolates the drain cap.
+          leftoverReaperDeps: {
+            ...DEFAULT_LEFTOVER_REAPER_DEPS,
+            supported: false,
+          },
         },
         NO_RETRY_WAIT,
       );
