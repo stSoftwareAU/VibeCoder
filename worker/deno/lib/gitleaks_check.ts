@@ -4,10 +4,11 @@
  *
  * Three fleet PRs (#5014, #5091, #5119) failed the blocking `gitleaks / gitleaks`
  * CI check, and nothing had scanned them locally, so each was met as a red PR
- * after the push. This stage runs the same scan the licence-less CI fallback in
- * `.github/workflows/gitleaks.yml` runs: the same pinned CLI version, the same
- * repository config and the same flags, over the same commit set CI scans
- * (`base..HEAD`). A local pass therefore predicts a CI pass.
+ * after the push. This stage runs the same scan as the PR job's commit-range
+ * step in `.github/workflows/gitleaks.yml`: the same pinned CLI version, the
+ * same repository config and the same flags, over the same commit set CI scans
+ * (`base..HEAD`). CI also scans the merged result (Issue #5436), which this
+ * stage does not, so a local pass predicts the CI range scan's pass.
  *
  * Pipeline:
  *   1. Not a git repository → SKIPPED (there is no commit range to scan).
@@ -41,7 +42,9 @@
  * where `<fork>` is the merge-base with the PR's base. That is the commit set
  * CI's `gitleaks.yml` scans (`<base tip>..<head>`), not only the commits one
  * push adds, so a secret an earlier, already-pushed commit of the PR added is
- * still met before the next push. The babysitter tree gate turns that stage off,
+ * still met before the next push. For the CI merged-result scan (#5436), the
+ * pre-push gate also scans a temporary merge commit against the PR base tip.
+ * The babysitter tree gate turns that stage off,
  * because {@link runGitleaksTreeCheck} runs its own scan.
  *
  * Australian English spelling used throughout (behaviour, licence, etc.).
@@ -64,7 +67,10 @@ import { redactedLineTail } from "./redacted_text.ts";
 /** The gitleaks version `.github/workflows/gitleaks.yml` downloads. */
 export const GITLEAKS_VERSION = "8.30.1";
 
-/** The repository config both the licensed action and the CLI fallback read. */
+/**
+ * The repository config every gitleaks scan in `.github/workflows/gitleaks.yml`
+ * reads.
+ */
 export const GITLEAKS_CONFIG_PATH = ".github/gitleaks.toml";
 
 /**
@@ -100,9 +106,9 @@ export interface GitleaksCheckResult {
 
 /**
  * Arguments for the gitleaks scan of a commit range. The first four flags after
- * `git` mirror the CI fallback in `gitleaks.yml`. `--verbose` and `--no-color`
- * are local additions, so the finding's file, line and rule are printed (the
- * secret stays redacted). They do not change the verdict.
+ * `git` mirror the commit-range scan in `gitleaks.yml`. `--verbose` and
+ * `--no-color` are local additions, so the finding's file, line and rule are
+ * printed (the secret stays redacted). They do not change the verdict.
  */
 export function gitleaksScanArgs(
   range: string,
@@ -691,6 +697,9 @@ export type GitleaksRangeOutcome =
 
 /** Injection points for {@link runGitleaksRangeCheck} (used by the tests). */
 export interface GitleaksRangeCheckOptions {
+  /** CI merged-result scan, against this PR base ref (Issue #5436). */
+  mergeBaseRef?: string;
+  git?: GitRunner;
   /** Inject a version probe. Returns null when gitleaks cannot run. */
   probeVersion?: () => Promise<string | null>;
   /** Inject the scan. Defaults to the deadline-bound spawn of `gitleaks`. */
@@ -767,24 +776,86 @@ export async function runGitleaksRangeCheck(
   const scan = options.run ??
     ((args: string[]) =>
       spawnWithDeadline("gitleaks", args, dir, GITLEAKS_DEADLINE_MS));
-  const run = await scan(gitleaksScanArgs(`${base}..${head}`, configPath));
+  async function scanSubject(
+    logOptions: string,
+    subject: string,
+  ): Promise<GitleaksRangeOutcome> {
+    const run = await scan(gitleaksScanArgs(logOptions, configPath));
 
-  if (run.timedOut) {
+    if (run.timedOut) {
+      return {
+        kind: "infrastructure",
+        message: `gitleaks: scan of ${subject} exceeded the ` +
+          `${
+            GITLEAKS_DEADLINE_MS / 1000
+          }s local deadline, ${description} — a ` +
+          "scan that did not finish is not clean, an infrastructure fault, not " +
+          "a finding",
+      };
+    }
+
+    const judged = judgeRun(run, subject, description);
+    if (judged.verdict === "clean") {
+      return { kind: "passed", summary: judged.output };
+    }
+    if (judged.verdict === "leaks") {
+      return { kind: "blocked", message: judged.output };
+    }
+    return { kind: "infrastructure", message: judged.output };
+  }
+
+  const range = await scanSubject(
+    `${base}..${head}`,
+    `commit range ${shortRange}`,
+  );
+  if (range.kind !== "passed" || options.mergeBaseRef === undefined) {
+    return range;
+  }
+  // Build the same two-parent tree as CI without touching the index, refs or
+  // worktree. Resolve the base once so both git operations use the same tip.
+  const git = options.git ?? makeGitRunner(dir);
+  const tip = await git([
+    "rev-parse",
+    "--verify",
+    "--end-of-options",
+    `${options.mergeBaseRef}^{commit}`,
+  ]);
+  const baseTip = tip.stdout.trim();
+  if (tip.exitCode !== 0 || !FULL_SHA.test(baseTip)) {
     return {
       kind: "infrastructure",
-      message: `gitleaks: scan of commit range ${shortRange} exceeded the ` +
-        `${GITLEAKS_DEADLINE_MS / 1000}s local deadline, ${description} — a ` +
-        "scan that did not finish is not clean, an infrastructure fault, not " +
-        "a finding",
+      message: "gitleaks: cannot resolve the PR base tip",
     };
   }
-
-  const judged = judgeRun(run, `commit range ${shortRange}`, description);
-  if (judged.verdict === "clean") {
-    return { kind: "passed", summary: judged.output };
+  const tree = await git(["merge-tree", "--write-tree", baseTip, head]);
+  if (tree.exitCode !== 0 || !FULL_SHA.test(tree.stdout.trim())) {
+    return {
+      kind: "infrastructure",
+      message: "gitleaks: cannot construct a clean PR merge tree",
+    };
   }
-  if (judged.verdict === "leaks") {
-    return { kind: "blocked", message: judged.output };
+  const merge = await git([
+    "-c",
+    "user.name=VibeCoder",
+    "-c",
+    "user.email=vibecoder@localhost",
+    "commit-tree",
+    tree.stdout.trim(),
+    "-p",
+    baseTip,
+    "-p",
+    head,
+    "-m",
+    "Local gitleaks merged-result scan",
+  ]);
+  if (merge.exitCode !== 0 || !FULL_SHA.test(merge.stdout.trim())) {
+    return {
+      kind: "infrastructure",
+      message: "gitleaks: cannot construct the PR merge commit",
+    };
   }
-  return { kind: "infrastructure", message: judged.output };
+  return await scanSubject(
+    `--first-parent --diff-merges=first-parent -1 ${merge.stdout.trim()}`,
+    "merged result",
+  );
 }

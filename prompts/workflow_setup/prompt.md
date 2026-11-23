@@ -325,8 +325,8 @@ name: Gitleaks
 #
 # Deliberately omitted (Issue #594) so the template runs unmodified on a
 # freshly set-up repository, which has neither of them yet:
-#   - the `environment: scanning-secrets` gate this repository's own copy
-#     uses to scope the licence secret — add it once the GitHub
+#   - the `environment: scanning-secrets` gate that scopes the licence
+#     secret — add it once the GitHub
 #     Environment exists;
 #   - `GITLEAKS_CONFIG: .github/gitleaks.toml` — add it once the repo
 #     commits an allowlist config, and pass `--config` to the CLI

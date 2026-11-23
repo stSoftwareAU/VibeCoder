@@ -1238,41 +1238,13 @@ Deno.test(
 );
 
 Deno.test(
-  "workflow_definitions - local gitleaks.yml fetches PR base branch before action",
+  "workflow_definitions - local gitleaks.yml satisfies the detection patterns",
   async () => {
     const workflowUrl = new URL(
       "../../../.github/workflows/gitleaks.yml",
       import.meta.url,
     );
     const content = await Deno.readTextFile(workflowUrl);
-    assertEquals(
-      content.includes("Fetch base branch"),
-      true,
-      "local gitleaks.yml must include 'Fetch base branch' step (Issue #1756)",
-    );
-    const fetchIdx = content.indexOf("Fetch base branch");
-    const actionIdx = content.indexOf("gitleaks/gitleaks-action");
-    assertEquals(
-      fetchIdx >= 0 && actionIdx >= 0 && fetchIdx < actionIdx,
-      true,
-      "Fetch base branch step must precede gitleaks-action invocation",
-    );
-  },
-);
-
-Deno.test(
-  "workflow_definitions - local gitleaks.yml wires GITLEAKS_LICENSE secret",
-  async () => {
-    const workflowUrl = new URL(
-      "../../../.github/workflows/gitleaks.yml",
-      import.meta.url,
-    );
-    const content = await Deno.readTextFile(workflowUrl);
-    assertEquals(
-      content.includes("secrets.GITLEAKS_LICENSE"),
-      true,
-      "local gitleaks.yml should pull GITLEAKS_LICENSE from secrets",
-    );
     // Detection pattern still satisfied
     const lower = content.toLowerCase();
     const spec = WORKFLOW_SPECS.find((s) => s.id === "gitleaks");
@@ -1337,37 +1309,6 @@ Deno.test(
       true,
       "GITLEAKS_LICENSE must be exposed at job level for the if: guard",
     );
-  },
-);
-
-Deno.test(
-  "workflow_definitions - local gitleaks.yml falls back to the open-source CLI when unlicensed",
-  async () => {
-    const content = await Deno.readTextFile(
-      new URL("../../../.github/workflows/gitleaks.yml", import.meta.url),
-    );
-    assertEquals(
-      content.includes("env.GITLEAKS_LICENSE != ''"),
-      true,
-      "licensed action must be gated on a present licence",
-    );
-    assertEquals(
-      content.includes("env.GITLEAKS_LICENSE == ''"),
-      true,
-      "CLI fallback must be gated on an absent licence",
-    );
-    assertEquals(
-      content.includes("gitleaks git"),
-      true,
-      "fallback must invoke the gitleaks CLI",
-    );
-    assertEquals(
-      content.includes("sha256sum -c"),
-      true,
-      "fallback must verify the downloaded binary against a checksum",
-    );
-    // Must still parse as valid YAML.
-    assertNotEquals(parseYaml(content), undefined);
   },
 );
 
