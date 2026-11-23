@@ -4192,7 +4192,9 @@ interface BaseBranchDeferralOptions {
  * a marker that would not build) returns `none` and charges an attempt, so an
  * unverifiable claim never parks a pull request for ever. A dependency-audit
  * check is never deferred or held at all (Issue #3141): the pull request can
- * bump the vulnerable package itself.
+ * bump the vulnerable package itself. A repair pull request for a red default
+ * branch (head branch `fix/red-default-branch-*`) also returns `none`, because
+ * it exists to fix the base's failure (Issue #5437).
  *
  * @param options - The agent's message, the failure, and the `gh` runner.
  * @returns What the caller should do.

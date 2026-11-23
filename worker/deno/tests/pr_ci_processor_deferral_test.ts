@@ -26,6 +26,7 @@ import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { parseCiFixAttemptMarkers } from "../lib/ci_fix_attempt_markers.ts";
 import { RED_DEFAULT_BRANCH_REPAIR_PREFIX } from "../lib/red_default_branch_repair.ts";
+import { RED_DEFAULT_BRANCH_REPAIR_NOTE } from "../lib/prompt_builder.ts";
 import type { GitHubComment, Logger } from "../types.ts";
 import type {
   ClaudeDeps,
@@ -71,6 +72,8 @@ interface Captured {
   warnings: string[];
   /** Reads of the base branch's (`develop`) check runs (Issue #3141). */
   baseCheckRunReads?: number;
+  /** The `prompt` of each agent run the scenario spawned, in order (Issue #5437). */
+  prompts: string[];
 }
 
 /** The base branch head the stubbed `develop` resolves to (Issue #4680). */
@@ -432,6 +435,7 @@ async function runDeferralScenario(
       labelsAdded: [],
       errors: [],
       warnings: [],
+      prompts: [],
     };
     // The fixture's first annotation describes the job failure; notices are
     // not automatically copied into the job log.
@@ -447,11 +451,15 @@ async function runDeferralScenario(
     });
 
     const mockClaude: Partial<ClaudeDeps> = {
-      runClaudeWithRetry: (() =>
-        Promise.resolve({
+      // The first argument is the run's options; its `prompt` is what the
+      // agent was given (Issue #5437).
+      runClaudeWithRetry: ((options: { prompt: string }) => {
+        captured.prompts.push(options.prompt);
+        return Promise.resolve({
           ok: true,
           value: { output: "", exitCode: 0, timedOut: false },
-        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+        });
+      }) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
 
     const github: Partial<GitHubDeps> = {
@@ -573,6 +581,35 @@ Deno.test("processCiFailure - a repair PR for a red default branch is never defe
     `expected the repair-PR refusal warning; got: ${
       captured.warnings.join(" | ")
     }`,
+  );
+  // The repair PR's agent is told it is repairing the red base (Issue #5437).
+  assertEquals(
+    captured.prompts.length,
+    1,
+    `expected exactly one agent prompt; got ${captured.prompts.length}`,
+  );
+  assertStringIncludes(
+    captured.prompts[0] ?? "",
+    RED_DEFAULT_BRANCH_REPAIR_NOTE,
+  );
+
+  // Negative control (Issue #5437): the same failure on the default branch,
+  // with the base green so the claim is refuted and the ordinary path runs
+  // (a red base would defer before any agent is spawned). Its prompt carries
+  // no repair note.
+  const ordinary = await runDeferralScenario(AGENT_MESSAGE, {
+    baseCheckRuns: baseCheckRunsPayload("success"),
+  });
+  assertEquals(
+    ordinary.prompts.length,
+    1,
+    `expected exactly one agent prompt; got ${ordinary.prompts.length}`,
+  );
+  assertEquals(
+    ordinary.prompts.some((prompt) =>
+      prompt.includes(RED_DEFAULT_BRANCH_REPAIR_NOTE)
+    ),
+    false,
   );
 });
 
@@ -730,6 +767,7 @@ Deno.test("processCiFailure - a deferral comment that fails to post is never rep
       labelsAdded: [],
       errors: [],
       warnings: [],
+      prompts: [],
     };
     const inner = makeGhRunner(captured, {
       failingLog: semgrepLog(SEMGREP_RULE),
