@@ -2055,10 +2055,12 @@ async function mergeDefaultBranchIntoSyncBranch(
  * has (a repair has landed) needs no PR.
  *
  * Before a worker repair PR is opened or adopted, an open human fix PR against
- * the default branch is looked for: one that is green on every held check, or
- * whose CI is still running with no held check failed (Issue #5437), since a
- * held check may not exist yet while CI is in flight. A fleet-authored or bot
- * PR is never waited on. When one is found, the status is posted to it as a comment
+ * the default branch is looked for: a human (not fleet or bot) PR whose title
+ * or branch names a held check, or which references a held PR, and that is
+ * green on every held check, or whose CI is still running with no held check
+ * failed (Issue #5437), since a held check may not exist yet while CI is in
+ * flight. A fleet-authored or bot PR is never the fix, green or running. When
+ * one is found, the status is posted to it as a comment
  * and no repair PR is made, so the repair is not written a second time while
  * the human's fix runs. A running fix gets the pending wording. If the fix
  * search or the comment read fails, the worker repair PR path runs. Either way,
@@ -2374,9 +2376,11 @@ async function handHeldFailureToRepairPr(input: {
  * its failures are logged as `stale-sync-head` and never handed over. While the
  * tip is red on them it is held for the repair PR, and once the tip is green on
  * them the default branch is merged into the sync branch. A sync PR whose ancestry cannot be decided gets no CI-fix
- * target this scan. Before a repair PR is opened, an open human fix PR that is
- * green on every held check, or whose CI is still running with no held check
- * failed (Issue #5437), is adopted: the status is commented on it.
+ * target this scan. Before a repair PR is opened, an open human (not fleet or
+ * bot) fix PR whose title or branch names a held check, or which references a
+ * held PR, and that is green on every held check, or whose CI is still running
+ * with no held check failed (Issue #5437), is adopted: the status is commented
+ * on it.
  *
  * @param options - CI check scan options
  * @returns Result containing the highest priority failed check, or null

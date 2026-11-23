@@ -5417,7 +5417,7 @@ flowchart TD
     H --> F{"Head behind the tip?"}
     F -- yes --> FF["Fast-forward to the tip, force=false"]
     H --> R{"Tip red on a held check?"}
-    R -- yes --> G{"Open human fix PR naming a held check or held PR, green on every held check or still running with none failed?"}
+    R -- yes --> G{"Open human (not fleet or bot) fix PR whose title or branch names a held check, or which references a held PR, green on every held check or still running with none failed?"}
     G -- yes --> C["One status comment, edited in place; no repair PR"]
     C --> W["A fleet status on any other PR is withdrawn, naming the fix"]
     P --> W
@@ -5467,34 +5467,38 @@ flowchart TD
   `PATCH git/refs/heads/<branch>` and `force=false`, so GitHub refuses anything
   that is not a fast-forward and no commit is lost. Once a repair lands, the
   stale sync PRs pick it up on the next scan.
-- **A human fix that is green, or still running, is adopted, not duplicated.** Before a repair PR is opened
-  or adopted, the open PRs against the default branch are listed
-  (`gh pr list --base <default> --state open`, limit 30). The first one that is
-  not a sync or repair PR, is not held, names a held check or a held PR (below),
-  whose head contains the default
-  branch's tip (the compare status is `ahead`, so a stale branch cut before the
-  red commit does not count), and whose head commit has succeeded on every held
-  check is the fix, and a green fix always wins. Failing that, the first
-  candidate by a login outside the fleet and not a bot account, with no held
-  check completed without `success`, `neutral` or `skipped` (so `failure`,
+- **A human fix that is green, or still running, is adopted, not duplicated.**
+  Before a repair PR is opened or adopted, the open PRs against the default
+  branch are listed (`gh pr list --base <default> --state open`, limit 30). A
+  candidate is one that is not a sync or repair PR, is not held, is by a login
+  outside the fleet and not a bot account, names a held check or a held PR
+  (below), and whose head contains the default branch's tip (the compare status
+  is `ahead`, so a stale branch cut before the red commit does not count). The
+  first candidate whose head commit has succeeded on every held check is the
+  fix, and a green fix always wins. Failing that, the first candidate with no
+  held check completed without `success`, `neutral` or `skipped` (so `failure`,
   `timed_out` and `cancelled` all count) and at least one check run not yet
-  `completed` that
-  started within two hours (`RUNNING_FIX_WAIT_MS`), and which also names a held
-  check or a held PR, is the pending fix. A candidate names a held check when
-  its title, body or head branch contains the check name (case-insensitive, a
-  whole token: the characters either side are not ASCII letters or digits), and
-  names a held PR when it contains `#N` not followed by another digit. A
-  candidate naming neither is skipped with an info log, on the green and the
-  pending path alike, because a diff-scoped check such as gitleaks (which scans
-  only `base.sha..head.sha`) passes on any PR that adds no finding, so green
-  alone does not show the PR fixes main. #5434 qualified because its branch
-  `fix/gitleaks-allow-5310-fixtures` and title name gitleaks. The list reads
-  `title` and `body` as well, and a row missing either field fails the read
-  (the scan falls back to the repair PR). A held
-  check may not exist yet while CI is in flight (the `gate` check runs after the
-  others), so an absent one is not a failure. A fleet or bot PR is never waited
-  on, and a run with no usable start time does not hold the repair. A candidate whose ancestry
-  cannot be read is skipped with a warning quoting the error. The status is then
+  `completed` that started within two hours (`RUNNING_FIX_WAIT_MS`) is the
+  pending fix. A fleet or bot PR is never the fix on either path, green or
+  running: it is skipped with an info log naming its author (previously only
+  the pending path excluded them, so a fleet PR green on a diff-scoped check
+  could be adopted). A candidate names a held check when its title or head
+  branch contains the check name (case-insensitive, a whole token: the
+  characters either side are not ASCII letters or digits). The body does not
+  count for check names, because PR bodies routinely mention generic check
+  words such as "quality gate", and a held check may be called `gate`. A
+  candidate names a held PR when its title, body or head branch contains `#N`
+  not followed by another digit. A candidate naming neither is skipped with an
+  info log, on the green and the pending path alike, because a diff-scoped
+  check such as gitleaks (which scans only `base.sha..head.sha`) passes on any
+  PR that adds no finding, so green alone does not show the PR fixes main.
+  #5434 qualified because its branch `fix/gitleaks-allow-5310-fixtures` and
+  title name gitleaks. The list reads `title` and `body` as well, and a row
+  missing either field fails the read (the scan falls back to the repair PR). A
+  held check may not exist yet while CI is in flight (the `gate` check runs
+  after the others), so an absent one is not a failure. A run with no usable
+  start time does not hold the repair. A candidate whose ancestry cannot be
+  read is skipped with a warning quoting the error. The status is then
   kept as one comment on it,
   carrying the `vibe-red-default-branch-hold` marker, and no repair PR is made.
   The status is the newest comment by a fleet login whose body ends with a
@@ -5527,9 +5531,10 @@ flowchart TD
   scan. A failed list, read or edit is logged with its error, and the next scan
   tries again.
 - **One repair PR.** A repair PR is raised only when the tip itself is red on a
-  held check, and no human fix PR was found that names a held check or held PR
-  and is green on every held check or still running with none failed. It is an empty commit on the
-  tip (GitHub refuses a PR with no commits), on a `fix/red-default-branch-<sha12>`
+  held check, and no human (not fleet or bot) fix PR was found whose title or
+  branch names a held check, or which references a held PR, and that is green
+  on every held check or still running with none failed. It is an empty commit
+  on the tip (GitHub refuses a PR with no commits), on a `fix/red-default-branch-<sha12>`
   branch, opened against the default branch. A later scan adopts an open repair
   PR with that prefix (the lowest number) rather than opening another: one in
   the scan's listing, or else one found by a direct

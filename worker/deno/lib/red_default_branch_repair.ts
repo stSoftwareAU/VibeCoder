@@ -14,11 +14,12 @@
  *   are held, which PR carries the fix, and the worker marker that lets a
  *   later scan tell whether the status is already current.
  * - `findGreenFixPr` finds an open human-authored fix PR against the default
- *   branch whose head contains the default branch's tip, whose title, body or
- *   branch names a held check or held PR, and whose own CI is
- *   green on every held check, or is still running with no held check failed
- *   (Issue #5437: a held check may not exist yet while CI is in flight, and a
- *   fleet-authored or bot PR is never waited on). `postRedDefaultBranchStatusComment`
+ *   branch whose head contains the default branch's tip, whose title or branch
+ *   names a held check (or whose title, body or branch references a held PR),
+ *   and whose own CI is green on every held check, or is still running with no
+ *   held check failed (Issue #5437: a held check may not exist yet while CI is
+ *   in flight). A fleet-authored or bot PR is never the fix, green or running.
+ *   `postRedDefaultBranchStatusComment`
  *   then records the status there as one comment, edited in place when the
  *   tip or the held set changes, so the human's body is never overwritten.
  *   Only when no such PR exists does the worker open or adopt its repair PR.
@@ -610,10 +611,11 @@ export interface GreenFixPrRequest {
    */
   readSuccessfulCheckNames: (sha: string) => Promise<ReadonlySet<string>>;
   /**
-   * The logins of the fleet's own PRs. A PR by one of them is never waited on
-   * while its CI runs: it is not a human fix, and waiting on it would starve
-   * the repair while fleet CI churns (Issue #5437). Bot accounts are never
-   * waited on either, by `isBotAuthorForMaintenance`.
+   * The logins of the fleet's own PRs. A PR by one of them is never the fix,
+   * whether green or with its CI still running: it is not a human fix, a
+   * diff-scoped check passes on it whatever it changes, and waiting on it would
+   * starve the repair while fleet CI churns (Issue #5437). Bot accounts are
+   * never the fix either, by `isBotAuthorForMaintenance`.
    */
   fleetLogins: readonly string[];
   /**
@@ -646,8 +648,8 @@ export interface GreenFixPr {
  * The open PRs in a
  * `gh pr list --json number,headRefName,headRefOid,author,title,body`
  * answer. Throws when the answer is not a JSON array, or when a row lacks its
- * number, head branch, head commit, author login, title or body, naming the missing field
- * (Issue #5437).
+ * number, head branch, head commit, author login, title or body, naming the
+ * missing field (Issue #5437).
  */
 function parseFixCandidates(output: string): FixCandidate[] {
   const rows: unknown = JSON.parse(output);
@@ -726,18 +728,23 @@ async function listOpenPrsAgainst(
 }
 
 /**
- * Whether a fix candidate's title, body or branch names a held check or a held
- * PR. A PR that names the failing check or a held PR is about the failure; one
- * that names neither is not taken as the fix, because a diff-scoped check
- * (gitleaks) passes on any PR that adds no finding (Issue #5437). Matching is
- * case-insensitive and by whole token, using `indexOf` rather than a pattern
- * built from untrusted text.
+ * Whether a fix candidate names a held check or a held PR. A PR that names the
+ * failing check or a held PR is about the failure; one that names neither is
+ * not taken as the fix, because a diff-scoped check (gitleaks) passes on any
+ * PR that adds no finding (Issue #5437). A held check name counts only in the
+ * title or the head branch: bodies routinely mention generic check words such
+ * as "quality gate", so a body naming `gate` says nothing about the failure. A
+ * held PR reference `#N`, not followed by a digit, counts in the title, body
+ * or branch. Matching is case-insensitive and by whole token, using `indexOf`
+ * rather than a pattern built from untrusted text.
  */
 export function fixCandidateNamesHeldFailure(
   candidate: { title: string; body: string; headRefName: string },
   checkNames: readonly string[],
   heldPrNumbers: readonly number[],
 ): boolean {
+  const namingText = `${candidate.title}\n${candidate.headRefName}`
+    .toLowerCase();
   const text = `${candidate.title}\n${candidate.body}\n${candidate.headRefName}`
     .toLowerCase();
   const isAlnum = (ch: string | undefined): boolean =>
@@ -749,10 +756,11 @@ export function fixCandidateNamesHeldFailure(
     if (name === "") continue;
     let from = 0;
     for (;;) {
-      const at = text.indexOf(name, from);
+      const at = namingText.indexOf(name, from);
       if (at === -1) break;
       if (
-        !isAlnum(text[at - 1]) && !isAlnum(text[at + name.length])
+        !isAlnum(namingText[at - 1]) &&
+        !isAlnum(namingText[at + name.length])
       ) {
         return true;
       }
@@ -781,17 +789,18 @@ export function fixCandidateNamesHeldFailure(
  * red commit cannot pass for the fix. A candidate whose ancestry is
  * `on-default` or `diverged` is skipped silently; one whose ancestry is
  * `unknown` is skipped with a warning quoting the cause. A candidate whose
- * title, body or branch names none of the held checks or held PRs
- * (`fixCandidateNamesHeldFailure`) is skipped too, on both the green and the
- * pending path, so an unrelated PR that a diff-scoped check passes is not
- * adopted (Issue #5437).
+ * title or branch names none of the held checks, and whose title, body or
+ * branch references none of the held PRs (`fixCandidateNamesHeldFailure`), is
+ * skipped too, on both the green and the pending path, so an unrelated PR that
+ * a diff-scoped check passes is not adopted (Issue #5437). A candidate whose
+ * login is in `fleetLogins` or is a bot account (`isBotAuthorForMaintenance`)
+ * is skipped on both paths as well, with an info line: a fleet or bot PR is
+ * never the fix, green or running.
  *
  * A qualifying candidate whose successful check names include every name in
  * `checkNames` is the fix, and it wins at once. Otherwise, a candidate whose
- * login is neither in `fleetLogins` nor a bot account
- * (`isBotAuthorForMaintenance`) and whose CI is still running is remembered,
- * when no held check has failed on it: a held check may not exist yet while CI
- * is in flight. Scanning continues past it, so a green candidate still wins.
+ * CI is still running is remembered, when no held check has failed on it: a
+ * held check may not exist yet while CI is in flight. Scanning continues past it, so a green candidate still wins.
  * The first remembered candidate is the fix when no green one is found, so the
  * caller opens no repair PR while it runs. The log records which case applied.
  *
@@ -854,7 +863,16 @@ export async function findGreenFixPr(
       logger.info(
         `Red default branch: ${repo}#${pr.number} (${pr.headRefName}) names none of the held checks (${
           checkNames.join(", ")
-        }) or held PRs in its title, body or branch, so it is not taken as the fix (Issue #5437)`,
+        }) in its title or branch, nor a held PR, so it is not taken as the fix (Issue #5437)`,
+      );
+      continue;
+    }
+    if (
+      isFleetAuthor(pr.authorLogin, [...request.fleetLogins]) ||
+      isBotAuthorForMaintenance(normaliseGhAppLogin(pr.authorLogin))
+    ) {
+      logger.info(
+        `Red default branch: ${repo}#${pr.number} (${pr.headRefName}) is by ${pr.authorLogin}, a fleet or bot account, so it is not taken as the fix (Issue #5437)`,
       );
       continue;
     }
@@ -883,13 +901,7 @@ export async function findGreenFixPr(
         pending: false,
       };
     }
-    if (
-      pendingFix !== null ||
-      isFleetAuthor(pr.authorLogin, [...request.fleetLogins]) ||
-      isBotAuthorForMaintenance(normaliseGhAppLogin(pr.authorLogin))
-    ) {
-      continue;
-    }
+    if (pendingFix !== null) continue;
     let states: { failed: ReadonlySet<string>; running: ReadonlySet<string> };
     try {
       states = await request.readCheckRunStates(pr.headRefOid);

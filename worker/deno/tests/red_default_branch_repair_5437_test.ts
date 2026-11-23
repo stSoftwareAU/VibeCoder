@@ -11,8 +11,12 @@
  * - a sync failure the default branch does not share still gets its fix;
  * - a green human fix PR is adopted only when its head contains the default
  *   branch's tip, so a stale branch cannot pass for the fix;
+ * - a fix PR is adopted only when its title or branch names a held check, or
+ *   its title, body or branch references a held PR; a body naming a generic
+ *   check word ("quality gate") does not count;
+ * - a fleet or bot PR is never the fix, whether green or still running;
  * - a human fix PR whose CI is still running, with no held check failed, is
- *   waited on rather than duplicated; a fleet or bot PR or a stale run is not;
+ *   waited on rather than duplicated; a stale run is not;
  * - an undecidable ancestry stands the sync PR down for the scan;
  * - a non-sync PR is held only when the tip and its merge base are both red
  *   on the check, so a check its own base lacks is never inherited;
@@ -2463,16 +2467,60 @@ Deno.test("findFailedCiChecks - the same human PR with a title naming gitleaks i
   assertEquals(comments[0]?.[2], "5434");
 });
 
+Deno.test("findFailedCiChecks - a fleet-authored PR whose title names gitleaks and that is green on it is not adopted, and the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  // `testbot` is the scan's own login, so it is in the fleet author set.
+  fx.fixPrs = [
+    humanFixPr(
+      5434,
+      "feature/dark-mode",
+      FIX_HEAD,
+      "testbot",
+      "Add dark mode and allow gitleaks fixtures",
+      "Adds a theme toggle.",
+    ),
+  ];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks", "gate"] };
+  fx.compare[FIX_HEAD] = "ahead";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(
+    callsTo(calls, "pr", "comment").filter((args) => args[2] === "5434")
+      .length,
+    0,
+  );
+  assert(
+    logger.infos.some((line) =>
+      line.includes("org/repo#5434") &&
+      line.includes("a fleet or bot account")
+    ),
+    `infos: ${logger.infos}`,
+  );
+});
+
 const NAMES = { title: "", body: "", headRefName: "" };
 
-Deno.test("fixCandidateNamesHeldFailure - a check named in the body, the branch or in mixed case counts (Issue #5437)", () => {
-  assert(
+Deno.test("fixCandidateNamesHeldFailure - a check named only in the body does not count, but a held PR in the body does (Issue #5437)", () => {
+  assertEquals(
     fixCandidateNamesHeldFailure(
       { ...NAMES, body: "Allows the gitleaks fixtures." },
       ["gitleaks"],
       [],
     ),
+    false,
   );
+  assert(
+    fixCandidateNamesHeldFailure(
+      { ...NAMES, body: "Follows up #5429." },
+      ["gitleaks"],
+      [5429],
+    ),
+  );
+});
+
+Deno.test("fixCandidateNamesHeldFailure - a check named in the branch or in mixed case in the title counts (Issue #5437)", () => {
   assert(
     fixCandidateNamesHeldFailure(
       { ...NAMES, headRefName: "fix/gitleaks-allow-5310-fixtures" },
@@ -2565,18 +2613,19 @@ function directFix(
   rows: unknown[],
   running: ReadonlySet<string>,
   passing: ReadonlySet<string>,
+  checkNames: readonly string[] = ["lint"],
 ) {
   const logger = makeLogger();
   const fix = findGreenFixPr({
     repo: REPO,
     defaultBranch: DEFAULT_BRANCH,
-    checkNames: ["lint"],
+    checkNames,
     heldPrNumbers: [],
     isSyncBranch: () => false,
     readAncestry: () =>
       Promise.resolve({ status: "contains-default" as const }),
     readSuccessfulCheckNames: (oid: string) =>
-      Promise.resolve(oid === "green" ? new Set(["lint"]) : passing),
+      Promise.resolve(oid === "green" ? new Set(checkNames) : passing),
     fleetLogins: [],
     readCheckRunStates: () =>
       Promise.resolve({ failed: new Set<string>(), running }),
@@ -2604,7 +2653,7 @@ Deno.test("findGreenFixPr - a still-running human candidate that names nothing i
 });
 
 Deno.test("findGreenFixPr - an unnamed running candidate is skipped and a later named green one is returned (Issue #5437)", async () => {
-  const { fix } = directFix(
+  const { fix, logger } = directFix(
     [
       {
         number: 12,
@@ -2627,6 +2676,12 @@ Deno.test("findGreenFixPr - an unnamed running candidate is skipped and a later 
     new Set(),
   );
   assertEquals((await fix)?.number, 13);
+  assert(
+    logger.infos.some((line) =>
+      line.includes("names none of the held") && line.includes("#12")
+    ),
+    `infos: ${logger.infos}`,
+  );
 });
 
 Deno.test("findGreenFixPr - a PR row without a title returns null and the warn names title (Issue #5437)", async () => {
@@ -2643,7 +2698,7 @@ Deno.test("findGreenFixPr - a PR row without a title returns null and the warn n
   );
   assertEquals(await fix, null);
   assert(
-    logger.warns.some((w) => w.includes("title")),
+    logger.warns.some((w) => w.includes("has no title")),
     `warns: ${logger.warns}`,
   );
 });
@@ -2681,4 +2736,29 @@ Deno.test("findGreenFixPr - an empty body is valid, and the PR is adopted when i
     new Set(),
   );
   assertEquals((await fix)?.number, 12);
+});
+
+Deno.test("findGreenFixPr - a green human PR whose body says quality gate is not the fix for gate, but one whose title names gate is (Issue #5437)", async () => {
+  const row = (title: string) => ({
+    number: 12,
+    headRefName: "feature/dark-mode",
+    headRefOid: "green",
+    author: { login: "alice" },
+    title,
+    body: "Ran the quality gate.",
+  });
+  const unnamed = directFix(
+    [row("Add dark mode")],
+    new Set(),
+    new Set(),
+    ["gate"],
+  );
+  assertEquals(await unnamed.fix, null);
+  const named = directFix(
+    [row("Fix the gate failure on main")],
+    new Set(),
+    new Set(),
+    ["gate"],
+  );
+  assertEquals((await named.fix)?.number, 12);
 });
