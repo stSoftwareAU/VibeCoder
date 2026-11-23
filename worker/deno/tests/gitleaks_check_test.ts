@@ -39,9 +39,12 @@ import {
   GITLEAKS_VERSION,
   type GitleaksCheckOptions,
   gitleaksFileScanArgs,
+  type GitleaksRangeCheckOptions,
+  type GitleaksRangeOutcome,
   gitleaksScanArgs,
   type GitleaksTreeCheckOptions,
   runGitleaksCheck,
+  runGitleaksRangeCheck,
   runGitleaksTreeCheck,
 } from "../lib/gitleaks_check.ts";
 import {
@@ -535,6 +538,21 @@ Deno.test("gitleaks.yml - every pinned GITLEAKS_VERSION matches the module, and 
     `/repo/${GITLEAKS_CONFIG_PATH}`,
   ).filter((arg) => arg !== "--verbose" && arg !== "--no-color");
   assertEquals(normaliseScanArgs(localArgs), normaliseScanArgs(ciArgs));
+
+  // The local gate mirrors one CLI scan. A second scan in the workflow (for
+  // example a merged-result scan, Issue #5436) must be mirrored in the local
+  // gate (gitleaksScanArgs and the pre-push stage) before this count changes.
+  const cliScanLines = workflow
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) =>
+      /^(\.\/)?gitleaks\s+(git|dir|detect|protect)\b/.test(line)
+    );
+  assertEquals(
+    cliScanLines.length,
+    1,
+    "gitleaks.yml must have exactly one gitleaks CLI scan invocation: a second scan (for example a merged-result scan, Issue #5436) must be mirrored in the local gate (gitleaksScanArgs and the pre-push stage) before this count changes",
+  );
 });
 
 /**
@@ -624,6 +642,178 @@ Deno.test("runQualityGate - registers gitleaks only where gitleaks.yml exists", 
   } finally {
     await Deno.remove(withWorkflow, { recursive: true });
     await Deno.remove(withoutWorkflow, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Pre-push gate: a pushed commit range (Issue #5430)
+// ---------------------------------------------------------------------------
+
+/** The head sha of a pushed range in these fakes; distinct from BASE_SHA. */
+const RANGE_HEAD = "fedcba9876543210fedcba9876543210fedcba98";
+
+/** Options for a host range run that reaches the scan, with the given overrides. */
+function rangeOptions(
+  overrides: GitleaksRangeCheckOptions = {},
+): GitleaksRangeCheckOptions {
+  return {
+    probeVersion: () => Promise.resolve(GITLEAKS_VERSION),
+    run: unexpectedRun,
+    env: hostEnv,
+    ...overrides,
+  };
+}
+
+/** The text a range outcome carries, whichever field holds it. */
+function outcomeText(outcome: GitleaksRangeOutcome): string {
+  return outcome.kind === "passed" ? outcome.summary : outcome.message;
+}
+
+Deno.test("runGitleaksRangeCheck - PASSED on a clean range, scanning exactly base..head with the CI flags", async () => {
+  const recorded = recordingRun({
+    exitCode: 0,
+    stdout: "",
+    stderr: CLEAN_STDERR,
+  });
+
+  const outcome = await runGitleaksRangeCheck(
+    "/unused-scriptdir",
+    BASE_SHA,
+    RANGE_HEAD,
+    rangeOptions({ run: recorded.run }),
+  );
+
+  assertEquals(outcome, {
+    kind: "passed",
+    summary:
+      "gitleaks: PASSED (commit range 0123456789ab..fedcba987654, gitleaks 8.30.1)",
+  });
+  assertEquals(recorded.calls, [
+    gitleaksScanArgs(`${BASE_SHA}..${RANGE_HEAD}`, null),
+  ]);
+});
+
+Deno.test("runGitleaksRangeCheck - a finding is blocked with its rule and file, never the secret", async () => {
+  const recorded = recordingRun({
+    exitCode: 1,
+    stdout: LEAK_STDOUT,
+    stderr: LEAK_STDERR,
+  });
+
+  const outcome = await runGitleaksRangeCheck(
+    "/unused-scriptdir",
+    BASE_SHA,
+    RANGE_HEAD,
+    rangeOptions({ run: recorded.run }),
+  );
+
+  assertEquals(outcome.kind, "blocked");
+  const text = outcomeText(outcome);
+  assertStringIncludes(text, "github-pat");
+  assertStringIncludes(text, "worker/deno/lib/leaky.ts");
+  assert(!text.includes(FAKE_TOKEN), "the raw token must not reach the output");
+});
+
+Deno.test("runGitleaksRangeCheck - an ERR line with exit 0 is infrastructure, not a pass", async () => {
+  const outcome = await runGitleaksRangeCheck(
+    "/unused-scriptdir",
+    BASE_SHA,
+    RANGE_HEAD,
+    rangeOptions({
+      run: recordingRun({ exitCode: 0, stdout: "", stderr: AMBIGUOUS_STDERR })
+        .run,
+    }),
+  );
+
+  assertEquals(outcome.kind, "infrastructure");
+  assertStringIncludes(outcomeText(outcome), "scanner error");
+});
+
+Deno.test("runGitleaksRangeCheck - a deadline hit is infrastructure, never a pass", async () => {
+  const outcome = await runGitleaksRangeCheck(
+    "/unused-scriptdir",
+    BASE_SHA,
+    RANGE_HEAD,
+    rangeOptions({
+      run: recordingRun({ exitCode: 1, stdout: "", stderr: "", timedOut: true })
+        .run,
+    }),
+  );
+
+  assertEquals(outcome.kind, "infrastructure");
+  assertStringIncludes(
+    outcomeText(outcome),
+    "exceeded the 300s local deadline",
+  );
+  assertStringIncludes(
+    outcomeText(outcome),
+    "a scan that did not finish is not clean",
+  );
+});
+
+Deno.test("runGitleaksRangeCheck - gitleaks absent is SKIPPED on a host, naming the CI pin", async () => {
+  const outcome = await runGitleaksRangeCheck(
+    "/unused-scriptdir",
+    BASE_SHA,
+    RANGE_HEAD,
+    rangeOptions({
+      probeVersion: () => Promise.resolve(null),
+      env: hostEnv,
+    }),
+  );
+
+  assertEquals(outcome.kind, "skipped");
+  assertStringIncludes(outcomeText(outcome), "gitleaks is not installed");
+  assertStringIncludes(outcomeText(outcome), GITLEAKS_VERSION);
+});
+
+Deno.test("runGitleaksRangeCheck - gitleaks absent is infrastructure inside the fleet image", async () => {
+  const outcome = await runGitleaksRangeCheck(
+    "/unused-scriptdir",
+    BASE_SHA,
+    RANGE_HEAD,
+    rangeOptions({
+      probeVersion: () => Promise.resolve(null),
+      env: imageEnv,
+    }),
+  );
+
+  assertEquals(outcome.kind, "infrastructure");
+  assertStringIncludes(outcomeText(outcome), "fleet container image");
+  assertStringIncludes(outcomeText(outcome), "never scanned");
+});
+
+Deno.test("runGitleaksRangeCheck - a base or head that is not a full lowercase sha is blocked before any scan", async () => {
+  for (
+    const bad of [
+      "main",
+      "HEAD",
+      "0123",
+      "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+    ]
+  ) {
+    const recorded = recordingRun({
+      exitCode: 0,
+      stdout: "",
+      stderr: CLEAN_STDERR,
+    });
+
+    const byBase = await runGitleaksRangeCheck(
+      "/unused-scriptdir",
+      bad,
+      RANGE_HEAD,
+      rangeOptions({ run: recorded.run }),
+    );
+    const byHead = await runGitleaksRangeCheck(
+      "/unused-scriptdir",
+      BASE_SHA,
+      bad,
+      rangeOptions({ run: recorded.run }),
+    );
+
+    assertEquals(byBase.kind, "blocked", `base ${bad}`);
+    assertEquals(byHead.kind, "blocked", `head ${bad}`);
+    assertEquals(recorded.calls.length, 0, `the scan ran for ${bad}`);
   }
 });
 

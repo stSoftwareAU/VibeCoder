@@ -208,7 +208,7 @@ the backstop.
 
 Publication paths and where the scan runs: the issue completion gate and the
 other `./quality.sh` callers run the stage above through `runQualityGate`. A
-fleet babysitter repair does not: `babysitter-repair` gates a `BABYSITTER_READY`
+fleet babysitter repair does not run that stage: `babysitter-repair` gates a `BABYSITTER_READY`
 response with `runBabysitterTreeGate` (`babysitter_tree_gate.ts`), which runs
 the pre-push gate over the repair's uncommitted tree, including the repo CI's
 cargo clippy and test-target compile and `deno fmt --check` on the changed files
@@ -226,9 +226,28 @@ is `blocked` and spends a repair attempt, with redacted rule, path and line
 metadata. A missing scanner, an unresolvable base, a scanner error or a
 deadline hit is `infrastructure` and spends none. The repository's
 `.github/gitleaks.toml` is read from the working tree, as CI reads it from the
-PR head. The pre-push gate that the worker runs over unpushed commits
-(`gateUnpushedCommits`) does not run gitleaks; the completion gate's
-`./quality.sh` does.
+PR head. The worker's pre-push gate, `gateUnpushedCommits` (`git_push.ts`), which
+calls `runPrePushGate` (`pre_push_gate.ts`), has its own gitleaks stage (Issue #5430).
+It runs on each push the gate guards (the completion phase's
+`gateBeforePush()`, `commitAndPushPending` Step 1b, and the agent's `git push`
+hook) when the repository tracks `.github/workflows/gitleaks.yml`, in every mode
+of the gate, after the cargo-deny gate and before the pre-flight commands. For
+each pushed head it scans `<merge-base of the PR base and the head>..<head>`:
+every commit the PR has ahead of its base, including commits an earlier push
+already put on the remote, as CI's `base_sha..head_sha` scan does. The PR base
+is the completion gate's `origin/<base>`, else the base branch handed to the
+repair or hook, else the checkout's default branch. With no base known it scans
+the commits on no remote; when none places the range it logs a
+`[PRE_PUSH_WARNING]` and scans nothing. It runs `runGitleaksRangeCheck`
+(`gitleaks_check.ts`), the same pinned invocation and judgement as the
+`./quality.sh` stage. A leak blocks the push as a verdict, with the redacted
+rule, file and line. A merge-base that cannot be found for a known base, a
+scanner error or a scan past 300 s is an infrastructure failure. Gitleaks absent
+is an infrastructure failure in the fleet image, which bakes it in, and a
+`[PRE_PUSH_WARNING]` (not scanned) on a host. A pass is listed as
+`gitleaks (<base12>..<head12>)`. The fleet babysitter's tree gate turns this
+stage off (`secretScan: "off"`), because `runGitleaksTreeCheck` already scans the
+range and the uncommitted files.
 
 Progress is **streamed**: every check emits one `✓ / ✗ / - name: STATUS (1.2s)`
 line to stdout the moment it settles (Issue #399), ahead of the detailed output
