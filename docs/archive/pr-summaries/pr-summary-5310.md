@@ -395,7 +395,7 @@ flowchart LR
     head was left out because it does not return on some of these inputs.
 - **Review round 15** — two items:
   - **A masked assignment on the line after the inner value.** The wrapped-run
-    check read `<value>\nAPI_KEY=<other value>` from the unmasked text and kept
+    check read `<value>` followed by an `API_KEY` assignment of another value from the unmasked text and kept
     main's result, but main runs the decode pass after the assignment rule, so
     it sees `<value>\nAPI_KEY=` and masks nothing. The run is now cut at the
     first value the walk masks after the inner value (`maskedValueStart`), so
@@ -772,7 +772,7 @@ flowchart LR
     covers this shape.
 - When more than 8 credential keys sit between the inner value and the first
   value masked after it (eight lines such as `GITHUB_TOKEN`, `NPM_TOKEN`, ...
-  with no separator, then `ADMIN_TOKEN=<other value>`), the wrapped run is read
+  with no separator, then an `ADMIN_TOKEN` assignment of another value), the wrapped run is read
   whole and keeps the base result, so the inner value is published as on base. A
   test pins that output, and seven such lines mask the value.
 - One label-as-value shape is still not final, and publishes nothing: a

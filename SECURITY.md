@@ -579,13 +579,13 @@ and, apart from that check, **only when the separator crossed a line break**:
   inner value by the assignment rule (which ends it at the separator,
   `API_KEY=`), by `secret-cli-flag` (`--password` then `USER=bob`; the
   flag's name stays) or by `hex32-credential` (`md5=<32 hex>`). So
-  `credentials: DEPLOY_TOKEN = <value>` then `API_KEY=<other value>`, or then
+  `credentials: DEPLOY_TOKEN = <value>` then an `API_KEY` assignment of another value, or then
   `md5=<32 hex>`, masks `<value>`. A next line the rules leave unmasked
   (`API_KEY=true`, `USER=bob` alone) stays in the run. The cut reads at most
   8 credential keys after the inner value; past that the run is read whole
   and the base result stands, so eight lines that each hold a credential
   word with no separator (`GITHUB_TOKEN`, `NPM_TOKEN`, ...) before
-  `ADMIN_TOKEN=<other value>` still publish `<value>`. Each loop over a
+  an `ADMIN_TOKEN` assignment of another value still publish `<value>`. Each loop over a
   shared pattern steps its own copy (`matchAll`), because decoding a run
   walks the decoded text and reaches the same check again. A match inside the inner value that runs past it counts whether or
   not it is masked, since the base scan resumes after it either way. When the
