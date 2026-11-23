@@ -210,7 +210,7 @@ Deno.test("quality_gate_budget - each push record names only checks its path run
     );
     assertStringIncludes(
       preFlightOnly,
-      "with none configured, the worker still runs the ShellCheck policy, cargo deny for cargo inputs, and the dependency-selected unit tests and markdownlint",
+      "with none configured, the worker still runs the ShellCheck policy, cargo deny for cargo inputs, the gitleaks scan of the PR's commit range (where the repository's CI runs `gitleaks.yml`), and the dependency-selected unit tests and markdownlint",
     );
     assertNotMatch(
       preFlightOnly,
@@ -236,7 +236,7 @@ Deno.test("quality_gate_budget - each push record names only checks its path run
     );
     assertStringIncludes(
       ciFix,
-      "dependency-selected unit tests and markdownlint for the pushed paths before that push",
+      "cargo deny for cargo inputs, the gitleaks scan of the PR's commit range (where the repository's CI runs `gitleaks.yml`), and the dependency-selected unit tests and markdownlint for the pushed paths before that push",
       `budget ${runBudget}`,
     );
     assertNotMatch(ciFix, /runs the full gate before the PR is raised/);

@@ -18,7 +18,6 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | dtolnay/rust-toolchain | v1 | 683b588c487a69d01f6c6ddf40f036ff682cc2c8 | .github/workflows/cargo-audit.yml, .github/workflows/cargo-upgrade.yml | pinned to commit SHA |
 | github/codeql-action/analyze | v4.39.4 | 1bd86f2fdb4b86187fa4059f16f31a3202acc9ea | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | github/codeql-action/init | v4.39.4 | 1bd86f2fdb4b86187fa4059f16f31a3202acc9ea | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
-| gitleaks/gitleaks-action | v3.0.0 | e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e | .github/workflows/gitleaks.yml | pinned to commit SHA |
 | peter-evans/create-pull-request | v8.1.3 | 3ffccacd46053766916f087ce41d627c0b8cf2d1 | .github/workflows/cargo-upgrade.yml | pinned to commit SHA |
 
 ## Container base images
