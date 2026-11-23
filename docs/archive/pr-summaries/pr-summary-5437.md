@@ -20,18 +20,7 @@ Part of #5437.
   whose head contains the tip, such as #5434, or an open
   `fix/red-default-branch-*` PR, or opens one (an empty commit on the tip). The
   repair PR's failure is returned before every other failure. While a green fix
-  PR is adopted, the worker's own repair PR waits. An open repair PR missing
-  from the scan's listing (needs-human, or a scan scoped to one PR) is found by
-  a direct `gh pr list --search head:fix/red-default-branch-` lookup, so a
-  second one is never opened; an unreadable lookup opens nothing.
-- **Repair PR that does not reproduce the failure:** gitleaks on a pull request
-  scans only `base.sha..head.sha`, so the empty repair commit passes it. When an
-  adopted repair PR has no failure of its own on a held check, the lowest held
-  PR's failing check run (id, name, annotations) is handed to the CI-fix agent
-  as the repair PR's failure (`handHeldFailureToRepairPr` in
-  `worker/deno/lib/pr_maintenance.ts`). Once that check run's retries are spent
-  the scan warns that the default branch needs a human
-  (`red-default-branch-repair-needs-human`).
+  PR is adopted, the worker's own repair PR waits.
 - **Re-sync:** a held sync head behind the tip is fast-forwarded
   (`force=false`). A stale merge-commit sync head gets the default branch merged
   in server-side once the tip is green on its checks.
@@ -54,13 +43,8 @@ Part of #5437.
   the default branch shares is fixed once, on the default branch. Fixing it on a
   sync branch wrote the fix twice (#5429 and #5434).
 - The repair PR starts as an empty commit on the tip, because GitHub refuses a
-  PR with no commits. A check that runs over the whole tree fails on it too, and
-  the ordinary CI-fix lane repairs the default branch through it. A check that
-  scans only the PR's own commits, such as gitleaks, passes on the empty commit,
-  so the held PR's failing check run is handed to the CI-fix agent on the repair
-  branch instead, and a spent hand-over is reported for a human. A green empty
-  repair PR is not kept from auto-merging; merging it changes no file, and the
-  next scan opens a new one if the tip is still red.
+  PR with no commits. Its own CI then fails on the same check, and the ordinary
+  CI-fix lane repairs the default branch through it.
 
 ### Essential Design Decisions
 
@@ -256,16 +240,6 @@ claimed in `docs/audits/lib-sweep-coverage/top-up-5437.json`.
     check-run and list reads;
   - the red → repair → green sequence;
   - a hostile marker regex input.
-- Verifier follow-up: the same file adds tests for an adopted repair PR that
-  does not reproduce gitleaks (handed sync PR #1's check run `11`), one red on
-  gitleaks itself (its own check run `99`), a newly opened repair PR (no
-  hand-over that scan), a needs-human repair PR absent from the listing (found
-  by the `--search head:` lookup, no `pr create`) and an unreadable lookup (no
-  `pr create`, warning names the `gh` error). Four existing tests that adopt a
-  green repair PR now expect the hand-over (`value?.prNumber === 20`) instead of
-  `null`. Run:
-  `deno task test:unit tests/red_default_branch_repair_5437_test.ts tests/pr_maintenance_test.ts tests/pr_maintenance_ci_deferral_test.ts tests/pr_maintenance_merge_queue_test.ts tests/shift_left_failures_test.ts`
-  gave 208 passed, 0 failed.
 - `worker/deno/tests/default_branch_ancestry_5437_test.ts` (new) covers every
   compare status with its cause, a thrown error and an invalid sha, using an
   input-aware fake.
