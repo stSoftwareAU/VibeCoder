@@ -260,7 +260,7 @@ comment name the repair PR as a second exception to deferral. New modules are cl
 - Full gate: `./quality.sh` passed on `59f1a5c61`
   (`Result: PASSED (with skipped checks)`; config integration and checkov are
   skipped because their tools are not installed on the host). It passed again on
-  the final code head `75bddb693`.
+  the final code head `9c1fb4314`.
 - `worker/deno/tests/ci_fix_prompt_v4_test.ts` (edited) adds
   `buildCiFixPrompt - a repair PR for a red default branch is told not to defer to its base, and an ordinary PR is not (Issue #5437)`.
 - `worker/deno/tests/pr_ci_processor_deferral_test.ts` (edited) adds
