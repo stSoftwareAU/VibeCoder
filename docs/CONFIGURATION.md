@@ -3072,10 +3072,12 @@ uncommitted changes after its attempt, then runs configured pre-flight commands
 before the worker push; with no such changes and no pre-flight commands, it runs
 only the repair checks before that push: the ShellCheck publication check, the
 CI cargo-deny check when the pushed paths, including deleted and renamed-away
-ones, include a cargo input (Issue #5169), the
-dependency-selected unit tests and configured markdownlint for the pushed paths
-(Issue #4930), and the changed-file `deno fmt --check` (Issue #5169). PR feedback and spelling fixes do not run the full
-gate before the worker push. Configured pre-flight commands also enable
+ones, include a cargo input (Issue #5169), the gitleaks range scan (Issue #5430),
+the dependency-selected unit tests and configured markdownlint for the pushed
+paths (Issue #4930), and the changed-file `deno fmt --check` (Issue #5169). PR
+feedback and spelling fixes do not run the full gate before the
+worker push, but they run the same repair checks, gitleaks range scan included.
+Configured pre-flight commands also enable
 the full set of changed-file checks. PR-review feedback runs its independent fix verifier even
 without pre-flight configuration; persistent findings can block the push.
 A fleet babysitter repair is gated inside its container before it reports
@@ -5225,9 +5227,9 @@ repo-specific commands in the worker.
   described below, and a failure there fails the run. The CI-fix and PR-feedback
   repair pushes are the exception: for such a repo they pass the
   `REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT` spec (Issue #4630), so only the repo CI's cargo clippy and test-target compile,
-  the ShellCheck policy, `cargo deny` and the pushed paths' `deno test` and
-  markdownlint checks (Issue #4930) and changed-file `deno fmt --check` (Issue
-  #5169) run there. Pushes that pass no spec (such as WIP-preservation pushes) stay
+  the ShellCheck policy, `cargo deny`, the gitleaks range scan (Issue #5430) and
+  the pushed paths' `deno test` and markdownlint checks (Issue #4930) and
+  changed-file `deno fmt --check` (Issue #5169) run there. Pushes that pass no spec (such as WIP-preservation pushes) stay
   ungated.
 
 Commands run directly (not through a shell), so each entry is a program plus
@@ -5281,8 +5283,9 @@ environment, so the hook does not gate them; instead its final-mile
 commit-and-push (`commitAndPushPending`, when given a pre-flight spec) runs the
 changed-files check through `runPrePushGate` on the already-committed
 unpushed commits before pushing, and refuses the push on failure (Issue #3689).
-That check includes the CI cargo checks, as does the agent's own hook, which
-receives the scan precomputed in its spec (see the CI cargo bullet below).
+That check includes the CI cargo checks and the gitleaks range scan (Issue #5430),
+as does the agent's own hook, which receives the cargo scan precomputed in its
+spec (see the CI cargo bullet below).
 WIP-preservation pushes (no pre-flight spec) stay ungated so work is not lost.
 Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 (such as WIP-preservation pushes) are not gated there. The CI-fix and
@@ -5290,8 +5293,9 @@ PR-feedback repair processors pass the repair-with-CI-cargo spec
 (`REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT`) when the repo has no pre-flight
 commands (Issue #4630), so their repair pushes run only the repo
 CI's cargo clippy and test-target compile, the ShellCheck policy
-(Issue #4631), cargo deny for changed, deleted or renamed-away cargo inputs (Issue #4626) and the
-pushed paths' `deno test` and markdownlint checks (Issue #4930) and their
+(Issue #4631), cargo deny for changed, deleted or renamed-away cargo inputs (Issue #4626), the
+gitleaks range scan (Issue #5430) and the pushed paths' `deno test` and
+markdownlint checks (Issue #4930) and their
 `deno fmt --check` (Issue #5169), through Step 1b, and not the other
 changed-file checks listed below. Repos with
 pre-flight commands keep their own spec. The completion phase's
@@ -5303,8 +5307,8 @@ renames a file, directory-listing tests (the whole `test:unit` suite
 when a `prompts/` file or a root's `deno.json`, `deno.jsonc` or `deno.lock`
 changes), cargo fmt, markdownlint, cspell, ShellCheck and the Floci
 CloudFormation deploy test), the CI cargo clippy and test-target compile (which
-the agent's hook also runs from its precomputed spec) and cargo deny still run
-and can fail the run. Unlike Step 1b, the completion gate checks every commit
+the agent's hook also runs from its precomputed spec), cargo deny and the
+gitleaks range scan still run and can fail the run. Unlike Step 1b, the completion gate checks every commit
 the branch has ahead of the PR base, not only commits on no remote-tracking ref;
 a merge commit contributes only the paths the merge itself changed (a conflict
 resolution), never the files it brings in from the base. The execute phase's
@@ -5719,6 +5723,25 @@ gates do (see that bullet):
      changes before a repair reports ready (Issue #4930), inside the worker
      container (#4768, #4770), never beside the host App key, so babysitter
      repairs are checked by it there;
+   - **gitleaks range scan** (Issue #5430), when the repo tracks
+     `.github/workflows/gitleaks.yml`, in every mode of the gate, after the
+     cargo-deny gate and before the pre-flight commands. It does not read
+     changed files. For each pushed head it scans
+     `<merge-base of the PR base and the head>..<head>`: every commit the PR has
+     ahead of its base, including ones an earlier push already put on the remote,
+     as CI's `base_sha..head_sha` scan does. The PR base is the completion gate's
+     `origin/<base>`, else the base branch the repair or hook was handed, else the
+     checkout's default branch. With no base known it scans the commits on no
+     remote, and when none places the range it logs a `[PRE_PUSH_WARNING]` and
+     scans nothing. It uses the same pinned gitleaks invocation and verdict rule
+     as `./quality.sh` (`runGitleaksRangeCheck`, `worker/deno/lib/gitleaks_check.ts`).
+     A leak refuses the push, with its redacted rule, file and line. A merge-base
+     that cannot be found for a known base, a scanner error or a scan past 300 s
+     is an infrastructure fault. So is gitleaks missing in the fleet image, which
+     bakes it in; on a host a missing gitleaks logs a `[PRE_PUSH_WARNING]` and
+     nothing is scanned. A pass is listed as `gitleaks (<base12>..<head12>)`. The
+     fleet babysitter's tree gate sets `secretScan: "off"`, because its own tree
+     check already scans the range and the uncommitted files;
    - `shellcheck` on changed `.sh` files when a tracked workflow contains the
      supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form, or on
      the action's named shell files and executable extensionless shell scripts for a
