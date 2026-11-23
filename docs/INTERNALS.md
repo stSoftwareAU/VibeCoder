@@ -5346,6 +5346,137 @@ flowchart TD
   (`gh pr merge --disable-auto`), so a close GitHub refuses leaves a PR that
   can no longer land rather than one that still can.
 
+#### Red default branch: hold sync PRs, repair once (Issue #5437)
+
+When the default branch is red, every `sync/milestone-*` PR inherits the
+failure, and so does any other PR into the default branch that fails a check the
+default branch also fails. The CI-fix scan used to hand each of those PRs to the
+CI-fix agent separately, so the same fix was written onto a sync branch and onto
+the default branch. `findFailedCiChecks` now holds those inherited failures and
+repairs the default branch once, through one repair PR, or through a human fix
+PR that already passes them
+([`red_default_branch_repair.ts`](../worker/deno/lib/red_default_branch_repair.ts)).
+
+```mermaid
+flowchart TD
+    S["Red PR check"] --> K{"Sync PR?"}
+    K -- no --> N{"Red on the default tip and its merge base?"}
+    N -- yes --> H
+    N -- "no, or unreadable (warned)" --> O["Ordinary path: CI-fix agent"]
+    K -- yes --> A{"Sync head vs default branch"}
+    A -- "on-default: identical or behind" --> H["Inherited: held"]
+    A -- "contains-default: ahead" --> T{"Same check red on the default tip?"}
+    T -- yes --> H
+    T -- no --> O
+    T -- "tip unreadable" --> U["Stand down this scan, retried next scan"]
+    A -- "diverged" --> X{"Tip green on this PR's checks?"}
+    X -- yes --> M["Merge the default branch into the sync branch, server-side"]
+    X -- no --> D["Stale: held for the repair PR on its red checks, no CI-fix target, no merge yet"]
+    A -- "unknown" --> U["Stand down this scan, retried next scan"]
+    H --> F{"Head behind the tip?"}
+    F -- yes --> FF["Fast-forward to the tip, force=false"]
+    H --> R{"Tip red on a held check?"}
+    R -- yes --> G{"Open human fix PR green on every held check?"}
+    G -- yes --> C["One status comment, edited in place; no repair PR"]
+    G -- no --> P["One repair PR per repo: fix/red-default-branch-sha12"]
+    P --> Q["Its own red CI goes to the CI-fix agent first"]
+    style P fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style C fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style U fill:#9d0208,stroke:#6a040f,color:#fff
+```
+
+- **Held, not handed over.** An inherited check is skipped with the reason
+  `inherited-red-default-branch` and is not returned to the CI-fix agent. An
+  on-default head (identical or behind the tip) holds every failing check on it.
+  A contains-default head (ahead: a fresh merge of the current tip) holds only
+  the checks the default tip also has red. A sync-only failure, one the tip does
+  not share, takes the ordinary path and is still fixed.
+- **Non-sync PRs into the default branch.** A PR into the default branch that is
+  not a sync PR is held for a check only when that check is red on both the tip
+  and the PR's merge base with the default branch. The merge base is read with
+  `gh api repos/<repo>/compare/<default>...<head> --jq .merge_base_commit.sha`,
+  then the merge base's failed check runs are read, once per merge-base sha for
+  the scan. A PR cut from a green commit that breaks a check itself is therefore
+  not held, even when the tip is red on that check. Both reads happen only when
+  such a PR has a failing check that would otherwise be pushed, and the merge
+  base is read only for a check the tip already has red. If a read fails, or the
+  merge base is not a full commit SHA, the PR takes the ordinary path with a
+  warning quoting the cause. It is never held on unknown.
+- **Diverged is stale: held while main is red, refreshed once main is green.** A
+  diverged head lacks commits the default branch has since gained, so its
+  failures are never handed over. They are logged as `stale-sync-head`. While
+  the tip is red on any of the PR's candidate checks, the PR is held for the one
+  repair PR with those red-on-tip checks, so the status lists it. Once the tip
+  is green on the PR's candidate checks, the default branch is merged into the
+  sync branch with `POST repos/<repo>/merges` (base the sync branch, head the
+  default branch). That adds a merge commit and destroys nothing. The PR gets no
+  CI-fix target this scan, since its CI reruns on the new head. A refused merge,
+  for example a conflict, is logged and the milestone sync lane retries on its
+  next cycle. If the tip's red checks cannot be read, no merge is attempted and
+  the PR is not held this scan.
+- **Unknown stands down.** If the ancestry cannot be read, the sync PR gets no
+  CI-fix target this scan and a warning names it. An unreadable tip check-run
+  read stands down a contains-default head the same way. An on-default head
+  stays held, but no repair PR is opened while the tip's red checks cannot be
+  read, so held PRs wait for the next scan. "Could not tell" never hands a PR
+  over.
+- **Refresh is fast-forward only.** A held sync head behind the tip is moved with
+  `PATCH git/refs/heads/<branch>` and `force=false`, so GitHub refuses anything
+  that is not a fast-forward and no commit is lost. Once a repair lands, the
+  stale sync PRs pick it up on the next scan.
+- **A green human fix is adopted, not duplicated.** Before a repair PR is opened
+  or adopted, the open PRs against the default branch are listed
+  (`gh pr list --base <default> --state open`, limit 30). The first one that is
+  not a sync or repair PR, is not held, whose head contains the default
+  branch's tip (the compare status is `ahead`, so a stale branch cut before the
+  red commit does not count), and whose head commit has succeeded on every held
+  check is the fix. A candidate whose ancestry cannot be read is skipped with a
+  warning quoting the error. The status is then kept as one comment on it,
+  carrying the `vibe-red-default-branch-hold` marker, and no repair PR is made.
+  The status is the newest comment by a fleet login whose body ends with a
+  marker. If it carries the identical marker (the tip and the held set), a
+  repeat scan writes nothing. If it carries a different marker, it is edited in
+  place with `PATCH repos/<repo>/issues/comments/<id>`, so a changed held set
+  never adds a second status comment. With no such comment, one is posted.
+  Comments by other logins are ignored, and the fix PR's body is never edited.
+  A failed list, check-run read or comment read is logged with its error, and
+  the worker's repair PR path runs instead. A failed post or edit is logged with
+  its error and no repair PR is made this scan; it is retried next scan.
+  Once a fix is adopted, the worker's own repair PR in that repo is not handed
+  to the CI-fix agent in the same scan, since that would write the same fix
+  twice. Its failure is skipped with the reason `red-default-branch-fix-adopted`.
+- **One repair PR.** A repair PR is raised only when the tip itself is red on a
+  held check, and no green human fix PR was found. It is an empty commit on the
+  tip (GitHub refuses a PR with no commits), on a `fix/red-default-branch-<sha12>`
+  branch, opened against the default branch. A later scan adopts an open repair
+  PR with that prefix (the lowest number) rather than opening another: one in
+  the scan's listing, or else one found by a direct
+  `gh pr list --search head:fix/red-default-branch-` lookup, so a needs-human
+  repair PR or a scan scoped to one PR never opens a second. An unreadable
+  lookup opens nothing that scan. Its body
+  is replaced by the status only when the `vibe-red-default-branch-hold` marker
+  differs. A human-authored fix PR is never edited, only commented on. If that
+  branch already exists without an open PR, the create step fails and is logged
+  each scan until the branch is deleted.
+- **A repair PR that does not reproduce the failure.** A check that scans only
+  the PR's own commits (gitleaks runs over `base.sha..head.sha` on a pull
+  request) passes on the empty repair commit while the tip stays red. When an
+  adopted repair PR has no failure of its own on a held check, the lowest held
+  PR's failing check run (its id, name and annotations) is handed to the CI-fix
+  agent as a failure of the repair PR, on the repair branch. A repair PR opened
+  in the same scan is left to its own CI first. So is a repair PR that already
+  carries a fix (its branch changes files against the default branch, read
+  through `compare/<default>...<repair branch>`), which waits for its CI and
+  merge, and one whose held check is still running. An unreadable read hands
+  nothing over and warns with the `gh` error. Once that check run's retry
+  budget is spent, the scan warns that the default branch needs a human and logs
+  `red-default-branch-repair-needs-human` instead of handing it over again.
+- **Status wording.** The status reads "holding sync PRs" when every held PR is
+  a sync PR, and "holding PRs" when any held PR is not one.
+- **Top priority.** A failure on the repair PR is returned before any other
+  default-branch failure. The `top-priority` label is never applied; it is
+  reserved for workflow use.
+
 #### 🎟️ The conflict attempt ledger a milestone branch spends
 
 A milestone branch that conflicts with the default branch gets the same

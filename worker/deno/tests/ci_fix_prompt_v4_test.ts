@@ -11,6 +11,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildCiFixPrompt,
   formatCiFailureClassification,
+  RED_DEFAULT_BRANCH_REPAIR_NOTE,
 } from "../lib/prompt_builder.ts";
 import type { CiAnnotation } from "../lib/ci_failure_classifier.ts";
 
@@ -304,4 +305,28 @@ Deno.test("ci_fix - the zero age covers the advisory-clearing version only, not 
     prompt.includes("or by editing the manifest and lockfile directly"),
     false,
   );
+});
+
+Deno.test("buildCiFixPrompt - a repair PR for a red default branch is told not to defer to its base, and an ordinary PR is not (Issue #5437)", async () => {
+  const base = {
+    repo: "owner/repo",
+    prNumber: "44",
+    checkName: "gitleaks / gitleaks",
+    annotationDetails: "leak in docs/x.md",
+    annotations: [],
+    promptsDir: PROMPTS_DIR,
+  };
+  const repair = await buildCiFixPrompt({
+    ...base,
+    repairsDefaultBranch: true,
+  });
+  const ordinary = await buildCiFixPrompt(base);
+  assertEquals(repair.ok && ordinary.ok, true);
+  if (repair.ok && ordinary.ok) {
+    assertStringIncludes(repair.value.prompt, RED_DEFAULT_BRANCH_REPAIR_NOTE);
+    assertEquals(
+      ordinary.value.prompt.includes(RED_DEFAULT_BRANCH_REPAIR_NOTE),
+      false,
+    );
+  }
 });

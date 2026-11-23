@@ -1,0 +1,13 @@
+{
+  "issue": 5437,
+  "chunk": "top-up-5437",
+  "title": "top-up: red default branch repair",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5437",
+  "definition": "modules added for holding sync PRs on a red default branch and repairing it once: default_branch_ancestry.ts, red_default_branch_repair.ts (#5437)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/default_branch_ancestry.ts",
+    "worker/deno/lib/red_default_branch_repair.ts"
+  ],
+  "sweptAt": "8596aa75bc6c08d2eb4d2054ae648d9365e8dc4a"
+}
