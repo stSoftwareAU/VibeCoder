@@ -26,6 +26,12 @@ Part of #5437.
   in server-side once the tip is green on its checks.
 - **Status:** "main is red: holding sync PRs #…, fix in #N" goes in the repair
   PR's body, or in one fleet comment on an adopted fix PR, edited in place.
+- **Repair PR is never deferred:** on a `fix/red-default-branch-*` head the
+  CI-fix processor refuses a `Depends on` base-branch deferral
+  (`_resolveBaseBranchDeferral` in `worker/deno/lib/pr_ci_processor.ts`), and
+  the CI-fix prompt carries `RED_DEFAULT_BRANCH_REPAIR_NOTE`
+  (`worker/deno/lib/prompt_builder.ts`) telling the agent the base's failure is
+  the one to fix.
 - **Shift-left:** runs on sync branches and the repair branch are not counted,
   nor is a job whose check already failed on the PR's merge base.
 
@@ -136,11 +142,14 @@ PRs, repair once (Issue #5437)", and the "Shift-left detection" section of
   red head. — evidence:
   `worker/deno/tests/red_default_branch_repair_5437_test.ts::findFailedCiChecks - a diverged sync PR is refreshed by merging main into it once the tip is green on its checks (Issue #5437)`
   — reviewer: met
-- **met** — Keep the shift-left count clean. Exclude failures that are inherited
-  from a red base (including all sync PRs) from the shift-left recurrence
-  counter. — evidence:
+- **partial** — Keep the shift-left count clean. Exclude failures that are
+  inherited from a red base (including all sync PRs) from the shift-left
+  recurrence counter. — evidence:
   `worker/deno/tests/shift_left_failures_test.ts::scan: a check that failed on the base commit is not observed, while the same check on a green base is (Issue #5437)`
-  — reviewer: met
+  — reviewer: met — reason: a non-sync PR's inherited failure is excluded only
+  when its merge-base commit carries a failed check run; a merge base with no
+  check runs (usual for `main` commits here, as `quality.yml` is
+  `pull_request`-only) still counts
 - **met** — Leave a single, visible "main is red: holding sync PRs, fix in #N"
   status (for example on the fix PR), so a human can see why streams are held. —
   evidence:
@@ -156,10 +165,11 @@ PRs, repair once (Issue #5437)", and the "Shift-left detection" section of
   — reviewer: partial — reason: the reviewer asked for a red → repair → green
   sequence test; that test was added after its review, and runs two scans over
   the same fixture
-- **met** — Inherited failures are excluded from the shift-left counter. —
+- **partial** — Inherited failures are excluded from the shift-left counter. —
   evidence:
   `worker/deno/tests/shift_left_failures_test.ts::scan: a run on a milestone sync branch is not observed, while an identical feature-branch run is (Issue #5437)`
-  — reviewer: met
+  — reviewer: met — reason: not excluded when the merge base has no check runs,
+  the normal case for `main` and milestone commits in this repo
 - **unrequested** — `docs/audits/lib-sweep-coverage/top-up-5437.json` —
   reviewer: unrequested — reason: the repository's lib-sweep coverage test
   requires every new lib module to be claimed by a slice
@@ -239,6 +249,9 @@ PRs, repair once (Issue #5437)", and the "Shift-left detection" section of
   (`Result: PASSED (with skipped checks)`; config integration and checkov are
   skipped because their tools are not installed on the host). It passed again on
   the final code head `75bddb693`.
+- `worker/deno/tests/ci_fix_prompt_v4_test.ts` (edited) adds
+  `buildCiFixPrompt - a repair PR for a red default branch is told not to defer to its base, and an ordinary PR is not (Issue #5437)`.
+  With `tests/pr_ci_processor_deferral_test.ts`: 57 passed, 0 failed.
 - Twinned rules: none found. This changes a scan, not a PR-summary gate.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

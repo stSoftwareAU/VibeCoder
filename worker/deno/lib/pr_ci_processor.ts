@@ -25,6 +25,7 @@ import { tokenEconomizerSpawnOptions } from "./token_economizer_plugin.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { buildCiFixPrompt, type CiFixPromptOptions } from "./prompt_builder.ts";
+import { RED_DEFAULT_BRANCH_REPAIR_PREFIX } from "./red_default_branch_repair.ts";
 import { loadRepoContextContent } from "./repo_context_reader.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { type CodegraphRun, prepareCodegraphRun } from "./codegraph_run.ts";
@@ -1997,6 +1998,10 @@ async function _processCiWithHeartbeat(
       path: a.path,
     })),
     prFailureActions: prFailureActionsExcerpt,
+    // Issue #5437: the repair PR for a red default branch fixes the base.
+    repairsDefaultBranch: input.branchName.startsWith(
+      RED_DEFAULT_BRANCH_REPAIR_PREFIX,
+    ),
     promptsDir: processorDeps.promptsDir,
   };
 
@@ -2883,6 +2888,7 @@ async function _processCiWithHeartbeat(
       prNumber,
       baseRef: input.baseRef,
       checkRunId,
+      branchName: input.branchName,
       checkName,
       failureText,
       signature,
@@ -4132,6 +4138,11 @@ interface BaseBranchDeferralOptions {
   baseRef: string | undefined;
   /** The failing check run's id, from which its identity is read (Issue #4680). */
   checkRunId: string;
+  /**
+   * The pull request's head branch. A repair PR for a red default branch is
+   * never deferred to its base (Issue #5437).
+   */
+  branchName: string;
   /** Name of the failing check. */
   checkName: string;
   /** The failure's annotations and log excerpt (Issue #3141). */
@@ -4195,6 +4206,7 @@ async function _resolveBaseBranchDeferral(
     prNumber,
     baseRef,
     checkRunId,
+    branchName,
     checkName,
     failureText,
     signature,
@@ -4234,6 +4246,20 @@ async function _resolveBaseBranchDeferral(
         "a dependency-audit check is never deferred — running the ordinary " +
         "no-changes path (Issue #3141)",
       { repo, prNumber, checkName, advisory, refusedDependsOn: ref },
+    );
+    return { kind: "none" };
+  }
+
+  // Issue #5437: a repair PR exists to fix the red default branch itself, so
+  // "red on the base branch too" is the failure it must fix, not a reason to
+  // defer it.
+  if (branchName.startsWith(RED_DEFAULT_BRANCH_REPAIR_PREFIX)) {
+    logger.warn(
+      `CI-fix agent declared \`Depends on ${ref}\` for check ` +
+        `\`${checkName}\` on the repair PR for a red default branch, but a ` +
+        "repair PR is never deferred to its base — running the ordinary " +
+        "no-changes path (Issue #5437)",
+      { repo, prNumber, checkName, refusedDependsOn: ref },
     );
     return { kind: "none" };
   }
