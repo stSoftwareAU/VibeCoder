@@ -204,6 +204,18 @@ Deno.test("(b) refuses a negated pinned install, which would swallow a checksum 
   );
 });
 
+// Issue #5351: `env "X"=./script` runs no command (env takes it as an
+// assignment). #5350's exact match refuses it too; this pins it.
+Deno.test("(a) refuses env with a quoted-name assignment as the script (Issue #5351)", () => {
+  expectFindings(
+    mutate([
+      TEST_STEP_ANCHOR,
+      '\n          env "X"=./infra/cloudformation/test-aws-emulator.sh\n',
+    ]),
+    ["[test-step]"],
+  );
+});
+
 Deno.test("(a) refuses the call only in a comment line", () => {
   expectFindings(
     mutate([
