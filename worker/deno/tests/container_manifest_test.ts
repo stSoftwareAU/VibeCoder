@@ -2183,7 +2183,7 @@ Deno.test("container/ - the committed Graft layer states every invariant a real 
 // Issue #1596 — the image and this repo's own secret scan run one gitleaks
 // ---------------------------------------------------------------------------
 
-Deno.test("container/ - the gitleaks pin matches the CI workflow's CLI fallback (Issue #1596)", async () => {
+Deno.test("container/ - the gitleaks pin matches the CI workflow's gitleaks CLI (Issue #1596)", async () => {
   const manifest = parseContainerManifest(
     await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
   );
@@ -2191,9 +2191,9 @@ Deno.test("container/ - the gitleaks pin matches the CI workflow's CLI fallback 
   assert(gitleaks, "container/tools.json must pin the gitleaks toolchain");
 
   // One artefact, one digest: .github/workflows/gitleaks.yml fetches the same
-  // linux_x64 release when the licensed action cannot run, so a bump that
-  // moved only one of them would have CI scanning with a gitleaks the image
-  // does not carry. Asserted rather than asserted-in-prose (Issue #1596).
+  // linux_x64 release for every scan, so a bump that moved only one of them
+  // would have CI scanning with a gitleaks the image does not carry. Asserted
+  // rather than asserted-in-prose (Issue #1596).
   const workflow = await Deno.readTextFile(
     new URL(".github/workflows/gitleaks.yml", REPO_ROOT),
   );
