@@ -519,12 +519,51 @@ direct conflict with "redact before you truncate" above.
 ### An assignment's value is judged, not only its label
 
 The `*_TOKEN=`/`*_SECRET=` rule matches a key, a separator and a value, and its
-separator (`["']?\s*[=:]\s*`) spans line breaks. A prose line ending in a
+separator (an optional quote, optional Markdown markers, then `:` or `=`, and
+trailing whitespace) spans line breaks. A prose line ending in a
 credential-ish label therefore adopted the **next** non-blank line as the
 assignment's value: a PR body reading `… now picks a credential:` had the
 Mermaid fence beneath it published as `***REDACTED***`, and the diagram
 `CODING-STANDARDS.md` requires stopped rendering (Issue #1727). The prose
 variant masked the following sentence's first word.
+
+Markdown emphasis, code-span or angle-bracket markers around a label (up to
+three before the separator, as in `**PASSWORD**: <value>`,
+`` `API_KEY`=<value> `` or `<PASSWORD>: <value>`, and up to three `*` or `_`
+emphasis markers after it, as in `**PASSWORD:** <value>`) are read as
+rendering, not as text that breaks the assignment (Issue #5326). Two limits: a
+code span that includes the colon (`` `PASSWORD:` <value> ``) is not matched,
+because that is how prose names a key, and a corpus run over the archived PR
+summaries showed it masking the next prose word; and `<TOKEN>=<value>`, a `>`
+straight before `=`, is not matched, because that is the `>=` comparison.
+
+A value that is a credential command-line flag followed by whitespace and a
+value (`the token: --token <value>`, or `Set the token:` then
+`--github-token <value>` on the next line) is left to the `secret-cli-flag`
+rule, which keeps the flag name and masks its value (Issue #5330). Before that
+fix the assignment masked the flag's name, so the `secret-cli-flag` rule no
+longer found the flag and the value was published. A flag with nothing after
+it, another flag after it (`password: --token --verbose`), or a bare `=` or `:`
+after it (`credentials: --token = <value>`, an Issue #5310 shape) is masked as
+the label's value as before.
+
+A quoted value may hold an escaped quote of its own kind, and the whole literal
+is masked: `"abc\"def"`, `'abc\'def'`, the SQL `'abc''def'` and the shell
+`'it'\''s'` are each masked in full. Before Issue #5327 the mask stopped at that
+quote and the rest of the credential was published. Two limits: the
+escape-aware read covers at most 4,096 characters or escapes, and a value whose
+escape never closes (`"C:\dir\"`) falls back to ending at the first quote.
+
+A bare value that starts at the closing quote of a credential flag's quoted
+value keeps that quote in front of the placeholder (Issue #5363). In
+`--password 'alpha beta TOKEN='tail` the `TOKEN=` value opens at that quote;
+masking the quote with the value left the `secret-cli-flag` rule no closing
+quote, so it masked only `'alpha` and published `beta`. The quote is kept only
+when the flag's opening quote lies outside every assignment mask, so the flag
+rule really pairs the two. One form is not covered: when the quote sits inside
+an outer label's value that is masked whole, as in
+`--token 'alpha beta credentials: TOKEN='tail`, the base behaviour applies and
+`beta credentials:` is still published.
 
 The label side stays deliberately blunt — it catches real secrets — apart from
 the prose-heading check below. The value is judged before the mask is applied,
@@ -666,15 +705,20 @@ itself must not report as carrying a secret, and vice versa.
 A product-name heading is not an assignment (Issue #5253). The PR title for
 Issue #4959, a product-name heading, had the word after its colon published as
 the placeholder, because the rule read the heading's `Name:` as a label. The
-word after a bare `: ` is now left alone when four things hold: the key is a
-Capitalised product name that does not end in a credential word (`TokenBudget`,
-though `GithubToken` and `Userpassword` do), the value is a single plain word of
-at most 15 letters, and a further word follows it on the same line, so the
+word after a bare `: ` (Markdown markers around the colon allowed,
+Issue #5326) is now left alone when four things hold: the key is a Capitalised
+product name that does not end in a credential word (`TokenBudget`, though
+`GithubToken` and `Userpassword` do), the value is a single plain word of at
+most 15 letters, and a further word follows it on the same line, so the
 heading leads into a sentence. It is the one judgement made on a single line,
 and it looks at the key, the value and what follows rather than a line break. A
-key ending in a credential word keeps its mask whatever its value, a
-`Key: word` that ends its line (`SecretString: hunter`) stays masked, and `=`,
-quoted keys, underscore keys and lower-camel identifiers are never exempt.
+key ending in a credential word keeps its mask whatever its value, except under
+Markdown markers (Issue #5326): a key ending in a plural credential noun such as
+`Tokens` or `Secrets`, with a plain-word value followed by more text on the
+line, is a heading for a count or list (the run-stats line
+`- **Tokens:** input 27 · output 11`). A `Key: word` that ends its line
+(`SecretString: hunter`) stays masked, and `=`, quoted keys, underscore keys and
+lower-camel identifiers are never exempt.
 
 The accepted costs are two rules. The first: a credential shorter than eight
 characters, or one whose emphasis-stripped value is a single lower-case word,
@@ -684,7 +728,9 @@ sentence ended in a credential label. A credential in that position still
 carrying a provider prefix is masked by its own signature rule regardless. The
 second: a credential that is a single plain word of at most 15 letters, sitting
 after a PascalCase heading that does not end in a credential word, on the same
-line after `: `, with a further word after it on that line.
+line after `: `, with a further word after it on that line; or, under Markdown
+markers, after a plural credential noun (`**Tokens:** sunshine and more`) with
+any further text after it on that line.
 
 ### Transformed secrets are decoded, then re-scanned
 
