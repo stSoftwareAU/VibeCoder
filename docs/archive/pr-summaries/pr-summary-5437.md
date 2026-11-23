@@ -280,13 +280,13 @@ claimed in `docs/audits/lib-sweep-coverage/top-up-5437.json`.
 - Red against base: with `worker/deno/lib/pr_maintenance.ts` and
   `worker/deno/lib/shift_left_failures.ts` restored to `8596aa75b`, 53 tests
   failed (observed at `da3d654ae`).
-- Targeted run on the head:
-  `deno task test:unit tests/red_default_branch_repair_5437_test.ts tests/pr_maintenance_ci_deferral_test.ts tests/pr_maintenance_test.ts tests/pr_maintenance_merge_queue_test.ts`
-  gave 163 passed, 0 failed.
-- Full gate: `./quality.sh` passed on `59f1a5c61`
+- Targeted run on the final code head `c500e1c92`:
+  `deno task test:unit tests/red_default_branch_repair_5437_test.ts tests/pr_maintenance_test.ts tests/pr_maintenance_ci_deferral_test.ts tests/pr_maintenance_merge_queue_test.ts tests/shift_left_failures_test.ts tests/default_branch_ancestry_5437_test.ts tests/pr_ci_processor_deferral_test.ts tests/ci_fix_prompt_v4_test.ts`
+  gave 273 passed, 0 failed.
+- Full gate: `./quality.sh` passed on the final code head `c500e1c92`
   (`Result: PASSED (with skipped checks)`; config integration and checkov are
-  skipped because their tools are not installed on the host). It passed again on
-  the final code head `9c1fb4314`.
+  skipped because their tools are not installed on the host).
+- `deno task pr-summary-check` on this summary: 0 gates blocked, 0 not checked.
 - `worker/deno/tests/ci_fix_prompt_v4_test.ts` (edited) adds
   `buildCiFixPrompt - a repair PR for a red default branch is told not to defer to its base, and an ordinary PR is not (Issue #5437)`.
 - `worker/deno/tests/pr_ci_processor_deferral_test.ts` (edited) adds
