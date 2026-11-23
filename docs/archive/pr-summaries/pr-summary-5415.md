@@ -164,10 +164,13 @@ flowchart TD
     `A Dependabot re-cut does not confirm a patch-less modified file by its blobs (Issue #5415)`.
     Each refusal test includes an accepted control.
 - TDD: run against the unfixed `gate.ts`, the test file gave
-  `FAILED | 72 passed | 6 failed`. The shared-merge-base and
-  differing-merge-base cases expected `"awaiting-fix"` and got `null`. With the
-  merge-base guard removed, the merge-base-missing, malformed-merge-base and
-  #3063 tests were observed red.
+  `FAILED | 72 passed | 7 failed`. The seven failing tests are the five
+  issue-item tests above plus the missing-merge-base and malformed-merge-base
+  tests. Each expected `"awaiting-fix"` and got `null`: the item 1 and item 2
+  cases at their main assertion, and the five refusal tests at their accepted
+  control, which the unfixed gate cannot confirm. With the merge-base guard
+  removed, the merge-base-missing, malformed-merge-base and #3063 tests were
+  observed red.
 - Edited existing tests:
   - The `compareFiles` helper gained an optional `mergeBase` argument. Its
     output is unchanged when the argument is omitted.
