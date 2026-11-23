@@ -133,7 +133,9 @@ export function resolvePreFlightSpec(
  * pushed it gets the CI cargo clippy and test-target compile (compared against
  * the PR base), the ShellCheck publication check, the CI cargo-deny check, and
  * the dependency-selected unit tests, markdownlint and `deno fmt --check` for
- * the pushed paths (Issues #4631, #4626, #4930 and #5169). WIP checkpoint,
+ * the pushed paths (Issues #4631, #4626, #4930 and #5169), and the gitleaks
+ * scan of the PR's commit range where the repository tracks `gitleaks.yml`
+ * (Issue #5430). WIP checkpoint,
  * timeout-preservation and declared hand-off pushes never call this; they stay
  * ungated on purpose.
  */
@@ -976,9 +978,11 @@ export async function gateUnpushedCommits(
  *   (zero added latency, no gate); a spec with `repairChecksWithCiCargo` (the CI-fix, PR-feedback,
  *   spelling and merge-conflict repairs, and the babysitter tree gate) runs
  *   just the repository ShellCheck policy, the CI cargo-deny check when the
- *   pushed paths include a cargo input, the dependency-selected unit tests and
- *   configured markdownlint and `deno fmt --check` for the pushed paths, plus
- *   the repo CI's cargo checks (Issues #4631, #4626, #4930, #4630 and #5169).
+ *   pushed paths include a cargo input, the gitleaks scan of the PR's commit
+ *   range where the repository tracks `gitleaks.yml` (Issue #5430), the
+ *   dependency-selected unit tests and configured markdownlint and `deno fmt
+ *   --check` for the pushed paths, plus the repo CI's cargo checks (Issues
+ *   #4631, #4626, #4930, #4630, #5169 and #5430).
  * @param runId - Run id stamped into the `Vibe-Coder-Run-Id` commit trailer
  *   (Issue #963). Omit in production: it then falls back to {@link getRunId},
  *   which reads `VIBE_RUN_ID` and generates-and-caches one when unset, exactly
