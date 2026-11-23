@@ -25,6 +25,7 @@ import {
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { parseCiFixAttemptMarkers } from "../lib/ci_fix_attempt_markers.ts";
+import { RED_DEFAULT_BRANCH_REPAIR_PREFIX } from "../lib/red_default_branch_repair.ts";
 import type { GitHubComment, Logger } from "../types.ts";
 import type {
   ClaudeDeps,
@@ -547,6 +548,32 @@ Deno.test("processCiFailure - a Depends on line with a green base takes the ordi
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
   // A verified green base is a charged attempt, never a hold (Issue #4680).
   assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+});
+
+Deno.test("processCiFailure - a repair PR for a red default branch is never deferred to its red base: it takes the ordinary path and charges an attempt (Issue #5437)", async () => {
+  // The base is red by default, so only the branch name differs from the
+  // deferring test above.
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {}, {
+    ...makeInput(),
+    branchName: `${RED_DEFAULT_BRANCH_REPAIR_PREFIX}302adaa5ed4f`,
+  });
+
+  assertEquals(captured.comments.length >= 1, true);
+  const body = captured.comments.at(-1) ?? "";
+  // The repair PR is charged an attempt, never deferred or paged (Issue #5437).
+  assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  // The refusal is logged loudly, so an operator can see why it was not held.
+  assertEquals(
+    captured.warnings.some((line) =>
+      line.includes("never deferred to its base")
+    ),
+    true,
+    `expected the repair-PR refusal warning; got: ${
+      captured.warnings.join(" | ")
+    }`,
+  );
 });
 
 Deno.test("processCiFailure - a base-branch lookup error holds the claim unverified: posts once, charges no attempt, logs loudly (Issue #1880, #4680)", async () => {
