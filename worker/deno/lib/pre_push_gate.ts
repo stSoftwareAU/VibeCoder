@@ -20,7 +20,7 @@
  *   same `repairChecksWithCiCargo` repair mode as the CI-fix repairs, Issue
  *   #5169).
  *
- * It does four things, in order:
+ * It does five things, in order:
  *
  * 1. Always runs a fast check over just the files the push introduces
  *    (`deno fmt --check`, `deno lint`, `deno test` (Issue #4930),
@@ -72,7 +72,19 @@
  *    Missing tools or an unreachable advisory database are infrastructure
  *    failures, except for an invocation CI allows to fail, whose failures of
  *    every kind are `[PRE_PUSH_WARNING]` lines.
- * 4. Then runs the repo's configured pre-flight commands.
+ * 4. Then runs the gitleaks secret scan (Issue #5430) over every pushed
+ *    branch's commit range, `<fork>..<head>`, where `<fork>` is the merge-base
+ *    with the PR base (`baseRef`, or `origin/<baselineBranch>`), or the parent
+ *    of the oldest commit on no remote when no base is known. That is the
+ *    commit set CI's `gitleaks.yml` scans (`<base tip>..<head>`), every commit
+ *    the PR has ahead of its base and not only the commits this push adds, so
+ *    a secret an earlier, already-pushed commit of the PR added is still met
+ *    before the next push.
+ *    It runs only where the repository tracks `.github/workflows/gitleaks.yml`,
+ *    as the quality gate's gitleaks stage does. The babysitter tree gate turns
+ *    it off (`secretScan: "off"`), because it runs its own scan of the range
+ *    and the uncommitted files.
+ * 5. Then runs the repo's configured pre-flight commands.
  *
  * Every uncertainty fails closed: unparseable hook input, a failing `git`
  * call, an unquotable path, a ShellCheck policy the runner cannot interpret,
@@ -96,6 +108,10 @@ import {
   tokeniseCommand,
 } from "./pre_flight_gate.ts";
 import { runCargoDenyGate } from "./cargo_deny_gate.ts";
+import {
+  type GitleaksRangeOutcome,
+  runGitleaksRangeCheck,
+} from "./gitleaks_check.ts";
 import {
   type DenoScopeConfig,
   inDenoScope,
@@ -2106,6 +2122,81 @@ async function pushForkCommit(
   return parent.code === 0 && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
 }
 
+/** The repository's CI secret scan (Issue #5121): its presence registers the stage. */
+const GITLEAKS_WORKFLOW = ".github/workflows/gitleaks.yml";
+
+/**
+ * The gitleaks scan of each pushed branch's commit range (Issue #5430), the
+ * range CI scans: `<fork>..<head>`, where `<fork>` is the merge-base of the
+ * head and `baseRef` (the PR base), via {@link pushForkCommit}. Each distinct
+ * pushed head is scanned once.
+ *
+ * A fork that cannot be found is an infrastructure fault when a base is known,
+ * because the range was never scanned. With no base, the gate cannot place the
+ * range, so it warns and goes on. A `passed` range is named in the result
+ * (`gitleaks (<fork>..<head>)`); a finding is a verdict; a skipped scan (no
+ * gitleaks on a host) is a warning.
+ */
+async function scanPushedRanges(args: {
+  cwd: string;
+  refs: readonly PrePushRef[];
+  git: PrePushGit;
+  baseRef: string | undefined;
+  scan: (
+    cwd: string,
+    base: string,
+    head: string,
+  ) => Promise<GitleaksRangeOutcome>;
+}): Promise<Result<string[], Error>> {
+  const checksRun: string[] = [];
+  const scanned = new Set<string>();
+  for (const ref of args.refs) {
+    if (scanned.has(ref.localSha)) continue;
+    scanned.add(ref.localSha);
+    const fork = await pushForkCommit(
+      [ref],
+      args.cwd,
+      args.git,
+      args.baseRef,
+    );
+    if (fork === null) {
+      if (args.baseRef !== undefined) {
+        return {
+          ok: false,
+          error: new PrePushGateInfrastructureError(
+            `gitleaks: the merge-base of ${args.baseRef} and the pushed head ` +
+              `${
+                ref.localSha.slice(0, 12)
+              } could not be found after deepening ` +
+              "the history, so the commit range was never scanned — an " +
+              "infrastructure fault, not a finding",
+          ),
+        };
+      }
+      console.warn(
+        "[PRE_PUSH_WARNING] gitleaks: no PR base is known and no unpushed " +
+          `commit places the range of ${ref.localRef}, so nothing was scanned`,
+      );
+      continue;
+    }
+    const range = `${fork.slice(0, 12)}..${ref.localSha.slice(0, 12)}`;
+    const outcome = await args.scan(args.cwd, fork, ref.localSha);
+    if (outcome.kind === "passed") {
+      checksRun.push(`gitleaks (${range})`);
+    } else if (outcome.kind === "blocked") {
+      return { ok: false, error: new Error(outcome.message) };
+    } else if (outcome.kind === "infrastructure") {
+      return {
+        ok: false,
+        error: new PrePushGateInfrastructureError(outcome.message),
+      };
+    } else {
+      console.warn(`[PRE_PUSH_WARNING] ${outcome.message}`);
+    }
+  }
+  return { ok: true, value: checksRun };
+}
+
 /**
  * Find a runnable `markdownlint-cli2`: the repo's own install first, then the
  * first working one on `PATH`; null when neither runs.
@@ -3091,6 +3182,20 @@ export async function runPrePushGate(opts: {
    * to `baseRef`. Without either, a failing CI cargo check always blocks.
    */
   compareRef?: string;
+  /**
+   * The gitleaks scan of each pushed commit range (Issue #5430), run where the
+   * repository tracks `.github/workflows/gitleaks.yml`. Defaults to
+   * {@link runGitleaksRangeCheck}; a function replaces it (a test seam). `"off"`
+   * skips the stage: the babysitter tree gate passes it, because that gate runs
+   * its own scan of the range and the uncommitted files.
+   */
+  secretScan?:
+    | "off"
+    | ((
+      cwd: string,
+      base: string,
+      head: string,
+    ) => Promise<GitleaksRangeOutcome>);
 }): Promise<Result<{ checksRun: string[] }, Error>> {
   const git = opts.git ?? defaultPrePushGit;
   const fail = (message: string): Result<never, Error> => ({
@@ -3435,6 +3540,23 @@ export async function runPrePushGate(opts: {
   // A check CI allows to fail is reported, never counted as run or a block.
   for (const warning of cargoDeny.value.warnings) {
     console.warn(`[PRE_PUSH_WARNING] cargo deny: ${warning}`);
+  }
+
+  // Issue #5430: the gitleaks scan of each pushed range, in every mode, as the
+  // quality gate registers it (the tracked workflow decides).
+  if (opts.secretScan !== "off" && tracked.includes(GITLEAKS_WORKFLOW)) {
+    const secrets = await scanPushedRanges({
+      cwd: opts.cwd,
+      refs: refs.value,
+      git,
+      baseRef: opts.baseRef ??
+        (opts.baselineBranch === undefined
+          ? undefined
+          : `origin/${opts.baselineBranch}`),
+      scan: opts.secretScan ?? runGitleaksRangeCheck,
+    });
+    if (!secrets.ok) return secrets;
+    checksRun.push(...secrets.value);
   }
 
   const preFlight = await runPreFlightGate(

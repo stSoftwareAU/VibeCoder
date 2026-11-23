@@ -745,6 +745,8 @@ export async function runBabysitterTreeGate(
         ? { findMarkdownlint: deps.findMarkdownlint }
         : {}),
       ...(baseBranch ? { baselineBranch: baseBranch } : {}),
+      // The gate runs `runGitleaksTreeCheck` itself, over the range and the uncommitted files.
+      secretScan: "off",
     });
     let verdict: BabysitterTreeGateOutcome;
     if (result.ok) {
