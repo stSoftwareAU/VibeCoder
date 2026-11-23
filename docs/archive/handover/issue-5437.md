@@ -9,8 +9,8 @@ one agent provider.
 
 ## This attempt
 
-- 2026-11-23T09:45:19Z — execute was released on schedule (cycle ended, finish
-  deadline reached, or run hard cap reached) after 4654s; 0 uncommitted file(s)
+- 2026-11-23T12:08:54Z — execute was released on schedule (cycle ended, finish
+  deadline reached, or run hard cap reached) after 5497s; 1 uncommitted file(s)
   preserved; 7 commit(s) added to the branch
 - Branch: `issue-5437-red-main-the-fleet-ci-fixes-one-sync-pr-at-a-time`
 - Wind-down notice: not delivered — the interruption arrived without warning
@@ -19,28 +19,29 @@ one agent provider.
 
 Commits this run added to the branch, newest first:
 
-- Refuse base-branch deferral on a red-default-branch repair PR and tell its
-  CI-fix agent so; mark shift-left criteria partial (#5437)
+- Undo the accidental whole-file reformat of docs/INTERNALS.md, keeping only the
+  repair-PR paragraphs (#5437)
+- Hand a held failure to a repair PR that cannot reproduce it, and find a repair
+  PR outside the scan's listing (#5437)
 - style: apply repository formatters
-- Record the passing quality gate on the final head in the #5437 summary
-- Rewrite the #5437 PR summary for the final head
-- Hold a diverged sync PR on a red tip for the one repair; test the red-to-green
-  refresh sequence (#5437)
-- Address standards review: shared merge-base and SHA helpers, fail loud on
-  missing keys, input-aware fakes (#5437)
-- Require a red merge base for held non-sync PRs; keep one status comment edited
-  in place (#5437)
+- WIP checkpoint: periodic agent progress snapshot
+- WIP checkpoint: periodic agent progress snapshot
+- Cover the repair-PR prompt wiring and document the deferral refusal (#5437)
+- Test that a red-default-branch repair PR is never deferred to its red base
+  (#5437)
 
-The working tree was clean at the interruption — the work above is already
-committed on this branch.
+Files the run left uncommitted, preserved onto this branch by the same
+interruption:
+
+- `docs/archive/pr-summaries/pr-summary-5437.md`
 
 ## What remains
 
-The run was interrupted after 4654s, so it never reported completion: whatever
+The run was interrupted after 5497s, so it never reported completion: whatever
 the issue still asks for beyond the changes above is outstanding.
 
 Diff `issue-5437-red-main-the-fleet-ci-fixes-one-sync-pr-at-a-time` against its
-base branch to see the 7 commit(s) and 0 preserved file(s) named above, continue
+base branch to see the 7 commit(s) and 1 preserved file(s) named above, continue
 from them, and do not revert them unless they are wrong.
 
 The closing deliverables are outstanding too unless the list above names them:
@@ -57,6 +58,9 @@ a blocker it reported.
 
 Earlier runs on this issue were interrupted too:
 
+- 2026-11-23T09:45:19Z — execute was released on schedule (cycle ended, finish
+  deadline reached, or run hard cap reached) after 4654s; 0 uncommitted file(s)
+  preserved; 7 commit(s) added to the branch
 - 2026-11-23T07:26:51Z — execute was parked at the host disk floor after 2085s;
   0 uncommitted file(s) preserved; 3 commit(s) added to the branch
 - 2026-11-23T06:29:29Z — execute was released on schedule (cycle ended, finish
