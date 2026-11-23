@@ -424,8 +424,15 @@ export async function reapAgentLeftovers(
       for (const pid of targets) killedPids.add(pid);
       const killed = await signalAll(targets, "KILL");
       if (born.length === 0 && killed === 0) {
-        exhausted = false;
-        break;
+        // The scan snapshots pids before probing their tags. A parent can
+        // fork and exit between that snapshot and the liveness check above.
+        const late = await rescan();
+        if (late.length === 0) {
+          exhausted = false;
+          break;
+        }
+        for (const pid of late) killedPids.add(pid);
+        await signalAll(late, "KILL");
       }
       await deps.sleep(POST_KILL_SETTLE_MS);
     }

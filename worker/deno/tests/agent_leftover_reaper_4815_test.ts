@@ -864,3 +864,29 @@ Deno.test({
     }
   },
 });
+
+Deno.test("reaper - finds a child born during the last parent scan", async () => {
+  const fake = fakeReaper({
+    found: { ok: true, pids: [101] },
+    alive: [101, 900],
+    ignoreTerm: [101],
+  });
+  const findTagged = fake.deps.findTagged;
+  fake.deps.findTagged = async (entry) => {
+    const snapshot = await findTagged(entry);
+    if (fake.scans.length === 3) {
+      fake.alive.add(102);
+      fake.born.push(102);
+      fake.alive.delete(101);
+    }
+    return snapshot;
+  };
+  const result = await reapAgentLeftovers({
+    tag: TAG,
+    maxWaitSeconds: 1,
+    deps: fake.deps,
+  });
+  assertEquals(fake.signals, ["TERM 101", "KILL 102"]);
+  assertEquals([...fake.alive], [900]);
+  assertEquals(result.survivors, []);
+});
