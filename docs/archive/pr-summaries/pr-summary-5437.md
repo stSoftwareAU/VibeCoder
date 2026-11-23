@@ -89,7 +89,8 @@ once (Issue #5437)". Added the lib-sweep slice
 - **symptom** — five sync PRs with head `302adaa` (= `main`) failed `gitleaks`.
   The CI-fix lane pushed a fix onto one sync branch (#5429) while #5434 fixed
   `main`, and shift-left counted the sync failures as local-gate misses (#5430).
-- **status** — `verified` — with `worker/deno/lib/pr_maintenance.ts` and
+- **status** — `verified` — the regression test was observed failing against
+  the unfixed code and passing after the fix. With `worker/deno/lib/pr_maintenance.ts` and
   `worker/deno/lib/shift_left_failures.ts` restored to the base commit, 12 of
   the new tests failed. Examples: the three-sync-PR test returned a sync PR as
   the CI-fix target and opened no repair PR, and the sync-branch shift-left test
