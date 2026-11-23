@@ -144,7 +144,10 @@ acceptance-criteria heading, so this summary carries no review blocks.
   `_boolean_setting_`, `cache_secret_redaction_1261`,
   `prompt_context_secret_redaction_1424` and
   `security_scan_secret_redaction_3047`, plus the new file.
-- GATE_RESULT_LINE
+- `./quality.sh < /dev/null` on the final code head, after merging the
+  milestone branch: `Result: PASSED (with skipped checks)`. The gate itself
+  skipped config integration and checkov. Deno tests, lint, type check, fmt,
+  semgrep, gitleaks, markdownlint and mermaid all passed.
 
 ## Not done / remaining risk
 
