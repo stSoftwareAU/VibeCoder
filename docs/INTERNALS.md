@@ -873,6 +873,28 @@ error and an `ORPHANS_UNCOLLECTED` security event. Surviving descendants are lef
 running; the agent's output and exit evidence still return to the execute phase.
 Successful sweeps retain the `ORPHANS_COLLECTED` event.
 
+Every agent spawn carries a unique `VIBE_AGENT_SPAWN_TAG` in its environment.
+Once the agent exits, by any path, the runner terminates the processes of the
+same user that still carry that tag: TERM, then KILL after the kill-after
+bound. The pass is bounded: tagged processes that keep appearing after the
+last KILL round, and pids that fail the identity or tag checks, are not
+terminated and are reported as survivors or skipped, with a warning that
+cleanup is incomplete. A detached `( … & )` job is re-parented at once and never appears in the
+descendant snapshot, so this is the only collection that reaches it. Linux
+only: the scan reads `/proc/<pid>/environ` through `grep`
+([`agent_leftover_reaper.ts`](../worker/deno/lib/agent_leftover_reaper.ts)).
+Each pid is fingerprinted after the scan (`captureProcessIdentity`), then its tag
+is read again for that same pid, so a pid reused since the scan holds an
+untagged process and is never taken for a leftover. The fingerprint is
+re-checked (`isSameProcess`) immediately before every TERM and KILL. A pid with
+no fingerprint, no tag or a changed fingerprint is never signalled and is listed
+as skipped. The pass rescans while it runs (every second of the TERM wait, then
+up to four KILL rounds), so a tagged child a leftover starts meanwhile is
+terminated too; if new ones are still appearing at that bound, they are listed
+as survivors and the warning says cleanup is incomplete. Events:
+`AGENT_LEFTOVERS_COLLECTED`, and `AGENT_LEFTOVERS_UNCHECKED` when the scan or a
+rescan fails or a signal, identity or probe throws (Issue #4815).
+
 ### 📉 Failure tracking (`worker/deno/commands/failure_tracker.ts`)
 
 The failure tracker (migrated to Deno TypeScript) tracks consecutive failures on

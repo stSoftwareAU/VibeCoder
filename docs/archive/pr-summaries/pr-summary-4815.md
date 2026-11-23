@@ -2,200 +2,180 @@
 
 ## Summary
 
-The issue requires that repeated deferral alone must never turn it into
-`needs-human`. The worker already behaves that way: since #4227, once an issue
-reaches `MAX_TIME_DEFERRALS`, its next deferral is not honoured and it is
-retried as not finished on the failure ladder. But the public comments still
-said the opposite. The deferral comment the worker posted on #4815 reads "Past
-that limit, this issue is handed to a human instead of deferred again". The
-limit-reached comment ends "this is now handed to a human". Both now say the
-issue is retried as not finished, and the limit-reached comment adds that no
-`needs-human` is added.
+Partial mitigation for #4815. An agent run now terminates the tagged processes
+it leaves running once the agent has exited, within a bounded number of KILL
+rounds; survivors and skipped pids are reported, not signalled. This stops a
+verified leak: a detached `( … & )` job is re-parented to PID 1 at once, so it
+never appears in the descendant snapshot (Issue #4382), and on a normal exit the
+collector is not run at all. Nothing in the worker bounded such a job before.
 
-GRQ-3 has now posted the redacted facts for its three archived completion kills
-on this issue. In all three, the guest did not answer its exec probe, and the
-last step logged differs: `agent turn` twice and `pre-PR verifier` once. The
-guest VM itself hung, so no single completion step is at fault. The launcher's
-early silent-guest reap (#5161, already on `main`) bounds a hung guest: it is a
-mitigation, not a cure. A new bounded replay test runs each kill's recorded
-timestamps through that reap's decision on a synthetic five-minute cadence. Why
-the guest hangs is still unknown, so the reap shortens a hang but does not
-prevent it. This is Part of #4815.
+It is not shown that this leak caused the completion wedge. The three archived
+facts posted on the issue establish an unresponsive guest and the last logged
+step, with guest memory and pressure unavailable. They do not establish that the
+agent had exited, that anything was left running, or that the guest was starved.
+The leftover build is a cause that fits those facts, no more. The diagnosis and
+repair of the completion wedge stay outstanding, which is why this summary says
+`Part of #4815` and does not close it.
+
+Every agent spawn now carries a unique `VIBE_AGENT_SPAWN_TAG` in its
+environment. After the agent exits, by any path, `reapAgentLeftovers` in
+`worker/deno/lib/agent_leftover_reaper.ts` finds each same-user process whose
+`/proc/<pid>/environ` still holds that tag, sends TERM, then KILL after the
+runner's kill-after bound. `runClaudeWithTimeoutBody` in
+`worker/deno/lib/claude_runner.ts` calls it after the descendant tracker settles
+on the normal path, and again in the catch path, so a throw cannot abandon a
+live agent or its leftovers.
+
+Review round 4 closed two gaps in the first version: a pid reused by an untagged
+process before the identity was captured could be signalled, and a tagged child
+started during the pass was never considered.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The diagnosis comes from the facts GRQ-3 posted (PR #5294's backfill): three
-  completion kills on 2–4 November, each with the guest probe `did not answer`.
-  Before capture, the worker log had been silent for 1h 1m, 30m 17s and 1h 30m
-  20s. A hang in one worker step would leave the guest answering `exec`. A guest
-  that does not answer is a VM-level hang, and the steps differ.
-- Since #5161, a guest whose log has been silent for 900s and that fails two
-  exec probes is reaped well before the watchdog deadline. All three kills
-  predate #5161.
-- The comment text is the part of the remaining scope this run can finish: the
-  issue's own thread shows a worker comment promising a human hand-off that the
-  code no longer performs.
+- The hard-kill facts posted on this issue name the completion phase, the
+  `pre-PR verifier` or `agent turn` as the last step logged, an hour of silence
+  before capture, and a guest probe that did not answer. They do not say whether
+  the agent had exited or whether anything was left running
+- PR #5312 showed the guest VM itself stopped answering and that the launcher's
+  early silent-guest reap (#5161) only shortens such a hang. Guest memory read
+  `not available`, so the cause was left open. A heavy build or watcher the
+  agent left behind is one cause that fits the posted kills, and nothing in the
+  worker bounded it. This PR removes that one leak and does not claim it was the
+  cause; #5161 still bounds any other hang. On a recurrence, the
+  `AGENT_LEFTOVERS_COLLECTED` and `AGENT_LEFTOVERS_UNCHECKED` events say whether
+  a leftover was found, which is the evidence that would connect the leak to a
+  wedge
+- A detached job is the case nothing collected before: it leaves the agent's
+  process tree at once. The environment is the one thing it keeps, so the tag is
+  the only reliable way to find it again
+- The tag is set on the child environment only (`baseEnv`), before the gh guard
+  shim and the pre-push hook copy it. The worker's own later subprocesses, such
+  as the completion phase's git and gh calls, never carry it and are never
+  reaped
 
 ### Essential Design Decisions
 
-- The deferral behaviour does not change, only its wording. The limit, the
-  not-finished retry and the absence of `needs-human`
-  (`worker/deno/lib/phases/declared_handoff.ts`, the branch after
-  `history.length < MAX_TIME_DEFERRALS`) stay as they are.
-- The replay samples the production silence decision at a synthetic interval.
-- No time-deferral marker is emitted. A deferral after a commit raises no PR,
-  and the next diagnostic step waits on a recurrence, not on a date this run can
-  know.
+- Linux only. The scan runs a small `sh` script that reads `/proc/<pid>/environ`
+  through `grep -z -x -F`, because Deno refuses that file under `--allow-read`
+  alone. The tag is passed as an argument, never interpolated, and only the UUID
+  shape `newAgentSpawnTag` produces is accepted
+- Each pid is fingerprinted (`captureProcessIdentity`), and then its tag is read
+  again for that same pid (`hasTag`), so a pid reused between the scan and the
+  fingerprint holds an untagged process and is skipped instead of being
+  fingerprinted as ours. The fingerprint is re-checked (`isSameProcess`)
+  immediately before every TERM and KILL. A pid with no fingerprint, no tag or a
+  changed fingerprint is never signalled and is reported as skipped
+- The pass rescans for tagged processes while it runs: every second of the TERM
+  wait, then in KILL rounds until a rescan finds nothing new and nothing is left
+  to KILL, at most four rounds. A child a leftover starts while it handles TERM
+  is therefore terminated, each new pid going through the same fingerprint, tag
+  and re-check steps. If new ones are still appearing at the bound, the newest
+  are reported as survivors and the warning says cleanup is incomplete
+- The worker's own pid is never signalled. Signals go to single pids, never
+  groups
+- The reaper never throws. A failed scan logs its cause and emits
+  `AGENT_LEFTOVERS_UNCHECKED`. A signal, identity or probe that throws stops the
+  pass and lists every pid not proven gone, a failed rescan included. A
+  successful pass emits `AGENT_LEFTOVERS_COLLECTED`
+- `VIBE_AGENT_SPAWN_TAG` is registered in `vibe_env_registry.ts` as launch
+  plumbing
 
 ### Undiscoverable Facts
 
-- Why the guest VM stops answering (for example memory exhaustion in the VM) is
-  not in the posted facts: guest memory and pressure read `not available`
-  because the guest did not answer. The raw evidence stays in GRQ-3's private
-  archive, as the issue requires.
+None. The raw evidence stays on the host in `~/logs/hard-kill-archive/`; this
+fix rests only on the redacted facts already posted on the issue.
 
 ## Evidence
 
-Backend change, no UI files. `worker/deno/tests/time_deferral_test.ts` drives
-the real comment builders:
+Backend-only change; verified by tests, including two that drive real processes
+on Linux.
 
-- `deferIssueUntil - posts a comment and records the body line`: the posted
-  deferral comment includes "retried as not finished" and does not include
-  "handed to a human".
-- `buildDeferralExhaustedComment - lists prior deferrals and the latest reason`:
-  the same two checks, plus every assertion the test already made.
+```mermaid
+flowchart LR
+    S[runner spawns agent] -->|env VIBE_AGENT_SPAWN_TAG| A[agent]
+    A -->|"( build & )"| D[detached job, re-parented to PID 1]
+    A --> X[agent exits or the runner throws]
+    X --> R[reapAgentLeftovers]
+    R -->|scan /proc environ for the tag| D
+    R -->|fingerprint, tag re-read, TERM, rescan, KILL| K[leftover terminated]
+    K --> C[completion phase runs on a responsive guest]
+```
 
-The existing
-`worker/deno/tests/handle_no_changes_time_deferral_test.ts::handle_no_changes_phase - deferral limit reached retries, never a human (#4227)`
-still proves the behaviour: no label is added, and the issue is retried.
-
-`worker/deno/tests/guest_silence_replay_4815_test.ts` replays the three posted
-kills (`vibe-coder-46887`, `vibe-coder-53371`, `vibe-coder-9753`). It uses only
-the public timestamps from the issue:
-
-- `replay #4815 <container> (<step>) - the guest is judged wedged before the recorded
-  silence`:
-  `checkGuestSilence` is sampled every 300 simulated seconds from three
-  check-clock offsets. For each, the guest is judged wedged after 900s and
-  before 1200s of silence. Even with both exec probes taking their full bound,
-  that is before the silence each kill actually ran to.
-- `replay #4815 <container> (<step>) - a guest that still answers is never
-  judged wedged`:
-  the same silence with a guest that answers gives a healthy verdict.
-
-Issue numbers the diff cites: #4227 (An approved issue is never handed back: a
-run that delivers nothing is retried, not labelled needs-human as
-'analysis-only').
-
-## Reproduction
-
-- **symptom** — the launcher watchdog reaped a container wedged in the
-  completion phase of run `vibe-mw2hlf2s-1125d1` on GRQ-3
-- **status** — `reproduced-by-replay` — the three posted kills are replayed from
-  their recorded timestamps through the early reap's decision. With the default
-  threshold raised to 3600s (no early reap for these kills), the replay failed
-  for `vibe-coder-46887` and `vibe-coder-53371`
-  (`never reaped early
-  within 3667.22s` / `1817.232s`). With the shipped 900s
-  default it passes.
-- **regression test** —
-  `worker/deno/tests/guest_silence_replay_4815_test.ts::replay #4815 vibe-coder-53371 (agent turn) - the guest is judged wedged before the recorded silence`
-
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **partial** — "use a bounded replay or the next applicable recurrence to
-  diagnose and repair the completion failure" — evidence:
-  `worker/deno/tests/guest_silence_replay_4815_test.ts::replay #4815 vibe-coder-46887 (pre-PR verifier) - the guest is judged wedged before the recorded silence`
-  (and the same test for `vibe-coder-53371` and `vibe-coder-9753`) — reviewer:
-  partial — reason: the replay narrows the wedge to a guest-VM hang that the
-  #5161 early reap ends after about 20 minutes instead of 30–90. Why the guest
-  hangs is still unknown, and the run still dies, so the failure is reaped
-  sooner, not repaired. The replay also assumes the guest stopped answering from
-  the last log line onward, and no recurrence has been seen since #5161.
-- **partial** — "Complete the issue through an implemented fix and automated
-  regression/recovery evidence" — evidence:
-  `worker/deno/tests/guest_silence_replay_4815_test.ts` (6 tests, red-checked) —
-  reviewer: partial — reason: the automated evidence exists and needs no manual
-  step, but the diff changes no code for the completion failure itself. The fix
-  it relies on is the #5161 mitigation, and the cause is still unknown.
-- **met** — "A missing evidence file on the claiming host, repeated deferral, or
-  exhausted retry counter alone must not turn this implementation issue into
-  `needs-human`" — evidence:
-  `worker/deno/tests/time_deferral_test.ts::deferIssueUntil - posts a comment and records the body line`,
-  `worker/deno/tests/time_deferral_test.ts::buildDeferralExhaustedComment - lists prior deferrals and the latest reason`
-  — reviewer: met
-- **partial** — "preserve the existing private diagnostic boundary, make the
-  necessary redacted cause/last-step evidence available to the automated
-  diagnostic path" — evidence: `worker/deno/lib/hard_kill_facts_backfill.ts` (PR
-  #5294) — reviewer: partial — reason: the boundary is kept and the last step
-  and probe result now reach the issue, but there is no cause evidence: guest
-  memory and pressure read `not available` in all three facts.
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **fixed** — no source-text gate — evidence:
-  `worker/deno/tests/guest_silence_replay_4815_test.ts` (scraped `run.sh` for
-  the check cadence) — reason: fixed in this diff, by keeping the simulated
-  cadence in the fixture.
-- **clean** — retyped constant (checked, not a breach) — evidence:
-  `worker/deno/tests/time_deferral_test.ts:370` — reason: the literal is the
-  contract, not a copy of one. The assertions check the public comment text a
-  reader sees. Importing the phrase from the code under test would make the test
-  agree with itself and miss a wording regression.
-- **clean** — Australian English spelling, `deno fmt`, `deno lint`, KISS/DRY,
-  and test fakes (no sleeps or real signals; the runtime is faked through
-  `EvidenceSeams`).
+- Docs: `docs/INTERNALS.md` describes the spawn tag, the reaper, its identity
+  checks and both events, next to the orphan collector it complements
+- Coverage ledger: `docs/audits/lib-sweep-coverage/top-up-4815.json` lists the
+  new module
+- Issue numbers this diff cites: #4815 (this issue), #4382 (the descendant
+  collector it complements), #5312 and #5161 (the earlier diagnosis and the
+  silent-guest reap)
 
 ## Test Plan
 
-- **Edited** `worker/deno/tests/time_deferral_test.ts`: assertions added to two
-  existing tests, with none removed. On the unchanged code both tests failed
-  with
-  `Expected actual: "…handed to a human…" to contain: "retried as not
-  finished"`
-  (25 passed, 2 failed). After the fix,
-  `deno test -A
-  tests/time_deferral_test.ts tests/handle_no_changes_time_deferral_test.ts`
-  from `worker/deno` passed: 37 passed, 0 failed.
-- **Added** `worker/deno/tests/guest_silence_replay_4815_test.ts`. It needs no
-  production change: the repair (#5161) is already on `main`. Red check: with
-  `DEFAULT_GUEST_SILENCE_SECONDS` temporarily set to 3600, 2 of the 6 replay
-  tests failed. The change was reverted, and
-  `deno test -A tests/guest_silence_replay_4815_test.ts
-  tests/guest_silence_watch_test.ts tests/container_reap_command_test.ts
-  < /dev/null`
-  from `worker/deno` passed: 26 passed, 0 failed. With the deferral tests,
-  `deno test -A tests/time_deferral_test.ts
-  tests/handle_no_changes_time_deferral_test.ts
-  tests/guest_silence_replay_4815_test.ts < /dev/null`
-  passed: 43 passed, 0 failed. `deno lint` and `deno check` on the new file are
-  clean.
-- **Merge with `main` (#5308):** `EvidenceSeams` gained `diskReading` and
-  `memoryReading`, so the replay test's fake seams gained both as inert stubs
-  (`null` and `level: "unknown"`), as in `guest_silence_watch_test.ts`. The
-  replay never captures evidence, so no assertion changed. After it,
-  `tests/guest_silence_replay_4815_test.ts`, `tests/guest_silence_watch_test.ts`
-  and `tests/time_deferral_test.ts` passed: 43 passed, 0 failed, and
-  `deno check` on the replay test is clean.
-- **Ran** `./quality.sh < /dev/null` on the earlier head (before the replay
-  test): `Result: PASSED (with skipped checks)`; the gate skipped
-  `config integration` and `checkov`.
-- **Docs:** I grepped `docs/` (outside `docs/archive/`), `README.md`,
-  `DESIGN-PRINCIPLES.md` and `prompts/` for `MAX_TIME_DEFERRALS`,
-  `Deferral limit reached` and the deferral limit.
-  `docs/workflows/issue-processing.md` ("Deferral has a budget"),
-  `DESIGN-PRINCIPLES.md` and `docs/TOKEN-ECONOMIZER-TRIAL.md` already describe
-  the retry, so no doc needed a change.
+- New `worker/deno/tests/agent_leftover_reaper_4815_test.ts`, 19 tests (run
+  count at the head, below):
+  - terminates tagged processes, spares its own pid, names them in the warning
+  - KILLs a pid that ignores TERM after the wait, and names a survivor that
+    outlives KILL
+  - a scan failure logs its cause and signals nothing; nothing tagged means no
+    signal and no warning; an unsupported platform never scans; a malformed tag
+    is refused before any scan
+  - a signal that throws stops the pass and names what was done
+  - a pid replaced between TERM and KILL is never KILLed; a pid with no identity
+    is never signalled
+  - a tagged pid replaced by an untagged process before the identity is captured
+    is never signalled and stays alive, beside a genuine leftover that is
+    terminated; when every found pid was replaced, nothing is signalled and no
+    leftover is claimed
+  - a tagged child started while the parent handles TERM is terminated, an
+    unrelated process survives; a child born during KILL is found by the next
+    round; a tree that keeps spawning is bounded and reported as incomplete; a
+    failed rescan stops the pass and lists what is unproven
+  - Linux, real processes: the default tag read is true for a tagged process and
+    false for another tag, an untagged process and a missing pid
+  - Linux, real processes: a detached tagged `sleep` is terminated while an
+    untagged control keeps running
+  - Linux, real runner: a stub agent that leaves `( sleep … & )` behind has it
+    terminated by `runClaudeWithTimeout`
+- `worker/deno/tests/claude_runner_killed_test.ts`: the drain-cap test (#325)
+  disables the reaper, because it deliberately leaves a descendant holding
+  stdout and asserts only the drain cap
+- Branch outcomes: every arm the review round added is reached by a test above:
+  tag read false (skipped, nothing signalled), tag read true (signalled); a
+  rescan finding a new pid during the TERM wait or a KILL round; a clean rescan
+  ending the pass; a rescan that fails; the KILL-round bound exhausted
+- Red on the previous head: with `worker/deno/lib/agent_leftover_reaper.ts`
+  restored from commit `6ebe94d2a` (before this round) and the new tests run
+  without type checking, the six new fake-driven tests fail (the replacement is
+  sent TERM; the child born during TERM, the child born during KILL and the
+  respawning tree are never reaped; the rescan failure is not reported) and the
+  other twelve pass. The default tag read test needs the new `hasTag` and is not
+  part of that run
+- At the head: `deno test` on `tests/agent_leftover_reaper_4815_test.ts`,
+  `tests/claude_runner_killed_test.ts` and `tests/vibe_env_registry_test.ts`: 39
+  passed, 0 failed; the reaper test file alone: 19 passed, 0 failed. `deno lint`
+  and `deno check` on the changed files: clean. `deno fmt --check` on the
+  changed TypeScript files: clean
+- Not done or not checked: the full `./quality.sh` (not run, for run budget; CI
+  runs it on this PR); a live fleet host, so no connection between the leak and
+  the incident is shown. A recurrence on a fleet host would be that evidence
 
-## Not done or not checked
+## Acceptance Criteria
 
-- Why the guest VM hangs: the facts do not say, and the raw evidence is private
-  to GRQ-3. The early reap bounds the cost of a hang; it does not stop the VM
-  hanging.
-- I did not check whether GRQ-3 is running the code from #5161.
+The issue's remaining scope names no criteria heading, so each requirement is
+quoted from its words.
+
+- **partial** — "Complete the issue through an implemented fix and automated
+  regression/recovery evidence" — reason: the detached-process leak is fixed and
+  covered by automated tests, but no test or log connects it to the completion
+  wedge, so it is a mitigation of a verified leak, not a shown fix of the
+  incident
+- **missing** — "use a bounded replay or the next applicable recurrence to
+  diagnose and repair the completion failure" — reason: the cause of the guest
+  that stopped answering is still undiagnosed; the new events would show a
+  leftover on a recurrence, and no live fleet host has been checked for one
+
+Part of #4815.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
