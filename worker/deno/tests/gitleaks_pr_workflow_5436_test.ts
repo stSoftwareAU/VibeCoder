@@ -50,6 +50,10 @@ const FAKE_TOKEN = ["ghp", "_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"].join(
 // Validator
 // ---------------------------------------------------------------------------
 
+const RANGE_LOG_OPTS = '--log-opts="${BASE_SHA}..${HEAD_SHA}"';
+const MERGE_LOG_OPTS =
+  '--log-opts="--first-parent --diff-merges=first-parent -1 ${merge_sha}"';
+
 const MSG_ACTION =
   "a step uses gitleaks-action, which bundles a second gitleaks version and scans only 30 commits";
 const MSG_CHECKOUT =
@@ -57,9 +61,9 @@ const MSG_CHECKOUT =
 const MSG_INSTALL =
   `the "${INSTALL_STEP}" step must exist and verify the download with sha256sum -c`;
 const MSG_RANGE =
-  `the "${RANGE_STEP}" step must exist, be unconditional and take BASE_SHA/HEAD_SHA from the pull request`;
+  `the "${RANGE_STEP}" step must exist, be unconditional, take BASE_SHA/HEAD_SHA from the pull request and run gitleaks git over ${RANGE_LOG_OPTS}`;
 const MSG_MERGE =
-  `the "${MERGE_STEP}" step must exist, be unconditional and take HEAD_SHA from the pull request`;
+  `the "${MERGE_STEP}" step must exist, be unconditional, take HEAD_SHA from the pull request and run gitleaks git over ${MERGE_LOG_OPTS}`;
 
 type Step = Record<string, unknown>;
 
@@ -113,14 +117,20 @@ function prScanViolations(workflow: unknown): string[] {
   const range = named(RANGE_STEP);
   if (
     range === undefined || "if" in range ||
-    envOf(range).BASE_SHA !== BASE_EXPR || envOf(range).HEAD_SHA !== HEAD_EXPR
+    envOf(range).BASE_SHA !== BASE_EXPR ||
+    envOf(range).HEAD_SHA !== HEAD_EXPR ||
+    typeof range.run !== "string" || !range.run.includes("gitleaks git ") ||
+    !range.run.includes(RANGE_LOG_OPTS)
   ) {
     violations.push(MSG_RANGE);
   }
 
   const merge = named(MERGE_STEP);
   if (
-    merge === undefined || "if" in merge || envOf(merge).HEAD_SHA !== HEAD_EXPR
+    merge === undefined || "if" in merge ||
+    envOf(merge).HEAD_SHA !== HEAD_EXPR ||
+    typeof merge.run !== "string" || !merge.run.includes("gitleaks git ") ||
+    !merge.run.includes(MERGE_LOG_OPTS)
   ) {
     violations.push(MSG_MERGE);
   }
@@ -212,6 +222,32 @@ Deno.test("gitleaks.yml PR job - a conditional merged-result scan is refused", (
   assertEquals(
     mutated((steps) => {
       findStep(steps, MERGE_STEP).if = "env.X != ''";
+    }),
+    [MSG_MERGE],
+  );
+});
+
+Deno.test("gitleaks.yml PR job - a range scan that no longer scans the range is refused", () => {
+  assertEquals(
+    mutated((steps) => {
+      const range = findStep(steps, RANGE_STEP);
+      range.run = String(range.run).replaceAll(
+        RANGE_LOG_OPTS,
+        '--log-opts="${HEAD_SHA}"',
+      );
+    }),
+    [MSG_RANGE],
+  );
+});
+
+Deno.test("gitleaks.yml PR job - a merged-result scan without first-parent diffs is refused", () => {
+  assertEquals(
+    mutated((steps) => {
+      const merge = findStep(steps, MERGE_STEP);
+      merge.run = String(merge.run).replaceAll(
+        "--first-parent --diff-merges=first-parent ",
+        "",
+      );
     }),
     [MSG_MERGE],
   );
@@ -421,6 +457,7 @@ Deno.test({
       assert(result.code !== 0, result.output);
       assertStringIncludes(result.output, `${ctx.baseSha}..${ctx.headSha}`);
       assertStringIncludes(result.output, "Scanning 35 commit(s)");
+      assertStringIncludes(result.output, "35 commits scanned");
       assertStringIncludes(result.output, "leaks found: 1");
       assert(
         !result.output.includes(FAKE_TOKEN),
@@ -438,9 +475,11 @@ Deno.test({
       const range = await runWorkflowStep(RANGE_STEP, dir, ctx);
       assertEquals(range.code, 0, range.output);
       assertStringIncludes(range.output, "no leaks found");
+      assertStringIncludes(range.output, "35 commits scanned");
       const merge = await runWorkflowStep(MERGE_STEP, dir, ctx);
       assertEquals(merge.code, 0, merge.output);
       assertStringIncludes(merge.output, "no leaks found");
+      assertStringIncludes(merge.output, "1 commits scanned");
     });
   },
 });
@@ -455,7 +494,7 @@ Deno.test({
       assertEquals(range.code, 0, range.output);
       const merge = await runWorkflowStep(MERGE_STEP, dir, ctx);
       assert(merge.code !== 0, merge.output);
-      assertStringIncludes(merge.output, "leaks found");
+      assertStringIncludes(merge.output, "leaks found: 1");
       assertStringIncludes(merge.output, "Scanning the merged result:");
     });
   },
@@ -468,6 +507,28 @@ Deno.test({
   fn: async () => {
     await withFixture({}, async (dir, ctx) => {
       await runGit(dir, ["checkout", "-q", "--detach", ctx.headSha]);
+      const result = await runWorkflowStep(MERGE_STEP, dir, ctx);
+      assertEquals(result.code, 1, result.output);
+      assertStringIncludes(result.output, "is not the merge of the PR head");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "gitleaks.yml PR job - the merged-result scan refuses a merge whose second parent is not the PR head",
+  ignore: !gitleaksAvailable,
+  fn: async () => {
+    await withFixture({}, async (dir, ctx) => {
+      await runGit(dir, ["checkout", "-q", "--detach", ctx.baseSha]);
+      await runGit(dir, [
+        "merge",
+        "-q",
+        "--no-ff",
+        `${ctx.headSha}~1`,
+        "-m",
+        "stale merge",
+      ]);
       const result = await runWorkflowStep(MERGE_STEP, dir, ctx);
       assertEquals(result.code, 1, result.output);
       assertStringIncludes(result.output, "is not the merge of the PR head");
