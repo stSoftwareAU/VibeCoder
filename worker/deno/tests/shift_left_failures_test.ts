@@ -341,8 +341,14 @@ function fakeGh(opts: {
       );
     }
     if (/\/pulls\/\d+$/.test(path)) {
+      // The base is answered only when the jq filter asks for `.base.ref`.
+      const jqFilter = args[args.indexOf("--jq") + 1] ?? "";
+      const asksForBase = jqFilter.includes(".base.ref");
       return Promise.resolve(
-        JSON.stringify({ login: "fleet-bot", base: "main" }),
+        JSON.stringify({
+          login: "fleet-bot",
+          ...(asksForBase ? { base: "main" } : {}),
+        }),
       );
     }
     const compare = /\/compare\/[^/]+\.\.\.([0-9a-f]{40})$/.exec(path);
@@ -365,7 +371,17 @@ function fakeGh(opts: {
       if (pr === undefined) {
         return Promise.reject(new Error(`unexpected check-runs ${path}`));
       }
-      return Promise.resolve((opts.baseFailing?.[pr] ?? []).join("\n"));
+      // The check runs as the jq filter of fetchFailedCheckRunsStrict shapes them.
+      return Promise.resolve(
+        JSON.stringify(
+          (opts.baseFailing?.[pr] ?? []).map((name, i) => ({
+            id: i + 1,
+            name,
+            status: "completed",
+            conclusion: "failure",
+          })),
+        ),
+      );
     }
     if (path.endsWith("/contents/quality.sh")) {
       return opts.gate === null
@@ -789,6 +805,25 @@ Deno.test("scan: a merge-base read that fails keeps the job counted and logs the
   assert(
     logs.some((l) =>
       l.includes("run 70") && l.includes("HTTP 502 compare unavailable")
+    ),
+    `logs: ${logs}`,
+  );
+});
+
+Deno.test("scan: a linked PR whose response has no user.login fails loudly, naming the field (Issue #5437)", async () => {
+  const fake = fakeGh({});
+  const gh = (args: string[]): Promise<string> => {
+    const path = args.find((a) => a.startsWith("repos/")) ?? "";
+    if (/\/pulls\/\d+$/.test(path)) {
+      return Promise.resolve(JSON.stringify({ base: "main" }));
+    }
+    return fake.gh(args);
+  };
+  const { logs } = await scan({ calls: fake.calls, gh });
+  assert(
+    logs.some((l) =>
+      l.includes("shift-left scan of owner/product failed") &&
+      l.includes("pulls/7 response has no user.login")
     ),
     `logs: ${logs}`,
   );

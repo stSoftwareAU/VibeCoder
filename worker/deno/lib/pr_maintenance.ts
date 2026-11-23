@@ -56,6 +56,11 @@ import {
   resolveCheckFixRoute,
 } from "./pr_ci_checks.ts";
 import { mergeQueueCheckId } from "./merge_queue_check_id.ts";
+import {
+  errorText,
+  FULL_COMMIT_SHA_PATTERN,
+  readMergeBaseSha,
+} from "./default_branch_ancestry.ts";
 import { commitAncestryOnDefault } from "./default_branch_ancestry.ts";
 import {
   ensureRedDefaultBranchRepairPr,
@@ -1765,14 +1770,14 @@ function createDefaultBranchState(
           "--jq",
           ".sha",
         ])).trim();
-        if (/^[0-9a-f]{40}$/i.test(sha)) return sha;
+        if (FULL_COMMIT_SHA_PATTERN.test(sha)) return sha;
         logger.warn(
           `${repo}: ${defaultBranch}'s tip is not a commit SHA ("${sha}") (Issue #5437)`,
         );
       } catch (error) {
         logger.warn(
           `${repo}: could not read ${defaultBranch}'s tip: ${
-            error instanceof Error ? error.message : String(error)
+            errorText(error)
           } (Issue #5437)`,
         );
       }
@@ -1791,9 +1796,7 @@ function createDefaultBranchState(
         logger.warn(
           `${repo}: could not read the checks red on ${defaultBranch} at ${
             sha.slice(0, 12)
-          }: ${
-            error instanceof Error ? error.message : String(error)
-          } (Issue #5437)`,
+          }: ${errorText(error)} (Issue #5437)`,
         );
         return null;
       }
@@ -1801,38 +1804,6 @@ function createDefaultBranchState(
     return redTip;
   };
   return { tipSha, redTipCheckNames };
-}
-
-/** A full commit SHA as the REST API returns it (Issue #5437). */
-const FULL_COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
-
-/**
- * The merge base of a PR's head with the default branch (Issue #5437), read
- * with `gh api repos/<repo>/compare/<default>...<head> --jq
- * .merge_base_commit.sha`. Never throws: a read failure, or a value that is
- * not a full commit SHA, is returned as the cause.
- */
-async function readMergeBaseSha(
-  repo: string,
-  defaultBranch: string,
-  headSha: string,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<{ sha: string } | { cause: string }> {
-  if (!FULL_COMMIT_SHA_PATTERN.test(headSha)) {
-    return { cause: `not a commit sha: ${JSON.stringify(headSha)}` };
-  }
-  try {
-    const sha = (await ghCommandFn([
-      "api",
-      `repos/${repo}/compare/${encodeURIComponent(defaultBranch)}...${headSha}`,
-      "--jq",
-      ".merge_base_commit.sha",
-    ])).trim();
-    if (FULL_COMMIT_SHA_PATTERN.test(sha)) return { sha };
-    return { cause: `not a commit sha: ${JSON.stringify(sha)}` };
-  } catch (error) {
-    return { cause: error instanceof Error ? error.message : String(error) };
-  }
 }
 
 /**
@@ -1934,9 +1905,7 @@ async function fastForwardHeldSyncBranch(
     logger.warn(
       `${repo}#${prNumber}: could not fast-forward ${branchName} to ${
         tipSha.slice(0, 12)
-      }: ${
-        error instanceof Error ? error.message : String(error)
-      } (Issue #5437)`,
+      }: ${errorText(error)} (Issue #5437)`,
     );
   }
 }
@@ -1975,7 +1944,7 @@ async function mergeDefaultBranchIntoSyncBranch(
   } catch (error) {
     logger.warn(
       `${repo}#${prNumber}: could not merge ${defaultBranch} into ${branchName}: ${
-        error instanceof Error ? error.message : String(error)
+        errorText(error)
       }; the milestone sync lane retries on its next cycle (Issue #5437)`,
     );
   }

@@ -38,9 +38,41 @@ export interface DefaultBranchAncestryResult {
 /** A commit SHA as GitHub prints it: 7 to 40 hexadecimal characters. */
 const SHA_PATTERN = /^[0-9a-f]{7,40}$/i;
 
-/** A failure message, whatever the thrown value. */
-function errorText(error: unknown): string {
+/** A full commit SHA as the REST API returns it (Issue #5437). */
+export const FULL_COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
+
+/** A failure message, whatever the thrown value (Issue #5437). */
+export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The merge base of a PR's head with the default branch (Issue #5437), read
+ * with `gh api repos/<repo>/compare/<default>...<head> --jq
+ * .merge_base_commit.sha`. Never throws: a read failure, or a value that is
+ * not a full commit SHA, is returned as the cause.
+ */
+export async function readMergeBaseSha(
+  repo: string,
+  defaultBranch: string,
+  headSha: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<{ sha: string } | { cause: string }> {
+  if (!FULL_COMMIT_SHA_PATTERN.test(headSha)) {
+    return { cause: `not a commit sha: ${JSON.stringify(headSha)}` };
+  }
+  try {
+    const sha = (await ghCommandFn([
+      "api",
+      `repos/${repo}/compare/${encodeURIComponent(defaultBranch)}...${headSha}`,
+      "--jq",
+      ".merge_base_commit.sha",
+    ])).trim();
+    if (FULL_COMMIT_SHA_PATTERN.test(sha)) return { sha };
+    return { cause: `not a commit sha: ${JSON.stringify(sha)}` };
+  } catch (error) {
+    return { cause: errorText(error) };
+  }
 }
 
 /**

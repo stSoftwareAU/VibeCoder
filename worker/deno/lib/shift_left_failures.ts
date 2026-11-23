@@ -54,6 +54,8 @@ import { getRepoVisibility } from "./repo_visibility.ts";
 import { selectFleetAuthoredMatches } from "./alert_dedup_authors.ts";
 import { isMilestoneSyncBranch } from "./milestone_sync_branch.ts";
 import { RED_DEFAULT_BRANCH_REPAIR_PREFIX } from "./red_default_branch_repair.ts";
+import { readMergeBaseSha } from "./default_branch_ancestry.ts";
+import { fetchFailedCheckRunsStrict } from "./pr_maintenance.ts";
 import type { Result } from "../types.ts";
 
 /**
@@ -642,9 +644,12 @@ async function resolvePr(
         "{login: .user.login, base: .base.ref} | tojson",
       ]),
     ) as { login?: string | null; base?: string | null };
+    if (typeof data.login !== "string") {
+      throw new Error(`pulls/${linked} response has no user.login`);
+    }
     pr = {
       number: linked,
-      login: data.login ?? "",
+      login: data.login,
       base: data.base ?? null,
     };
   } else if (run.head_branch) {
@@ -657,7 +662,23 @@ async function resolvePr(
       "--jq",
       ".[0] | select(. != null) | {number, login: .user.login, base: .base.ref} | tojson",
     ]);
-    pr = line.trim() ? JSON.parse(line) : null;
+    if (line.trim()) {
+      const found = JSON.parse(line) as {
+        number: number;
+        login?: string | null;
+        base?: string | null;
+      };
+      if (typeof found.login !== "string") {
+        throw new Error(
+          `pulls for head branch ${run.head_branch} has no user.login`,
+        );
+      }
+      pr = {
+        number: found.number,
+        login: found.login,
+        base: found.base ?? null,
+      };
+    }
   }
   cache.set(cacheKey, pr);
   return pr;
@@ -703,29 +724,19 @@ async function inheritedCheckNames(
 ): Promise<Result<Set<string>, string>> {
   if (!pr.base) return { ok: false, error: "the PR has no base branch" };
   const base = pr.base;
-  const mergeBase = await lookupOnce(caches.mergeBases, headSha, async () => {
-    const sha = (await deps.gh([
-      "api",
-      `repos/${repo}/compare/${encodeURIComponent(base)}...${headSha}`,
-      "--jq",
-      ".merge_base_commit.sha",
-    ])).trim();
-    if (!/^[0-9a-f]{40}$/.test(sha)) {
-      throw new Error(`merge base is not a commit sha: ${JSON.stringify(sha)}`);
-    }
-    return sha;
-  });
+  let mergeBase = caches.mergeBases.get(headSha);
+  if (mergeBase === undefined) {
+    const found = await readMergeBaseSha(repo, base, headSha, deps.gh);
+    mergeBase = "cause" in found
+      ? { ok: false, error: found.cause }
+      : { ok: true, value: found.sha };
+    caches.mergeBases.set(headSha, mergeBase);
+  }
   if (!mergeBase.ok) return { ok: false, error: mergeBase.error };
   const sha = mergeBase.value;
   return await lookupOnce(caches.baseFailures, sha, async () => {
-    const names = await deps.gh([
-      "api",
-      `repos/${repo}/commits/${sha}/check-runs?per_page=100`,
-      "--paginate",
-      "--jq",
-      '[.check_runs[] | select(.conclusion == "failure") | .name] | .[]',
-    ]);
-    return new Set(names.split("\n").filter((l) => l.trim() !== ""));
+    const runs = await fetchFailedCheckRunsStrict(repo, sha, deps.gh);
+    return new Set(runs.map((check) => check.name));
   });
 }
 

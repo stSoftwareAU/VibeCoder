@@ -28,7 +28,9 @@ import {
 } from "../lib/pr_maintenance.ts";
 import {
   bodyCarriesRedDefaultBranchMarker,
+  findGreenFixPr,
   formatRedDefaultBranchStatus,
+  postRedDefaultBranchStatusComment,
   RED_DEFAULT_BRANCH_REPAIR_PREFIX,
   redDefaultBranchMarker,
 } from "../lib/red_default_branch_repair.ts";
@@ -1490,5 +1492,51 @@ Deno.test("findFailedCiChecks - with a green human fix PR adopted, the worker's 
         "org/repo#20: org/repo#5434 already passes the held checks; the repair PR waits",
       )
     ),
+  );
+});
+
+Deno.test("findGreenFixPr - a PR row without its head commit fails the read, and the warn names headRefOid (Issue #5437)", async () => {
+  const logger = makeLogger();
+  const fix = await findGreenFixPr({
+    repo: REPO,
+    defaultBranch: DEFAULT_BRANCH,
+    checkNames: ["lint"],
+    heldPrNumbers: [],
+    isSyncBranch: () => false,
+    readAncestry: () =>
+      Promise.resolve({ status: "contains-default" as const }),
+    readSuccessfulCheckNames: () => Promise.resolve(new Set(["lint"])),
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify([
+        { number: 12, headRefName: "human/fix", author: { login: "alice" } },
+      ])),
+    logger,
+  });
+  assertEquals(fix, null);
+  assert(
+    logger.warns.some((w) => w.includes("headRefOid")),
+    `warns: ${logger.warns}`,
+  );
+});
+
+Deno.test("postRedDefaultBranchStatusComment - a comment without a user.login reads as read-failed, and the warn names the login (Issue #5437)", async () => {
+  const logger = makeLogger();
+  const outcome = await postRedDefaultBranchStatusComment({
+    repo: REPO,
+    defaultBranch: DEFAULT_BRANCH,
+    tipSha: TIP,
+    checkNames: ["lint"],
+    heldPrNumbers: [11],
+    allHeldAreSync: true,
+    prNumber: 12,
+    fleetLogins: ["fleet-bot"],
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify({ id: 5, login: null, body: "" })),
+    logger,
+  });
+  assertEquals(outcome, "read-failed");
+  assert(
+    logger.warns.some((w) => w.includes("user.login")),
+    `warns: ${logger.warns}`,
   );
 });

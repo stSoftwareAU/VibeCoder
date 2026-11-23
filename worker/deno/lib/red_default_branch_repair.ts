@@ -28,7 +28,11 @@
  */
 
 import type { Logger } from "../types.ts";
-import type { DefaultBranchAncestryResult } from "./default_branch_ancestry.ts";
+import {
+  type DefaultBranchAncestryResult,
+  errorText,
+  FULL_COMMIT_SHA_PATTERN,
+} from "./default_branch_ancestry.ts";
 
 /** Head-branch prefix of the repair PR (Issue #5437). */
 export const RED_DEFAULT_BRANCH_REPAIR_PREFIX = "fix/red-default-branch-";
@@ -38,9 +42,6 @@ const TITLE_MAX_LENGTH = 200;
 
 /** A branch name GitHub accepts in these arguments, with no option-like start. */
 const BRANCH_NAME_PATTERN = /^[A-Za-z0-9._/-]+$/;
-
-/** A full commit SHA as the REST API returns it. */
-const FULL_SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
 /**
  * The worker marker, anchored at the end of a body where the worker writes it
@@ -174,11 +175,6 @@ export function formatRedDefaultBranchStatus(
   ].join("\n");
 }
 
-/** A failure message, whatever the thrown value. */
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /** Collapse whitespace so a check name stays on one line in a title. */
 function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
@@ -288,7 +284,7 @@ async function openRepairPr(input: {
     );
     return null;
   }
-  if (!FULL_SHA_PATTERN.test(tipSha)) {
+  if (!FULL_COMMIT_SHA_PATTERN.test(tipSha)) {
     logger.warn(
       `Red default branch: the tip of ${repo} is not a commit SHA, so no repair PR is opened (Issue #5437)`,
     );
@@ -312,7 +308,7 @@ async function openRepairPr(input: {
   } catch (error) {
     return fail("reading the tip's tree", error);
   }
-  if (!FULL_SHA_PATTERN.test(tree)) {
+  if (!FULL_COMMIT_SHA_PATTERN.test(tree)) {
     return fail("reading the tip's tree", `unexpected tree "${tree}"`);
   }
 
@@ -335,7 +331,7 @@ async function openRepairPr(input: {
   } catch (error) {
     return fail("creating the empty commit", error);
   }
-  if (!FULL_SHA_PATTERN.test(commit)) {
+  if (!FULL_COMMIT_SHA_PATTERN.test(commit)) {
     return fail("creating the empty commit", `unexpected sha "${commit}"`);
   }
 
@@ -437,8 +433,9 @@ export interface GreenFixPr {
 
 /**
  * The open PRs in a `gh pr list --json number,headRefName,headRefOid,author`
- * answer. A row missing a number, a head branch or a head commit is skipped.
- * Throws when the answer is not a JSON array.
+ * answer. Throws when the answer is not a JSON array, or when a row lacks its
+ * number, head branch, head commit or author login, naming the missing field
+ * (Issue #5437).
  */
 function parseFixCandidates(output: string): FixCandidate[] {
   const rows: unknown = JSON.parse(output);
@@ -447,24 +444,34 @@ function parseFixCandidates(output: string): FixCandidate[] {
   }
   const candidates: FixCandidate[] = [];
   for (const row of rows) {
-    if (typeof row !== "object" || row === null) continue;
-    const fields = row as Record<string, unknown>;
-    if (
-      typeof fields.number !== "number" ||
-      typeof fields.headRefName !== "string" ||
-      typeof fields.headRefOid !== "string" || fields.headRefOid === ""
-    ) {
-      continue;
+    const fields =
+      (typeof row === "object" && row !== null ? row : {}) as Record<
+        string,
+        unknown
+      >;
+    if (typeof fields.number !== "number") {
+      throw new Error(
+        `a PR row without a numeric number: ${JSON.stringify(row)}`,
+      );
+    }
+    if (typeof fields.headRefName !== "string") {
+      throw new Error(`PR #${fields.number} has no headRefName`);
+    }
+    if (typeof fields.headRefOid !== "string" || fields.headRefOid === "") {
+      throw new Error(`PR #${fields.number} has no headRefOid`);
     }
     const author = fields.author;
     const login = typeof author === "object" && author !== null
       ? (author as Record<string, unknown>).login
       : undefined;
+    if (typeof login !== "string") {
+      throw new Error(`PR #${fields.number} has no author.login`);
+    }
     candidates.push({
       number: fields.number,
       headRefName: fields.headRefName,
       headRefOid: fields.headRefOid,
-      authorLogin: typeof login === "string" ? login : "unknown",
+      authorLogin: login,
     });
   }
   return candidates;
@@ -491,6 +498,14 @@ export async function findGreenFixPr(
 ): Promise<GreenFixPr | null> {
   const { repo, defaultBranch, checkNames, heldPrNumbers, logger } = request;
   if (checkNames.length === 0) return null;
+  if (!BRANCH_NAME_PATTERN.test(defaultBranch)) {
+    logger.warn(
+      `Red default branch: ${
+        JSON.stringify(defaultBranch)
+      } is not a branch name this worker will look for a fix on (Issue #5437)`,
+    );
+    return null;
+  }
 
   let listed: FixCandidate[];
   try {
@@ -632,9 +647,12 @@ export async function postRedDefaultBranchStatusComment(
         if (typeof fields.id !== "number") {
           throw new Error(`a comment without a numeric id: ${line}`);
         }
+        if (typeof fields.login !== "string") {
+          throw new Error(`a comment without a user.login: ${line}`);
+        }
         return {
           id: fields.id,
-          login: typeof fields.login === "string" ? fields.login : "",
+          login: fields.login,
           body: typeof fields.body === "string" ? fields.body : "",
         };
       },
