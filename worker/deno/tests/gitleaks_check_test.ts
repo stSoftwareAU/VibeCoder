@@ -539,9 +539,7 @@ Deno.test("gitleaks.yml - every pinned GITLEAKS_VERSION matches the module, and 
   ).filter((arg) => arg !== "--verbose" && arg !== "--no-color");
   assertEquals(normaliseScanArgs(localArgs), normaliseScanArgs(ciArgs));
 
-  // The local gate mirrors one CLI scan. A second scan in the workflow (for
-  // example a merged-result scan, Issue #5436) must be mirrored in the local
-  // gate (gitleaksScanArgs and the pre-push stage) before this count changes.
+  // Range and merged-result scans are both mirrored by the pre-push gate.
   const cliScanLines = workflow
     .split("\n")
     .map((line) => line.trim())
@@ -550,8 +548,8 @@ Deno.test("gitleaks.yml - every pinned GITLEAKS_VERSION matches the module, and 
     );
   assertEquals(
     cliScanLines.length,
-    1,
-    "gitleaks.yml must have exactly one gitleaks CLI scan invocation: a second scan (for example a merged-result scan, Issue #5436) must be mirrored in the local gate (gitleaksScanArgs and the pre-push stage) before this count changes",
+    2,
+    "the pre-push stage mirrors the range and merged-result scans",
   );
 });
 
@@ -1388,4 +1386,74 @@ Deno.test({
       await Deno.remove(repo, { recursive: true });
     }
   },
+});
+
+Deno.test("runGitleaksRangeCheck - a finding confined to the merged result blocks the push", async () => {
+  const tree = "1".repeat(40);
+  const merge = "2".repeat(40);
+  const baseTip = "3".repeat(40);
+  const calls: string[][] = [];
+  const result = await runGitleaksRangeCheck(
+    "/unused-scriptdir",
+    BASE_SHA,
+    RANGE_HEAD,
+    rangeOptions({
+      mergeBaseRef: "origin/main",
+      git: (args) => {
+        calls.push(args);
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: [baseTip, tree, merge][calls.length - 1]!,
+        });
+      },
+      run: (args) =>
+        Promise.resolve(
+          args.includes(`--log-opts=${BASE_SHA}..${RANGE_HEAD}`)
+            ? { exitCode: 0, stdout: "", stderr: CLEAN_STDERR }
+            : args.includes(
+                `--log-opts=--first-parent --diff-merges=first-parent -1 ${merge}`,
+              )
+            ? { exitCode: 1, stdout: LEAK_STDOUT, stderr: LEAK_STDERR }
+            : { exitCode: 1, stdout: "", stderr: "unexpected scan" },
+        ),
+    }),
+  );
+  assertEquals(calls[1], ["merge-tree", "--write-tree", baseTip, RANGE_HEAD]);
+  assert(
+    calls[2]!.join(" ").includes(
+      `commit-tree ${tree} -p ${baseTip} -p ${RANGE_HEAD}`,
+    ),
+  );
+  assertEquals(result.kind, "blocked");
+  assertStringIncludes(outcomeText(result), "merged result");
+});
+
+Deno.test("runGitleaksRangeCheck - a failed merge preparation never passes the push", async () => {
+  for (const failAt of [1, 2, 3]) {
+    let attempt = 0;
+    const scan = recordingRun({
+      exitCode: 0,
+      stdout: "",
+      stderr: CLEAN_STDERR,
+    });
+    const result = await runGitleaksRangeCheck(
+      "/unused-scriptdir",
+      BASE_SHA,
+      RANGE_HEAD,
+      rangeOptions({
+        mergeBaseRef: "origin/main",
+        git: () => {
+          attempt++;
+          return Promise.resolve({
+            exitCode: attempt === failAt ? 1 : 0,
+            stdout: BASE_SHA,
+          });
+        },
+        run: scan.run,
+      }),
+    );
+    assertEquals(result.kind, "infrastructure");
+    assertEquals(attempt, failAt);
+    assertEquals(scan.calls.length, 1);
+  }
 });

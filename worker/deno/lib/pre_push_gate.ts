@@ -3553,7 +3553,25 @@ export async function runPrePushGate(opts: {
         (opts.baselineBranch === undefined
           ? undefined
           : `origin/${opts.baselineBranch}`),
-      scan: opts.secretScan ?? runGitleaksRangeCheck,
+      scan: opts.secretScan ?? (async (cwd, fork, head) => {
+        let workflow: string;
+        try {
+          workflow = await readRepoFile(cwd, GITLEAKS_WORKFLOW);
+        } catch (error) {
+          return {
+            kind: "infrastructure",
+            message: `gitleaks: could not read the scan workflow: ${error}`,
+          };
+        }
+        const merged = workflow.includes("--diff-merges=first-parent");
+        const baseRef = opts.baseRef ??
+          (opts.baselineBranch === undefined
+            ? "refs/remotes/origin/HEAD"
+            : `origin/${opts.baselineBranch}`);
+        return await runGitleaksRangeCheck(cwd, fork, head, {
+          mergeBaseRef: merged ? baseRef : undefined,
+        });
+      }),
     });
     if (!secrets.ok) return secrets;
     checksRun.push(...secrets.value);
