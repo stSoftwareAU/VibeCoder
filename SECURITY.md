@@ -669,8 +669,8 @@ itself must not report as carrying a secret, and vice versa.
 A product-name heading is not an assignment (Issue #5253). The PR title for
 Issue #4959, a product-name heading, had the word after its colon published as
 the placeholder, because the rule read the heading's `Name:` as a label. The
-word after a bare `: ` (Markdown markers around the colon allowed, Issue
-#5326) is now left alone when four things hold: the key is a Capitalised
+word after a bare `: ` (Markdown markers around the colon allowed,
+Issue #5326) is now left alone when four things hold: the key is a Capitalised
 product name that does not end in a credential word (`TokenBudget`, though
 `GithubToken` and `Userpassword` do), the value is a single plain word of at
 most 15 letters, and a further word follows it on the same line, so the
