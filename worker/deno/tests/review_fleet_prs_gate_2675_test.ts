@@ -444,6 +444,7 @@ const compareFiles = (
     previous_filename?: string;
     sha?: string | null;
   }[],
+  mergeBase?: string,
 ) =>
   JSON.stringify({
     files: files.map((f) => ({
@@ -453,6 +454,9 @@ const compareFiles = (
       ...(f.patch !== undefined ? { patch: f.patch } : {}),
       ...(f.sha !== undefined ? { sha: f.sha } : {}),
     })),
+    ...(mergeBase !== undefined
+      ? { merge_base_commit: { sha: mergeBase } }
+      : {}),
   });
 
 function fakeGh(
@@ -1230,8 +1234,10 @@ Deno.test("ownDiffUnchanged returns false rather than throwing (Issue #3063)", a
 
   // A modified file with no patch (a changed binary) cannot be confirmed
   // unchanged. Both sides carry the same blob sha, which GitHub always
-  // sends, so this stays false only because sameAddedBlob requires
-  // status "added" — a modified binary is not an added blob.
+  // sends, but these compare responses carry no merge base, so this stays
+  // false: a patch-less modified file also needs its base-side blob read at
+  // both merge bases (Issue #5415). sameAddedBlob alone refuses it too, since
+  // its status is not "added".
   const { gh: noPatchGh } = fakeGh({
     "repos/o/r/compare/X...head": compareResponse("ahead", [{
       sha: "m1",
@@ -1527,6 +1533,257 @@ Deno.test("skipReason: an added binary whose blob sha changed is a fresh review 
       "nleck",
       (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
     ),
+    null,
+  );
+});
+
+// Issue #5415: GitHub omits `patch` for a text file whose diff is too large, so
+// a patch-less modified file is confirmed by its head blob and by its
+// base-side blob at both merge bases. The fixture is VibeCoder#5332's
+// docs/BEST-PRACTICES-SCAN.md; the shell file has the same patch at both heads.
+const SCAN_PATH = "docs/BEST-PRACTICES-SCAN.md";
+const SCAN_HEAD_SHA = "2e1d1ebd11ac80505754cd27a442bcd9f66939fc";
+const SCAN_SINCE_BASE = "a2af0edd9f9954250cbb4019797925108449a4ec";
+const SCAN_HEAD_BASE = "651abab555c27e62aed28b371952aaf859a1c798";
+const SCAN_BASE_SHA = "b2b922f869febeb03dc1fb203c41b94760f41d71";
+const SCAN_FINDINGS: Finding[] = [{ file: SCAN_PATH, line: 1, problem: "x" }];
+const SHELL_FILE = {
+  filename: "worker/deno/lib/shell_command_words.ts",
+  patch: "@@ -1,3 +1,4 @@\n+x",
+};
+
+// The contents API body for the scan file at a merge base.
+const blobBody = (sha: string) =>
+  JSON.stringify({ type: "file", path: SCAN_PATH, sha });
+
+// The contents reads of the scan file at each merge base, keyed as the gate
+// requests them.
+const scanReads = (sinceBody: string, headBody: string) => ({
+  [`repos/o/r/contents/${SCAN_PATH}?ref=${SCAN_SINCE_BASE}`]: sinceBody,
+  [`repos/o/r/contents/${SCAN_PATH}?ref=${SCAN_HEAD_BASE}`]: headBody,
+});
+
+// The PR sent back at X and its head. The scan file has no patch on either
+// side, and the shell file is unchanged.
+const scanGh = (
+  reads: Record<string, string>,
+  headSha = SCAN_HEAD_SHA,
+  sinceBase = SCAN_SINCE_BASE,
+  headBase = SCAN_HEAD_BASE,
+) =>
+  fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles(
+      [{ filename: SCAN_PATH, sha: SCAN_HEAD_SHA }, SHELL_FILE],
+      sinceBase,
+    ),
+    "repos/o/r/compare/main...head": compareFiles(
+      [{ filename: SCAN_PATH, sha: headSha }, SHELL_FILE],
+      headBase,
+    ),
+    ...reads,
+  });
+
+// The skipReason verdict for a PR sent back at X and reviewed at head.
+const scanSkip = (
+  gh: (args: string[]) => Promise<string>,
+  findings: Finding[] | undefined,
+  kind?: ReadyPr["kind"],
+) =>
+  skipReason(
+    searchPr({
+      headRefOid: "head",
+      baseRefName: "main",
+      reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+    }),
+    "nleck",
+    (since) =>
+      ownDiffUnchanged(gh, "o/r", "main", since, "head", findings, kind),
+  );
+
+Deno.test("A patch-less modified file with the same head and base blobs is awaiting-fix at differing merge bases (Issue #5415)", async () => {
+  const { gh, calls } = scanGh(
+    scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
+  );
+  assertEquals(await scanSkip(gh, SCAN_FINDINGS), "awaiting-fix");
+  // Unknown or empty findings reach the same verdict.
+  assertEquals(await ownDiffUnchanged(gh, "o/r", "main", "X", "head"), true);
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
+    true,
+  );
+  // The scan file's base blob was read at both merge bases.
+  assertEquals(
+    calls.includes(`repos/o/r/contents/${SCAN_PATH}?ref=${SCAN_SINCE_BASE}`),
+    true,
+  );
+  assertEquals(
+    calls.includes(`repos/o/r/contents/${SCAN_PATH}?ref=${SCAN_HEAD_BASE}`),
+    true,
+  );
+});
+
+Deno.test("A patch-less modified file with one shared merge base reads no contents (Issue #5415)", async () => {
+  const { gh, calls } = scanGh(
+    {},
+    SCAN_HEAD_SHA,
+    SCAN_SINCE_BASE,
+    SCAN_SINCE_BASE,
+  );
+  assertEquals(await scanSkip(gh, SCAN_FINDINGS), "awaiting-fix");
+  assertEquals(calls.some((c) => c.includes("/contents/")), false);
+});
+
+Deno.test("A patch-less modified file whose base blob differs between the merge bases is a fresh review (Issue #5415)", async () => {
+  // Control: equal base blobs are accepted, as in the first test above.
+  const control = scanGh(
+    scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
+  );
+  assertEquals(await scanSkip(control.gh, SCAN_FINDINGS), "awaiting-fix");
+  const { gh } = scanGh(
+    scanReads(blobBody(SCAN_BASE_SHA), blobBody("c0ffee00")),
+  );
+  assertEquals(await scanSkip(gh, SCAN_FINDINGS), null);
+});
+
+Deno.test("A patch-less modified file whose head blob changed is a fresh review (Issue #5415)", async () => {
+  // Control: the unchanged head blob is accepted.
+  const control = scanGh(
+    scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
+  );
+  assertEquals(await scanSkip(control.gh, SCAN_FINDINGS), "awaiting-fix");
+  const { gh } = scanGh(
+    scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
+    "deadbeef",
+  );
+  assertEquals(await scanSkip(gh, SCAN_FINDINGS), null);
+});
+
+Deno.test("A patch-less modified file whose base blob is not a readable file is a fresh review (Issue #5415)", async () => {
+  // Control: a readable file at both merge bases is accepted.
+  const control = scanGh(
+    scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
+  );
+  assertEquals(await scanSkip(control.gh, SCAN_FINDINGS), "awaiting-fix");
+  // An absent read makes the fake throw, as a failed gh call does.
+  const { gh: absent } = scanGh({});
+  assertEquals(await scanSkip(absent, SCAN_FINDINGS), null);
+  // A symlink resolves to its target, a directory is a list, and a file with
+  // no sha cannot be compared.
+  const bodies = [
+    JSON.stringify({ type: "symlink", path: SCAN_PATH, sha: SCAN_BASE_SHA }),
+    JSON.stringify([{
+      type: "file",
+      path: `${SCAN_PATH}/x`,
+      sha: SCAN_BASE_SHA,
+    }]),
+    JSON.stringify({ type: "file", path: SCAN_PATH }),
+  ];
+  for (const body of bodies) {
+    const { gh } = scanGh(scanReads(body, blobBody(SCAN_BASE_SHA)));
+    assertEquals(await scanSkip(gh, SCAN_FINDINGS), null, body);
+  }
+});
+
+Deno.test("A patch-less modified file with a merge base missing on one side is a fresh review (Issue #5415)", async () => {
+  // Control: both merge bases present is accepted.
+  const control = scanGh(
+    scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
+  );
+  assertEquals(await scanSkip(control.gh, SCAN_FINDINGS), "awaiting-fix");
+  const { gh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles(
+      [{ filename: SCAN_PATH, sha: SCAN_HEAD_SHA }, SHELL_FILE],
+      SCAN_SINCE_BASE,
+    ),
+    "repos/o/r/compare/main...head": compareFiles([
+      { filename: SCAN_PATH, sha: SCAN_HEAD_SHA },
+      SHELL_FILE,
+    ]),
+    ...scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
+  });
+  assertEquals(await scanSkip(gh, SCAN_FINDINGS), null);
+});
+
+Deno.test("A modified file with a patch on one side only is a fresh review (Issue #5415)", async () => {
+  const patch = "@@ -1 +1 @@\n-old\n+unfixed";
+  // Both sides carry the same patch: accepted, as it is a named file.
+  const scanSides = (sincePatch?: string, headPatch?: string) =>
+    fakeGh({
+      "repos/o/r/compare/X...head": compareResponse("ahead", [{
+        sha: "m1",
+        parents: 2,
+      }]),
+      "repos/o/r/compare/main...X": compareFiles(
+        [
+          { filename: SCAN_PATH, sha: SCAN_HEAD_SHA, patch: sincePatch },
+          SHELL_FILE,
+        ],
+        SCAN_SINCE_BASE,
+      ),
+      "repos/o/r/compare/main...head": compareFiles(
+        [
+          { filename: SCAN_PATH, sha: SCAN_HEAD_SHA, patch: headPatch },
+          SHELL_FILE,
+        ],
+        SCAN_HEAD_BASE,
+      ),
+      ...scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
+    }).gh;
+  assertEquals(
+    await scanSkip(scanSides(patch, patch), SCAN_FINDINGS),
+    "awaiting-fix",
+  );
+  assertEquals(
+    await scanSkip(scanSides(patch, undefined), SCAN_FINDINGS),
+    null,
+  );
+  assertEquals(
+    await scanSkip(scanSides(undefined, patch), SCAN_FINDINGS),
+    null,
+  );
+});
+
+Deno.test("A Dependabot re-cut does not confirm a patch-less modified file by its blobs (Issue #5415)", async () => {
+  // Equal merge bases on both sides, so no contents read is needed.
+  const recut = (patch?: string) => {
+    const listing = compareFiles(
+      [{ filename: SCAN_PATH, sha: SCAN_HEAD_SHA, patch }, SHELL_FILE],
+      SCAN_SINCE_BASE,
+    );
+    return fakeGh({
+      "repos/o/r/compare/X...head": compareResponse("diverged", [{
+        sha: "new",
+        parents: 1,
+      }]),
+      "repos/o/r/compare/main...X": listing,
+      "repos/o/r/compare/main...head": JSON.stringify({
+        ...JSON.parse(listing),
+        status: "ahead",
+        total_commits: 1,
+        commits: [{ sha: "c", author: { login: "dependabot[bot]" } }],
+      }),
+    }).gh;
+  };
+  // Control: an identical patch at both heads is accepted for a re-cut.
+  assertEquals(
+    await scanSkip(
+      recut("@@ -1 +1 @@\n-old\n+unfixed"),
+      SCAN_FINDINGS,
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+  // A re-cut allows no blob-only confirmation.
+  assertEquals(
+    await scanSkip(recut(undefined), SCAN_FINDINGS, "dependabot"),
     null,
   );
 });
