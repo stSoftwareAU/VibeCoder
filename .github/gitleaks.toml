@@ -37,6 +37,9 @@
 #  - secret_redaction_json_structure_test.ts: a fake passphrase and a
 #    fake TOKEN= value inside stream-json lines asserting the assignment
 #    rule masks them without breaking the line's JSON.
+#  - secret_redaction_label_as_value_5310_test.ts (Issue #5310): fake
+#    DEPLOY_TOKEN / API_KEY / ADMIN_TOKEN values asserting a label consumed
+#    as the value of an earlier credential cannot publish that value.
 #
 # None of these are real credentials. An inline `gitleaks:allow` comment
 # could not clear the findings because gitleaks scans every commit in a
@@ -113,6 +116,13 @@ regexes = [
   '''^\s*"secrets:\\n  API_TOKEN: abcdefgh12345",\s*$''',
   # The PR summary quoted the same value in one commit; match only that backtick-quoted mention.
   '''`  API_TOKEN: abcdefgh12345`''',
+  # Issue #5310: SECURITY.md and the PR summary quote the synthetic follow-on
+  # assignments (`API_KEY=...`, `ADMIN_TOKEN=...`) of the label-as-value
+  # fixtures. Match each quoted mention by its surrounding prose only.
+  '''then `API_KEY=[A-Za-z0-9]+`, or then''',
+  '''`ADMIN_TOKEN=[A-Za-z0-9]+` still publish''',
+  '''\\nAPI_KEY=[A-Za-z0-9]+` from the unmasked text''',
+  '''then `ADMIN_TOKEN=[A-Za-z0-9]+`\), the wrapped run''',
 ]
 paths = [
   '''worker/deno/tests/secret_redaction_test\.ts''',
@@ -176,4 +186,10 @@ paths = [
   # the literals in one piece, and the range scan covers it, so only a path
   # allowlist clears it.
   '''worker/deno/tests/secret_redaction_json_structure_test\.ts''',
+  # Fake DEPLOY_TOKEN / API_KEY / ADMIN_TOKEN values (interpolated from
+  # fixtures at run time) fed to `redactSecrets()` to prove a label consumed
+  # as the value of an earlier credential cannot publish that value
+  # (Issue #5310). The commit that introduced them is scanned as one range, so
+  # only a path allowlist clears it.
+  '''worker/deno/tests/secret_redaction_label_as_value_5310_test\.ts''',
 ]
