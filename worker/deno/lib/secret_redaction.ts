@@ -50,7 +50,7 @@ import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
  * means and why every quantifier is bounded.
  */
 const SECRET_ASSIGNMENT_PATTERN =
-  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|[^\s"]+)/gi;
+  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])((?=\S{0,63}[A-Za-z0-9])(?:"[^"]+"|'[^']+'|[^\s"]+)|"(?=[^"]{0,255}[A-Za-z0-9])(?:[^"]+"|[^"\n\r\u2028\u2029]+)|'(?=[^']{0,255}[A-Za-z0-9])[^']+')/gi;
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -630,6 +630,13 @@ const RULES: readonly RedactionRule[] = [
   // alphanumeric well inside its first 64 characters, so the bounded scan costs
   // constant time per candidate match.
   //
+  // A quoted value is judged inside its quotes (Issue #5329). A letter or
+  // digit within its first 256 characters makes it a credential, so a value
+  // opening with a space or a symbol-only word, such as `PASSWORD=" hunter2"`
+  // or `API_KEY='#! s3cr3t'`, is masked. A double-quoted value with no closing
+  // quote is masked to the end of its line. An unterminated single-quoted value
+  // is still read as a bare run, as before.
+  //
   // A value that opens a JSON object or array is structure, not a credential
   // (Issue #1254). `{"secret_scanning":{"status":"enabled"}}` — the body the
   // repo-hardening path PUTs to enable secret scanning — matched the `\S+`
@@ -679,12 +686,13 @@ const RULES: readonly RedactionRule[] = [
   // label, not masked as that value (Issue #5310). In
   // `credentials: DEPLOY_TOKEN = <value>` the bare-value branch stops at
   // whitespace, so the outer match masked only `DEPLOY_TOKEN`, the scan
-  // resumed after it, and the real value was published. The pattern itself is
-  // unchanged; `walkAssignments` makes the decision where the value is judged
-  // — see there. That holds within the limits `trailingLabel` and
+  // resumed after it, and the real value was published. Issue #5310 left the
+  // pattern unchanged; `walkAssignments` makes the decision where the value is
+  // judged — see there. That holds within the limits `trailingLabel` and
   // `innerAssignment` apply: the inner separator and value start within
   // `INNER_ASSIGNMENT_SPAN` (256) characters of the outer value's end, a
-  // double-quoted inner value closes within `INNER_QUOTED_MAX` (4,096)
+  // double-quoted inner value that opens with a line break, or holds no letter
+  // or digit inside the window, closes within `INNER_QUOTED_MAX` (4,096)
   // characters, the label is at most `INNER_LABEL_MAX` (128) characters, and
   // the embedded-quote case (`DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
   // Past them the base behaviour applies.
@@ -1405,11 +1413,14 @@ function innerAssignmentUncached(
 /**
  * Whether the inner value after the label ending at `labelEnd` opens with `"`
  * inside the window but closes past it, within {@link INNER_QUOTED_MAX}
- * (Issue #5310). The pattern matches a double-quoted value only with its
- * closing quote, so the window probe fails on a long one
- * (`DEPLOY_TOKEN = "<300 characters>"`) and the value would be published; the
- * full-text match then decides. The search for the closing quote is capped,
- * so each candidate costs bounded extra work (the Issue #3942 linearity rule).
+ * (Issue #5310). Since Issue #5329 the pattern also reads a double-quoted value
+ * with no closing quote to the end of its line, so the window probe reads a
+ * long value cut off by the window as unterminated and the full-text match
+ * masks it. The probe still fails on one that opens with a line break or holds
+ * no letter or digit inside the window (`DEPLOY_TOKEN = "\n<300 characters>"`),
+ * and that value would be published; the full-text match then decides. The
+ * search for the closing quote is capped, so each candidate costs bounded extra
+ * work (the Issue #3942 linearity rule).
  */
 function closesWithinReach(
   text: string,
@@ -1960,8 +1971,9 @@ const OPEN_DOUBLE_QUOTE = /^["']?\s*[=:]\s*"/;
 /**
  * Longest double-quoted inner value, past the window, that
  * {@link closesWithinReach} looks for the end of (Issue #5310). A ReDoS
- * ceiling (Issue #3942), not a syntax rule: a longer value keeps the base
- * behaviour.
+ * ceiling (Issue #3942), not a syntax rule: a longer value that the probe
+ * cannot read (one that opens with a line break or holds no letter or digit
+ * inside the window) keeps the base behaviour (Issue #5329).
  */
 const INNER_QUOTED_MAX = 4096;
 
