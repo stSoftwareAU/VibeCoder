@@ -319,7 +319,8 @@ template. Terraform counts only with AWS evidence: a `provider "aws"` block, a
 `<namespace>/<name>/aws` or one containing `terraform-aws-modules/`. Comments
 are ignored, and Terraform for other providers does not trigger the check. The
 walk skips `.git`, `node_modules`, `target`, `vendor`, `.terraform`,
-`.terragrunt-cache`, `cdk.out` and `.aws-sam`.
+`.terragrunt-cache`, `cdk.out` and `.aws-sam`. Each file the walk reads is
+capped at 1 MiB, and a larger file is skipped unread, so it is not evidence.
 
 **Pass condition.** The check is static: it reads workflow and script text and
 credits a repo whose CI is wired to run the official AWS Emulator, or a
