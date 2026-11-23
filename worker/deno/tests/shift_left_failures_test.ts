@@ -266,11 +266,6 @@ function fakeGh(opts: {
   rerunBy?: string[];
   /** Head branch of each run, index-aligned with PRs 7, 8, 9 (Issue #5437). */
   headBranches?: string[];
-  /**
-   * What GitHub says comparing the default branch (`main`) with a run's head:
-   * `ahead` by default; `throws` makes that call fail (Issue #5437).
-   */
-  compare?: "ahead" | "behind" | "throws";
 }): FakeGh {
   const calls: string[][] = [];
   const runs = [7, 8, 9].map((pr, i) => ({
@@ -329,12 +324,6 @@ function fakeGh(opts: {
         "error: indexing may panic\n= note: `-D clippy::indexing-slicing` implied by `-D warnings`\n##[error]Process completed with exit code 101.\n",
       );
     }
-    if (/\/compare\//.test(path)) {
-      if (opts.compare === "throws") {
-        return Promise.reject(new Error("gh: HTTP 500"));
-      }
-      return Promise.resolve(opts.compare ?? "ahead");
-    }
     if (/\/pulls\/\d+$/.test(path)) {
       return Promise.resolve("fleet-bot");
     }
@@ -343,13 +332,7 @@ function fakeGh(opts: {
         ? Promise.reject(new Error("HTTP 404"))
         : Promise.resolve(opts.gate ?? "cargo clippy --workspace");
     }
-    // Visibility reads `.visibility`; the default-branch read asks for
-    // `.default_branch`, answered `main` (Issue #5437).
-    if (path === "repos/owner/product") {
-      return Promise.resolve(
-        args.includes(".default_branch") ? "main" : "private",
-      );
-    }
+    if (path === "repos/owner/product") return Promise.resolve("private");
     if (args[1]?.startsWith("search/issues?")) {
       return Promise.resolve(
         (opts.existing ?? []).map((i) =>
@@ -705,39 +688,19 @@ Deno.test("scan: a run on a milestone sync branch is not observed, while an iden
     ledger.observations.map((o) => o.prNumber).sort((a, b) => a - b),
     [8, 9],
   );
-  const syncJobReads = fake.calls.filter((c) =>
-    c.some((a) => a.includes("/actions/runs/70/jobs"))
-  );
-  assertEquals(syncJobReads.length, 0);
 });
 
-Deno.test("scan: a feature-branch head the default branch already contains is not observed (Issue #5437)", async () => {
-  const fake = fakeGh({ compare: "behind" });
+Deno.test("scan: a run on the red-default-branch repair branch is not observed, while the others are (Issue #5437)", async () => {
+  const fake = fakeGh({
+    headBranches: [
+      "fix/red-default-branch-abc123",
+      "issue-8",
+      "issue-9",
+    ],
+  });
   const { ledger } = await scan(fake);
-  assertEquals(ledger.observations.length, 0);
-  const defaultReads = fake.calls.filter((c) =>
-    c.includes("repos/owner/product") && c.includes(".default_branch")
-  );
-  assertEquals(defaultReads.length, 1);
   assertEquals(
-    fake.calls.some((c) =>
-      c.includes(
-        "repos/owner/product/compare/main...7777777777777777777777777777777777777777",
-      )
-    ),
-    true,
+    ledger.observations.map((o) => o.prNumber).sort((a, b) => a - b),
+    [8, 9],
   );
-});
-
-Deno.test("scan: a feature-branch head ahead of the default branch is observed (Issue #5437)", async () => {
-  const fake = fakeGh({ compare: "ahead" });
-  const { ledger } = await scan(fake);
-  assertEquals(ledger.observations.length, 3);
-});
-
-Deno.test("scan: a head whose ancestry cannot be decided is still observed (Issue #5437)", async () => {
-  const fake = fakeGh({ compare: "throws" });
-  const { ledger, logs } = await scan(fake);
-  assertEquals(ledger.observations.length, 3);
-  assert(logs.some((l) => l.includes("could not tell whether")));
 });

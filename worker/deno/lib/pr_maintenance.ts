@@ -1913,7 +1913,9 @@ async function repairHeldDefaultBranch(input: {
  * agent. Its inherited checks are held for one repair PR against the default
  * branch, which is returned ahead of every other default-branch failure. A
  * held sync PR whose head is behind the tip is fast-forwarded to it. A sync
- * PR whose ancestry cannot be decided gets no CI-fix target this scan.
+ * PR whose head is diverged from the tip is stale: its failures are logged as
+ * `stale-sync-head` and neither held nor handed over. A sync PR whose ancestry
+ * cannot be decided gets no CI-fix target this scan.
  *
  * @param options - CI check scan options
  * @returns Result containing the highest priority failed check, or null
@@ -2243,6 +2245,19 @@ export async function findFailedCiChecks(
             );
             continue;
           }
+          if (ancestry === "diverged") {
+            // Issue #5437: the head lacks commits the default branch has since
+            // gained, so its failures are stale. They are neither held for a
+            // repair nor handed to the CI-fix agent: the milestone sync lane
+            // re-merges the default branch on its next cycle.
+            logger.skipReason(
+              "stale-sync-head",
+              `${repo}#${prNumber}: ${
+                candidateNames.join(", ")
+              } fail on a sync head that lacks commits ${defaultBranch} has since gained, so they are stale; the milestone sync lane re-merges ${defaultBranch} on its next cycle, no CI-fix target (Issue #5437)`,
+            );
+            continue;
+          }
           if (ancestry === "on-default") {
             // The head is the default branch's own commit, so every failure
             // on it is the default branch's.
@@ -2259,8 +2274,8 @@ export async function findFailedCiChecks(
               );
             }
           } else {
-            // Off the default branch: a failure is inherited only when the
-            // default branch's tip is red on the same check.
+            // The head contains the default tip (a fresh merge of it): a
+            // failure is inherited only when the tip is red on the same check.
             const redTip = await defaultBranchState.redTipCheckNames();
             if (redTip === null) {
               logger.warn(

@@ -34,9 +34,12 @@ const BRANCH_NAME_PATTERN = /^[A-Za-z0-9._/-]+$/;
 /** A full commit SHA as the REST API returns it. */
 const FULL_SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
-/** The worker marker that records the tip and the held sync PRs. */
-const MARKER_PATTERN =
-  /<!-- vibe-red-default-branch-hold sha="([^"]*)" held="([^"]*)" -->/;
+/**
+ * The worker marker, anchored at the end of a body where the worker writes it
+ * (Issue #5437). A marker quoted mid-text does not count.
+ */
+const TRAILING_MARKER_PATTERN =
+  /<!-- vibe-red-default-branch-hold sha="([0-9a-f]{40})" held="([0-9,]*)" -->\s*$/;
 
 /** The fields a repair-PR decision reads from a listed PR. */
 export interface RepairPrCandidate {
@@ -109,7 +112,7 @@ export function bodyCarriesRedDefaultBranchMarker(
   tipSha: string,
   heldPrNumbers: readonly number[],
 ): boolean {
-  const match = MARKER_PATTERN.exec(body ?? "");
+  const match = TRAILING_MARKER_PATTERN.exec(body ?? "");
   if (match === null) return false;
   return match[1] === tipSha &&
     match[2] === sortedHeld(heldPrNumbers).join(",");

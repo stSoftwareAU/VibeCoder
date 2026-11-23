@@ -65,6 +65,10 @@ interface Fixture {
   compare: Record<string, string | "error">;
   /** Refs whose check-runs read fails with a `gh` error. */
   checkReadErrors?: string[];
+  /** The message `gh pr create` fails with, when set. */
+  prCreateError?: string;
+  /** The message a ref PATCH fails with, when set. */
+  patchError?: string;
 }
 
 /** A recording logger, so the scan's warnings and skips can be asserted. */
@@ -127,6 +131,9 @@ function ghStub(
       return Promise.resolve(JSON.stringify(fx.prs));
     }
     if (args[0] === "pr" && args[1] === "create") {
+      if (fx.prCreateError !== undefined) {
+        return Promise.reject(new Error(fx.prCreateError));
+      }
       return Promise.resolve(`https://github.com/${REPO}/pull/${CREATED_PR}\n`);
     }
     if (args[0] === "pr" && args[1] === "edit") return Promise.resolve("");
@@ -142,7 +149,12 @@ function ghStub(
     if (args.includes("POST") && args[3] === `repos/${REPO}/git/refs`) {
       return Promise.resolve("{}");
     }
-    if (args.includes("PATCH")) return Promise.resolve("{}");
+    if (args.includes("PATCH")) {
+      if (fx.patchError !== undefined) {
+        return Promise.reject(new Error(fx.patchError));
+      }
+      return Promise.resolve("{}");
+    }
     const compare = args.find((arg) => arg.includes("/compare/"));
     if (compare !== undefined) {
       const sha = compare.split("...")[1] ?? "";
@@ -381,7 +393,7 @@ Deno.test("findFailedCiChecks - a held sync head behind the tip is fast-forwarde
 // Off the default branch: only inherited failures are held
 // ---------------------------------------------------------------------------
 
-Deno.test("findFailedCiChecks - a diverged sync PR's check the tip does not share still reaches the CI-fix agent (Issue #5437)", async () => {
+Deno.test("findFailedCiChecks - an ahead sync PR's check the tip does not share still reaches the CI-fix agent (Issue #5437)", async () => {
   const fx = redMainFixture(
     [syncPr(5, "sync/milestone-e", SYNC_ONLY_HEAD)],
     {
@@ -390,7 +402,7 @@ Deno.test("findFailedCiChecks - a diverged sync PR's check the tip does not shar
         "sync/milestone-e": [{ id: 15, name: "lint" }],
         [TIP]: [],
       },
-      compare: { [SYNC_ONLY_HEAD]: "diverged" },
+      compare: { [SYNC_ONLY_HEAD]: "ahead" },
     },
   );
   const { value, calls } = await scan(fx);
@@ -401,7 +413,7 @@ Deno.test("findFailedCiChecks - a diverged sync PR's check the tip does not shar
   assertEquals(prCreateCalls(calls).length, 0);
 });
 
-Deno.test("findFailedCiChecks - a diverged sync PR's check that the tip also has is held for the repair (Issue #5437)", async () => {
+Deno.test("findFailedCiChecks - an ahead sync PR's check that the tip also has is held for the repair (Issue #5437)", async () => {
   const fx = redMainFixture(
     [syncPr(5, "sync/milestone-e", SYNC_ONLY_HEAD)],
     {
@@ -410,7 +422,7 @@ Deno.test("findFailedCiChecks - a diverged sync PR's check that the tip also has
         "sync/milestone-e": [{ id: 15, name: "lint" }],
         [TIP]: [{ id: 1, name: "lint" }],
       },
-      compare: { [SYNC_ONLY_HEAD]: "diverged" },
+      compare: { [SYNC_ONLY_HEAD]: "ahead" },
     },
   );
   const { value, calls, logger } = await scan(fx);
@@ -448,7 +460,7 @@ Deno.test("findFailedCiChecks - an off-default sync PR stands down when the defa
     [syncPr(7, "sync/milestone-g", SYNC_ONLY_HEAD)],
     {
       checks: { "sync/milestone-g": [{ id: 17, name: "lint" }] },
-      compare: { [SYNC_ONLY_HEAD]: "diverged" },
+      compare: { [SYNC_ONLY_HEAD]: "ahead" },
     },
   );
   fx.checkReadErrors = [TIP];
@@ -533,4 +545,103 @@ Deno.test("formatRedDefaultBranchStatus - a repair PR not yet opened says the fi
   assert(bodyCarriesRedDefaultBranchMarker(body, TIP, [1]));
   assert(!bodyCarriesRedDefaultBranchMarker(body, OLD_HEAD, [1]));
   assert(!bodyCarriesRedDefaultBranchMarker(body, TIP, [1, 2]));
+});
+
+// ---------------------------------------------------------------------------
+// Stale (diverged) sync heads, anchored markers and failed outcomes
+// ---------------------------------------------------------------------------
+
+Deno.test("findFailedCiChecks - a diverged sync PR is stale: no CI-fix target, no repair PR and no PATCH, even when the tip is green (Issue #5437)", async () => {
+  const fx = redMainFixture(
+    [syncPr(8, "sync/milestone-h", SYNC_ONLY_HEAD)],
+    {
+      checks: {
+        [SYNC_ONLY_HEAD]: [],
+        "sync/milestone-h": [{ id: 18, name: "gitleaks" }],
+        [TIP]: [],
+      },
+      compare: { [SYNC_ONLY_HEAD]: "diverged" },
+    },
+  );
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(
+    callsTo(calls, "api").filter((args) => args.includes("PATCH")).length,
+    0,
+  );
+  assertEquals(logger.skips.length, 1);
+  assertStringIncludes(logger.skips[0] ?? "", "stale-sync-head");
+  assertStringIncludes(logger.skips[0] ?? "", "re-merges");
+  assertEquals(
+    logger.skips.some((skip) =>
+      skip.startsWith("inherited-red-default-branch")
+    ),
+    false,
+  );
+});
+
+Deno.test("findFailedCiChecks - a repair PR whose body quotes the current marker mid-text, without ending with it, is edited (Issue #5437)", async () => {
+  const quoted = `Superseded status quoted as \`${
+    redDefaultBranchMarker(TIP, [1, 2, 3])
+  }\` above.\n\nNew notes follow.`;
+  const repair: PrFixture = {
+    number: 20,
+    headRefName: REPAIR_BRANCH,
+    headRefOid: TIP,
+    baseRefName: DEFAULT_BRANCH,
+    body: quoted,
+  };
+  const fx = redMainFixture([...THREE_SYNC_PRS, repair], {
+    checks: THREE_SYNC_CHECKS,
+  });
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "edit").length, 1);
+});
+
+Deno.test("findFailedCiChecks - a failed repair PR creation warns with the gh error and leaves the sync PRs held (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.prCreateError = "HTTP 422: Validation Failed";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(logger.skips.length, 3);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not open a repair PR") &&
+      warn.includes("HTTP 422: Validation Failed")
+    ),
+  );
+});
+
+Deno.test("findFailedCiChecks - a failed fast-forward warns with the gh error and the sync PR stays held (Issue #5437)", async () => {
+  const fx = redMainFixture([syncPr(4, "sync/milestone-d", OLD_HEAD)], {
+    checks: {
+      "sync/milestone-d": [{ id: 14, name: "gitleaks" }],
+      [TIP]: [],
+    },
+    compare: { [OLD_HEAD]: "behind" },
+  });
+  fx.patchError = "HTTP 422: Update is not a fast-forward";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(
+    callsTo(calls, "api").filter((args) => args.includes("PATCH")).length,
+    1,
+  );
+  assertEquals(logger.skips.length, 1);
+  assertStringIncludes(logger.skips[0] ?? "", "inherited-red-default-branch");
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not fast-forward") &&
+      warn.includes("HTTP 422: Update is not a fast-forward")
+    ),
+  );
+  assertEquals(prCreateCalls(calls).length, 0);
 });

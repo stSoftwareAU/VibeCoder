@@ -16,9 +16,8 @@
  *   ({@link detectTool}) and {@link classifyCiFailure} calls the failure a
  *   code fault. Infrastructure, timing, human-gate, aggregator and
  *   deployment-state failures are never counted. Runs on a milestone sync
- *   branch, and runs whose head is already on the default branch, are not
- *   counted either: they inherit the default branch's failure, not the PR's
- *   (Issue #5437).
+ *   branch or on the red-default-branch repair branch are not counted, since
+ *   they inherit the default branch's failure (Issue #5437).
  * - Observations are grouped by repository, check and failed step, with
  *   matrix shard numbers folded. A group that has failed on
  *   {@link SHIFT_LEFT_THRESHOLD} distinct fleet PRs within
@@ -51,11 +50,8 @@ import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import { redactedLogTail } from "./redacted_text.ts";
 import { getRepoVisibility } from "./repo_visibility.ts";
 import { selectFleetAuthoredMatches } from "./alert_dedup_authors.ts";
-import {
-  commitAncestryOnDefault,
-  type DefaultBranchAncestry,
-} from "./default_branch_ancestry.ts";
 import { isMilestoneSyncBranch } from "./milestone_sync_branch.ts";
+import { RED_DEFAULT_BRANCH_REPAIR_PREFIX } from "./red_default_branch_repair.ts";
 
 /**
  * Distinct fleet PRs, at heads a fleet account pushed, a step must fail on
@@ -653,55 +649,6 @@ async function resolvePr(
   return pr;
 }
 
-/**
- * Judges whether a run's head is already on the repository's default branch
- * (Issue #5437). The default branch is read on first need, once per scan of
- * the repository, and each head is compared once. A read that fails or comes
- * back empty leaves every head `unknown`: the run is still counted, because
- * the filer is advisory and a missed exclusion is cheaper than a silent one.
- */
-function defaultBranchJudge(
-  repo: string,
-  deps: ShiftLeftScanDeps,
-): (sha: string) => Promise<DefaultBranchAncestry> {
-  let defaultBranch: string | null | undefined;
-  const judged = new Map<string, DefaultBranchAncestry>();
-  return async (sha) => {
-    const known = judged.get(sha);
-    if (known !== undefined) return known;
-    if (defaultBranch === undefined) {
-      try {
-        defaultBranch = (await deps.gh([
-          "api",
-          `repos/${repo}`,
-          "--jq",
-          ".default_branch",
-        ])).trim() || null;
-      } catch (error) {
-        deps.log(
-          `shift-left: could not read ${repo}'s default branch: ${error}`,
-        );
-        defaultBranch = null;
-      }
-      if (defaultBranch === null) {
-        deps.log(
-          `shift-left: ${repo} reported no default branch; heads are not checked against it`,
-        );
-      }
-    }
-    const ancestry: DefaultBranchAncestry = defaultBranch === null
-      ? "unknown"
-      : await commitAncestryOnDefault(repo, sha, defaultBranch, deps.gh);
-    if (ancestry === "unknown") {
-      deps.log(
-        `shift-left: could not tell whether ${repo} ${sha} is on its default branch; counting it`,
-      );
-    }
-    judged.set(sha, ancestry);
-    return ancestry;
-  };
-}
-
 async function observeRepo(
   repo: string,
   deps: ShiftLeftScanDeps,
@@ -738,18 +685,16 @@ async function observeRepo(
     : deps.nowMs;
   const fleet = new Set(deps.fleetAuthors.map((a) => a.toLowerCase()));
   const prs = new Map<string, { number: number; login: string } | null>();
-  const onDefault = defaultBranchJudge(repo, deps);
   const out: FailureObservation[] = [];
   for (const run of batch) {
     scanned[String(run.id)] = Date.parse(run.created_at) || deps.nowMs;
-    // A sync PR's head is the default branch merged in, so its failure is the
+    // A sync PR's head is the default branch merged in, and the repair PR is
+    // the worker's fix for a red default branch, so their failures are the
     // default branch's, not the PR's (Issue #5437).
     if (isMilestoneSyncBranch(run.head_branch)) continue;
+    if (run.head_branch?.startsWith(RED_DEFAULT_BRANCH_REPAIR_PREFIX)) continue;
     const pr = await resolvePr(repo, run, prs, deps);
     if (pr === null || !fleet.has(pr.login.toLowerCase())) continue;
-    // A head already on the default branch landed there before this run, so
-    // its failure is the default branch's, not the PR's local gate (Issue #5437).
-    if (await onDefault(run.head_sha) === "on-default") continue;
     const prNumber = pr.number;
     const jobs = parseLines<JobSummary>(
       await deps.gh([

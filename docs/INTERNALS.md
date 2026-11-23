@@ -5359,9 +5359,11 @@ default branch once, through one repair PR
 flowchart TD
     S["Red sync PR check"] --> A{"Sync head vs default branch"}
     A -- "on-default: identical or behind" --> H["Inherited: held"]
-    A -- "off-default: ahead or diverged" --> T{"Same check red on the default tip?"}
+    A -- "contains-default: ahead" --> T{"Same check red on the default tip?"}
     T -- yes --> H
     T -- no --> O["Ordinary path: CI-fix agent"]
+    T -- "tip unreadable" --> U["Stand down this scan, retried next scan"]
+    A -- "diverged" --> X["Stale: no CI-fix, no repair; the sync lane re-merges"]
     A -- "unknown" --> U["Stand down this scan, retried next scan"]
     H --> F{"Head behind the tip?"}
     F -- yes --> FF["Fast-forward to the tip, force=false"]
@@ -5375,12 +5377,20 @@ flowchart TD
 - **Held, not handed over.** An inherited check is skipped with the reason
   `inherited-red-default-branch` and is not returned to the CI-fix agent. An
   on-default head (identical or behind the tip) holds every failing check on it.
-  An off-default head (ahead or diverged) holds only the checks the default
-  tip also has red. Any other sync failure takes the ordinary path, so a real
-  sync-only failure is still fixed.
-- **Unknown stands down.** If the ancestry cannot be read, or the default
-  branch's red checks cannot be read, the sync PR gets no CI-fix target this
-  scan and a warning names it. "Could not tell" never hands the PR over.
+  A contains-default head (ahead: a fresh merge of the current tip) holds only
+  the checks the default tip also has red. A sync-only failure, one the tip does
+  not share, takes the ordinary path and is still fixed.
+- **Diverged is stale.** A diverged head lacks commits the default branch has
+  since gained, so its failures are neither held nor handed over. They are
+  logged as `stale-sync-head`, and no repair PR is opened for them. The
+  milestone sync lane re-merges the default branch on its next cycle, which
+  brings the head up to date.
+- **Unknown stands down.** If the ancestry cannot be read, the sync PR gets no
+  CI-fix target this scan and a warning names it. An unreadable tip check-run
+  read stands down a contains-default head the same way. An on-default head
+  stays held, but no repair PR is opened while the tip's red checks cannot be
+  read, so held PRs wait for the next scan. "Could not tell" never hands a PR
+  over.
 - **Refresh is fast-forward only.** A held sync head behind the tip is moved with
   `PATCH git/refs/heads/<branch>` and `force=false`, so GitHub refuses anything
   that is not a fast-forward and no commit is lost. Once a repair lands, the
