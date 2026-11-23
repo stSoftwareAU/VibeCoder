@@ -527,13 +527,15 @@ function emulatorRunnerCommand(words: string[]): string[] | null {
   return null;
 }
 
-/** Script text assigning `NAME=` (optionally exported/local), capturing the value. */
+/** Any shell assignment (optionally exported/local), capturing its name and value. */
+const ASSIGNMENT =
+  /(?:^|\n)[ \t]*(?:(?:export|readonly|local|declare(?:[ \t]+-x)?)[ \t]+)?([A-Za-z_]\w*)=([^\n]*)/g;
+
+/** The values the script text assigns to `name`. */
 function assignmentValues(text: string, name: string): string[] {
-  const re = new RegExp(
-    `(?:^|\\n)[ \\t]*(?:(?:export|readonly|local|declare(?:[ \\t]+-x)?)[ \\t]+)?${name}=([^\\n]*)`,
-    "g",
-  );
-  return [...text.matchAll(re)].map((m) => m[1] ?? "");
+  return [...text.matchAll(ASSIGNMENT)]
+    .filter((m) => m[1] === name)
+    .map((m) => m[2] ?? "");
 }
 
 /** A value ending in the script's own path expansion, then only closing quotes/parens. */
