@@ -1288,7 +1288,7 @@ Deno.test("findFailedCiChecks - a diverged sync PR is refreshed by merging main 
   assertEquals(logger.warns, []);
 });
 
-Deno.test("findFailedCiChecks - a diverged sync PR is not refreshed while the tip is red on its checks (Issue #5437)", async () => {
+Deno.test("findFailedCiChecks - a diverged sync PR is not refreshed while the tip is red, but is held for one repair PR (Issue #5437)", async () => {
   const fx = redMainFixture(
     [syncPr(8, "sync/milestone-h", SYNC_ONLY_HEAD)],
     {
@@ -1303,10 +1303,54 @@ Deno.test("findFailedCiChecks - a diverged sync PR is not refreshed while the ti
 
   assertEquals(value, null);
   assertEquals(postsTo(calls, MERGES_PATH).length, 0);
-  assertEquals(prCreateCalls(calls).length, 0);
+  // Issue #5437: the red tip holds the diverged PR, so one repair PR is opened
+  // for it and the status lists the PR.
+  const creates = prCreateCalls(calls);
+  assertEquals(creates.length, 1);
+  assertEquals(argAfter(creates[0] ?? [], "--base"), DEFAULT_BRANCH);
+  assertStringIncludes(
+    argAfter(creates[0] ?? [], "--body") ?? "",
+    "main is red: holding sync PRs #8, fix in this PR.",
+  );
   assert(
     logger.infos.some((info) => info.includes("is red on gitleaks")),
   );
+});
+
+Deno.test("findFailedCiChecks - three sync PRs on a red tip get one repair, then one fast-forward each once the repair lands (Issue #5437)", async () => {
+  const TIP_AFTER = "f6".repeat(20);
+
+  // Scan 1: main is red on gitleaks at TIP and the three sync heads sit on it.
+  const first = await scan(
+    redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS }),
+  );
+  assertEquals(first.value, null);
+  const creates = prCreateCalls(first.calls);
+  assertEquals(creates.length, 1);
+  assertEquals(argAfter(creates[0] ?? [], "--base"), DEFAULT_BRANCH);
+  assertEquals(patchCalls(first.calls).length, 0);
+
+  // Scan 2: the repair has landed, so the tip is green at TIP_AFTER. The repair
+  // PR is no longer open, and the sync heads are still at TIP, behind the tip.
+  const second = await scan({
+    prs: THREE_SYNC_PRS,
+    tip: TIP_AFTER,
+    checks: THREE_SYNC_CHECKS,
+    compare: { [TIP]: "behind" },
+  });
+  assertEquals(second.value, null);
+  assertEquals(prCreateCalls(second.calls).length, 0);
+  assertEquals(patchCalls(second.calls).length, 3);
+  for (const pr of THREE_SYNC_PRS) {
+    const patches = patchesTo(
+      second.calls,
+      `repos/${REPO}/git/refs/heads/${pr.headRefName}`,
+    );
+    assertEquals(patches.length, 1);
+    assertEquals(argAfter(patches[0] ?? [], "-f"), `sha=${TIP_AFTER}`);
+    assertStringIncludes(patches[0]?.join(" ") ?? "", "force=false");
+  }
+  assertEquals(second.logger.warns, []);
 });
 
 Deno.test("findFailedCiChecks - a failed merge refresh warns with the gh error and hands no CI-fix target (Issue #5437)", async () => {

@@ -2089,9 +2089,9 @@ async function repairHeldDefaultBranch(input: {
  * repair PR against the default branch, which is returned ahead of every other
  * default-branch failure. A held sync PR whose head is behind the tip is
  * fast-forwarded to it. A sync PR whose head is diverged from the tip is stale:
- * its failures are logged as `stale-sync-head` and neither held nor handed
- * over, and once the tip is green on them the default branch is merged into
- * the sync branch. A sync PR whose ancestry cannot be decided gets no CI-fix
+ * its failures are logged as `stale-sync-head` and never handed over. While the
+ * tip is red on them it is held for the repair PR, and once the tip is green on
+ * them the default branch is merged into the sync branch. A sync PR whose ancestry cannot be decided gets no CI-fix
  * target this scan. Before a repair PR is opened, an open human fix PR that is
  * green on every held check is adopted: the status is commented on it.
  *
@@ -2431,9 +2431,10 @@ export async function findFailedCiChecks(
           }
           if (ancestry.status === "diverged") {
             // Issue #5437: the head lacks commits the default branch has since
-            // gained, so its failures are stale. They are neither held for a
-            // repair nor handed to the CI-fix agent: the milestone sync lane
-            // re-merges the default branch on its next cycle.
+            // gained, so its failures are stale. They are never handed to the
+            // CI-fix agent: the milestone sync lane re-merges the default
+            // branch on its next cycle. They are held for the repair PR only
+            // when the tip is red on them.
             logger.skipReason(
               "stale-sync-head",
               `${repo}#${prNumber}: ${
@@ -2453,11 +2454,15 @@ export async function findFailedCiChecks(
                 tipRed.has(name)
               );
               if (redOnTip.length > 0) {
+                // Issue #5437: a red tip is still held, so one repair PR is
+                // prompted and the status lists this PR. It gets no CI-fix
+                // target, as the head is stale.
                 logger.info(
                   `${repo}#${prNumber}: ${defaultBranch} is red on ${
                     redOnTip.join(", ")
                   }, so the stale sync head is not refreshed until ${defaultBranch} is green (Issue #5437)`,
                 );
+                held.push({ prNumber, checkNames: redOnTip, isSync: true });
               } else {
                 await mergeDefaultBranchIntoSyncBranch(
                   repo,

@@ -5371,7 +5371,7 @@ flowchart TD
     T -- "tip unreadable" --> U["Stand down this scan, retried next scan"]
     A -- "diverged" --> X{"Tip green on this PR's checks?"}
     X -- yes --> M["Merge the default branch into the sync branch, server-side"]
-    X -- no --> D["Stale: no CI-fix target and no merge yet"]
+    X -- no --> D["Stale: held for the repair PR on its red checks, no CI-fix target, no merge yet"]
     A -- "unknown" --> U["Stand down this scan, retried next scan"]
     H --> F{"Head behind the tip?"}
     F -- yes --> FF["Fast-forward to the tip, force=false"]
@@ -5402,15 +5402,18 @@ flowchart TD
   base is read only for a check the tip already has red. If a read fails, or the
   merge base is not a full commit SHA, the PR takes the ordinary path with a
   warning quoting the cause. It is never held on unknown.
-- **Diverged is stale, and refreshed once main is green.** A diverged head lacks
-  commits the default branch has since gained, so its failures are neither held
-  nor handed over. They are logged as `stale-sync-head`. Once the tip is green on
-  the PR's candidate checks, the default branch is merged into the sync branch
-  with `POST repos/<repo>/merges` (base the sync branch, head the default
-  branch). That adds a merge commit and destroys nothing. The PR gets no CI-fix
-  target this scan, since its CI reruns on the new head. A refused merge, for
-  example a conflict, is logged and the milestone sync lane retries on its next
-  cycle. If the tip's red checks cannot be read, no merge is attempted.
+- **Diverged is stale: held while main is red, refreshed once main is green.** A
+  diverged head lacks commits the default branch has since gained, so its
+  failures are never handed over. They are logged as `stale-sync-head`. While
+  the tip is red on any of the PR's candidate checks, the PR is held for the one
+  repair PR with those red-on-tip checks, so the status lists it. Once the tip
+  is green on the PR's candidate checks, the default branch is merged into the
+  sync branch with `POST repos/<repo>/merges` (base the sync branch, head the
+  default branch). That adds a merge commit and destroys nothing. The PR gets no
+  CI-fix target this scan, since its CI reruns on the new head. A refused merge,
+  for example a conflict, is logged and the milestone sync lane retries on its
+  next cycle. If the tip's red checks cannot be read, no merge is attempted and
+  the PR is not held this scan.
 - **Unknown stands down.** If the ancestry cannot be read, the sync PR gets no
   CI-fix target this scan and a warning names it. An unreadable tip check-run
   read stands down a contains-default head the same way. An on-default head
