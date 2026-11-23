@@ -124,6 +124,12 @@ import {
   DescendantTracker,
   type OrphanCollectorDeps,
 } from "./orphan_collector.ts";
+import {
+  AGENT_SPAWN_TAG_ENV,
+  type LeftoverReaperDeps,
+  newAgentSpawnTag,
+  reapAgentLeftovers,
+} from "./agent_leftover_reaper.ts";
 import { applyJitter } from "./rate_limit_jitter.ts";
 import { writeRateLimitSignal } from "./rate_limit_signal.ts";
 import { heldProviderCredentialLabel } from "./credential_preflight.ts";
@@ -704,6 +710,8 @@ export interface RunClaudeOptions {
   hostDiskPollMs?: number;
   /** Process-table seams for the orphan collector — tests only. */
   orphanCollectorDeps?: OrphanCollectorDeps;
+  /** Process-table seams for the leftover reaper — tests only. */
+  leftoverReaperDeps?: LeftoverReaperDeps;
   /**
    * Minimum gap between two "memory pressure high" evidence lines during
    * one run (Issue #4384). Default 60 s; the watch itself rides on the
@@ -1590,6 +1598,8 @@ async function runClaudeWithTimeoutBody(
   // the survivors of an external kill can be collected after the fact.
   let descendantSnapshotTimer: TimerHandle | undefined;
   let descendantTracker: DescendantTracker | undefined;
+  // The spawn tag of this run (Issue #4815), hoisted so the catch reaps too.
+  let agentSpawnTag: string | undefined;
   // Set when the host crosses its disk floor while the agent is running
   // (Issue #4360). The run then fails as infrastructure, not as a timeout.
   let hostDiskPark: string | undefined;
@@ -1683,6 +1693,12 @@ async function runClaudeWithTimeoutBody(
     // the checkout this run works in. On a runtime that honours the trim, and
     // on a developer host, this adds nothing.
     Object.assign(baseEnv, buildCacheEnvForCheckout(cwd, { source: baseEnv }));
+    // One spawn tag per agent run (Issue #4815). Every process the agent
+    // starts inherits it, detached jobs included, so the leftover reaper can
+    // find and terminate what outlives the agent. Set before the gh guard
+    // shim and the pre-push hook copy baseEnv, so the child carries it.
+    agentSpawnTag = newAgentSpawnTag();
+    baseEnv[AGENT_SPAWN_TAG_ENV] = agentSpawnTag;
     // The TokenEconomizer plugin's allow-listed environment (Issue #4956),
     // overlaid before the gh guard shim and the pre-push hook copy baseEnv, so
     // both carry it to the agent. The plugin's own hooks and model calls are
@@ -3115,6 +3131,15 @@ async function runClaudeWithTimeoutBody(
         await descendantTracker.settle();
       }
     }
+    // The agent has exited, by any path: terminate what it left running under
+    // its spawn tag (Issue #4815). A detached job never reaches the descendant
+    // snapshot, so this is the only collection that sees it.
+    await reapAgentLeftovers({
+      tag: agentSpawnTag,
+      maxWaitSeconds: killAfterSeconds,
+      logger,
+      deps: options.leftoverReaperDeps,
+    });
     if (hostDiskPark) {
       return {
         ok: false,
@@ -3182,6 +3207,17 @@ async function runClaudeWithTimeoutBody(
     if (descendantSnapshotTimer) clock.clearInterval(descendantSnapshotTimer);
     if (hostDiskPoll) clock.clearInterval(hostDiskPoll);
     if (descendantTracker) await descendantTracker.settle();
+    // On a throw the agent may still be alive, and it carries the tag too, so
+    // it is terminated along with its leftovers rather than abandoned
+    // (Issue #4815).
+    if (agentSpawnTag !== undefined) {
+      await reapAgentLeftovers({
+        tag: agentSpawnTag,
+        maxWaitSeconds: killAfterSeconds,
+        logger,
+        deps: options.leftoverReaperDeps,
+      });
+    }
     for (const [pid, run] of activeAgentRuns) {
       if (run.logger === logger && run.label.startsWith(phase ?? "agent")) {
         activeAgentRuns.delete(pid);
