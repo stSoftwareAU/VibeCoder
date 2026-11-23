@@ -2,12 +2,12 @@
 
 Gemini runs now get the run's MCP servers (Playwright, Graft, CodeGraph). The
 servers go under `mcpServers` in the per-run settings file
-(`GEMINI_CLI_SYSTEM_SETTINGS_PATH`), and `--allowed-mcp-server-names` limits
-the run to exactly the requested names. `bindGraftRun` and
-`prepareCodegraphContext` no longer leave Gemini out. Codex and Gemini share one
-MCP config reader (`worker/deno/lib/mcp_server_entries.ts`), so both skip the
-same unsafe names. The argv names and the settings file both come from one
-reader, `readGeminiMcpServers`. Closes #5343.
+(`GEMINI_CLI_SYSTEM_SETTINGS_PATH`), and `--allowed-mcp-server-names` limits the
+run to exactly the requested names. `bindGraftRun` and `prepareCodegraphContext`
+no longer leave Gemini out. Codex and Gemini share one MCP config reader
+(`worker/deno/lib/mcp_server_entries.ts`), so both skip the same unsafe names.
+The argv names and the settings file both come from one reader,
+`readGeminiMcpServers`. Closes #5343.
 
 ## Spec
 
@@ -25,16 +25,16 @@ reader, `readGeminiMcpServers`. Closes #5343.
   server name, so none load. The CLI ignores file-based `admin.mcp.enabled`, so
   that setting cannot do this job. The reasoning is recorded at
   `worker/deno/lib/gemini_executor.ts`, as the issue's assumption asked.
-- When the MCP config was written but cannot be read, or holds no usable
-  server, Gemini refuses to start, as Codex does. When the config was never
-  written, `ensureAgentMcpConfig` logs `config not written`, no path is passed,
-  and the run goes ahead with no servers.
+- When the MCP config was written but cannot be read, or holds no usable server,
+  Gemini refuses to start, as Codex does. When the config was never written,
+  `ensureAgentMcpConfig` logs `config not written`, no path is passed, and the
+  run goes ahead with no servers.
 - `CodegraphStatus` keeps its `unsupported` member because callbacks publish it.
   No provider produces it now, and the stats line renders it as plain
   `unsupported`.
 - The runner's refusal for a failed `prepareRunSettings` now says
-  `could not prepare its run settings`. That call can now fail on the MCP
-  config as well as on tool denials.
+  `could not prepare its run settings`. That call can now fail on the MCP config
+  as well as on tool denials.
 
 ### Undiscoverable Facts
 
@@ -46,8 +46,8 @@ reader, `readGeminiMcpServers`. Closes #5343.
     filters only when `allowedNames.length > 0`.
   - `packages/cli/src/config/settings.ts`: "Any admin settings from files are
     ignored."
-- The Gemini CLI is not installed in the container, so the empty-list
-  behaviour was read from that source, not observed by running the CLI.
+- The Gemini CLI is not installed in the container, so the empty-list behaviour
+  was read from that source, not observed by running the CLI.
 
 ## Evidence
 
@@ -83,10 +83,10 @@ flowchart LR
   it. — evidence:
   `worker/deno/tests/agent_provider_gemini_test.ts::gemini MCP servers (Issue #5343) - a run with no servers allows none and its settings file has no mcpServers key`
   — reviewer: partial — reason: the reviewer said the CLI's treatment of `""`
-  "is unverified" and the source "is not in the repo". The test asserts the
-  argv the criterion asks for. The CLI behaviour comes from the v0.68.0 source
-  cited under Undiscoverable Facts, and the code records it, as the issue's
-  assumption allows.
+  "is unverified" and the source "is not in the repo". The test asserts the argv
+  the criterion asks for. The CLI behaviour comes from the v0.68.0 source cited
+  under Undiscoverable Facts, and the code records it, as the issue's assumption
+  allows.
 - **met** — `bindGraftRun` for a Gemini run no longer logs
   `has no MCP transport`, and wires the server. — evidence:
   `worker/deno/tests/graft_run_test.ts::bindGraftRun - a Gemini-routed run is wired like Claude (Issue #5343)`
@@ -122,8 +122,8 @@ flowchart LR
   reason: the docs-change standard requires the docs edits, and the sweep gate
   requires the new lib module to be registered
 - **unrequested** — the stats line renders `unsupported` instead of
-  `unsupported (gemini)` — reviewer: unrequested — reason: the issue allows
-  this when the line "reads wrongly", and naming Gemini now would
+  `unsupported (gemini)` — reviewer: unrequested — reason: the issue allows this
+  when the line "reads wrongly", and naming Gemini now would
 - **unrequested** — `GEMINI_PROVIDER_ID` imports dropped from callers that no
   longer use it — reviewer: unrequested — reason: they became unused when the
   Gemini branches were removed
@@ -132,13 +132,12 @@ flowchart LR
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — Every changed call site needs a test that goes red without
-  it: nothing tested the runner passing `mcpConfigPath` into
-  `prepareRunSettings` — evidence: `worker/deno/lib/claude_runner.ts:1659` —
-  reason: fixed in this diff. A real-runner test with a written config now
-  asserts that the settings file's `mcpServers` and the allow-list both name
-  `playwright`. With that spread removed, the test failed (6 passed, 1 failed);
-  restored, it passes.
+- **violation** — Every changed call site needs a test that goes red without it:
+  nothing tested the runner passing `mcpConfigPath` into `prepareRunSettings` —
+  evidence: `worker/deno/lib/claude_runner.ts:1659` — reason: fixed in this
+  diff. A real-runner test with a written config now asserts that the settings
+  file's `mcpServers` and the allow-list both name `playwright`. With that
+  spread removed, the test failed (6 passed, 1 failed); restored, it passes.
 - **violation** — an absolute claim the code does not back ("wired exactly as
   Claude and Codex are") — evidence: `docs/CONFIGURATION.md:2277` — reason:
   fixed in this diff. The sentence now says Gemini gets the `command`, `args`
@@ -148,13 +147,13 @@ flowchart LR
   `worker/deno/tests/codegraph_context_test.ts:253` — reason: fixed in this
   diff. Those assertions are removed, and the outcome assertions (status `ok`,
   node and relationship counts) remain.
-- **violation** — Documentation-drift tests (review-enforced): `unsupported`
-  was retyped as a bare literal — evidence:
+- **violation** — Documentation-drift tests (review-enforced): `unsupported` was
+  retyped as a bare literal — evidence:
   `worker/deno/tests/repo_context_trial_docs_test.ts:149` — reason: fixed in
   this diff. It is now `"unsupported" satisfies CodegraphStatus`, and the test
   is renamed so its name stays true.
-- **violation** — DRY / twinned rule: the server-name regex was copied
-  (found by an earlier review of this branch) — evidence:
+- **violation** — DRY / twinned rule: the server-name regex was copied (found by
+  an earlier review of this branch) — evidence:
   `worker/deno/lib/gemini_settings.ts:137` — reason: fixed in this diff. Codex
   and Gemini import `SAFE_MCP_NAME` from `mcp_server_entries.ts`.
 - **violation** — the MCP config was read twice, once for the argv names and
@@ -162,8 +161,8 @@ flowchart LR
   evidence: `worker/deno/lib/agent_provider.ts:1153` — reason: fixed in this
   diff. Both now come from `readGeminiMcpServers` in
   `worker/deno/lib/gemini_settings.ts`.
-- **clean** — Australian English in added lines (review-enforced). No copied
-  or reinvented helper (review-enforced). The other dummy-test rules
+- **clean** — Australian English in added lines (review-enforced). No copied or
+  reinvented helper (review-enforced). The other dummy-test rules
   (review-enforced): new tests assert values and refusal causes. Docs-drift
   rules 1 and 4 (review-enforced). Also clean: fail loud, `Result` usage, the
   callback schema stays additive-only, `__proto__` safety, filtering of server
@@ -186,8 +185,8 @@ flowchart LR
   - `worker/deno/tests/codegraph_context_test.ts`: the old Gemini `unsupported`
     test now asserts that Gemini reaches the index with the same outcome as
     Claude. The issue drops that return.
-  - `worker/deno/tests/issue_run_stats_comment_test.ts`:
-    `unsupported (gemini)` becomes `unsupported`.
+  - `worker/deno/tests/issue_run_stats_comment_test.ts`: `unsupported (gemini)`
+    becomes `unsupported`.
   - `worker/deno/tests/repo_context_trial_docs_test.ts`: the runner no longer
     returns `unsupported`. The test still requires the docs to name `off` and
     `unsupported`, and `unsupported` is now type-checked.
@@ -195,8 +194,8 @@ flowchart LR
     expectations gain the new flag.
   - `worker/deno/tests/issue_4109_callsite_test.ts`: comments only.
   - No behaviour assertion was removed without replacement. The codegraph
-    call-args assertions were "how" assertions, and the outcome assertions
-    still cover the behaviour.
+    call-args assertions were "how" assertions, and the outcome assertions still
+    cover the behaviour.
 - Results on the final code head:
   - `deno task test:unit tests/mcp_server_entries_test.ts tests/gemini_settings_5341_test.ts tests/agent_provider_gemini_test.ts`:
     50 passed, 0 failed.
