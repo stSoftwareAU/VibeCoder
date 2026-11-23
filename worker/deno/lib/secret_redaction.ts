@@ -50,7 +50,7 @@ import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
  * means and why every quantifier is bounded.
  */
 const SECRET_ASSIGNMENT_PATTERN =
-  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?[*`>]{0,3}\s*(?::|(?<!>)=)(?:[*_]{1,3}(?=\s))?\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|[^\s"]+)/gi;
+  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?[*`>]{0,3}\s*(?::|(?<!>)=)(?:[*_]{1,3}(?=\s))?\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("(?:[^"\\]|\\[^]){1,4096}"|'(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|"[^"]+"|'[^']+'|[^\s"]+)/gi;
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -100,8 +100,13 @@ const FENCE_VALUE = /^(?:`{3,}|~{3,})[A-Za-z0-9_+#-]*$/;
 /** A complete inline image — `![alt](path)` — as the whole value. */
 const IMAGE_VALUE = /^!\[[^\][]*\]\([^()]*\)$/;
 
-/** A value in matching quotes: explicit assignment syntax, not prose. */
-const QUOTED_VALUE = /^(?:"[^"]*"|'[^']*')$/;
+/**
+ * A value in matching quotes: explicit assignment syntax, not prose. It accepts
+ * the same escaped quotes as the pattern (Issue #5327), so a masked escaped
+ * value keeps its quotes around the placeholder.
+ */
+const QUOTED_VALUE =
+  /^(?:"(?:[^"\\]|\\[^]){0,4096}"|'(?:[^'\\]|\\[^]|''|'\\''){0,4096}'|"[^"]*"|'[^']*')$/;
 
 /**
  * A single word with no digit, symbol or internal capital — the shape of an
@@ -749,6 +754,20 @@ const RULES: readonly RedactionRule[] = [
   // characters, the label is at most `INNER_LABEL_MAX` (128) characters, and
   // the embedded-quote case (`DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
   // Past them the base behaviour applies.
+  //
+  // A quoted value may hold an escaped quote of its own kind (Issue #5327): a
+  // backslash pair in either quote kind, and in single quotes a doubled `''` or
+  // the shell `'\''` idiom. The quoted branches read through it, so the whole
+  // literal is masked; before, they stopped at the escaped quote, masked the
+  // leading part and published the rest. Each escape-aware branch is bounded at
+  // 4,096 characters or escapes, and the alternatives are told apart by their
+  // first two characters, so the pattern stays linear (the linearity rule in
+  // the module header). A longer value, or one whose escape never closes
+  // (`"C:\dir\"`), falls back to the old branches that end at the first quote,
+  // which is the base behaviour. A backslash is read as an escape in single
+  // quotes too, although the shell treats it as literal there; that can mask
+  // past a Windows path's trailing backslash up to the next quote, which errs
+  // towards masking.
   //
   // JSON structure survives the mask (Issue #4169's transcript tee is the
   // sink that showed it). Every stream-json line the agent emits carries a

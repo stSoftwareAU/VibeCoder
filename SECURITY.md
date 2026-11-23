@@ -537,6 +537,13 @@ because that is how prose names a key, and a corpus run over the archived PR
 summaries showed it masking the next prose word; and `<TOKEN>=<value>`, a `>`
 straight before `=`, is not matched, because that is the `>=` comparison.
 
+A quoted value may hold an escaped quote of its own kind, and the whole literal
+is masked: `"abc\"def"`, `'abc\'def'`, the SQL `'abc''def'` and the shell
+`'it'\''s'` are each masked in full. Before Issue #5327 the mask stopped at that
+quote and the rest of the credential was published. Two limits: the
+escape-aware read covers at most 4,096 characters or escapes, and a value whose
+escape never closes (`"C:\dir\"`) falls back to ending at the first quote.
+
 The label side stays deliberately blunt — it catches real secrets — apart from
 the prose-heading check below. The value is judged before the mask is applied,
 and, apart from that check, **only when the separator crossed a line break**:
