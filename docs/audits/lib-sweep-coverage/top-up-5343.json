@@ -1,0 +1,12 @@
+{
+  "issue": 5343,
+  "chunk": "top-up-5343",
+  "title": "top-up: shared MCP server config reader",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5343",
+  "definition": "modules added for reading the run's MCP server config shared by Codex and Gemini: mcp_server_entries.ts (#5343)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/mcp_server_entries.ts"
+  ],
+  "sweptAt": "daa9bb82604b7ff0b641c1d87c7ba294f7d51388"
+}
