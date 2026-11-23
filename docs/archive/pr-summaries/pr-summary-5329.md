@@ -17,9 +17,9 @@ miss:
 ### Intent and Rationale
 
 - The old value lookahead `(?=\S{0,63}[A-Za-z0-9])` read the first
-  whitespace-free run even for a quoted value. A quoted value that opened with
-  a space or symbols failed it, and the bare branch excludes `"`, so an
-  unclosed double quote matched nothing.
+  whitespace-free run even for a quoted value. A quoted value that opened with a
+  space or symbols failed it, and the bare branch excludes `"`, so an unclosed
+  double quote matched nothing.
 - The old value alternative is kept byte-for-byte as the first branch. Every
   value masked before is matched by that same branch and masked the same way;
   the two new branches only run when it fails.
@@ -47,10 +47,9 @@ miss:
 - Knock-on effect for #5310: when the 256-character window probe in
   `innerAssignmentUncached` cuts a long double-quoted inner value, it now reads
   that value as unterminated. The full-text match then masks the inner value.
-  Before this change the value was published once it ran past 4,096
-  characters. The 4,096 limit (`INNER_QUOTED_MAX`) now matters only for an inner
-  value that opens with a line break or has no letter or digit inside the
-  window.
+  Before this change the value was published once it ran past 4,096 characters.
+  The 4,096 limit (`INNER_QUOTED_MAX`) now matters only for an inner value that
+  opens with a line break or has no letter or digit inside the window.
 - The issue comments moved this issue to milestone **secret redaction
   follow-ups**, after PR #5425 landed on that stream.
 
@@ -59,9 +58,10 @@ miss:
 Backend-only change (regex and doc comments), with no UI files.
 
 Before the fix, the library left every reported shape unchanged and
-`containsSecret` returned `false` (scratch run of `redactSecrets`/`containsSecret`
-over `PASSWORD=" hunter2 abc"`, `PASSWORD="!!! hunter2"`, `API_KEY=' s3cr3t value'`,
-`TOKEN="hunter2abc`, `TOKEN=" hunter2`, `{"password":"abc123xyz`).
+`containsSecret` returned `false` (scratch run of
+`redactSecrets`/`containsSecret` over `PASSWORD=" hunter2 abc"`,
+`PASSWORD="!!! hunter2"`, `API_KEY=' s3cr3t value'`, `TOKEN="hunter2abc`,
+`TOKEN=" hunter2`, `{"password":"abc123xyz`).
 
 ```mermaid
 flowchart LR
@@ -79,8 +79,10 @@ flowchart LR
 
 Issue numbers this diff adds as provenance:
 
-- #5329: secret-assignment rule does not mask a quoted value whose opening word holds no letter or digit, or a double-quoted value with no closing quote
-- #5310: secret-assignment rule publishes a credential when its label is consumed as the value of an earlier credential label
+- #5329: secret-assignment rule does not mask a quoted value whose opening word
+  holds no letter or digit, or a double-quoted value with no closing quote
+- #5310: secret-assignment rule publishes a credential when its label is
+  consumed as the value of an earlier credential label
 
 Docs updated: `SECURITY.md`, section "An assignment's value is judged, not only
 its label". It gets a new #5329 paragraph, and the #5310 limits bullet now says
@@ -93,21 +95,20 @@ pattern exists: `git grep -F '\S{0,63}[A-Za-z0-9]'` returns only line 53.
 
 - Added `worker/deno/tests/secret_redaction_quoted_value_5329_test.ts`. Every
   test goes through `redactSecrets` and `containsSecret`:
-  - Positive cases: values opening with a space or a symbol-only word, in
-    double and single quotes. Unclosed double quotes: no space, with spaces,
-    opening with a space, cross-line (the next line is untouched), and a
-    truncated JSON string. A value 200 spaces in, inside the 256-character span.
-    Each case also asserts idempotence and that `containsSecret` is `false` on
-    the output.
-  - Negative controls, unchanged: `"---"`, `" "`, `""`, a lone `"`,
-    `"  -- "`, a value whose only letter is 300 characters in,
-    `id-token: write`, and `- **Tokens:** input 27` (Issue #4004).
+  - Positive cases: values opening with a space or a symbol-only word, in double
+    and single quotes. Unclosed double quotes: no space, with spaces, opening
+    with a space, cross-line (the next line is untouched), and a truncated JSON
+    string. A value 200 spaces in, inside the 256-character span. Each case also
+    asserts idempotence and that `containsSecret` is `false` on the output.
+  - Negative controls, unchanged: `"---"`, `" "`, `""`, a lone `"`, `"  -- "`, a
+    value whose only letter is 300 characters in, `id-token: write`, and
+    `- **Tokens:** input 27` (Issue #4004).
   - Unchanged-behaviour pins: closed JSON `"password":"…"`, and an unterminated
     single quote (`PASSWORD='x abc` → `PASSWORD=***REDACTED*** abc`, the
     base-branch output).
   - Hostile inputs, asserting exact output and no timing: 100,000 spaces inside
     `"` and inside `'`, 100,000 `!` inside an unclosed `"`, 25,000 words in an
-    unclosed `"` (masked whole), and 20,000 repeated `PASSWORD=" x" ` (each one
+    unclosed `"` (masked whole), and 20,000 repeated `PASSWORD=" x"` (each one
     masked).
 - TDD: run against the unfixed pattern, the new file gave
   `15 passed | 11 failed`. The failures were every positive fixture; the
@@ -123,9 +124,10 @@ pattern exists: `git grep -F '\S{0,63}[A-Za-z0-9]'` returns only line 53.
   `security_scan_secret_redaction_3047_test.ts`,
   `fleet_telemetry_redaction_test.ts` and `run_stats_redaction_test.ts`) gave
   `ok | 509 passed | 0 failed` before the last doc-only edits.
-- Edited existing test, `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`:
-  - The old control "a double-quoted inner value over 4,096 characters keeps
-    the base behaviour" asserted that the inner value was published. That is
+- Edited existing test,
+  `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`:
+  - The old control "a double-quoted inner value over 4,096 characters keeps the
+    base behaviour" asserted that the inner value was published. That is
     intentionally changed: the issue asks for an unclosed double quote to be
     read as a value, and the window probe now sees the cut-off value that way.
     Renamed to "#5310/#5329: a double-quoted inner value over 4,096 characters
@@ -134,8 +136,7 @@ pattern exists: `git grep -F '\S{0,63}[A-Za-z0-9]'` returns only line 53.
   - The documented limit still holds for a value the probe cannot read. A new
     control, "#5310 control: a line-broken double-quoted inner value over 4,096
     characters keeps the base behaviour", pins the base output for
-    `DEPLOY_TOKEN = "\n<4,097 chars>"`. No other assertion in that file
-    changed.
+    `DEPLOY_TOKEN = "\n<4,097 chars>"`. No other assertion in that file changed.
 - `deno fmt --check`, `deno lint` and `deno check` pass on the changed `.ts`
   files.
 - Full gate: `timeout 900 ./quality.sh < /dev/null` was stopped at the
