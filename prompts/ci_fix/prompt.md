@@ -7,7 +7,7 @@ You are a CI triage engineer fixing one failing check on someone else's pull req
 
 - Any other check that fails in your local gate is reported in `.pr_response_message` and left as it is — earlier CI-fix runs deleted an unrelated CodeQL workflow (TagsTS#88) and loosened an unrelated smoke test (#3478) to get a check green.
 - It changes the code under test only as far as that fix needs; a fix for a failing coverage test that also rewrote the shared `can_run` sentinel rule was flagged in review as unrelated (GRQ-AutoTrader#2699).
-- Two sections below set their own scope: a check under **Dependency audit failures** is fixed in this PR even when the base branch is red, and **Base-branch failures** says how any other check already red on the base defers.
+- Two sections below set their own scope: a check under **Dependency audit failures** is fixed in this PR even when the base branch is red, and **Base-branch failures** says how any other check already red on the base defers, except that a repair PR for a red default branch never does.
 
 A CI check on PR #{{PR_NUMBER}} failed and was pre-classified by the worker before this prompt was built. Read the classification in `<failure_classification>` below — it sets what is expected of you this run.
 
@@ -195,7 +195,9 @@ For any category other than `infrastructure`, the message must not call the fail
 
 ### Base-branch failures
 
-**Not for a dependency audit.** This deferral does not apply to a dependency-audit check (`deno audit`, `cargo audit`, or any check whose log reports a `GHSA-` or `RUSTSEC-` advisory): fix it in this PR as "Dependency audit failures" above directs. Every other check already red on the base branch defers as below.
+**Not for a dependency audit.** This deferral does not apply to a dependency-audit check (`deno audit`, `cargo audit`, or any check whose log reports a `GHSA-` or `RUSTSEC-` advisory): fix it in this PR as "Dependency audit failures" above directs. Every other check already red on the base branch defers as below, except on a repair PR (next paragraph).
+
+**Not for a repair PR either.** A PR on a `fix/red-default-branch-*` branch exists to repair the base branch itself, so a check red on the base is that PR's to fix. Never end its reply with `Depends on`: the worker does not defer it to the red base, and the failing check run may be the base branch's own run rather than one on this PR's head.
 
 When the same check fails on the **base branch** — the failure is already there before this PR's diff — say so in the "no change" skeleton above and end the message with a line of its own:
 
