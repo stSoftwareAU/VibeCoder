@@ -1884,8 +1884,12 @@ not trigger it. It then checks the static wiring of the repo's GitHub Actions
 workflows; it does not read any CI result. The official AWS Emulator passes in
 one of two forms. Server mode is a reachable `run:` step that invokes
 `aws-emulator-run [--ready-timeout N] [--timeout N] -- COMMAND` with a COMMAND
-that is not a no-op, directly or through a repository script the step runs (one
-level deep, confined to the checkout). Embedded mode, for Rust repos only, is a
+that is the repository's test (a recognised test command, an existing
+test-named repository script credited by its name, a repository script that
+runs one, or a test-named step script that re-executes itself under the runner
+through a variable whose last assignment is exactly its own path; `echo`,
+version and health probes earn nothing), directly or through a repository
+script the step runs (one script read per step, confined to the checkout). Embedded mode, for Rust repos only, is a
 `# aws-emulator-embedded: version=<X.Y.Z>; justification=<text>` marker on a
 status-preserving `cargo test` or `cargo nextest` step. Either form passes only
 when the workflow runs on `pull_request` (directly, or through a `workflow_call`

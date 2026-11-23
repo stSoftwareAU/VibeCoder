@@ -9,7 +9,9 @@
  * official credit, and only in a workflow that runs on `pull_request` (directly,
  * or through a `workflow_call` from one):
  *   - official-server: a status-preserving `aws-emulator-run -- <test>` in a
- *     `run:` step, directly or in a repository script that the step runs;
+ *     `run:` step, directly or in a repository script that the step runs,
+ *     where `<test>` is the repository's test command (not an echo, version or
+ *     health probe, or an ignored failure);
  *   - official-embedded (Rust only): a status-preserving `cargo test` or
  *     `cargo nextest` step with an `aws-emulator-embedded:` marker that pins
  *     the version and gives a justification.
@@ -484,42 +486,147 @@ const NO_OP_COMMANDS = new Set([
 ]);
 
 /**
- * True when one command segment actually runs a repository test through
- * the emulator runner (#5109's usage): its command word (see
- * {@link commandIndex}, with any surrounding quotes removed) is
- * `aws-emulator-run` or a path ending `/aws-emulator-run`, followed by
- * optional `--ready-timeout N` / `--timeout N`, then `--` and a COMMAND that
- * is not a no-op (`true`, `:`). The helper's own `--smoke` self-check,
- * `--smoke-client`, `-h`/`--help`, a bare `--` and any unknown option do not
- * count; nor do `echo aws-emulator-run`, `command -v aws-emulator-run`, an
- * `install ... /usr/local/bin/aws-emulator-run` or the install fragment
- * `container/toolchains/aws-emulator.sh`: none of them runs a test.
+ * The COMMAND words after `--` when one command segment invokes the emulator
+ * runner (#5109's usage), else null. Its command word (see {@link commandIndex},
+ * with any surrounding quotes removed) is `aws-emulator-run` or a path ending
+ * `/aws-emulator-run`, followed by optional `--ready-timeout N` / `--timeout N`,
+ * then `--` and a COMMAND that is not a no-op (`true`, `:`). The helper's own
+ * `--smoke` self-check, `--smoke-client`, `-h`/`--help`, a bare `--` and any
+ * unknown option give null; so do `echo aws-emulator-run`,
+ * `command -v aws-emulator-run`, an `install ... /usr/local/bin/aws-emulator-run`
+ * and the install fragment `container/toolchains/aws-emulator.sh`: none of them
+ * runs a test. Whether the COMMAND is the repository's test is decided by
+ * {@link runnerRunsRepositoryTest}.
  */
-function segmentInvokesEmulatorRunner(words: string[]): boolean {
+function emulatorRunnerCommand(words: string[]): string[] | null {
   let i = commandIndex(words);
   const command = words[i];
   if (
     command === undefined ||
     !AWS_EMULATOR_RUN_COMMAND.test(stripQuotes(command))
   ) {
-    return false;
+    return null;
   }
   i++;
   while (i < words.length) {
     const arg = stripQuotes(words[i] ?? "");
     if (EMULATOR_RUN_VALUE_OPTIONS.has(arg)) {
-      if (i + 1 >= words.length) return false;
+      if (i + 1 >= words.length) return null;
       i += 2;
     } else if (arg === "--") {
       const testCommand = words[i + 1];
       return testCommand !== undefined &&
-        stripQuotes(testCommand).length > 0 &&
-        !NO_OP_COMMANDS.has(stripQuotes(testCommand));
+          stripQuotes(testCommand).length > 0 &&
+          !NO_OP_COMMANDS.has(stripQuotes(testCommand))
+        ? words.slice(i + 1)
+        : null;
     } else {
-      return false; // --smoke, --smoke-client, -h, --help or unknown
+      return null; // --smoke, --smoke-client, -h, --help or unknown
     }
   }
-  return false;
+  return null;
+}
+
+/** Any shell assignment (optionally exported/local), capturing its name and value. */
+const ASSIGNMENT =
+  /(?:^|\n)[ \t]*(?:(?:export|readonly|local|declare(?:[ \t]+-x)?)[ \t]+)?([A-Za-z_]\w*)=([^\n]*)/g;
+
+/** The values the script text assigns to `name`. */
+function assignmentValues(text: string, name: string): string[] {
+  return [...text.matchAll(ASSIGNMENT)]
+    .filter((m) => m[1] === name)
+    .map((m) => m[2] ?? "");
+}
+
+/** Exactly the script's own path expansion. */
+const SELF_PLAIN =
+  /^(?:\$(?:0|BASH_SOURCE)|\$\{(?:0|BASH_SOURCE(?:\[0\])?)\})$/;
+/** Exactly one `$VAR/` or `${VAR}/` directory, then the script's own basename. */
+const SELF_DIR_BASENAME =
+  /^\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})\/\$\{(?:0|BASH_SOURCE\[0\])##\*\/\}$/;
+/** Exactly `$(realpath X)` or `$(readlink -f X)`, capturing X. */
+const SELF_RESOLVED = /^\$\((?:realpath|readlink -f) ([^()]*)\)$/;
+
+/** One layer of surrounding double quotes removed. */
+function unquoteOnce(value: string): string {
+  return value.length >= 2 && value.startsWith('"') && value.endsWith('"')
+    ? value.slice(1, -1)
+    : value;
+}
+
+/**
+ * True when the value of a variable is exactly the script's own path: `$0`,
+ * `${BASH_SOURCE[0]}`, a `$DIR/${BASH_SOURCE[0]##*\/}` form, or the
+ * `realpath` / `readlink -f` of one of the plain forms.
+ */
+function isSelfValue(raw: string): boolean {
+  const value = unquoteOnce(raw.trim());
+  if (SELF_PLAIN.test(value) || SELF_DIR_BASENAME.test(value)) return true;
+  const resolved = SELF_RESOLVED.exec(value);
+  return resolved !== null && SELF_PLAIN.test(unquoteOnce(resolved[1] ?? ""));
+}
+
+/** A command word that is the running script itself, with no variable name. */
+const SELF_WORD = /^\$(?:0|BASH_SOURCE)$|^\$\{(?:0|BASH_SOURCE(?:\[0\])?)\}$/;
+/** A command word that is a variable reference: `$NAME` or `${NAME}`. */
+const VARIABLE_WORD = /^\$([A-Za-z_]\w*)$|^\$\{([A-Za-z_]\w*)\}$/;
+
+/**
+ * True when the runner COMMAND re-executes the script it sits in: `$0`,
+ * `$BASH_SOURCE` or a variable the script assigns from one of those.
+ */
+function commandIsSelfReference(
+  commandWords: string[],
+  scriptText: string,
+): boolean {
+  const word = stripQuotes(commandWords[commandIndex(commandWords)] ?? "");
+  if (SELF_WORD.test(word)) return true;
+  const m = VARIABLE_WORD.exec(word);
+  const name = m?.[1] ?? m?.[2];
+  if (name === undefined) return false;
+  const last = assignmentValues(scriptText, name).at(-1);
+  return last !== undefined && isSelfValue(last);
+}
+
+/** The script a step ran and its text, for the self re-exec rule. */
+interface ContainingScript {
+  stepWords: string[];
+  text: string;
+}
+
+/**
+ * True when the COMMAND an `aws-emulator-run` runs is the repository's test:
+ * a test command itself (`deno task test`, `pytest -k aws`), a repository script
+ * (read through `readScript`) that has a kept test command (one level only), or
+ * a re-exec of the containing script when the step that ran it is a test command.
+ */
+function runnerRunsRepositoryTest(
+  commandWords: string[],
+  readScript: ScriptReader | undefined,
+  containing?: ContainingScript,
+): boolean {
+  const path = segmentScriptPath(commandWords);
+  const text = readScript === undefined || path === null
+    ? null
+    : readScript(path);
+  // A relative, unexpanded repository script the checkout does not hold (or
+  // the reader refuses) earns nothing; an absolute tool path is not judged here.
+  if (
+    readScript !== undefined && path !== null && text === null &&
+    !path.startsWith("/") && !path.includes("$")
+  ) return false;
+  if (looksLikeTestCommand(commandWords)) return true;
+  if (readScript !== undefined) {
+    if (
+      text !== null &&
+      keptCommands(text, false).some((k) =>
+        k.kept && looksLikeTestCommand(k.cmd.words)
+      )
+    ) return true;
+  }
+  return containing !== undefined &&
+    looksLikeTestCommand(containing.stepWords) &&
+    commandIsSelfReference(commandWords, containing.text);
 }
 
 /**
@@ -1152,7 +1259,8 @@ interface RunnerHit {
  * Emulator invocations in a `run:` body: the direct `aws-emulator-run` commands
  * and the repository-script commands whose own status-preserving reachable
  * commands run it (one level only). `ok` is false when the invocation cannot be
- * credited because of how it is run.
+ * credited: because of how it is run, or because its COMMAND is not a
+ * recognised repository test (see {@link runnerRunsRepositoryTest}).
  */
 function serverHits(
   where: string,
@@ -1163,12 +1271,17 @@ function serverHits(
   const hits: RunnerHit[] = [];
   for (const { cmd, kept } of keptCommands(run, initialErrexit)) {
     const label = cmd.words.join(" ");
-    if (segmentInvokesEmulatorRunner(cmd.words)) {
+    const direct = emulatorRunnerCommand(cmd.words);
+    if (direct !== null) {
+      const isTest = runnerRunsRepositoryTest(direct, readScript);
       hits.push({
         label,
-        ok: kept,
-        reason:
-          `${where}: step running \`${label}\` is not status-preserving: a failure would not fail the step`,
+        ok: kept && isTest,
+        reason: !kept
+          ? `${where}: step running \`${label}\` is not status-preserving: a failure would not fail the step`
+          : `${where}: step running \`${label}\` runs \`${
+            direct.join(" ")
+          }\` through aws-emulator-run, which is not a recognised repository test command`,
       });
       continue;
     }
@@ -1178,16 +1291,26 @@ function serverHits(
     const text = readScript(path);
     if (text === null) continue;
     // A repository script starts without errexit, whatever the caller's shell.
-    const inner = keptCommands(text, false).filter((k) =>
-      segmentInvokesEmulatorRunner(k.cmd.words)
-    );
+    const inner = keptCommands(text, false).flatMap((k) => {
+      const command = emulatorRunnerCommand(k.cmd.words);
+      return command === null ? [] : [{ kept: k.kept, command }];
+    });
     if (inner.length === 0) continue;
+    const containing = { stepWords: cmd.words, text };
+    const tests = inner.filter((k) =>
+      runnerRunsRepositoryTest(k.command, undefined, containing)
+    );
+    const keptInner = inner.filter((k) => k.kept);
     hits.push({
       label,
-      ok: kept && inner.some((k) => k.kept),
-      reason: kept
+      ok: kept && tests.some((k) => k.kept),
+      reason: !kept
+        ? `${where}: step running \`${label}\` is not status-preserving: a failure would not fail the step`
+        : keptInner.length === 0
         ? `${where}: step running \`${label}\` runs \`${path}\`, whose emulator run is not status-preserving`
-        : `${where}: step running \`${label}\` is not status-preserving: a failure would not fail the step`,
+        : `${where}: step running \`${label}\` runs \`${
+          keptInner[0]!.command.join(" ")
+        }\` through aws-emulator-run in \`${path}\`, which is not a recognised repository test command`,
     });
   }
   return hits;
@@ -1321,9 +1444,10 @@ function scanWorkflowDoc(
 
 /**
  * True when a parsed workflow document runs tests through the official AWS
- * Emulator in a `run:` step: a status-preserving `aws-emulator-run` command,
- * directly or in a repository script (one level of indirection) that `readScript`
- * returns and that itself runs `aws-emulator-run` status-preservingly. The
+ * Emulator in a `run:` step: a status-preserving `aws-emulator-run` command
+ * whose COMMAND is a recognised repository test, directly or in a repository
+ * script (one level of indirection) that `readScript` returns and that itself
+ * runs `aws-emulator-run` status-preservingly with such a COMMAND. The
  * workflow counts as applicable when it triggers on `pull_request`; use
  * {@link checkAwsEmulatorInCI} for `workflow_call` reach and the embedded and
  * Floci rules. Floci is never official, and a job or step that is statically
