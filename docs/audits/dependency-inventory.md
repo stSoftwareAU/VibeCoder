@@ -10,14 +10,14 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | --- | --- | --- | --- | --- |
 | actions/cache | v6.1.0 | 55cc8345863c7cc4c66a329aec7e433d2d1c52a9 | .github/workflows/dependency-audit.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
 | actions/checkout | v7.0.1 | 3d3c42e5aac5ba805825da76410c181273ba90b1 | .github/workflows/aws-emulator.yml, .github/workflows/cargo-audit.yml, .github/workflows/cargo-upgrade.yml, .github/workflows/checkov.yml, .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/dependency-review.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/quality.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/semgrep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
-| actions/dependency-review-action | v5.0.0 | a1d282b36b6f3519aa1f3fc636f609c47dddb294 | .github/workflows/dependency-review.yml | pinned to commit SHA |
+| actions/dependency-review-action | v5.0.0 | bbc44d14a204704ccc493733616cd1e93a0321ec | .github/workflows/dependency-review.yml | pinned to commit SHA |
 | actions/setup-node | v7.1.0 | 949feb2413d6458794dcd2491c4babbbce0c15c1 | .github/workflows/markdown-lint.yml | pinned to commit SHA |
 | actions/upload-artifact | v7.0.2 | cf430e030ddbb5b0abf93d22962f4752f3646cd9 | .github/workflows/dependency-audit.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | aquasecurity/trivy-action | v0.36.0 | ed142fd0673e97e23eac54620cfb913e5ce36c25 | .github/workflows/dependency-audit.yml | pinned to commit SHA |
 | denoland/setup-deno | v2.0.5 | 22d081ff2d3a40755e97629de92e3bcbfa7cf2ed | .github/workflows/checkov.yml, .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
 | dtolnay/rust-toolchain | v1 | 683b588c487a69d01f6c6ddf40f036ff682cc2c8 | .github/workflows/cargo-audit.yml, .github/workflows/cargo-upgrade.yml | pinned to commit SHA |
-| github/codeql-action/analyze | v4.39.1 | 33d7b85da1a04171e211befe2c739303b9a4c066 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
-| github/codeql-action/init | v4.39.1 | 33d7b85da1a04171e211befe2c739303b9a4c066 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
+| github/codeql-action/analyze | v4.39.1 | 1bd86f2fdb4b86187fa4059f16f31a3202acc9ea | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
+| github/codeql-action/init | v4.39.1 | 1bd86f2fdb4b86187fa4059f16f31a3202acc9ea | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | gitleaks/gitleaks-action | v3.0.0 | e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e | .github/workflows/gitleaks.yml | pinned to commit SHA |
 | peter-evans/create-pull-request | v8.1.3 | 3ffccacd46053766916f087ce41d627c0b8cf2d1 | .github/workflows/cargo-upgrade.yml | pinned to commit SHA |
 
