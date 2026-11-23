@@ -67,6 +67,7 @@ import {
   findGreenFixPr,
   isRedDefaultBranchRepairPr,
   postRedDefaultBranchStatusComment,
+  type RedDefaultBranchRepair,
   type RepairPrCandidate,
 } from "./red_default_branch_repair.ts";
 import {
@@ -1740,6 +1741,22 @@ interface HeldPr {
   checkNames: string[];
   /** Whether it is a `sync/milestone-*` PR, which sets the status wording. */
   isSync: boolean;
+  /**
+   * The held failing check runs themselves, so a repair PR that does not
+   * reproduce the failure (a check that scans only the PR's own commits, such
+   * as gitleaks) can be handed this failure instead (Issue #5437).
+   */
+  checks: CheckRunEntry[];
+}
+
+/** What {@link repairHeldDefaultBranch} settled on (Issue #5437). */
+interface HeldRepairOutcome {
+  /** The adopted green fix PR, or `null` when none was adopted. */
+  adoptedFixPr: number | null;
+  /** The worker's repair PR, or `null` when none stands this scan. */
+  repair: RedDefaultBranchRepair | null;
+  /** The held checks red on the tip. */
+  checkNames: string[];
 }
 
 /**
@@ -1961,9 +1978,9 @@ async function mergeDefaultBranchIntoSyncBranch(
  * is found, the status is posted to it as a comment and no repair PR is made.
  * If the fix search or the comment read fails, the worker repair PR path runs.
  *
- * @returns The number of the adopted fix PR when one was adopted (the caller
- *   then keeps the worker's repair PR out of this scan's hand-offs), otherwise
- *   `null`.
+ * @returns The adopted fix PR's number when one was adopted (the caller then
+ *   keeps the worker's repair PR out of this scan's hand-offs), the worker's
+ *   repair PR when one stands, and the held checks red on the tip.
  */
 async function repairHeldDefaultBranch(input: {
   repo: string;
@@ -1974,7 +1991,12 @@ async function repairHeldDefaultBranch(input: {
   scanAuthors: string[];
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Logger;
-}): Promise<number | null> {
+}): Promise<HeldRepairOutcome> {
+  const none: HeldRepairOutcome = {
+    adoptedFixPr: null,
+    repair: null,
+    checkNames: [],
+  };
   const {
     repo,
     defaultBranch,
@@ -1990,14 +2012,14 @@ async function repairHeldDefaultBranch(input: {
     logger.warn(
       `${repo}: ${defaultBranch}'s tip could not be read, so the held PRs wait for the next scan (Issue #5437)`,
     );
-    return null;
+    return none;
   }
   const redTip = await state.redTipCheckNames();
   if (redTip === null) {
     logger.warn(
       `${repo}: the checks red on ${defaultBranch} could not be read, so no repair PR is opened this scan (Issue #5437)`,
     );
-    return null;
+    return none;
   }
   const heldNames = new Set(held.flatMap((entry) => entry.checkNames));
   const failing = [...heldNames].filter((name) => redTip.has(name));
@@ -2007,7 +2029,7 @@ async function repairHeldDefaultBranch(input: {
         tipSha.slice(0, 12)
       } is not red on the held checks, so no repair PR is opened (Issue #5437)`,
     );
-    return null;
+    return none;
   }
   const checkNames = failing.sort();
   const heldPrNumbers = held.map((entry) => entry.prNumber);
@@ -2043,10 +2065,12 @@ async function repairHeldDefaultBranch(input: {
       logger,
     });
     // Only an unreadable comment list falls through to the worker repair PR.
-    if (outcome !== "read-failed") return fix.number;
+    if (outcome !== "read-failed") {
+      return { adoptedFixPr: fix.number, repair: null, checkNames };
+    }
   }
 
-  await ensureRedDefaultBranchRepairPr({
+  const repair = await ensureRedDefaultBranchRepairPr({
     repo,
     defaultBranch,
     tipSha,
@@ -2057,7 +2081,86 @@ async function repairHeldDefaultBranch(input: {
     ghCommandFn,
     logger,
   });
-  return null;
+  return { adoptedFixPr: null, repair, checkNames };
+}
+
+/**
+ * Hand the held failure to the CI-fix agent on the repair branch when the
+ * repair PR does not reproduce it (Issue #5437).
+ *
+ * The repair PR starts as an empty commit on the red tip. A check that scans
+ * only a pull request's own commits, such as gitleaks over
+ * `base.sha..head.sha`, passes on it even though the default branch is red,
+ * so its own check runs never put the failure in front of the CI-fix agent.
+ * When the adopted repair PR has no failure of its own on a held check, the
+ * lowest-numbered held PR's failing check run (its id, name and annotations)
+ * is handed over as a failure of the repair PR, so the agent fixes the default
+ * branch on the repair branch. A PR opened this scan is left to its own CI
+ * first. Once that check run's retry budget is spent the hand-over stops and
+ * the repair PR is reported for a human, never left as a silent green PR.
+ */
+async function handHeldFailureToRepairPr(input: {
+  repo: string;
+  defaultBranch: string;
+  repair: RedDefaultBranchRepair;
+  held: readonly HeldPr[];
+  tipRedNames: readonly string[];
+  repairFailures: FailedCiCheck[];
+  stateDir: string;
+  maxRetries: number;
+  ghCommandFn: (args: string[]) => Promise<string>;
+  logger: Logger;
+}): Promise<void> {
+  const { repo, defaultBranch, repair, repairFailures, logger } = input;
+  const tipRed = new Set(input.tipRedNames);
+  const reproduced = repairFailures.some((failure) =>
+    failure.repo === repo && failure.prNumber === repair.number &&
+    tipRed.has(failure.checkName)
+  );
+  if (reproduced) return;
+  const source = [...input.held]
+    .sort((a, b) => a.prNumber - b.prNumber)
+    .flatMap((entry) =>
+      entry.checks
+        .filter((check) => tipRed.has(check.name))
+        .map((check) => ({ prNumber: entry.prNumber, check }))
+    )[0];
+  if (source === undefined) return;
+  const { check } = source;
+  const checkId = check.checkSuiteId === undefined
+    ? String(check.id)
+    : `suite-${check.checkSuiteId}`;
+  const retryCount = await getCiCheckRetryCount(
+    input.stateDir,
+    repo,
+    checkId,
+  );
+  if (retryCount >= input.maxRetries) {
+    logger.warn(
+      `Red default branch: repair PR ${repo}#${repair.number} does not reproduce ${check.name} (it may scan only the PR's own commits), and the hand-over of ${repo}#${source.prNumber}'s failing check run ${checkId} has spent its ${input.maxRetries} attempts; ${defaultBranch} needs a human to repair it (Issue #5437)`,
+    );
+    logger.skipReason(
+      "red-default-branch-repair-needs-human",
+      `${repo}#${repair.number}: ${check.name} is red on ${defaultBranch} but not on the repair PR, and the hand-over is spent (Issue #5437)`,
+    );
+    return;
+  }
+  const annotationsJson = check.annotations
+    ? JSON.stringify(check.annotations)
+    : await fetchCheckAnnotations(repo, check.id, input.ghCommandFn);
+  logger.info(
+    `Red default branch: repair PR ${repo}#${repair.number} does not reproduce ${check.name}, so ${repo}#${source.prNumber}'s failing check run ${checkId} is handed to the CI-fix agent on ${repair.headRefName} (Issue #5437)`,
+  );
+  repairFailures.push({
+    repo,
+    prNumber: repair.number,
+    branchName: repair.headRefName,
+    checkId,
+    checkName: check.name,
+    encodedAnnotations: encodeBase64(annotationsJson),
+    baseRef: defaultBranch,
+    siblingFailedCheckNames: [...input.tipRedNames],
+  });
 }
 
 /**
@@ -2462,7 +2565,14 @@ export async function findFailedCiChecks(
                     redOnTip.join(", ")
                   }, so the stale sync head is not refreshed until ${defaultBranch} is green (Issue #5437)`,
                 );
-                held.push({ prNumber, checkNames: redOnTip, isSync: true });
+                held.push({
+                  prNumber,
+                  checkNames: redOnTip,
+                  isSync: true,
+                  checks: failedChecks.filter((check) =>
+                    redOnTip.includes(check.name)
+                  ),
+                });
               } else {
                 await mergeDefaultBranchIntoSyncBranch(
                   repo,
@@ -2542,7 +2652,12 @@ export async function findFailedCiChecks(
       }
       if (inherited.size > 0) {
         const names = [...inherited];
-        held.push({ prNumber, checkNames: names, isSync: isSyncPr });
+        held.push({
+          prNumber,
+          checkNames: names,
+          isSync: isSyncPr,
+          checks: failedChecks.filter((check) => inherited.has(check.name)),
+        });
         logger.skipReason(
           "inherited-red-default-branch",
           `${repo}#${prNumber}: ${
@@ -2737,16 +2852,17 @@ export async function findFailedCiChecks(
     // Issue #5437: once per repo, one repair PR for the default branch when
     // any PR was held for it: a sync PR, or a PR into the default branch.
     if (held.length > 0) {
-      const adoptedFixPr = await repairHeldDefaultBranch({
-        repo,
-        defaultBranch,
-        held,
-        state: defaultBranchState,
-        prs,
-        scanAuthors,
-        ghCommandFn,
-        logger,
-      });
+      const { adoptedFixPr, repair, checkNames: tipRedNames } =
+        await repairHeldDefaultBranch({
+          repo,
+          defaultBranch,
+          held,
+          state: defaultBranchState,
+          prs,
+          scanAuthors,
+          ghCommandFn,
+          logger,
+        });
       // Issue #5437: a human fix PR already passes the held checks, so this
       // repo's worker repair PR is not handed to the CI-fix agent too. That
       // would write the same fix twice. Filtered after the step, because the
@@ -2761,6 +2877,19 @@ export async function findFailedCiChecks(
         }
         const kept = repairFailures.filter((failure) => failure.repo !== repo);
         repairFailures.splice(0, repairFailures.length, ...kept);
+      } else if (repair !== null && !repair.opened) {
+        await handHeldFailureToRepairPr({
+          repo,
+          defaultBranch,
+          repair,
+          held,
+          tipRedNames,
+          repairFailures,
+          stateDir,
+          maxRetries,
+          ghCommandFn,
+          logger,
+        });
       }
     }
   }

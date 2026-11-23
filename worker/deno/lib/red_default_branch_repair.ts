@@ -184,7 +184,9 @@ function oneLine(text: string): string {
  * Make sure exactly one repair PR stands for the red default branch
  * (Issue #5437).
  *
- * An open repair PR listed by this scan is adopted (the lowest number wins).
+ * An open repair PR is adopted (the lowest number wins): one listed by this
+ * scan, or else one found by a direct `gh pr list --search head:` lookup, so a
+ * needs-human repair PR or a scan scoped to one PR never opens a second.
  * Its body is brought up to date only when the marker differs. Otherwise one
  * is opened: an empty commit on `tipSha`, a `fix/red-default-branch-<sha12>`
  * branch on it, and a PR against the default branch.
@@ -199,9 +201,26 @@ export async function ensureRedDefaultBranchRepairPr(
   const heldPrNumbers = request.heldPrNumbers;
   const checkNames = request.checkNames.map(oneLine);
 
-  const existing = request.prs
+  let existing = request.prs
     .filter((pr) => isRedDefaultBranchRepairPr(pr, defaultBranch))
     .sort((a, b) => a.number - b.number)[0];
+
+  // The scan's listing drops a needs-human PR and can be scoped to one PR, so
+  // an open repair PR missing from it is looked up directly before another
+  // is opened. An unreadable lookup opens nothing: a duplicate repair PR is
+  // the failure this module exists to prevent (Issue #5437).
+  if (existing === undefined) {
+    try {
+      existing = await findOpenRepairPr(repo, defaultBranch, ghCommandFn);
+    } catch (error) {
+      logger.warn(
+        `Red default branch: could not look up an open repair PR on ${repo}: ${
+          errorText(error)
+        }; no repair PR is opened this scan (Issue #5437)`,
+      );
+      return null;
+    }
+  }
 
   if (existing !== undefined) {
     if (
@@ -250,6 +269,65 @@ export async function ensureRedDefaultBranchRepairPr(
     ghCommandFn,
     logger,
   });
+}
+
+/**
+ * The lowest-numbered open repair PR against `defaultBranch`, read straight
+ * from GitHub rather than from the scan's listing (Issue #5437). Throws when
+ * the listing cannot be read or a row lacks its number or head branch.
+ */
+async function findOpenRepairPr(
+  repo: string,
+  defaultBranch: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<RepairPrCandidate | undefined> {
+  const output = await ghCommandFn([
+    "pr",
+    "list",
+    "--repo",
+    repo,
+    "--base",
+    defaultBranch,
+    "--state",
+    "open",
+    "--search",
+    `head:${RED_DEFAULT_BRANCH_REPAIR_PREFIX}`,
+    "--json",
+    "number,headRefName,body",
+    "--limit",
+    "30",
+  ]);
+  const rows: unknown = JSON.parse(output);
+  if (!Array.isArray(rows)) {
+    throw new Error(`unexpected PR list "${output.trim().slice(0, 80)}"`);
+  }
+  const found: RepairPrCandidate[] = [];
+  for (const row of rows) {
+    const fields =
+      (typeof row === "object" && row !== null ? row : {}) as Record<
+        string,
+        unknown
+      >;
+    if (typeof fields.number !== "number") {
+      throw new Error(
+        `a PR row without a numeric number: ${JSON.stringify(row)}`,
+      );
+    }
+    if (typeof fields.headRefName !== "string") {
+      throw new Error(`PR #${fields.number} has no headRefName`);
+    }
+    // `--search head:` is a prefix match on GitHub's side; re-check it here.
+    if (!fields.headRefName.startsWith(RED_DEFAULT_BRANCH_REPAIR_PREFIX)) {
+      continue;
+    }
+    found.push({
+      number: fields.number,
+      headRefName: fields.headRefName,
+      baseRefName: defaultBranch,
+      body: typeof fields.body === "string" ? fields.body : null,
+    });
+  }
+  return found.sort((a, b) => a.number - b.number)[0];
 }
 
 /** Open the repair PR: an empty commit on the tip, a branch, then the PR. */

@@ -90,6 +90,13 @@ interface Fixture {
   }>;
   /** The message the `--base` PR listing fails with, when set. */
   fixListError?: string;
+  /**
+   * Open repair PRs the direct `--search head:` lookup returns, which the
+   * scan's own listing may not carry (Issue #5437).
+   */
+  openRepairPrs?: Array<{ number: number; headRefName: string; body?: string }>;
+  /** The message the repair-PR lookup fails with, when set. */
+  repairListError?: string;
   /** Names of the checks that succeeded, keyed by the ref read. */
   greenChecks?: Record<string, string[]>;
   /**
@@ -170,7 +177,14 @@ function ghStub(
     calls.push(args);
     const key = args.join(" ");
     if (args[0] === "pr" && args[1] === "list") {
-      // The fix search is the only listing that names its base branch.
+      // The repair-PR lookup is the only listing that searches by head.
+      if (args.includes("--search")) {
+        if (fx.repairListError !== undefined) {
+          return Promise.reject(new Error(fx.repairListError));
+        }
+        return Promise.resolve(JSON.stringify(fx.openRepairPrs ?? []));
+      }
+      // The fix search names its base branch.
       if (args.includes("--base")) {
         if (fx.fixListError !== undefined) {
           return Promise.reject(new Error(fx.fixListError));
@@ -332,13 +346,17 @@ function argAfter(args: string[], flag: string): string | undefined {
  */
 function redMainFixture(
   prs: PrFixture[],
-  extra: Partial<Pick<Fixture, "checks" | "compare">> = {},
+  extra: Partial<
+    Pick<Fixture, "checks" | "compare" | "openRepairPrs" | "repairListError">
+  > = {},
 ): Fixture {
   return {
     prs,
     tip: TIP,
     checks: { [TIP]: [{ id: 1, name: "gitleaks" }], ...extra.checks },
     compare: { [TIP]: "identical", ...extra.compare },
+    openRepairPrs: extra.openRepairPrs,
+    repairListError: extra.repairListError,
   };
 }
 
@@ -426,7 +444,9 @@ Deno.test("findFailedCiChecks - an open repair PR is adopted, not duplicated, an
   });
   const { value, calls } = await scan(fx);
 
-  assertEquals(value, null);
+  // Issue #5437: the adopted repair PR is not red on gitleaks itself, so
+  // the lowest held sync PR's failing check run is handed over on it.
+  assertEquals(value?.prNumber, 20);
   assertEquals(prCreateCalls(calls).length, 0);
   const edits = callsTo(calls, "pr", "edit");
   assertEquals(edits.length, 1);
@@ -456,9 +476,103 @@ Deno.test("findFailedCiChecks - an adopted repair PR whose marker is already cur
   });
   const { value, calls } = await scan(fx);
 
-  assertEquals(value, null);
+  // Issue #5437: the adopted repair PR is not red on gitleaks itself, so
+  // the lowest held sync PR's failing check run is handed over on it.
+  assertEquals(value?.prNumber, 20);
   assertEquals(prCreateCalls(calls).length, 0);
   assertEquals(callsTo(calls, "pr", "edit").length, 0);
+});
+
+Deno.test("findFailedCiChecks - an adopted repair PR that does not reproduce the tip's gitleaks failure is handed the held sync PR's failing check run (Issue #5437)", async () => {
+  // gitleaks on a pull request scans only base..head, so an empty repair
+  // commit on the red tip passes it while the tip and the sync PRs stay red.
+  const repair: PrFixture = {
+    number: 20,
+    headRefName: REPAIR_BRANCH,
+    headRefOid: TIP,
+    baseRefName: DEFAULT_BRANCH,
+  };
+  const fx = redMainFixture([...THREE_SYNC_PRS, repair], {
+    checks: THREE_SYNC_CHECKS,
+  });
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(value?.prNumber, 20);
+  assertEquals(value?.branchName, REPAIR_BRANCH);
+  assertEquals(value?.checkName, "gitleaks");
+  assertEquals(value?.checkId, "11");
+  assertEquals(value?.baseRef, DEFAULT_BRANCH);
+  assert(
+    logger.infos.some((line) =>
+      line.includes("does not reproduce gitleaks") && line.includes("#1's")
+    ),
+  );
+});
+
+Deno.test("findFailedCiChecks - an adopted repair PR red on the held check itself is handed its own failure, not the sync PR's (Issue #5437)", async () => {
+  const repair: PrFixture = {
+    number: 20,
+    headRefName: REPAIR_BRANCH,
+    headRefOid: TIP,
+    baseRefName: DEFAULT_BRANCH,
+  };
+  const fx = redMainFixture([...THREE_SYNC_PRS, repair], {
+    checks: {
+      ...THREE_SYNC_CHECKS,
+      [REPAIR_BRANCH]: [{ id: 99, name: "gitleaks" }],
+    },
+  });
+  const { value } = await scan(fx);
+
+  assertEquals(value?.prNumber, 20);
+  assertEquals(value?.checkId, "99");
+});
+
+Deno.test("findFailedCiChecks - a newly opened repair PR is left to its own CI: no hand-over in the scan that opens it (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  const { value, calls } = await scan(fx);
+
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(value, null);
+});
+
+Deno.test("findFailedCiChecks - a needs-human repair PR missing from the scan's listing is found by the direct lookup, so no second repair PR is opened (Issue #5437)", async () => {
+  // listActionablePrs drops needs-human PRs and a stall-repair scan is scoped
+  // to one PR, so the open repair PR is absent from fx.prs.
+  const fx = redMainFixture(THREE_SYNC_PRS, {
+    checks: THREE_SYNC_CHECKS,
+    openRepairPrs: [{ number: 20, headRefName: REPAIR_BRANCH, body: "" }],
+  });
+  const { value, calls } = await scan(fx);
+
+  assertEquals(prCreateCalls(calls).length, 0);
+  const lookups = callsTo(calls, "pr", "list").filter((args) =>
+    args.includes("--search")
+  );
+  assertEquals(lookups.length, 1);
+  assertEquals(
+    argAfter(lookups[0] ?? [], "--search"),
+    "head:fix/red-default-branch-",
+  );
+  assertEquals(value?.prNumber, 20);
+});
+
+Deno.test("findFailedCiChecks - an unreadable repair-PR lookup opens no repair PR and warns with the gh error (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, {
+    checks: THREE_SYNC_CHECKS,
+    repairListError: "HTTP 502: Bad Gateway",
+  });
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(value, null);
+  assert(
+    logger.warns.some((line) =>
+      line.includes("could not look up an open repair PR") &&
+      line.includes("HTTP 502: Bad Gateway")
+    ),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -720,7 +834,9 @@ Deno.test("findFailedCiChecks - a repair PR whose body quotes the current marker
   });
   const { value, calls } = await scan(fx);
 
-  assertEquals(value, null);
+  // Issue #5437: the adopted repair PR is not red on gitleaks itself, so
+  // the lowest held sync PR's failing check run is handed over on it.
+  assertEquals(value?.prNumber, 20);
   assertEquals(prCreateCalls(calls).length, 0);
   assertEquals(callsTo(calls, "pr", "edit").length, 1);
 });
@@ -1474,7 +1590,9 @@ Deno.test("findFailedCiChecks - a failed status edit on an adopted repair PR war
   fx.editError = "HTTP 422: edit boom";
   const { value, calls, logger } = await scan(fx);
 
-  assertEquals(value, null);
+  // Issue #5437: the adopted repair PR is not red on gitleaks itself, so
+  // the lowest held sync PR's failing check run is handed over on it.
+  assertEquals(value?.prNumber, 20);
   assertEquals(prCreateCalls(calls).length, 0);
   assertEquals(callsTo(calls, "pr", "edit").length, 1);
   assert(
