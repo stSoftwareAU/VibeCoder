@@ -16,13 +16,13 @@
  * - `findGreenFixPr` finds an open human-authored fix PR against the default
  *   branch whose head contains the default branch's tip and whose own CI is
  *   green on every held check. `postRedDefaultBranchStatusComment`
- *   then records the status there as a comment, so the human's body is never
- *   overwritten. Only when no such PR exists does the worker open or adopt its
- *   repair PR.
+ *   then records the status there as one comment, edited in place when the
+ *   tip or the held set changes, so the human's body is never overwritten.
+ *   Only when no such PR exists does the worker open or adopt its repair PR.
  *
  * Only a `fix/red-default-branch-*` head targeting the default branch is ever
  * adopted as the repair PR. A human-authored fix PR is never edited, only
- * commented on, and only once per tip and hold set.
+ * commented on, and it keeps one status comment, edited in place.
  *
  * Australian English throughout.
  */
@@ -133,6 +133,17 @@ export function bodyCarriesRedDefaultBranchMarker(
   if (match === null) return false;
   return match[1] === tipSha &&
     match[2] === sortedHeld(heldPrNumbers).join(",");
+}
+
+/**
+ * Whether a body ends with a worker marker for some tip and hold set
+ * (Issue #5437). Same anchoring as {@link bodyCarriesRedDefaultBranchMarker}:
+ * a marker quoted mid-text does not count.
+ */
+export function bodyEndsWithRedDefaultBranchMarker(
+  body: string | null | undefined,
+): boolean {
+  return TRAILING_MARKER_PATTERN.test((body ?? "").trimEnd());
 }
 
 /**
@@ -556,6 +567,7 @@ export async function findGreenFixPr(
 /** How {@link postRedDefaultBranchStatusComment} settled (Issue #5437). */
 export type FixStatusCommentOutcome =
   | "posted"
+  | "edited"
   | "already-posted"
   | "read-failed"
   | "post-failed";
@@ -581,11 +593,14 @@ export interface FixStatusCommentRequest {
 
 /**
  * Record the status on an adopted fix PR as one comment, never by editing its
- * body (Issue #5437). A comment counts as already posted only when its author
- * is in `fleetLogins` and its body ends with the identical marker. A read
- * failure is logged and yields `read-failed`, which tells the caller to fall
- * back to the repair PR. A failed post is logged and yields `post-failed`.
- * Never throws.
+ * body (Issue #5437). The status is one comment: the newest comment by a
+ * fleet login (`fleetLogins`) whose body ends with a worker marker. If that
+ * comment carries the identical marker it is already current (`already-posted`).
+ * If it carries a different marker it is edited in place (`edited`). With no
+ * such comment one is posted (`posted`). Comments from other logins never
+ * count. A read failure is logged and yields `read-failed`, which tells the
+ * caller to fall back to the repair PR. A failed post or edit is logged and
+ * yields `post-failed`. Never throws.
  */
 export async function postRedDefaultBranchStatusComment(
   request: FixStatusCommentRequest,
@@ -602,19 +617,23 @@ export async function postRedDefaultBranchStatusComment(
   } = request;
   const checkNames = request.checkNames.map(oneLine);
 
-  let comments: Array<{ login: string; body: string }>;
+  let comments: Array<{ id: number; login: string; body: string }>;
   try {
     const output = await ghCommandFn([
       "api",
       `repos/${repo}/issues/${prNumber}/comments`,
       "--paginate",
       "--jq",
-      ".[] | {login: .user.login, body: .body} | tojson",
+      ".[] | {id: .id, login: .user.login, body: .body} | tojson",
     ]);
     comments = output.split("\n").filter((line) => line.trim() !== "").map(
       (line) => {
         const fields = JSON.parse(line) as Record<string, unknown>;
+        if (typeof fields.id !== "number") {
+          throw new Error(`a comment without a numeric id: ${line}`);
+        }
         return {
+          id: fields.id,
           login: typeof fields.login === "string" ? fields.login : "",
           body: typeof fields.body === "string" ? fields.body : "",
         };
@@ -629,12 +648,19 @@ export async function postRedDefaultBranchStatusComment(
     return "read-failed";
   }
 
+  // GitHub lists comments oldest first, so the newest status is the last one.
   const fleet = new Set(fleetLogins.map((login) => login.toLowerCase()));
-  const carried = comments.some((comment) =>
+  const statuses = comments.filter((comment) =>
     fleet.has(comment.login.toLowerCase()) &&
-    bodyCarriesRedDefaultBranchMarker(comment.body, tipSha, heldPrNumbers)
+    bodyEndsWithRedDefaultBranchMarker(comment.body)
   );
-  if (carried) return "already-posted";
+  const status = statuses.at(-1);
+  if (
+    status !== undefined &&
+    bodyCarriesRedDefaultBranchMarker(status.body, tipSha, heldPrNumbers)
+  ) {
+    return "already-posted";
+  }
 
   const body = formatRedDefaultBranchStatus({
     defaultBranch,
@@ -644,6 +670,31 @@ export async function postRedDefaultBranchStatusComment(
     tipSha,
     allHeldAreSync: request.allHeldAreSync,
   });
+  if (status !== undefined) {
+    try {
+      await ghCommandFn([
+        "api",
+        "-X",
+        "PATCH",
+        `repos/${repo}/issues/comments/${status.id}`,
+        "-f",
+        `body=${body}`,
+      ]);
+    } catch (error) {
+      logger.warn(
+        `Red default branch: could not edit the status on comment ${status.id} on ${repo}#${prNumber}: ${
+          errorText(error)
+        }; the fix PR is adopted and the status is retried next scan (Issue #5437)`,
+      );
+      return "post-failed";
+    }
+    logger.info(
+      `Red default branch: edited the status on ${repo}#${prNumber} in place, the fix for ${defaultBranch} at ${
+        tipSha.slice(0, 12)
+      } (Issue #5437)`,
+    );
+    return "edited";
+  }
   try {
     await ghCommandFn([
       "pr",

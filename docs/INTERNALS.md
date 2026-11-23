@@ -5360,9 +5360,9 @@ PR that already passes them
 ```mermaid
 flowchart TD
     S["Red PR check"] --> K{"Sync PR?"}
-    K -- no --> N{"Same check red on the default tip?"}
+    K -- no --> N{"Red on the default tip and its merge base?"}
     N -- yes --> H
-    N -- "no, or tip unreadable (warned)" --> O["Ordinary path: CI-fix agent"]
+    N -- "no, or unreadable (warned)" --> O["Ordinary path: CI-fix agent"]
     K -- yes --> A{"Sync head vs default branch"}
     A -- "on-default: identical or behind" --> H["Inherited: held"]
     A -- "contains-default: ahead" --> T{"Same check red on the default tip?"}
@@ -5377,7 +5377,7 @@ flowchart TD
     F -- yes --> FF["Fast-forward to the tip, force=false"]
     H --> R{"Tip red on a held check?"}
     R -- yes --> G{"Open human fix PR green on every held check?"}
-    G -- yes --> C["Status commented on that PR, no repair PR"]
+    G -- yes --> C["One status comment, edited in place; no repair PR"]
     G -- no --> P["One repair PR per repo: fix/red-default-branch-sha12"]
     P --> Q["Its own red CI goes to the CI-fix agent first"]
     style P fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -5392,10 +5392,16 @@ flowchart TD
   the checks the default tip also has red. A sync-only failure, one the tip does
   not share, takes the ordinary path and is still fixed.
 - **Non-sync PRs into the default branch.** A PR into the default branch that is
-  not a sync PR is held the same way when its failing check is also red on the
-  tip. The tip's red checks are read only when such a PR has a failing check
-  that would otherwise be pushed. If that read fails, the PR takes the ordinary
-  path with a warning, so it is never stood down.
+  not a sync PR is held for a check only when that check is red on both the tip
+  and the PR's merge base with the default branch. The merge base is read with
+  `gh api repos/<repo>/compare/<default>...<head> --jq .merge_base_commit.sha`,
+  then the merge base's failed check runs are read, once per merge-base sha for
+  the scan. A PR cut from a green commit that breaks a check itself is therefore
+  not held, even when the tip is red on that check. Both reads happen only when
+  such a PR has a failing check that would otherwise be pushed, and the merge
+  base is read only for a check the tip already has red. If a read fails, or the
+  merge base is not a full commit SHA, the PR takes the ordinary path with a
+  warning quoting the cause. It is never held on unknown.
 - **Diverged is stale, and refreshed once main is green.** A diverged head lacks
   commits the default branch has since gained, so its failures are neither held
   nor handed over. They are logged as `stale-sync-head`. Once the tip is green on
@@ -5422,12 +5428,17 @@ flowchart TD
   branch's tip (the compare status is `ahead`, so a stale branch cut before the
   red commit does not count), and whose head commit has succeeded on every held
   check is the fix. A candidate whose ancestry cannot be read is skipped with a
-  warning quoting the error. The status is then posted to it as one comment
+  warning quoting the error. The status is then kept as one comment on it,
   carrying the `vibe-red-default-branch-hold` marker, and no repair PR is made.
-  Its body is never edited. A comment already counts only when its author is a
-  fleet login and its body ends with the identical marker, so a repeat scan
-  posts nothing. A failed list, check-run read or comment read is logged with
-  its error, and the worker's repair PR path runs instead.
+  The status is the newest comment by a fleet login whose body ends with a
+  marker. If it carries the identical marker (the tip and the held set), a
+  repeat scan writes nothing. If it carries a different marker, it is edited in
+  place with `PATCH repos/<repo>/issues/comments/<id>`, so a changed held set
+  never adds a second status comment. With no such comment, one is posted.
+  Comments by other logins are ignored, and the fix PR's body is never edited.
+  A failed list, check-run read or comment read is logged with its error, and
+  the worker's repair PR path runs instead. A failed post or edit is logged with
+  its error and no repair PR is made this scan; it is retried next scan.
   Once a fix is adopted, the worker's own repair PR in that repo is not handed
   to the CI-fix agent in the same scan, since that would write the same fix
   twice. Its failure is skipped with the reason `red-default-branch-fix-adopted`.

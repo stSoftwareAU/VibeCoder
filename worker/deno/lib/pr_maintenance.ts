@@ -1726,7 +1726,8 @@ async function readScanQueueRemoval(
 
 /**
  * A PR held for one repair against the default branch (Issue #5437): a sync
- * PR, or a PR into the default branch whose check the tip is also red on.
+ * PR, or a PR into the default branch whose check the tip and its merge base
+ * are both red on.
  */
 interface HeldPr {
   prNumber: number;
@@ -1800,6 +1801,103 @@ function createDefaultBranchState(
     return redTip;
   };
   return { tipSha, redTipCheckNames };
+}
+
+/** A full commit SHA as the REST API returns it (Issue #5437). */
+const FULL_COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
+
+/**
+ * The merge base of a PR's head with the default branch (Issue #5437), read
+ * with `gh api repos/<repo>/compare/<default>...<head> --jq
+ * .merge_base_commit.sha`. Never throws: a read failure, or a value that is
+ * not a full commit SHA, is returned as the cause.
+ */
+async function readMergeBaseSha(
+  repo: string,
+  defaultBranch: string,
+  headSha: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<{ sha: string } | { cause: string }> {
+  if (!FULL_COMMIT_SHA_PATTERN.test(headSha)) {
+    return { cause: `not a commit sha: ${JSON.stringify(headSha)}` };
+  }
+  try {
+    const sha = (await ghCommandFn([
+      "api",
+      `repos/${repo}/compare/${encodeURIComponent(defaultBranch)}...${headSha}`,
+      "--jq",
+      ".merge_base_commit.sha",
+    ])).trim();
+    if (FULL_COMMIT_SHA_PATTERN.test(sha)) return { sha };
+    return { cause: `not a commit sha: ${JSON.stringify(sha)}` };
+  } catch (error) {
+    return { cause: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * The checks red on a non-sync PR's merge base with the default branch
+ * (Issue #5437), or `null` when that cannot be read. The caller reads it only
+ * for a check the tip is already red on, and a `null` leaves the PR on the
+ * ordinary CI-fix path with a warning quoting the cause. `redOnBase` caches
+ * one read per merge-base sha for the scan.
+ */
+async function readMergeBaseRedChecks(args: {
+  repo: string;
+  prNumber: number;
+  defaultBranch: string;
+  headSha: string;
+  redOnBase: Map<string, Promise<Result<Set<string>>>>;
+  ghCommandFn: (args: string[]) => Promise<string>;
+  logger: Logger;
+}): Promise<Set<string> | null> {
+  const {
+    repo,
+    prNumber,
+    defaultBranch,
+    headSha,
+    redOnBase,
+    ghCommandFn,
+    logger,
+  } = args;
+  const base = await readMergeBaseSha(
+    repo,
+    defaultBranch,
+    headSha,
+    ghCommandFn,
+  );
+  if ("cause" in base) {
+    logger.warn(
+      `${repo}#${prNumber}: cannot tell whether this PR branched from a commit ` +
+        `that is also red on ${defaultBranch}: ${base.cause}; this PR gets its ` +
+        `ordinary CI-fix target this scan (Issue #5437)`,
+    );
+    return null;
+  }
+  let red = redOnBase.get(base.sha);
+  if (red === undefined) {
+    red = fetchFailedCheckRunsStrict(repo, base.sha, ghCommandFn).then(
+      (runs): Result<Set<string>> => ({
+        ok: true,
+        value: new Set(runs.map((check) => check.name)),
+      }),
+      (error: unknown): Result<Set<string>> => ({
+        ok: false,
+        error: error instanceof Error ? error : new Error(String(error)),
+      }),
+    );
+    redOnBase.set(base.sha, red);
+  }
+  const read = await red;
+  if (!read.ok) {
+    logger.warn(
+      `${repo}#${prNumber}: cannot read the checks red on ${defaultBranch}'s ` +
+        `merge base ${base.sha.slice(0, 12)}: ${read.error.message}; this PR ` +
+        `gets its ordinary CI-fix target this scan (Issue #5437)`,
+    );
+    return null;
+  }
+  return read.value;
 }
 
 /**
@@ -2016,7 +2114,9 @@ async function repairHeldDefaultBranch(input: {
  * `sync/milestone-*` PR whose head is on the default branch, or whose failing
  * check is also red on the default branch's tip, is not handed to the CI-fix
  * agent. A PR into the default branch that is not a sync PR is held too when
- * its failing check is red on the tip. Its inherited checks are held for one
+ * its failing check is red on the tip and on the PR's merge base with the
+ * default branch, so a check the PR's own base lacks is never inherited. Its
+ * inherited checks are held for one
  * repair PR against the default branch, which is returned ahead of every other
  * default-branch failure. A held sync PR whose head is behind the tip is
  * fast-forwarded to it. A sync PR whose head is diverged from the tip is stale:
@@ -2098,6 +2198,8 @@ export async function findFailedCiChecks(
       logger,
     );
     const held: HeldPr[] = [];
+    // Issue #5437: the checks red on each merge base, read once per sha.
+    const redOnMergeBase = new Map<string, Promise<Result<Set<string>>>>();
 
     // A draft is work in progress (owner, 2026-10-23): its checks are not
     // run, and its required `gate` fails on purpose. Those by-design failures
@@ -2435,15 +2537,32 @@ export async function findFailedCiChecks(
         !isRedDefaultBranchRepairPr(pr, defaultBranch)
       ) {
         // Issue #5437: a PR into the default branch, not a sync PR, is held for
-        // a check the tip is also red on. The tip is read only for such a PR.
+        // a check only when the tip AND the PR's merge base with the default
+        // branch are both red on it. A PR cut from a green commit that breaks
+        // the check itself is not held. The tip is read only for such a PR,
+        // and the merge base only for a check the tip already has red.
         const redTip = await defaultBranchState.redTipCheckNames();
         if (redTip === null) {
           logger.warn(
             `${repo}#${prNumber}: cannot read the checks red on ${defaultBranch}, so this PR gets its ordinary CI-fix target this scan (Issue #5437)`,
           );
         } else {
-          for (const name of candidateNames) {
-            if (redTip.has(name)) inherited.add(name);
+          const onTip = candidateNames.filter((name) => redTip.has(name));
+          if (onTip.length > 0) {
+            const redBase = await readMergeBaseRedChecks({
+              repo,
+              prNumber,
+              defaultBranch,
+              headSha: pr.headRefOid ?? "",
+              redOnBase: redOnMergeBase,
+              ghCommandFn,
+              logger,
+            });
+            if (redBase !== null) {
+              for (const name of onTip) {
+                if (redBase.has(name)) inherited.add(name);
+              }
+            }
           }
         }
       }

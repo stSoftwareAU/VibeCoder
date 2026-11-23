@@ -12,6 +12,9 @@
  * - a green human fix PR is adopted only when its head contains the default
  *   branch's tip, so a stale branch cannot pass for the fix;
  * - an undecidable ancestry stands the sync PR down for the scan;
+ * - a non-sync PR is held only when the tip and its merge base are both red
+ *   on the check, so a check its own base lacks is never inherited;
+ * - the status is one fleet comment, edited in place when the held set moves;
  * - the repair PR's own failure is returned ahead of other default-branch
  *   failures.
  *
@@ -65,6 +68,11 @@ interface Fixture {
   checks: Record<string, Array<{ id: number; name: string }>>;
   /** The compare status of each head against the default branch. */
   compare: Record<string, string | "error">;
+  /**
+   * The merge base of each head with the default branch, read through
+   * `compare/...` with `--jq .merge_base_commit.sha`. `error` fails the read.
+   */
+  mergeBase?: Record<string, string | "error">;
   /** Refs whose check-runs read fails with a `gh` error. */
   checkReadErrors?: string[];
   /** The message `gh pr create` fails with, when set. */
@@ -82,8 +90,11 @@ interface Fixture {
   fixListError?: string;
   /** Names of the checks that succeeded, keyed by the ref read. */
   greenChecks?: Record<string, string[]>;
-  /** Comments per PR number, as `{login, body}` objects. */
-  comments?: Record<number, Array<{ login: string; body: string }>>;
+  /**
+   * Comments per PR number, oldest first, as `{id, login, body}` objects (the
+   * shape the scan's `--jq` emits).
+   */
+  comments?: Record<number, Array<{ id: number; login: string; body: string }>>;
   /** The message the comment list read fails with, when set. */
   commentReadError?: string;
   /** The message a PR comment post fails with, when set. */
@@ -228,6 +239,14 @@ function ghStub(
         return Promise.reject(new Error(fx.patchError));
       }
       return Promise.resolve("{}");
+    }
+    if (args.includes(".merge_base_commit.sha")) {
+      const sha = (args[1] ?? "").split("...")[1] ?? "";
+      const base = fx.mergeBase?.[sha];
+      if (base === undefined || base === "error") {
+        return Promise.reject(new Error("HTTP 502: Bad Gateway"));
+      }
+      return Promise.resolve(`${base}\n`);
     }
     const compare = args.find((arg) => arg.includes("/compare/"));
     if (compare !== undefined) {
@@ -755,6 +774,8 @@ Deno.test("findFailedCiChecks - a failed fast-forward warns with the gh error an
 const FEATURE_HEAD = "a7".repeat(20);
 /** A human fix PR's head commit (`nleck`'s, in the observed case). */
 const FIX_HEAD = "f6".repeat(20);
+/** The merge base of `FEATURE_HEAD` with main: the commit it branched from. */
+const MERGE_BASE = "9e".repeat(20);
 
 function featurePr(number: number, branch: string): PrFixture {
   return {
@@ -782,6 +803,16 @@ function postsTo(calls: string[][], path: string) {
   );
 }
 
+/** Every `gh api -X PATCH` call. */
+function patchCalls(calls: string[][]) {
+  return calls.filter((args) => args[0] === "api" && args.includes("PATCH"));
+}
+
+/** Every `gh api -X PATCH` call to `path`. */
+function patchesTo(calls: string[][], path: string) {
+  return patchCalls(calls).filter((args) => args[3] === path);
+}
+
 /** Every `gh api -X POST` call that writes under the repo's git data. */
 function gitWrites(calls: string[][]) {
   return calls.filter((args) =>
@@ -805,13 +836,25 @@ function statusComment(prNumber: number): string {
 // Non-sync PRs into the default branch (Issue #5437)
 // ---------------------------------------------------------------------------
 
-Deno.test("findFailedCiChecks - a non-sync PR into main failing a check the tip is also red on is held, not handed to the CI-fix agent (Issue #5437)", async () => {
+Deno.test("findFailedCiChecks - a non-sync PR into main failing a check the tip and its merge base are both red on is held, not handed to the CI-fix agent (Issue #5437)", async () => {
   const fx = redMainFixture([featurePr(9, "issue-9-fix")], {
-    checks: { "issue-9-fix": [{ id: 9, name: "gitleaks" }] },
+    checks: {
+      "issue-9-fix": [{ id: 9, name: "gitleaks" }],
+      [MERGE_BASE]: [{ id: 5, name: "gitleaks" }],
+    },
   });
+  fx.mergeBase = { [FEATURE_HEAD]: MERGE_BASE };
   const { value, calls, logger } = await scan(fx);
 
   assertEquals(value, null);
+  const mergeBaseReads = callsTo(calls, "api").filter((args) =>
+    args.includes(".merge_base_commit.sha")
+  );
+  assertEquals(mergeBaseReads.length, 1);
+  assertEquals(
+    mergeBaseReads[0]?.[1],
+    `repos/${REPO}/compare/main...${FEATURE_HEAD}`,
+  );
   const creates = prCreateCalls(calls);
   assertEquals(creates.length, 1);
   assertStringIncludes(
@@ -821,6 +864,41 @@ Deno.test("findFailedCiChecks - a non-sync PR into main failing a check the tip 
   assertEquals(logger.skips.length, 1);
   assertStringIncludes(logger.skips[0] ?? "", "inherited-red-default-branch");
   assertEquals(logger.warns, []);
+});
+
+Deno.test("findFailedCiChecks - a non-sync PR into main failing a check the tip is red on but its merge base is green on is not held: it is the CI-fix target, and no repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture([featurePr(9, "issue-9-fix")], {
+    checks: { "issue-9-fix": [{ id: 9, name: "gitleaks" }] },
+  });
+  // The merge base has no failed check run, so the PR's own base is green.
+  fx.mergeBase = { [FEATURE_HEAD]: MERGE_BASE };
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value?.prNumber, 9);
+  assertEquals(value?.checkName, "gitleaks");
+  assertEquals(value?.branchName, "issue-9-fix");
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(logger.skips.length, 0);
+  assertEquals(logger.warns, []);
+});
+
+Deno.test("findFailedCiChecks - a non-sync PR into main whose merge base cannot be read is not held: it is the CI-fix target, and the warn quotes the gh error (Issue #5437)", async () => {
+  const fx = redMainFixture([featurePr(9, "issue-9-fix")], {
+    checks: { "issue-9-fix": [{ id: 9, name: "gitleaks" }] },
+  });
+  fx.mergeBase = { [FEATURE_HEAD]: "error" };
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value?.prNumber, 9);
+  assertEquals(value?.checkName, "gitleaks");
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(logger.skips.length, 0);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("cannot tell whether this PR branched") &&
+      warn.includes("HTTP 502: Bad Gateway")
+    ),
+  );
 });
 
 Deno.test("findFailedCiChecks - a non-sync PR into main failing a check the tip is not red on still reaches the CI-fix agent (Issue #5437)", async () => {
@@ -891,13 +969,14 @@ Deno.test("findFailedCiChecks - a fleet-authored comment carrying the identical 
   fx.compare[FIX_HEAD] = "ahead";
   // `testbot` is the scan's own login, so it is in the fleet author set.
   fx.comments = {
-    5434: [{ login: "testbot", body: statusComment(5434) }],
+    5434: [{ id: 7001, login: "testbot", body: statusComment(5434) }],
   };
   const { value, calls } = await scan(fx);
 
   assertEquals(value, null);
   assertEquals(prCreateCalls(calls).length, 0);
   assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertEquals(patchCalls(calls).length, 0);
 });
 
 Deno.test("findFailedCiChecks - a comment with the identical marker from a non-fleet login does not count, so the status is commented (Issue #5437)", async () => {
@@ -908,13 +987,15 @@ Deno.test("findFailedCiChecks - a comment with the identical marker from a non-f
   fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
   fx.compare[FIX_HEAD] = "ahead";
   fx.comments = {
-    5434: [{ login: "nleck", body: statusComment(5434) }],
+    5434: [{ id: 7002, login: "nleck", body: statusComment(5434) }],
   };
   const { value, calls } = await scan(fx);
 
   assertEquals(value, null);
   assertEquals(prCreateCalls(calls).length, 0);
   assertEquals(callsTo(calls, "pr", "comment").length, 1);
+  // The human's comment is never edited: our status is a new comment.
+  assertEquals(patchCalls(calls).length, 0);
 });
 
 Deno.test("findFailedCiChecks - a candidate green on only some held checks is not adopted, and the repair PR is opened (Issue #5437)", async () => {
@@ -1060,6 +1141,111 @@ Deno.test("findFailedCiChecks - a failed status comment post warns with the gh e
     logger.warns.some((warn) =>
       warn.includes("could not post the status on org/repo#5434") &&
       warn.includes("HTTP 403: Resource not accessible")
+    ),
+  );
+});
+
+/** The status body on fix PR `prNumber` that holds `heldPrNumbers` for the tip. */
+function statusCommentHolding(
+  prNumber: number,
+  heldPrNumbers: number[],
+): string {
+  return formatRedDefaultBranchStatus({
+    defaultBranch: DEFAULT_BRANCH,
+    heldPrNumbers,
+    repairPrNumber: prNumber,
+    checkNames: ["gitleaks"],
+    tipSha: TIP,
+  });
+}
+
+Deno.test("findFailedCiChecks - a changed held set edits the one fleet status comment in place: one PATCH to its id, no new comment (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.compare[FIX_HEAD] = "ahead";
+  // The status was written when only #1 and #2 were held.
+  fx.comments = {
+    5434: [{
+      id: 7001,
+      login: "testbot",
+      body: statusCommentHolding(5434, [1, 2]),
+    }],
+  };
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertEquals(patchCalls(calls).length, 1);
+  const patches = patchesTo(calls, "repos/org/repo/issues/comments/7001");
+  assertEquals(patches.length, 1);
+  assertStringIncludes(
+    argAfter(patches[0] ?? [], "-f") ?? "",
+    "holding sync PRs #1, #2, #3, fix in #5434.",
+  );
+  assertEquals(logger.warns, []);
+});
+
+Deno.test("findFailedCiChecks - the newest fleet status comment decides: an older identical one does not stop the newer stale one being edited (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.comments = {
+    5434: [
+      {
+        id: 7001,
+        login: "testbot",
+        body: statusCommentHolding(5434, [1, 2, 3]),
+      },
+      { id: 7002, login: "testbot", body: statusCommentHolding(5434, [1, 2]) },
+    ],
+  };
+  const { calls } = await scan(fx);
+
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertEquals(patchCalls(calls).length, 1);
+  assertEquals(
+    patchesTo(calls, "repos/org/repo/issues/comments/7002").length,
+    1,
+  );
+});
+
+Deno.test("findFailedCiChecks - a failed status edit warns with the gh error, and neither a repair PR nor a new comment is made (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.comments = {
+    5434: [{
+      id: 7001,
+      login: "testbot",
+      body: statusCommentHolding(5434, [1, 2]),
+    }],
+  };
+  fx.patchError = "HTTP 422: Unprocessable Entity";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertEquals(
+    patchesTo(calls, "repos/org/repo/issues/comments/7001").length,
+    1,
+  );
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes(
+        "could not edit the status on comment 7001 on org/repo#5434",
+      ) &&
+      warn.includes("HTTP 422: Unprocessable Entity")
     ),
   );
 });
