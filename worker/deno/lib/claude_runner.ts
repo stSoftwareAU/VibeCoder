@@ -1570,9 +1570,6 @@ async function runClaudeWithTimeoutBody(
       ),
     };
   }
-  let stdinPayload = promptViaStdin
-    ? (provider.stdinBody?.(invocationRequest) ?? userPrompt)
-    : userPrompt;
 
   let timeoutMs = sessionTimeoutSeconds * 1000;
   const noOutputMs = noOutputTimeout > 0 ? noOutputTimeout * 1000 : 0;
@@ -1764,9 +1761,6 @@ async function runClaudeWithTimeoutBody(
       : prompt;
     invocationRequest.prompt = userPrompt;
     args = provider.buildInvocation({ ...invocationRequest, promptViaStdin });
-    stdinPayload = promptViaStdin
-      ? (provider.stdinBody?.(invocationRequest) ?? userPrompt)
-      : userPrompt;
 
     // Issue #324: run the agent at a lower scheduler priority.
     //
@@ -1848,6 +1842,7 @@ async function runClaudeWithTimeoutBody(
     if (promptViaStdin && promptFilePath) {
       // Finalise the already allocated file without an await between the
       // refreshed budget and spawn. It remains inspectable for the run.
+      const stdinPayload = provider.stdinBody?.(invocationRequest) ?? userPrompt;
       Deno.writeTextFileSync(promptFilePath, stdinPayload);
       logger?.info(
         `Prompt file: ${promptFilePath} (${
