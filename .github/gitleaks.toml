@@ -37,6 +37,10 @@
 #  - secret_redaction_json_structure_test.ts: a fake passphrase and a
 #    fake TOKEN= value inside stream-json lines asserting the assignment
 #    rule masks them without breaking the line's JSON.
+#  - secret_redaction_label_as_value_5310_test.ts (Issue #5310): fake
+#    `API_KEY=`, `ADMIN_TOKEN=`, `token=` and similar values on the line
+#    after a label-as-value assignment, asserting `redactSecrets()` masks
+#    both values.
 #
 # None of these are real credentials. An inline `gitleaks:allow` comment
 # could not clear the findings because gitleaks scans every commit in a
@@ -113,6 +117,11 @@ regexes = [
   '''^\s*"secrets:\\n  API_TOKEN: abcdefgh12345",\s*$''',
   # The PR summary quoted the same value in one commit; match only that backtick-quoted mention.
   '''`  API_TOKEN: abcdefgh12345`''',
+  # SECURITY.md and the PR summary quote the synthetic next-line values of
+  # the same test (`API_KEY=abcdefgh1234`, `ADMIN_TOKEN=abcdefgh1234`) in
+  # the commit that merged it. Match only a backtick-quoted mention of that
+  # exact value.
+  '''`[^`]*(API_KEY|ADMIN_TOKEN)=abcdefgh1234`''',
 ]
 paths = [
   '''worker/deno/tests/secret_redaction_test\.ts''',
@@ -176,10 +185,10 @@ paths = [
   # the literals in one piece, and the range scan covers it, so only a path
   # allowlist clears it.
   '''worker/deno/tests/secret_redaction_json_structure_test\.ts''',
-  # Synthetic `abcdefgh1234`-style values chained behind credential labels
-  # (DEPLOY_TOKEN, ADMIN_TOKEN) to prove `redactSecrets()` masks the inner
-  # label's value too (Issue #5310). The file is fixture-only and the commit
-  # that introduced it carries the literals in one piece, so only a path
-  # allowlist clears the range scan.
+  # Fake next-line credential values (`API_KEY=abcdefgh1234`,
+  # `ADMIN_TOKEN=abcdefgh1234`, `token=abc123def456`, ...) fed to
+  # `redactSecrets()` to prove a label-as-value assignment and the line after
+  # it are both masked (Issue #5310). The merge commit carries them literally,
+  # and range scans cover it, so only a path allowlist clears it.
   '''worker/deno/tests/secret_redaction_label_as_value_5310_test\.ts''',
 ]
