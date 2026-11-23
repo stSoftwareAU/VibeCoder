@@ -317,11 +317,14 @@ function fakeGh(opts: {
     }
     const byBranch = /\/pulls\?state=all&head=[^:]+:issue-(\d+)&/.exec(path);
     if (byBranch) {
+      // The base is answered only when the jq filter asks for `.base.ref`.
+      const jqFilter = args[args.indexOf("--jq") + 1] ?? "";
+      const asksForBase = jqFilter.includes(".base.ref");
       return Promise.resolve(
         JSON.stringify({
           number: Number(byBranch[1]),
           login: "fleet-bot",
-          base: "main",
+          ...(asksForBase ? { base: "main" } : {}),
         }),
       );
     }
@@ -751,11 +754,18 @@ Deno.test("scan: a check that failed on the base commit is not observed, while t
     ledger.observations.map((o) => o.prNumber).sort((a, b) => a - b),
     [8, 9],
   );
-  // The merge base is read per head, and the base's checks per merge base.
+});
+
+Deno.test("scan: an unlinked run whose merge base failed the same check is not observed, while an identical unlinked run on a green base is (Issue #5437)", async () => {
+  // The PR is found by head branch, so its base comes from the by-branch lookup.
+  const fake = fakeGh({
+    unlinkedRuns: true,
+    baseFailing: { 7: ["rust-checks"] },
+  });
+  const { ledger } = await scan(fake);
   assertEquals(
-    fake.calls.filter((c) => c.some((a) => a.includes("/compare/main...")))
-      .length,
-    3,
+    ledger.observations.map((o) => o.prNumber).sort((a, b) => a - b),
+    [8, 9],
   );
 });
 

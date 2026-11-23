@@ -821,7 +821,12 @@ check earlier.
   step runs a recognised local tool (`cargo clippy`, `cargo fmt`,
   `cargo mutants`, `cargo llvm-cov`, `deno test`, `markdownlint` and so on) and
   the CI failure classifier calls it a code fault. Infrastructure, timing,
-  aggregator and deployment-state failures never count.
+  aggregator and deployment-state failures never count. Nor do failures on a
+  `sync/milestone-*` branch or a `fix/red-default-branch-*` repair branch, or a
+  job whose check already failed on the PR's base commit (the merge base of the
+  PR's head with its base branch): they inherit a red base, not a local-gate
+  miss (Issue #5437). If that base-commit read fails, the job still counts and
+  the cause is logged.
 - When the same check and step fail on 3 or more distinct fleet PRs within 7
   days, it files one issue in the repository that owns the fix. Only failing
   heads a fleet account pushed count: the run's `actor` must be a fleet author

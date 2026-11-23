@@ -25,8 +25,23 @@ export type DefaultBranchAncestry =
   | "diverged"
   | "unknown";
 
+/**
+ * The answer {@link commitAncestryOnDefault} gives. `cause` is set for every
+ * `unknown` status: the `gh` error message, the unrecognised status text, or
+ * the rejected input, so a caller's warning can name it.
+ */
+export interface DefaultBranchAncestryResult {
+  status: DefaultBranchAncestry;
+  cause?: string;
+}
+
 /** A commit SHA as GitHub prints it: 7 to 40 hexadecimal characters. */
 const SHA_PATTERN = /^[0-9a-f]{7,40}$/i;
+
+/** A failure message, whatever the thrown value. */
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * How `sha` stands against `defaultBranch`.
@@ -41,8 +56,13 @@ export async function commitAncestryOnDefault(
   sha: string,
   defaultBranch: string,
   gh: (args: string[]) => Promise<string>,
-): Promise<DefaultBranchAncestry> {
-  if (!SHA_PATTERN.test(sha)) return "unknown";
+): Promise<DefaultBranchAncestryResult> {
+  if (!SHA_PATTERN.test(sha)) {
+    return {
+      status: "unknown",
+      cause: `not a commit sha: ${JSON.stringify(sha)}`,
+    };
+  }
   try {
     const status = (await gh([
       "api",
@@ -50,11 +70,16 @@ export async function commitAncestryOnDefault(
       "--jq",
       ".status",
     ])).trim();
-    if (status === "identical" || status === "behind") return "on-default";
-    if (status === "ahead") return "contains-default";
-    if (status === "diverged") return "diverged";
-    return "unknown";
-  } catch {
-    return "unknown";
+    if (status === "identical" || status === "behind") {
+      return { status: "on-default" };
+    }
+    if (status === "ahead") return { status: "contains-default" };
+    if (status === "diverged") return { status: "diverged" };
+    return {
+      status: "unknown",
+      cause: `unrecognised compare status ${JSON.stringify(status)}`,
+    };
+  } catch (error) {
+    return { status: "unknown", cause: errorText(error) };
   }
 }

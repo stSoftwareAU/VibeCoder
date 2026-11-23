@@ -42,10 +42,12 @@ const FULL_SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
 /**
  * The worker marker, anchored at the end of a body where the worker writes it
- * (Issue #5437). A marker quoted mid-text does not count.
+ * (Issue #5437). A marker quoted mid-text does not count. Matched against the
+ * body with its trailing whitespace trimmed, so the pattern needs no
+ * whitespace quantifier before `$`.
  */
 const TRAILING_MARKER_PATTERN =
-  /<!-- vibe-red-default-branch-hold sha="([0-9a-f]{40})" held="([0-9,]*)" -->\s*$/;
+  /<!-- vibe-red-default-branch-hold sha="([0-9a-f]{40})" held="([0-9,]*)" -->$/;
 
 /** The fields a repair-PR decision reads from a listed PR. */
 export interface RepairPrCandidate {
@@ -125,7 +127,7 @@ export function bodyCarriesRedDefaultBranchMarker(
   tipSha: string,
   heldPrNumbers: readonly number[],
 ): boolean {
-  const match = TRAILING_MARKER_PATTERN.exec(body ?? "");
+  const match = TRAILING_MARKER_PATTERN.exec((body ?? "").trimEnd());
   if (match === null) return false;
   return match[1] === tipSha &&
     match[2] === sortedHeld(heldPrNumbers).join(",");

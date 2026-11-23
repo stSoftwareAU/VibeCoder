@@ -54,6 +54,7 @@ import { getRepoVisibility } from "./repo_visibility.ts";
 import { selectFleetAuthoredMatches } from "./alert_dedup_authors.ts";
 import { isMilestoneSyncBranch } from "./milestone_sync_branch.ts";
 import { RED_DEFAULT_BRANCH_REPAIR_PREFIX } from "./red_default_branch_repair.ts";
+import type { Result } from "../types.ts";
 
 /**
  * Distinct fleet PRs, at heads a fleet account pushed, a step must fail on
@@ -662,30 +663,27 @@ async function resolvePr(
   return pr;
 }
 
-/** A lookup that either yields a value, or the cause it failed. */
-type Lookup<T> = { ok: true; value: T } | { ok: false; cause: string };
-
 /** Per-scan caches of the base-commit reads (Issue #5437). */
 interface InheritedCaches {
   /** Merge-base sha, keyed by the PR head sha. */
-  mergeBases: Map<string, Lookup<string>>;
+  mergeBases: Map<string, Result<string, string>>;
   /** Names of the checks that failed, keyed by the merge-base sha. */
-  baseFailures: Map<string, Lookup<Set<string>>>;
+  baseFailures: Map<string, Result<Set<string>, string>>;
 }
 
 /** Runs `load` once per key; a failure is cached as its cause, not thrown. */
 async function lookupOnce<T>(
-  cache: Map<string, Lookup<T>>,
+  cache: Map<string, Result<T, string>>,
   key: string,
   load: () => Promise<T>,
-): Promise<Lookup<T>> {
+): Promise<Result<T, string>> {
   const hit = cache.get(key);
   if (hit) return hit;
-  let result: Lookup<T>;
+  let result: Result<T, string>;
   try {
     result = { ok: true, value: await load() };
   } catch (error) {
-    result = { ok: false, cause: String(error) };
+    result = { ok: false, error: String(error) };
   }
   cache.set(key, result);
   return result;
@@ -702,8 +700,8 @@ async function inheritedCheckNames(
   headSha: string,
   caches: InheritedCaches,
   deps: ShiftLeftScanDeps,
-): Promise<Lookup<Set<string>>> {
-  if (!pr.base) return { ok: false, cause: "the PR has no base branch" };
+): Promise<Result<Set<string>, string>> {
+  if (!pr.base) return { ok: false, error: "the PR has no base branch" };
   const base = pr.base;
   const mergeBase = await lookupOnce(caches.mergeBases, headSha, async () => {
     const sha = (await deps.gh([
@@ -717,7 +715,7 @@ async function inheritedCheckNames(
     }
     return sha;
   });
-  if (!mergeBase.ok) return { ok: false, cause: mergeBase.cause };
+  if (!mergeBase.ok) return { ok: false, error: mergeBase.error };
   const sha = mergeBase.value;
   return await lookupOnce(caches.baseFailures, sha, async () => {
     const names = await deps.gh([
@@ -791,7 +789,7 @@ async function observeRepo(
       ]),
     );
     // Looked up once per run, and only once a job would count (Issue #5437).
-    let inherited: Lookup<Set<string>> | undefined;
+    let inherited: Result<Set<string>, string> | undefined;
     for (const job of jobs) {
       if (seen.has(job.id)) continue;
       const step = job.steps?.[0]?.name ?? "";
@@ -822,7 +820,7 @@ async function observeRepo(
         if (!inherited.ok) {
           deps.log(
             `shift-left: ${repo} run ${run.id} (PR #${prNumber}): could not ` +
-              `read the base commit, so the failure is counted: ${inherited.cause}`,
+              `read the base commit, so the failure is counted: ${inherited.error}`,
           );
         }
       }

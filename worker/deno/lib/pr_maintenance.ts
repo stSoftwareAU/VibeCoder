@@ -2348,13 +2348,15 @@ export async function findFailedCiChecks(
             defaultBranch,
             ghCommandFn,
           );
-          if (ancestry === "unknown") {
+          if (ancestry.status === "unknown") {
             logger.warn(
-              `${repo}#${prNumber}: cannot tell whether the sync head is on ${defaultBranch}, so this sync PR gets no CI-fix target until the next scan (Issue #5437)`,
+              `${repo}#${prNumber}: cannot tell whether the sync head is on ${defaultBranch}: ${
+                ancestry.cause ?? "no cause given"
+              }; this sync PR gets no CI-fix target until the next scan (Issue #5437)`,
             );
             continue;
           }
-          if (ancestry === "diverged") {
+          if (ancestry.status === "diverged") {
             // Issue #5437: the head lacks commits the default branch has since
             // gained, so its failures are stale. They are neither held for a
             // repair nor handed to the CI-fix agent: the milestone sync lane
@@ -2396,7 +2398,7 @@ export async function findFailedCiChecks(
             }
             continue;
           }
-          if (ancestry === "on-default") {
+          if (ancestry.status === "on-default") {
             // The head is the default branch's own commit, so every failure
             // on it is the default branch's.
             for (const name of candidateNames) inherited.add(name);
@@ -2638,7 +2640,7 @@ export async function findFailedCiChecks(
     }
 
     // Issue #5437: once per repo, one repair PR for the default branch when
-    // any sync PR was held for it.
+    // any PR was held for it: a sync PR, or a PR into the default branch.
     if (held.length > 0) {
       const adoptedFixPr = await repairHeldDefaultBranch({
         repo,

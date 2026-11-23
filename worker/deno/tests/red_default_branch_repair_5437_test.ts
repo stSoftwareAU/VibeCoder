@@ -537,6 +537,8 @@ Deno.test("findFailedCiChecks - a sync PR whose ancestry cannot be read gets no 
   assertEquals(logger.warns.length, 1);
   assertStringIncludes(logger.warns[0] ?? "", "cannot tell");
   assertStringIncludes(logger.warns[0] ?? "", "sync");
+  // The warning quotes the gh error that made the ancestry unknown.
+  assertStringIncludes(logger.warns[0] ?? "", "HTTP 502: Bad Gateway");
 });
 
 Deno.test("findFailedCiChecks - an off-default sync PR stands down when the default tip's check runs cannot be read, and opens no repair PR (Issue #5437)", async () => {
@@ -629,6 +631,19 @@ Deno.test("formatRedDefaultBranchStatus - a repair PR not yet opened says the fi
   assert(bodyCarriesRedDefaultBranchMarker(body, TIP, [1]));
   assert(!bodyCarriesRedDefaultBranchMarker(body, OLD_HEAD, [1]));
   assert(!bodyCarriesRedDefaultBranchMarker(body, TIP, [1, 2]));
+});
+
+Deno.test("bodyCarriesRedDefaultBranchMarker - hostile repeated markers with trailing spaces and x return promptly (Issue #5437)", () => {
+  const marker = redDefaultBranchMarker(TIP, [1, 2]);
+  const hostile = `${marker}${" ".repeat(50)}x`.repeat(20_000);
+
+  // Every marker is mid-text, followed by `x`, so none is trailing.
+  assertEquals(bodyCarriesRedDefaultBranchMarker(hostile, TIP, [1, 2]), false);
+  // The same body with a valid marker appended last is trailing.
+  assertEquals(
+    bodyCarriesRedDefaultBranchMarker(`${hostile}${marker}`, TIP, [1, 2]),
+    true,
+  );
 });
 
 // ---------------------------------------------------------------------------
