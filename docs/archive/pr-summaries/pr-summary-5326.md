@@ -137,7 +137,10 @@ flowchart LR
   - deno tests: one failure in
     `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts` under the
     parallel pass. That file has no redaction code, and it passes alone (17
-    passed, 0 failed). The rerun result is under the next heading.
+    passed, 0 failed).
+- Full `./quality.sh`, rerun on the head after the markdownlint fix: passed
+  (exit 0). Every stage passed, except config integration and checkov, which
+  the gate skipped.
 
 ## Docs
 
