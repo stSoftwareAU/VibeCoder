@@ -436,8 +436,9 @@ documents, the generated codebase map, recent-activity summaries, PR review
 comments, the optional `fleet_run_archive` repository name — so it **redacts
 before it scrubs**. Redaction first, because the
 scrub substitutes fullwidth characters mid-string and could otherwise split a
-secret across a signature-rule boundary; and it is idempotent, so a call site
-that already redacted its own text (`fenceQualityOutput`,
+secret across a signature-rule boundary; and it is idempotent (bar one
+label-as-value shape under Issue #5310 below, where a second call only masks
+more), so a call site that already redacted its own text (`fenceQualityOutput`,
 `formatConflictIssueContextSection`, the CI-failure issue body) is unaffected.
 
 This is defence-in-depth, not a replacement: an outbound sink still owes its own
@@ -544,6 +545,111 @@ and, apart from that check, **only when the separator crossed a line break**:
   that is not a single word without a digit, symbol or internal capital. That
   word test is **length-bounded**: an unbounded one read a lower-case
   passphrase such as `correcthorsebatterystaple` as prose.
+- A credential label in an earlier label's value is judged as a label, not
+  masked as that value (Issue #5310). In `credentials: DEPLOY_TOKEN = <value>`,
+  on one line or across two, the earlier match used to mask only
+  `DEPLOY_TOKEN` and publish `<value>`.
+  When a value ends in a credential label (a key-shaped run of at most 128
+  characters, including the `-` of `api-key`, `access-key` and `private-key`,
+  allowing a closing quote, the swallowed `=`/`:`, or a separator with
+  whitespace before the value's closing quote as in `'API_TOKEN = '` or
+  `'API_TOKEN =\n'` (up to 256 whitespace characters, line breaks included,
+  either side of it), or just before one of the
+  value's last three `'`, as in `DEPLOY_TOKEN='a b'`) whose own
+  assignment runs past the value and is masked, the inner value is masked. The
+  outer value is given up unmasked only when it is nothing but that label (an
+  optional quote, then label characters, with no `--` among them); when other
+  text precedes the label, as in `password: hunter2,token: <value>` or the CLI
+  flag in `credentials: x--token = <value>`, the outer value stays masked too.
+  No inner label is read, and the result is the base behaviour's, wherever
+  the base scan would have read past the inner value: a `secret-assignment`
+  match or a credential flag that starts inside the inner value and ends past
+  it (`credentials: DEPLOY_TOKEN = --token <value>`,
+  `credentials: DEPLOY_TOKEN = 'token:x'<value>`), other than the label that
+  ends the inner value, or a run from the inner value wrapped onto the next
+  line that the decode-then-rescan pass masks
+  (`credentials: DEPLOY_TOKEN = API_TOKEN=` then `hunter2`), read from where
+  that pass's run starts on the base text (the separator's `=`, the label's
+  own line) and covering the inner label as well as its value. A run is read
+  from the label's line only when the inner value stays visible (a chained
+  label); otherwise from the end of the outer value the base behaviour
+  masked, so `credentials: DEPLOY_TOKEN=` then `<value>` keeps the value
+  masked. The base behaviour runs the decode pass after every rule, so a run
+  is read as that pass sees it: cut at the first value masked after the
+  inner value by the assignment rule (which ends it at the separator,
+  `API_KEY=`), by `secret-cli-flag` (`--password` then `USER=bob`; the
+  flag's name stays) or by `hex32-credential` (`md5=<32 hex>`). So
+  `credentials: DEPLOY_TOKEN = <value>` then `API_KEY=<secret>`, or then
+  `md5=<32 hex>`, masks `<value>`. A next line the rules leave unmasked
+  (`API_KEY=true`, `USER=bob` alone) stays in the run. The cut reads at most
+  8 credential keys after the inner value; past that the run is read whole
+  and the base result stands, so eight lines that each hold a credential
+  word with no separator (`GITHUB_TOKEN`, `NPM_TOKEN`, ...) before
+  `ADMIN_TOKEN=<secret>` still publish `<value>`. Each loop over a
+  shared pattern steps its own copy (`matchAll`), because decoding a run
+  walks the decoded text and reaches the same check again. A match inside the inner value that runs past it counts whether or
+  not it is masked, since the base scan resumes after it either way. When the
+  outer bare value stopped at a `"` inside a quoted inner value that the text
+  runs straight on from (`DEPLOY_TOKEN='"abc"'--token <value>`), the outer
+  mask is kept, so a flag after the quote is still masked. A label that ends
+  the inner value is exempt only when the next link of the chain is itself
+  read as an inner label (looked ahead at most 16 links), so a chain whose last
+  value the base scan reads past gets the base result. An inner value that
+  already holds the placeholder after other text, holds more than 8
+  credential keys, touches a wrapped run longer than 4,096 characters, or
+  holds a quoted value read through more than 64 `--` runs, gets the base
+  result too. So does one that opens with a quote it never
+  closes, is not itself the chain's next label, and is followed by a
+  credential flag whose value starts with the placeholder (text may run on
+  after it, as in `--token ***REDACTED***;`) before the next quote of that
+  kind: the text between may hold anything else, an earlier placeholder
+  included, and has no length bound. A credential flag whose quoted value
+  opens before the outer value and would close at a quote the walk's mask
+  removes (one in the outer value, or inside the inner value's mask, as in
+  `--token 'alpha credentials: DEPLOY_TOKEN = 'tail`) also gets the base
+  result, because the `secret-cli-flag` rule pairs the quotes the walk
+  leaves. The quote before the outer value counts only where that rule,
+  reading the text from the start, really opens a flag's value, so the quote
+  that closes an earlier flag's value (`--token 'x --password '`) does not.
+  A closed quoted inner value keeps both its quotes when masked, so its
+  opening quote does not count either. Quotes an earlier mask took are
+  skipped, and past 16 such masks the base result stands. When a credential flag inside a quoted inner
+  value has a value that takes the closing quote
+  (`secrets:\n  DEPLOY_TOKEN: 'deploy --token '<value>'`), and nothing above
+  gives the base result, the inner value is masked through the end of that
+  flag's value, and through any flag value that mask would cut, so the
+  output holds no unclosed quote. That is more than the base behaviour masks
+  (it masked from the closing quote on and left `'deploy` visible). When a
+  credential keyword sits in the flag's value past the closing quote, the
+  base result stands instead. One shape is still not final: a single-quoted
+  value made of glued labels (`'app.token=password:`, `'token=API_TOKEN:`)
+  that the walk reads as the next chain link, where a flag later in the text
+  takes its closing quote. A second call then masks the value too. It
+  publishes nothing. The decode pass can mask a run a label's value was glued
+  to (`credentials:app.password<base64>`, where the run decodes to a
+  credential), leaving `app.***REDACTED***` as a plain value of the outer
+  label; `redactSecrets` walks the assignments once more after that pass, so
+  such a first call is final too. Every search reads only the inner value, then
+  each match from where it starts, the text up to the next quote of a kind,
+  or a quote found in a per-walk index of quote positions, each once per
+  position in a walk, so the check stays linear.
+  It has no whitespace bound of its own, so past the whitespace bound below
+  the base result stands too.
+  Label characters before the label are read as part of it, so in
+  `credentials: abc-DEPLOY_TOKEN = <value>` the `abc-` stays visible. That
+  includes text glued to a credential keyword with no separator at all
+  (`credentials: hunter2API_TOKEN = <value>` keeps `hunter2API_TOKEN`
+  visible), which the base behaviour masked as a value.
+  That covers hyphenated, dotted and quoted inner labels. A value with a
+  credential word anywhere else in it is masked whole as before, even when an
+  already-masked value follows it.
+- That handling has limits, past which the base behaviour applies (the label
+  is masked as the earlier label's value and the inner value is published):
+  the inner label's separator and value must start within 256 characters of
+  the outer value's end, a double-quoted inner value must close within 4,096
+  characters of its opening quote, the label must be at most 128 characters,
+  and a single-quoted inner value whose first word itself holds two `'` (as in
+  `DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
 
 `containsSecret()` asks the value predicate the same question the replacement
 does, so detection and redaction cannot drift apart — a body that redacts to
