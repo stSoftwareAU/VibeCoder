@@ -212,8 +212,11 @@ const TIMEOUT_VALUE_OPTIONS = new Set([
  * word) and `command`. A `VAR=value` word counts only with an unquoted name
  * (bash's rule, so `"X=1" cmd` runs a command named `X=1`). `env` is skipped
  * with each operand after it that contains `=` once quotes are removed
- * (`env "X"=1 cmd`), as GNU and BSD `env` read them. `command -v`/`-V` only
- * looks a command up, so it stops the scan at `command` itself. Returns `words.length` when none is found.
+ * (`env "X"=1 cmd`), as GNU and BSD `env` read them. The scan stops at an
+ * option word (`-i`, `--split-string=echo`): `env -S`/`--split-string` makes
+ * its value the command, so the option stays the command word and fails
+ * closed. `command -v`/`-V` only looks a command up, so it stops the scan at
+ * `command` itself. Returns `words.length` when none is found.
  */
 export function commandIndex(words: string[]): number {
   let i = 0;
@@ -223,9 +226,7 @@ export function commandIndex(words: string[]): number {
       i++;
     } else if (w === "env") {
       i++;
-      while (i < words.length && removeQuotes(words[i] ?? "").includes("=")) {
-        i++;
-      }
+      while (i < words.length && isEnvAssignment(words[i] ?? "")) i++;
     } else if (w === "time") {
       i++;
       if (words[i] === "-p") i++;
@@ -279,6 +280,15 @@ export function statusPreservingCommandIndex(words: string[]): number {
   return words.slice(0, i).some((w) => STATUS_ALTERING_PREFIX_WORDS.has(w))
     ? -1
     : i;
+}
+
+/**
+ * True when `env` reads `word` as a `NAME=value` operand: it contains `=` once
+ * quotes are removed and is not an option (does not start with `-`).
+ */
+function isEnvAssignment(word: string): boolean {
+  const unquoted = removeQuotes(word);
+  return !unquoted.startsWith("-") && unquoted.includes("=");
 }
 
 /** Shell quote removal on a word as {@link shellCommands} returns it; `$…` is not expanded. */

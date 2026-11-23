@@ -839,6 +839,30 @@ for (
       'set -euo pipefail\n          env "X"=1 aws-emulator-run -- pytest',
       true,
     ],
+    // `env --split-string=echo …` runs `echo`, so an option word ends the scan
+    // and stays the command word. That fails closed even where `env` would
+    // still run the next word: GNU `env -S=echo cmd` stores `=echo` and runs
+    // `cmd`, but `-S=echo` is not credited.
+    [
+      "aws-emulator-run -- env --split-string=echo pytest",
+      "aws-emulator-run -- env --split-string=echo pytest",
+      false,
+    ],
+    [
+      "env --split-string=echo aws-emulator-run -- pytest",
+      "env --split-string=echo aws-emulator-run -- pytest",
+      false,
+    ],
+    [
+      'env "--split-string"=echo aws-emulator-run -- pytest',
+      'env "--split-string"=echo aws-emulator-run -- pytest',
+      false,
+    ],
+    [
+      "env -S=echo aws-emulator-run -- pytest",
+      "env -S=echo aws-emulator-run -- pytest",
+      false,
+    ],
   ] as const
 ) {
   Deno.test(`workflowRunsAwsEmulator - ${label} is ${expected} (Issue #5351)`, () => {
@@ -854,6 +878,55 @@ jobs:
     assertEquals(workflowRunsAwsEmulator(doc), expected);
   });
 }
+
+Deno.test("workflowRunsAwsEmulator - env --split-string=echo ./ci.sh does not run the script (Issue #5351)", () => {
+  const reader = (path: string) =>
+    path === "ci.sh" || path === "./ci.sh"
+      ? "aws-emulator-run -- pytest\n"
+      : null;
+  const workflow = (run: string) =>
+    parseYaml(
+      `on: pull_request
+jobs:
+  test:
+    steps:
+      - run: ${run}
+`,
+    );
+  // Positive control: the same reader credits a plain script call.
+  assert(workflowRunsAwsEmulator(workflow("./ci.sh"), reader));
+  assert(workflowRunsAwsEmulator(workflow("env X=1 ./ci.sh"), reader));
+  assertEquals(
+    workflowRunsAwsEmulator(
+      workflow("env --split-string=echo ./ci.sh"),
+      reader,
+    ),
+    false,
+  );
+});
+
+Deno.test("checkAwsEmulatorInCI - an embedded marker before env --split-string=echo cargo test is refused (Issue #5351)", async () => {
+  const result = await checkRepoWith({
+    "Cargo.toml": CARGO_TOML_AWS,
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(
+        "# aws-emulator-embedded: version=1.2.3; justification=x\nenv --split-string=echo cargo test",
+      ),
+    ),
+  });
+  assertEquals(result.wiring, "missing");
+  assertDiagnostic(result, "no status-preserving cargo test");
+  // Positive control: an assignment operand still reaches `cargo test`.
+  const control = await checkRepoWith({
+    "Cargo.toml": CARGO_TOML_AWS,
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(
+        '# aws-emulator-embedded: version=1.2.3; justification=x\nenv "X"=1 cargo test',
+      ),
+    ),
+  });
+  assertEquals(control.wiring, "official-embedded");
+});
 
 // Issue #5351: shell quote removal on a word as shellCommands returns it.
 for (
