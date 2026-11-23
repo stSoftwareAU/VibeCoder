@@ -128,7 +128,7 @@ PRs, repair once (Issue #5437)", and the "Shift-left detection" section of
   - No existing assertion was removed or changed, and the existing tests still reach the counting logic.
 - Red against base: with `worker/deno/lib/pr_maintenance.ts` and `worker/deno/lib/shift_left_failures.ts` restored to `8596aa75b`, 53 tests failed (observed at `da3d654ae`).
 - Targeted run on the head: `deno task test:unit tests/red_default_branch_repair_5437_test.ts tests/pr_maintenance_ci_deferral_test.ts tests/pr_maintenance_test.ts tests/pr_maintenance_merge_queue_test.ts` gave 163 passed, 0 failed.
-- Full gate: `./quality.sh` passed on `59f1a5c61` (`Result: PASSED (with skipped checks)`; config integration and checkov are skipped because their tools are not installed on the host). GATE_RESULT_LINE
+- Full gate: `./quality.sh` passed on `59f1a5c61` (`Result: PASSED (with skipped checks)`; config integration and checkov are skipped because their tools are not installed on the host). It passed again on the final code head `75bddb693`.
 - Twinned rules: none found. This changes a scan, not a PR-summary gate.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
