@@ -455,7 +455,7 @@ RUN set -eu; \
 # The command is deliberately not pinned to a path — the thing being run is
 # the repository's own `quality.sh`, repository-controlled by definition,
 # which is precisely why it must not run as the worker.
-ARG SUDO_VERSION="1.9.16p2-3+deb13u2"
+ARG SUDO_VERSION="1.9.16p2-3+deb13u5"
 RUN set -eu; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
