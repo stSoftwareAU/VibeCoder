@@ -14,7 +14,8 @@
  *   are held, which PR carries the fix, and the worker marker that lets a
  *   later scan tell whether the status is already current.
  * - `findGreenFixPr` finds an open human-authored fix PR against the default
- *   branch whose head contains the default branch's tip and whose own CI is
+ *   branch whose head contains the default branch's tip, whose title, body or
+ *   branch names a held check or held PR, and whose own CI is
  *   green on every held check, or is still running with no held check failed
  *   (Issue #5437: a held check may not exist yet while CI is in flight, and a
  *   fleet-authored or bot PR is never waited on). `postRedDefaultBranchStatusComment`
@@ -580,6 +581,8 @@ interface FixCandidate {
   headRefName: string;
   headRefOid: string;
   authorLogin: string;
+  title: string;
+  body: string;
 }
 
 /** Inputs to {@link findGreenFixPr}. */
@@ -640,9 +643,10 @@ export interface GreenFixPr {
 }
 
 /**
- * The open PRs in a `gh pr list --json number,headRefName,headRefOid,author`
+ * The open PRs in a
+ * `gh pr list --json number,headRefName,headRefOid,author,title,body`
  * answer. Throws when the answer is not a JSON array, or when a row lacks its
- * number, head branch, head commit or author login, naming the missing field
+ * number, head branch, head commit, author login, title or body, naming the missing field
  * (Issue #5437).
  */
 function parseFixCandidates(output: string): FixCandidate[] {
@@ -675,11 +679,20 @@ function parseFixCandidates(output: string): FixCandidate[] {
     if (typeof login !== "string") {
       throw new Error(`PR #${fields.number} has no author.login`);
     }
+    if (typeof fields.title !== "string") {
+      throw new Error(`PR #${fields.number} has no title`);
+    }
+    // gh answers "" for an empty body, so "" is valid; a missing key is not.
+    if (typeof fields.body !== "string") {
+      throw new Error(`PR #${fields.number} has no body`);
+    }
     candidates.push({
       number: fields.number,
       headRefName: fields.headRefName,
       headRefOid: fields.headRefOid,
       authorLogin: login,
+      title: fields.title,
+      body: fields.body,
     });
   }
   return candidates;
@@ -705,11 +718,58 @@ async function listOpenPrsAgainst(
       "--state",
       "open",
       "--json",
-      "number,headRefName,headRefOid,author",
+      "number,headRefName,headRefOid,author,title,body",
       "--limit",
       "30",
     ]),
   );
+}
+
+/**
+ * Whether a fix candidate's title, body or branch names a held check or a held
+ * PR. A PR that names the failing check or a held PR is about the failure; one
+ * that names neither is not taken as the fix, because a diff-scoped check
+ * (gitleaks) passes on any PR that adds no finding (Issue #5437). Matching is
+ * case-insensitive and by whole token, using `indexOf` rather than a pattern
+ * built from untrusted text.
+ */
+export function fixCandidateNamesHeldFailure(
+  candidate: { title: string; body: string; headRefName: string },
+  checkNames: readonly string[],
+  heldPrNumbers: readonly number[],
+): boolean {
+  const text = `${candidate.title}\n${candidate.body}\n${candidate.headRefName}`
+    .toLowerCase();
+  const isAlnum = (ch: string | undefined): boolean =>
+    ch !== undefined && /^[a-z0-9]$/.test(ch);
+  const isDigit = (ch: string | undefined): boolean =>
+    ch !== undefined && ch >= "0" && ch <= "9";
+  for (const checkName of checkNames) {
+    const name = checkName.toLowerCase();
+    if (name === "") continue;
+    let from = 0;
+    for (;;) {
+      const at = text.indexOf(name, from);
+      if (at === -1) break;
+      if (
+        !isAlnum(text[at - 1]) && !isAlnum(text[at + name.length])
+      ) {
+        return true;
+      }
+      from = at + 1;
+    }
+  }
+  for (const number of heldPrNumbers) {
+    const needle = `#${number}`;
+    let from = 0;
+    for (;;) {
+      const at = text.indexOf(needle, from);
+      if (at === -1) break;
+      if (!isDigit(text[at + needle.length])) return true;
+      from = at + 1;
+    }
+  }
+  return false;
 }
 
 /**
@@ -720,7 +780,11 @@ async function listOpenPrsAgainst(
  * default branch's tip (`contains-default`), so a stale branch that lacks the
  * red commit cannot pass for the fix. A candidate whose ancestry is
  * `on-default` or `diverged` is skipped silently; one whose ancestry is
- * `unknown` is skipped with a warning quoting the cause.
+ * `unknown` is skipped with a warning quoting the cause. A candidate whose
+ * title, body or branch names none of the held checks or held PRs
+ * (`fixCandidateNamesHeldFailure`) is skipped too, on both the green and the
+ * pending path, so an unrelated PR that a diff-scoped check passes is not
+ * adopted (Issue #5437).
  *
  * A qualifying candidate whose successful check names include every name in
  * `checkNames` is the fix, and it wins at once. Otherwise, a candidate whose
@@ -786,6 +850,14 @@ export async function findGreenFixPr(
       continue;
     }
     if (ancestry.status !== "contains-default") continue;
+    if (!fixCandidateNamesHeldFailure(pr, checkNames, heldPrNumbers)) {
+      logger.info(
+        `Red default branch: ${repo}#${pr.number} (${pr.headRefName}) names none of the held checks (${
+          checkNames.join(", ")
+        }) or held PRs in its title, body or branch, so it is not taken as the fix (Issue #5437)`,
+      );
+      continue;
+    }
 
     let passing: ReadonlySet<string>;
     try {

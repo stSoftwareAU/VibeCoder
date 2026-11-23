@@ -38,6 +38,7 @@ import {
 import {
   bodyCarriesRedDefaultBranchMarker,
   findGreenFixPr,
+  fixCandidateNamesHeldFailure,
   formatRedDefaultBranchStatus,
   formatWithdrawnFixStatus,
   postRedDefaultBranchStatusComment,
@@ -97,6 +98,8 @@ interface Fixture {
     headRefName: string;
     headRefOid: string;
     author: { login: string };
+    title: string;
+    body: string;
   }>;
   /** The message the `--base` PR listing fails with, when set. */
   fixListError?: string;
@@ -1040,8 +1043,10 @@ function humanFixPr(
   headRefName: string,
   headRefOid: string,
   login: string,
+  title = "Allowlist the synthetic fixtures in gitleaks",
+  body = "",
 ) {
-  return { number, headRefName, headRefOid, author: { login } };
+  return { number, headRefName, headRefOid, author: { login }, title, body };
 }
 
 /** Every `gh api -X POST` call to `path`. */
@@ -2398,4 +2403,282 @@ Deno.test("findFailedCiChecks - a status withdrawn while no fix PR stood is edit
     `no longer taken as its fix: fix in #${CREATED_PR}.`,
   );
   assert(!body.includes("no fix PR stands yet"));
+});
+
+// ---------------------------------------------------------------------------
+// A fix candidate must name the held failure (Issue #5437)
+// ---------------------------------------------------------------------------
+
+Deno.test("findFailedCiChecks - an unrelated human PR green on gitleaks is not adopted, and the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(
+      5434,
+      "feature/dark-mode",
+      FIX_HEAD,
+      "nleck",
+      "Add dark mode",
+      "Adds a theme toggle.",
+    ),
+  ];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks", "gate"] };
+  fx.compare[FIX_HEAD] = "ahead";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(
+    callsTo(calls, "pr", "comment").filter((args) => args[2] === "5434")
+      .length,
+    0,
+  );
+  assert(
+    logger.infos.some((line) =>
+      line.includes("org/repo#5434") && line.includes("names none of the held")
+    ),
+    `infos: ${logger.infos}`,
+  );
+});
+
+Deno.test("findFailedCiChecks - the same human PR with a title naming gitleaks is adopted, so no repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(
+      5434,
+      "feature/dark-mode",
+      FIX_HEAD,
+      "nleck",
+      "Add dark mode and allow gitleaks fixtures",
+      "Adds a theme toggle.",
+    ),
+  ];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks", "gate"] };
+  fx.compare[FIX_HEAD] = "ahead";
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  const comments = callsTo(calls, "pr", "comment");
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]?.[2], "5434");
+});
+
+const NAMES = { title: "", body: "", headRefName: "" };
+
+Deno.test("fixCandidateNamesHeldFailure - a check named in the body, the branch or in mixed case counts (Issue #5437)", () => {
+  assert(
+    fixCandidateNamesHeldFailure(
+      { ...NAMES, body: "Allows the gitleaks fixtures." },
+      ["gitleaks"],
+      [],
+    ),
+  );
+  assert(
+    fixCandidateNamesHeldFailure(
+      { ...NAMES, headRefName: "fix/gitleaks-allow-5310-fixtures" },
+      ["gitleaks"],
+      [],
+    ),
+  );
+  assert(
+    fixCandidateNamesHeldFailure(
+      { ...NAMES, title: "Fix GitLeaks" },
+      ["gitleaks"],
+      [],
+    ),
+  );
+});
+
+Deno.test("fixCandidateNamesHeldFailure - a check name inside a longer word does not count (Issue #5437)", () => {
+  for (const title of ["gitleaksy", "notgitleaks", "gitleaks2"]) {
+    assertEquals(
+      fixCandidateNamesHeldFailure({ ...NAMES, title }, ["gitleaks"], []),
+      false,
+      title,
+    );
+  }
+  // A later whole-token occurrence still counts after an embedded one.
+  assert(
+    fixCandidateNamesHeldFailure(
+      { ...NAMES, title: "notgitleaks but gitleaks too" },
+      ["gitleaks"],
+      [],
+    ),
+  );
+});
+
+Deno.test("fixCandidateNamesHeldFailure - a held PR number counts only as a whole number and only when held (Issue #5437)", () => {
+  assert(
+    fixCandidateNamesHeldFailure(
+      { ...NAMES, body: "Follows up #5429" },
+      ["gitleaks"],
+      [5429],
+    ),
+  );
+  assertEquals(
+    fixCandidateNamesHeldFailure(
+      { ...NAMES, body: "See #54290" },
+      ["gitleaks"],
+      [5429],
+    ),
+    false,
+  );
+  assertEquals(
+    fixCandidateNamesHeldFailure(
+      { ...NAMES, body: "Follows up #5429" },
+      ["gitleaks"],
+      [5428],
+    ),
+    false,
+  );
+});
+
+Deno.test("fixCandidateNamesHeldFailure - a check name with spaces and a slash matches, and an empty name is ignored (Issue #5437)", () => {
+  assert(
+    fixCandidateNamesHeldFailure(
+      { ...NAMES, title: "Make CI / gate pass" },
+      ["CI / gate"],
+      [],
+    ),
+  );
+  assertEquals(
+    fixCandidateNamesHeldFailure(
+      { ...NAMES, title: "Anything" },
+      [""],
+      [],
+    ),
+    false,
+  );
+});
+
+Deno.test("fixCandidateNamesHeldFailure - a hostile long body of the check name's prefix returns false (Issue #5437)", () => {
+  const named = fixCandidateNamesHeldFailure(
+    { ...NAMES, body: "a".repeat(100000) + "!" },
+    ["aaab"],
+    [],
+  );
+  assertEquals(named, false);
+});
+
+/** Runs `findGreenFixPr` for check `lint` over `rows`, every candidate green. */
+function directFix(
+  rows: unknown[],
+  running: ReadonlySet<string>,
+  passing: ReadonlySet<string>,
+) {
+  const logger = makeLogger();
+  const fix = findGreenFixPr({
+    repo: REPO,
+    defaultBranch: DEFAULT_BRANCH,
+    checkNames: ["lint"],
+    heldPrNumbers: [],
+    isSyncBranch: () => false,
+    readAncestry: () =>
+      Promise.resolve({ status: "contains-default" as const }),
+    readSuccessfulCheckNames: (oid: string) =>
+      Promise.resolve(oid === "green" ? new Set(["lint"]) : passing),
+    fleetLogins: [],
+    readCheckRunStates: () =>
+      Promise.resolve({ failed: new Set<string>(), running }),
+    ghCommandFn: () => Promise.resolve(JSON.stringify(rows)),
+    logger,
+  });
+  return { fix, logger };
+}
+
+Deno.test("findGreenFixPr - a still-running human candidate that names nothing is not waited on (Issue #5437)", async () => {
+  const { fix, logger } = directFix(
+    [{
+      number: 12,
+      headRefName: "feature/dark-mode",
+      headRefOid: "running",
+      author: { login: "alice" },
+      title: "Add dark mode",
+      body: "",
+    }],
+    new Set(["lint"]),
+    new Set(),
+  );
+  assertEquals(await fix, null);
+  assert(logger.infos.some((line) => line.includes("names none of the held")));
+});
+
+Deno.test("findGreenFixPr - an unnamed running candidate is skipped and a later named green one is returned (Issue #5437)", async () => {
+  const { fix } = directFix(
+    [
+      {
+        number: 12,
+        headRefName: "feature/dark-mode",
+        headRefOid: "running",
+        author: { login: "alice" },
+        title: "Add dark mode",
+        body: "",
+      },
+      {
+        number: 13,
+        headRefName: "fix/other",
+        headRefOid: "green",
+        author: { login: "bob" },
+        title: "Fix lint",
+        body: "",
+      },
+    ],
+    new Set(["lint"]),
+    new Set(),
+  );
+  assertEquals((await fix)?.number, 13);
+});
+
+Deno.test("findGreenFixPr - a PR row without a title returns null and the warn names title (Issue #5437)", async () => {
+  const { fix, logger } = directFix(
+    [{
+      number: 12,
+      headRefName: "fix/lint",
+      headRefOid: "green",
+      author: { login: "alice" },
+      body: "",
+    }],
+    new Set(),
+    new Set(),
+  );
+  assertEquals(await fix, null);
+  assert(
+    logger.warns.some((w) => w.includes("title")),
+    `warns: ${logger.warns}`,
+  );
+});
+
+Deno.test("findGreenFixPr - a PR row without a body returns null and the warn names body (Issue #5437)", async () => {
+  const { fix, logger } = directFix(
+    [{
+      number: 12,
+      headRefName: "fix/lint",
+      headRefOid: "green",
+      author: { login: "alice" },
+      title: "Fix lint",
+    }],
+    new Set(),
+    new Set(),
+  );
+  assertEquals(await fix, null);
+  assert(
+    logger.warns.some((w) => w.includes("has no body")),
+    `warns: ${logger.warns}`,
+  );
+});
+
+Deno.test("findGreenFixPr - an empty body is valid, and the PR is adopted when its title names the check (Issue #5437)", async () => {
+  const { fix } = directFix(
+    [{
+      number: 12,
+      headRefName: "human/change",
+      headRefOid: "green",
+      author: { login: "alice" },
+      title: "Fix lint",
+      body: "",
+    }],
+    new Set(),
+    new Set(),
+  );
+  assertEquals((await fix)?.number, 12);
 });
