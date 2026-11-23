@@ -1570,9 +1570,8 @@ async function runClaudeWithTimeoutBody(
       ),
     };
   }
-  let stdinPayload = promptViaStdin
-    ? (provider.stdinBody?.(invocationRequest) ?? userPrompt)
-    : userPrompt;
+  // Assigned once the finish clamp has settled the final prompt (below).
+  let stdinPayload: string;
 
   let timeoutMs = sessionTimeoutSeconds * 1000;
   const noOutputMs = noOutputTimeout > 0 ? noOutputTimeout * 1000 : 0;
