@@ -51,12 +51,12 @@
 # secret scanning everywhere else.
 #
 # The allowlist uses the singular `[allowlist]` table, NOT the plural
-# `[[allowlists]]` array form. The licensed `gitleaks-action` pins gitleaks
-# 8.24.3, which does not honour a top-level `[[allowlists]]` entry when
-# `useDefault = true` (the extended default config shadows it), so the
-# fixture file was still flagged. The singular `[allowlist]` table is
-# honoured by both 8.24.3 (the action) and 8.30.1 (the CLI fallback), so
-# both scan paths agree.
+# `[[allowlists]]` array form. That choice was made while the licensed
+# `gitleaks-action` (gitleaks 8.24.3) still ran: 8.24.3 did not honour a
+# top-level `[[allowlists]]` entry when `useDefault = true` (the extended
+# default config shadows it), so the fixture file was still flagged. CI now
+# runs only the pinned gitleaks 8.30.1 CLI (Issue #5436), which honours the
+# singular `[allowlist]` table.
 [extend]
 useDefault = true
 
