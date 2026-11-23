@@ -14,7 +14,8 @@
  *   are held, which PR carries the fix, and the worker marker that lets a
  *   later scan tell whether the status is already current.
  * - `findGreenFixPr` finds an open human-authored fix PR against the default
- *   branch whose own CI is green on every held check. `postRedDefaultBranchStatusComment`
+ *   branch whose head contains the default branch's tip and whose own CI is
+ *   green on every held check. `postRedDefaultBranchStatusComment`
  *   then records the status there as a comment, so the human's body is never
  *   overwritten. Only when no such PR exists does the worker open or adopt its
  *   repair PR.
@@ -27,6 +28,7 @@
  */
 
 import type { Logger } from "../types.ts";
+import type { DefaultBranchAncestryResult } from "./default_branch_ancestry.ts";
 
 /** Head-branch prefix of the repair PR (Issue #5437). */
 export const RED_DEFAULT_BRANCH_REPAIR_PREFIX = "fix/red-default-branch-";
@@ -401,6 +403,12 @@ export interface GreenFixPrRequest {
   /** Whether a head branch is a `sync/milestone-*` branch. */
   isSyncBranch: (headRefName: string) => boolean;
   /**
+   * How a commit stands against the default branch. Only `contains-default`
+   * qualifies a candidate; a stale head cut before the default tip does not.
+   * Never throws: a failed read is `unknown`, with its cause.
+   */
+  readAncestry: (sha: string) => Promise<DefaultBranchAncestryResult>;
+  /**
    * The names of the checks that succeeded on a commit. Throws when the
    * commit's check runs cannot be read.
    */
@@ -455,12 +463,17 @@ function parseFixCandidates(output: string): FixCandidate[] {
  * Find an open fix PR against the default branch that already passes the
  * held checks (Issue #5437), such as a human's fix. A candidate is any open
  * PR against `defaultBranch` with a head commit, other than a sync branch, a
- * repair-prefix branch or a held PR. The first candidate whose successful
- * check names include every name in `checkNames` is the fix.
+ * repair-prefix branch or a held PR. A candidate qualifies only when its head
+ * contains the default branch's tip (`contains-default`), so a stale branch
+ * that lacks the red commit cannot pass for the fix. The first qualifying
+ * candidate whose successful check names include every name in `checkNames`
+ * is the fix. A candidate whose ancestry is `on-default` or `diverged` is
+ * skipped silently; one whose ancestry is `unknown` is skipped with a warning
+ * quoting the cause.
  *
- * Returns `null` when no candidate matches, or when a read fails. A failed
- * read is logged with its error, and the caller falls back to the worker's
- * repair PR. Never throws.
+ * Returns `null` when no candidate matches, or when the PR list or a check-run
+ * read fails. A failed read is logged with its error, and the caller falls
+ * back to the worker's repair PR. Never throws.
  */
 export async function findGreenFixPr(
   request: GreenFixPrRequest,
@@ -502,6 +515,17 @@ export async function findGreenFixPr(
     !held.has(pr.number)
   );
   for (const pr of candidates) {
+    const ancestry = await request.readAncestry(pr.headRefOid);
+    if (ancestry.status === "unknown") {
+      logger.warn(
+        `Red default branch: could not tell whether ${repo}#${pr.number} (${pr.headRefName}) contains ${defaultBranch}: ${
+          ancestry.cause ?? "no cause given"
+        }; it is not taken as the fix (Issue #5437)`,
+      );
+      continue;
+    }
+    if (ancestry.status !== "contains-default") continue;
+
     let passing: ReadonlySet<string>;
     try {
       passing = await request.readSuccessfulCheckNames(pr.headRefOid);

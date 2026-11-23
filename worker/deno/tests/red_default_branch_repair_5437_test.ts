@@ -9,6 +9,8 @@
  *   one is adopted, and its status is edited only when the marker differs;
  * - a held sync head behind the tip is fast-forwarded, and only that;
  * - a sync failure the default branch does not share still gets its fix;
+ * - a green human fix PR is adopted only when its head contains the default
+ *   branch's tip, so a stale branch cannot pass for the fix;
  * - an undecidable ancestry stands the sync PR down for the scan;
  * - the repair PR's own failure is returned ahead of other default-branch
  *   failures.
@@ -863,6 +865,7 @@ Deno.test("findFailedCiChecks - a green human fix PR against main is adopted: no
     humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
   ];
   fx.greenChecks = { [FIX_HEAD]: ["gitleaks", "gate"] };
+  fx.compare[FIX_HEAD] = "ahead";
   const { value, calls, logger } = await scan(fx);
 
   assertEquals(value, null);
@@ -885,6 +888,7 @@ Deno.test("findFailedCiChecks - a fleet-authored comment carrying the identical 
     humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
   ];
   fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.compare[FIX_HEAD] = "ahead";
   // `testbot` is the scan's own login, so it is in the fleet author set.
   fx.comments = {
     5434: [{ login: "testbot", body: statusComment(5434) }],
@@ -902,6 +906,7 @@ Deno.test("findFailedCiChecks - a comment with the identical marker from a non-f
     humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
   ];
   fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.compare[FIX_HEAD] = "ahead";
   fx.comments = {
     5434: [{ login: "nleck", body: statusComment(5434) }],
   };
@@ -931,6 +936,7 @@ Deno.test("findFailedCiChecks - a candidate green on only some held checks is no
   );
   fx.fixPrs = [humanFixPr(5440, "fix/partial", FIX_HEAD, "nleck")];
   fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.compare[FIX_HEAD] = "ahead";
   const { value, calls } = await scan(fx);
 
   assertEquals(value, null);
@@ -940,6 +946,48 @@ Deno.test("findFailedCiChecks - a candidate green on only some held checks is no
   assertStringIncludes(
     argAfter(creates[0] ?? [], "--body") ?? "",
     "`gitleaks`, `lint`",
+  );
+});
+
+Deno.test("findFailedCiChecks - a candidate green on every held check but diverged from main is a stale branch: not adopted, and the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/stale-before-red", FIX_HEAD, "nleck"),
+  ];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks", "gate"] };
+  fx.compare[FIX_HEAD] = "diverged";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertEquals(callsTo(calls, "pr", "edit").length, 0);
+  const creates = prCreateCalls(calls);
+  assertEquals(creates.length, 1);
+  assertStringIncludes(
+    argAfter(creates[0] ?? [], "--body") ?? "",
+    "fix in this PR",
+  );
+  assertEquals(logger.warns, []);
+});
+
+Deno.test("findFailedCiChecks - a candidate whose ancestry cannot be read is not adopted, the warn quotes the gh error, and the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/unknown-ancestry", FIX_HEAD, "nleck"),
+  ];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks", "gate"] };
+  fx.compare[FIX_HEAD] = "error";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not tell whether org/repo#5434") &&
+      warn.includes("contains main") &&
+      warn.includes("HTTP 502: Bad Gateway")
+    ),
   );
 });
 
@@ -963,6 +1011,7 @@ Deno.test("findFailedCiChecks - a failed check-run read on a candidate warns and
   const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
   fx.fixPrs = [humanFixPr(5434, "fix/gitleaks", FIX_HEAD, "nleck")];
   fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.compare[FIX_HEAD] = "ahead";
   fx.checkReadErrors = [FIX_HEAD];
   const { value, calls, logger } = await scan(fx);
 
@@ -981,6 +1030,7 @@ Deno.test("findFailedCiChecks - a failed comment read warns with the gh error an
   const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
   fx.fixPrs = [humanFixPr(5434, "fix/gitleaks", FIX_HEAD, "nleck")];
   fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.compare[FIX_HEAD] = "ahead";
   fx.commentReadError = "HTTP 502: Bad Gateway";
   const { value, calls, logger } = await scan(fx);
 
@@ -999,6 +1049,7 @@ Deno.test("findFailedCiChecks - a failed status comment post warns with the gh e
   const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
   fx.fixPrs = [humanFixPr(5434, "fix/gitleaks", FIX_HEAD, "nleck")];
   fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.compare[FIX_HEAD] = "ahead";
   fx.commentPostError = "HTTP 403: Resource not accessible";
   const { value, calls, logger } = await scan(fx);
 
@@ -1236,6 +1287,7 @@ Deno.test("findFailedCiChecks - with a green human fix PR adopted, the worker's 
     humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
   ];
   fx.greenChecks = { [FIX_HEAD]: ["gitleaks", "gate"] };
+  fx.compare[FIX_HEAD] = "ahead";
   const { value, calls, logger } = await scan(fx);
 
   // The repair PR's gitleaks failure is not the result: the fix PR is adopted.

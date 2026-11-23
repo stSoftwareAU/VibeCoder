@@ -1952,6 +1952,8 @@ async function repairHeldDefaultBranch(input: {
     checkNames,
     heldPrNumbers,
     isSyncBranch: (headRefName) => isMilestoneSyncBranch(headRefName),
+    readAncestry: (sha) =>
+      commitAncestryOnDefault(repo, sha, defaultBranch, ghCommandFn),
     readSuccessfulCheckNames: async (sha) =>
       new Set(
         (await fetchFailedCheckRunsStrict(repo, sha, ghCommandFn, ["success"]))

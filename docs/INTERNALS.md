@@ -5418,8 +5418,11 @@ flowchart TD
 - **A green human fix is adopted, not duplicated.** Before a repair PR is opened
   or adopted, the open PRs against the default branch are listed
   (`gh pr list --base <default> --state open`, limit 30). The first one that is
-  not a sync or repair PR, is not held, and whose head commit has succeeded on
-  every held check is the fix. The status is then posted to it as one comment
+  not a sync or repair PR, is not held, whose head contains the default
+  branch's tip (the compare status is `ahead`, so a stale branch cut before the
+  red commit does not count), and whose head commit has succeeded on every held
+  check is the fix. A candidate whose ancestry cannot be read is skipped with a
+  warning quoting the error. The status is then posted to it as one comment
   carrying the `vibe-red-default-branch-hold` marker, and no repair PR is made.
   Its body is never edited. A comment already counts only when its author is a
   fleet login and its body ends with the identical marker, so a repeat scan
