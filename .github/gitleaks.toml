@@ -176,4 +176,10 @@ paths = [
   # the literals in one piece, and the range scan covers it, so only a path
   # allowlist clears it.
   '''worker/deno/tests/secret_redaction_json_structure_test\.ts''',
+  # Synthetic `abcdefgh1234`-style values chained behind credential labels
+  # (DEPLOY_TOKEN, ADMIN_TOKEN) to prove `redactSecrets()` masks the inner
+  # label's value too (Issue #5310). The file is fixture-only and the commit
+  # that introduced it carries the literals in one piece, so only a path
+  # allowlist clears the range scan.
+  '''worker/deno/tests/secret_redaction_label_as_value_5310_test\.ts''',
 ]
