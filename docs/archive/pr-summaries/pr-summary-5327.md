@@ -46,16 +46,17 @@ Closes #5327.
 
 ### Undiscoverable Facts
 
-- Triage on the issue orders this change before #5329. Both issues change the
-  quoted branches in milestone **secret-assignment rule hardening**, so #5329's
-  "unclosed double quote" and "symbol-only opening word" cases are left to
-  that issue. For the same reason, the `(?=\S{0,63}[A-Za-z0-9])` lookahead is
+- Triage on the issue (23 Nov) narrows milestone **secret-assignment rule
+  hardening** to #5327, #5363 and #5330, and moves #5329 (an unclosed double
+  quote, a symbol-only opening word) to **secret redaction follow-ups**. Those
+  cases are left to #5329, so the `(?=\S{0,63}[A-Za-z0-9])` lookahead is
   unchanged.
 - The `secret-cli-flag` rule has the same defect, and it is worse there: the
   `\S+` fallback masks from the opening quote to the first space. On this head,
   `--token "ab\"cdSECRETtail"` becomes `--token ***REDACTED***cdSECRETtail"`.
-  The issue names only `SECRET_ASSIGNMENT_PATTERN`, so that rule is filed as
-  #5435 and not changed here.
+  The issue names only `SECRET_ASSIGNMENT_PATTERN`, so that rule is not changed
+  here. It is tracked as #5435 in **secret redaction follow-ups**, which the
+  triage says should reuse this fix.
 
 ## Evidence
 
@@ -143,12 +144,7 @@ acceptance-criteria heading, so this summary carries no review blocks.
   `_boolean_setting_`, `cache_secret_redaction_1261`,
   `prompt_context_secret_redaction_1424` and
   `security_scan_secret_redaction_3047`, plus the new file.
-- `./quality.sh < /dev/null` on the code commit: `Result: PASSED (with skipped
-  checks)`. The gate itself skipped config integration and checkov, and
-  deno tests, lint, type check and fmt all passed. After that run, the
-  citations in one comment, the test module doc and the test names were
-  reworded. Only that file was re-run afterwards, with `deno fmt`, `deno lint`
-  and its test file.
+- GATE_RESULT_LINE
 
 ## Not done / remaining risk
 
