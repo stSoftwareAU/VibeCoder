@@ -29,7 +29,7 @@ miss:
 - Branch 2: `"` followed by a letter or digit within the first 256 characters
   inside the quotes (`(?=[^"]{0,255}[A-Za-z0-9])`). It is either closed
   (`[^"]+"`) or, when no closing quote remains, runs to the end of the line
-  (`[^"\n\r  ]+`). The next line is never taken.
+  (`[^"\n\r\u2028\u2029]+`). The next line is never taken.
 - Branch 3: a **closed** single-quoted value with the same bounded check. An
   unterminated single-quoted value is still read by branch 1's bare run, as
   before, so a lone `'` is never masked on its own.
