@@ -357,9 +357,8 @@ Emulator, or a documented Floci gap. It does not observe a CI run.
 Official server mode needs all of the following:
 
 - a reachable `run:` command in the helper's test form,
-  `aws-emulator-run [--ready-timeout N] [--timeout N] -- COMMAND`, with
-  a non-empty COMMAND that is not a no-op (`true`, `:`, `/bin/true`,
-  `/usr/bin/true`). The step may run the command directly, or run a
+  `aws-emulator-run [--ready-timeout N] [--timeout N] -- COMMAND`, where
+  COMMAND is the repository's test (see **Test COMMAND** below). The step may run the command directly, or run a
   repository script that invokes it: one level of indirection, with the
   script read from the checkout and confined to it (absolute paths,
   `..`, `$` expansions and symlinks out of the repo do not count);
@@ -507,6 +506,34 @@ mention in a string does not count. Nor does an invocation that runs no
 repository test: the helper's own `--smoke` self-check, `--smoke-client`,
 `-h`/`--help`, a bare `--`, `-- true`, or a COMMAND without `--` (which
 the helper rejects).
+
+**Test COMMAND.** The COMMAND after `--` earns official-server credit
+only when it is the repository's test, in one of three forms:
+
+- (a) a recognised test command, the same matcher the Floci gap rule
+  below uses: a test runner such as `pytest` or `jest`, a test
+  subcommand such as `cargo test`, `go test`, `deno test`,
+  `deno task <test-named task>`, `npm test` or `npm run test:aws`,
+  `make <test-named target>`, a Maven or Gradle test goal, or a
+  repository script whose file name names a test
+  (`./scripts/run-tests.sh`). Probes such as `pytest --version` and
+  install steps never count;
+- (b) a repository script that itself has a test command of that kind
+  whose failure fails the script, one level only
+  (`aws-emulator-run -- ./ci/run.sh`, where `run.sh` runs
+  `deno task test` under `set -euo pipefail`); or
+- (c) a test-named script the step ran that re-executes itself under the
+  runner (`exec aws-emulator-run -- "$0"`, or a variable assigned from
+  `${BASH_SOURCE[0]}` or `$0`), as VibeCoder's own
+  `infra/cloudformation/test-aws-emulator.sh` does.
+
+Anything else earns no credit: `echo ok`, `aws --version`, a `curl`
+health probe, `sleep`, `sh -c 'exit 0'`, or `bash -c '… || true'` (a
+`-c` command string is never followed). The finding's diagnostics then
+say ``… runs `<COMMAND>` through aws-emulator-run, which is not a
+recognised repository test command``. A no-op COMMAND (`true`, `:`) is not
+recognised as a runner invocation at all, so it earns no credit and adds no
+diagnostic.
 
 **Embedded mode (Rust only).** Where `Cargo.toml` is AWS evidence, a
 credited step may instead use the embedded emulator. Its `run:` carries
