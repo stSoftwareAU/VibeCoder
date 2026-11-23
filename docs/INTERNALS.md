@@ -880,11 +880,17 @@ bound. A detached `( … & )` job is re-parented at once and never appears in th
 descendant snapshot, so this is the only collection that reaches it. Linux
 only: the scan reads `/proc/<pid>/environ` through `grep`
 ([`agent_leftover_reaper.ts`](../worker/deno/lib/agent_leftover_reaper.ts)).
-Each pid is fingerprinted after the scan (`captureProcessIdentity`) and
+Each pid is fingerprinted after the scan (`captureProcessIdentity`), then its tag
+is read again for that same pid, so a pid reused since the scan holds an
+untagged process and is never taken for a leftover. The fingerprint is
 re-checked (`isSameProcess`) immediately before every TERM and KILL. A pid with
-no fingerprint, or one that no longer matches, is never signalled and is listed
-as skipped. Events: `AGENT_LEFTOVERS_COLLECTED`, and `AGENT_LEFTOVERS_UNCHECKED`
-when the scan fails or a signal, identity or probe throws (Issue #4815).
+no fingerprint, no tag or a changed fingerprint is never signalled and is listed
+as skipped. The pass rescans while it runs (every second of the TERM wait, then
+up to four KILL rounds), so a tagged child a leftover starts meanwhile is
+terminated too; if new ones are still appearing at that bound, they are listed
+as survivors and the warning says cleanup is incomplete. Events:
+`AGENT_LEFTOVERS_COLLECTED`, and `AGENT_LEFTOVERS_UNCHECKED` when the scan or a
+rescan fails or a signal, identity or probe throws (Issue #4815).
 
 ### 📉 Failure tracking (`worker/deno/commands/failure_tracker.ts`)
 

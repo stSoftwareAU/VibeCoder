@@ -17,6 +17,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   AGENT_SPAWN_TAG_ENV,
+  DEFAULT_LEFTOVER_REAPER_DEPS,
   type FindTaggedResult,
   type LeftoverReaperDeps,
   newAgentSpawnTag,
@@ -79,6 +80,16 @@ interface FakeOptions {
   noIdentity?: number[];
   /** Pids whose identity changes once they have been sent TERM. */
   replacedAfterTerm?: number[];
+  /**
+   * Pids found by the scan whose process is an untagged replacement by the
+   * time the identity is captured (the old tagged process has exited and the
+   * pid was reused).
+   */
+  replacedBeforeCapture?: number[];
+  /** Pids that start a tagged child, by pid, when sent TERM, then exit. */
+  spawnsOnTerm?: Record<number, number>;
+  /** Every signalled pid exits after starting a new tagged one. */
+  respawnOnSignal?: boolean;
   /** The reaper's own pid. Default 1. */
   selfPid?: number;
   /** Whether the platform is supported. Default true. */
@@ -92,10 +103,21 @@ function fakeReaper(options: FakeOptions) {
   const scans: string[] = [];
   const sleeps: number[] = [];
   const found: FindTaggedResult = options.found ?? { ok: true, pids: [] };
+  // Tagged processes born while the reaper runs, still alive.
+  const born: number[] = [];
+  let nextBorn = 9000;
   const deps: LeftoverReaperDeps = {
     findTagged: (envEntry) => {
       scans.push(envEntry);
-      return Promise.resolve(found);
+      if (!found.ok) return Promise.resolve(found);
+      return Promise.resolve({
+        ok: true as const,
+        pids: [...found.pids, ...born.filter((pid) => alive.has(pid))],
+      });
+    },
+    hasTag: (pid) => {
+      const replaced = options.replacedBeforeCapture?.includes(pid) === true;
+      return Promise.resolve(alive.has(pid) && !replaced);
     },
     processNames: (pids) => {
       const names = new Map<number, string>();
@@ -131,6 +153,15 @@ function fakeReaper(options: FakeOptions) {
         return Promise.resolve();
       }
       alive.delete(pid);
+      const child = options.respawnOnSignal === true
+        ? nextBorn++
+        : signal === "TERM"
+        ? options.spawnsOnTerm?.[pid]
+        : undefined;
+      if (child !== undefined) {
+        alive.add(child);
+        born.push(child);
+      }
       return Promise.resolve();
     },
     sleep: (ms) => {
@@ -140,7 +171,7 @@ function fakeReaper(options: FakeOptions) {
     selfPid: options.selfPid ?? 1,
     supported: options.supported ?? true,
   };
-  return { deps, signals, scans, sleeps };
+  return { deps, signals, scans, sleeps, alive, born };
 }
 
 Deno.test({
@@ -162,7 +193,12 @@ Deno.test({
       deps: fake.deps,
     });
 
-    assertEquals(fake.scans, [`${AGENT_SPAWN_TAG_ENV}=${TAG}`]);
+    // The pass rescans while it runs; every scan asks for this spawn tag.
+    assert(fake.scans.length >= 1, "the environment must be scanned");
+    assertEquals(
+      [...new Set(fake.scans)],
+      [`${AGENT_SPAWN_TAG_ENV}=${TAG}`],
+    );
     assertEquals(fake.signals, ["TERM 101", "TERM 102"]);
     assertEquals(result.collected, [101, 102]);
     assertEquals(result.survivors, []);
@@ -443,6 +479,196 @@ Deno.test({
   },
 });
 
+Deno.test({
+  name:
+    "reaper - a tagged pid replaced by an untagged process before the identity is captured is never signalled",
+  permissions: { read: true, env: true },
+  async fn() {
+    // 101 was tagged at the scan, then exited and its pid was reused by an
+    // unrelated process; 102 is a genuine leftover (the allowed control).
+    const fake = fakeReaper({
+      found: { ok: true, pids: [101, 102] },
+      alive: [101, 102],
+      replacedBeforeCapture: [101],
+      ignoreTerm: [101],
+    });
+    const recorded = newRecorded();
+    const result = await reapAgentLeftovers({
+      tag: TAG,
+      maxWaitSeconds: 2,
+      logger: recordingLogger(recorded),
+      deps: fake.deps,
+    });
+
+    assertEquals(fake.signals, ["TERM 102"]);
+    assertEquals(result.collected, [102]);
+    assertEquals(result.skipped, [101]);
+    assertEquals(result.survivors, []);
+    assert(fake.alive.has(101), "the unrelated replacement must keep running");
+    assertEquals(result.error, undefined);
+    // Only the genuine leftover is reported as one the agent left.
+    assertStringIncludes(firstOf(recorded.warn), "left 1 process(es)");
+    assertStringIncludes(firstOf(recorded.warn), "; skipped: 101");
+  },
+});
+
+Deno.test({
+  name:
+    "reaper - when every found pid was replaced nothing is signalled and no leftover is claimed",
+  permissions: { read: true, env: true },
+  async fn() {
+    const fake = fakeReaper({
+      found: { ok: true, pids: [111] },
+      alive: [111],
+      replacedBeforeCapture: [111],
+    });
+    const recorded = newRecorded();
+    const result = await reapAgentLeftovers({
+      tag: TAG,
+      maxWaitSeconds: 2,
+      logger: recordingLogger(recorded),
+      deps: fake.deps,
+    });
+
+    assertEquals(fake.signals, []);
+    assertEquals(result.collected, []);
+    assertEquals(result.skipped, [111]);
+    assert(fake.alive.has(111), "the replacement must keep running");
+    assertEquals(recorded.warn.length, 1);
+    assert(
+      !firstOf(recorded.warn).includes("left 1 process"),
+      firstOf(recorded.warn),
+    );
+    assertStringIncludes(firstOf(recorded.warn), "Skipped 111");
+  },
+});
+
+Deno.test({
+  name:
+    "reaper - a tagged child a leftover starts while handling TERM is terminated too",
+  permissions: { read: true, env: true },
+  async fn() {
+    // 101 starts tagged 102 when sent TERM and exits; 900 is unrelated.
+    const fake = fakeReaper({
+      found: { ok: true, pids: [101] },
+      alive: [101, 900],
+      spawnsOnTerm: { 101: 102 },
+    });
+    const recorded = newRecorded();
+    const result = await reapAgentLeftovers({
+      tag: TAG,
+      maxWaitSeconds: 3,
+      logger: recordingLogger(recorded),
+      deps: fake.deps,
+    });
+
+    assertEquals(fake.signals, ["TERM 101", "TERM 102"]);
+    assertEquals(result.collected, [101, 102]);
+    assertEquals(result.survivors, []);
+    assertEquals(result.skipped, []);
+    assert(!fake.alive.has(102), "the child born during the pass must be gone");
+    assert(fake.alive.has(900), "unrelated work must survive");
+    assertStringIncludes(firstOf(recorded.warn), "left 2 process(es)");
+  },
+});
+
+Deno.test({
+  name:
+    "reaper - a tagged child that ignores TERM is KILLed, and one born during KILL is found by the next round",
+  permissions: { read: true, env: true },
+  async fn() {
+    // 201 ignores TERM, and starts tagged 202 at the moment it is KILLed.
+    const fake = fakeReaper({
+      found: { ok: true, pids: [201] },
+      alive: [201, 900],
+      ignoreTerm: [201],
+    });
+    const inner = fake.deps.sendSignal;
+    fake.deps.sendSignal = async (pid, signal) => {
+      await inner(pid, signal);
+      if (pid === 201 && signal === "KILL") {
+        fake.alive.add(202);
+        fake.born.push(202); // the scan can now find it
+      }
+    };
+    const result = await reapAgentLeftovers({
+      tag: TAG,
+      maxWaitSeconds: 1,
+      logger: recordingLogger(newRecorded()),
+      deps: fake.deps,
+    });
+
+    assertEquals(fake.signals, ["TERM 201", "KILL 201", "KILL 202"]);
+    assertEquals(result.survivors, []);
+    assert(!fake.alive.has(202));
+    assert(fake.alive.has(900), "unrelated work must survive");
+  },
+});
+
+Deno.test({
+  name:
+    "reaper - tagged processes that keep appearing are bounded and reported as incomplete",
+  permissions: { read: true, env: true },
+  async fn() {
+    // Every signalled pid exits after starting a new tagged one.
+    const fake = fakeReaper({
+      found: { ok: true, pids: [301] },
+      alive: [301, 900],
+      respawnOnSignal: true,
+    });
+    const recorded = newRecorded();
+    const result = await reapAgentLeftovers({
+      tag: TAG,
+      maxWaitSeconds: 2,
+      logger: recordingLogger(recorded),
+      deps: fake.deps,
+    });
+
+    assert(result.survivors.length > 0, "the newest child must be reported");
+    for (const pid of result.survivors) {
+      assert(fake.alive.has(pid), `survivor ${pid} must still be running`);
+    }
+    assert(fake.alive.has(900), "unrelated work must survive");
+    // Bounded: two TERM-wait rescans and four KILL rounds, one spawn each.
+    assert(fake.signals.length <= 12, fake.signals.join(", "));
+    assertStringIncludes(firstOf(recorded.warn), "cleanup is incomplete");
+    assertStringIncludes(firstOf(recorded.warn), "; still running: ");
+  },
+});
+
+Deno.test({
+  name:
+    "reaper - a rescan that fails stops the pass and lists what is unproven",
+  permissions: { read: true, env: true },
+  async fn() {
+    const fake = fakeReaper({
+      found: { ok: true, pids: [401] },
+      alive: [401],
+    });
+    let scans = 0;
+    const scan = fake.deps.findTagged;
+    fake.deps.findTagged = (entry) => {
+      scans++;
+      return scans === 1
+        ? scan(entry)
+        : Promise.resolve({ ok: false, error: "pgrep failed with status 2" });
+    };
+    const recorded = newRecorded();
+    const result = await reapAgentLeftovers({
+      tag: TAG,
+      maxWaitSeconds: 2,
+      logger: recordingLogger(recorded),
+      deps: fake.deps,
+    });
+
+    assertEquals(fake.signals, ["TERM 401"]);
+    assertStringIncludes(result.error ?? "", "rescan failed");
+    assertStringIncludes(result.error ?? "", "pgrep failed with status 2");
+    assertEquals(firstOf(recorded.security).event, "AGENT_LEFTOVERS_UNCHECKED");
+    assertStringIncludes(firstOf(recorded.security).details, "unproven=401");
+  },
+});
+
 /** Pids whose full command line matches `pattern`, via `pgrep -f`. */
 async function pgrepPids(pattern: string): Promise<number[]> {
   const out = await new Deno.Command("pgrep", {
@@ -593,6 +819,48 @@ Deno.test({
       assertStringIncludes(warning, "Issue #4815");
     } finally {
       await killMatching(pattern);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "reaper - the default tag read is true for a tagged process and false for others (Linux)",
+  permissions: { run: true, read: true, env: true },
+  ignore: Deno.build.os !== "linux",
+  async fn() {
+    const tagValue = newAgentSpawnTag();
+    const entry = `${AGENT_SPAWN_TAG_ENV}=${tagValue}`;
+    const duration = uniqueSleepDuration(302);
+    const tagged = new Deno.Command("sleep", {
+      args: [duration],
+      stdin: "null",
+      stdout: "null",
+      stderr: "null",
+      env: { [AGENT_SPAWN_TAG_ENV]: tagValue },
+    }).spawn();
+    try {
+      const { hasTag } = DEFAULT_LEFTOVER_REAPER_DEPS;
+      assertEquals(await hasTag(tagged.pid, entry), true);
+      // Same process, a different tag: refused by the entry, not the pid.
+      assertEquals(
+        await hasTag(
+          tagged.pid,
+          `${AGENT_SPAWN_TAG_ENV}=${newAgentSpawnTag()}`,
+        ),
+        false,
+      );
+      // A process without the variable at all (this test runner).
+      assertEquals(await hasTag(Deno.pid, entry), false);
+      // A pid that does not exist.
+      assertEquals(await hasTag(2_000_000_000, entry), false);
+    } finally {
+      try {
+        tagged.kill("SIGKILL");
+      } catch {
+        // Already gone.
+      }
+      await tagged.status;
     }
   },
 });

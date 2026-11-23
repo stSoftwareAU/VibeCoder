@@ -37,6 +37,12 @@ const TAG_PATTERN = /^[0-9a-f-]{8,64}$/i;
 const POST_KILL_SETTLE_MS = 500;
 
 /**
+ * Bound on KILL rounds. Each round rescans for tagged processes born since
+ * the last one, so a tree that keeps forking cannot hold the pass open.
+ */
+const MAX_KILL_ROUNDS = 4;
+
+/**
  * Prints the pid of every same-user process whose environment carries the
  * entry in `$1`. The entry is an argument, never interpolated. A pid that
  * vanishes mid-scan is skipped. A missing `pgrep` or a failed scan exits
@@ -52,6 +58,15 @@ const FIND_TAGGED_SCRIPT = [
   "exit 0",
 ].join("\n");
 
+/**
+ * Exits 0 only when `/proc/$1/environ` holds the entry in `$2`. A pid that
+ * has gone, or whose environment cannot be read, exits non-zero.
+ */
+const HAS_TAG_SCRIPT = [
+  'f=/proc/$1/environ; [ -r "$f" ] || exit 1',
+  'grep -q -z -x -F -e "$2" "$f" 2>/dev/null',
+].join("\n");
+
 /** Result of one scan for tagged processes. */
 export type FindTaggedResult =
   | { ok: true; pids: number[] }
@@ -61,6 +76,12 @@ export type FindTaggedResult =
 export interface LeftoverReaperDeps {
   /** Pids whose environment carries `envEntry` (`NAME=value`). */
   findTagged: (envEntry: string) => Promise<FindTaggedResult>;
+  /**
+   * Whether the process now holding `pid` carries `envEntry`. Read after the
+   * identity is captured, so the fingerprint is bound to a tagged process.
+   * Any doubt answers `false`.
+   */
+  hasTag: (pid: number, envEntry: string) => Promise<boolean>;
   /** Command name (never arguments) for each pid, when readable. */
   processNames: (pids: number[]) => Promise<Map<number, string>>;
   /** Whether a pid is still running. */
@@ -156,6 +177,18 @@ async function defaultFindTagged(envEntry: string): Promise<FindTaggedResult> {
   return { ok: true, pids: parsePids(decoder.decode(out.stdout)) };
 }
 
+async function defaultHasTag(pid: number, envEntry: string): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid < 1) return false;
+  const out = await commandOutputWithTimeout("sh", {
+    args: ["-c", HAS_TAG_SCRIPT, "sh", String(pid), envEntry],
+    stdin: "null",
+    stdout: "null",
+    stderr: "null",
+    timeoutMs: REAPER_PROBE_TIMEOUT_MS,
+  });
+  return out.success;
+}
+
 async function defaultProcessNames(
   pids: number[],
 ): Promise<Map<number, string>> {
@@ -188,6 +221,7 @@ async function defaultProcessNames(
 /** Injectable seams with the real OS behind them. */
 export const DEFAULT_LEFTOVER_REAPER_DEPS: LeftoverReaperDeps = {
   findTagged: defaultFindTagged,
+  hasTag: defaultHasTag,
   processNames: defaultProcessNames,
   isRunning: DEFAULT_ORPHAN_COLLECTOR_DEPS.isRunning,
   sendSignal: DEFAULT_ORPHAN_COLLECTOR_DEPS.sendSignal,
@@ -218,14 +252,20 @@ async function runningOf(
 
 /**
  * Terminate every same-user process that carries the agent's spawn tag.
- * Call once the agent has exited. Each pid is fingerprinted after the scan
- * and re-checked immediately before every TERM and KILL; a pid with no
- * fingerprint, or one that no longer matches, is never signalled and is
- * reported as skipped. TERM first, then KILL after the bound.
+ * Call once the agent has exited. Each pid is fingerprinted after the scan,
+ * and its tag is read again after the fingerprint, so a pid reused since the
+ * scan is never taken for a leftover. The fingerprint is re-checked
+ * immediately before every TERM and KILL; a pid with no fingerprint, no tag
+ * or a changed fingerprint is never signalled and is reported as skipped.
+ * TERM first, then KILL after the bound. The pass rescans while it runs
+ * (each second of the TERM wait, then each KILL round, at most
+ * {@link MAX_KILL_ROUNDS}), so a tagged child a leftover starts meanwhile is
+ * terminated too; when new ones are still appearing at the bound, they are
+ * reported as survivors and the warning says cleanup is incomplete.
  * Never throws: a scan failure is logged with its cause and reported as
- * `AGENT_LEFTOVERS_UNCHECKED`. A signal, identity or probe that throws stops
- * the pass, logs the cause under the same event, and reports as survivors
- * every pid not proven gone.
+ * `AGENT_LEFTOVERS_UNCHECKED`. A signal, identity, rescan or probe that
+ * throws stops the pass, logs the cause under the same event, and reports as
+ * survivors every pid not proven gone.
  */
 export async function reapAgentLeftovers(
   options: ReapAgentLeftoversOptions,
@@ -274,8 +314,8 @@ export async function reapAgentLeftovers(
     };
   }
 
-  const pids = found.pids.filter((pid) => pid !== deps.selfPid);
-  if (pids.length === 0) {
+  const initial = found.pids.filter((pid) => pid !== deps.selfPid);
+  if (initial.length === 0) {
     return { supported: true, collected: [], survivors: [], skipped: [] };
   }
 
@@ -283,50 +323,118 @@ export async function reapAgentLeftovers(
   const skipped: number[] = [];
   const gone = new Set<number>();
   const identities = new Map<number, ProcessIdentity>();
-  let names = new Map<number, string>();
+  // Every pid the pass has taken up, in the order found. `untagged` holds the
+  // ones that no longer carried the tag when checked: not the agent's.
+  const known: number[] = [];
+  const knownSet = new Set<number>();
+  const untagged = new Set<number>();
+  const names = new Map<number, string>();
+
+  // Takes up pids not seen before. Each is fingerprinted and then its tag is
+  // read again, in that order: a pid reused between the scan and the
+  // fingerprint holds an untagged process, so the fingerprint is never bound
+  // to it, and it is skipped, not signalled.
+  const adopt = async (candidates: number[]): Promise<number[]> => {
+    const fresh = candidates.filter((pid) =>
+      pid !== deps.selfPid && !knownSet.has(pid)
+    );
+    if (fresh.length === 0) return fresh;
+    for (const pid of fresh) {
+      knownSet.add(pid);
+      known.push(pid);
+    }
+    for (const [pid, name] of await deps.processNames(fresh)) {
+      names.set(pid, name);
+    }
+    for (const pid of fresh) {
+      const identity = await deps.captureIdentity(pid);
+      if (identity === null) {
+        skipped.push(pid);
+      } else if (!(await deps.hasTag(pid, entry))) {
+        untagged.add(pid);
+        skipped.push(pid);
+      } else {
+        identities.set(pid, identity);
+      }
+    }
+    return fresh;
+  };
+  // Scans again for tagged processes born since the last scan, such as a
+  // child a leftover starts while it handles TERM, and takes them up.
+  const rescan = async (): Promise<number[]> => {
+    const result = await deps.findTagged(entry);
+    if (!result.ok) throw new Error(`rescan failed: ${result.error}`);
+    return await adopt(result.pids);
+  };
   // Checked immediately before every signal: a pid with no fingerprint, or
   // one that no longer matches its fingerprint, is never signalled.
   const stillOurs = async (pid: number): Promise<boolean> => {
     const identity = identities.get(pid);
     return identity !== undefined && await deps.isSame(pid, identity);
   };
-  let survivors: number[];
-  try {
-    names = await deps.processNames(pids);
+  const signalAll = async (
+    pids: number[],
+    signal: "TERM" | "KILL",
+  ): Promise<number> => {
+    let sent = 0;
     for (const pid of pids) {
-      const identity = await deps.captureIdentity(pid);
-      if (identity !== null) identities.set(pid, identity);
-    }
-    for (const pid of pids) {
+      if (skipped.includes(pid)) continue;
       if (!(await stillOurs(pid))) {
         skipped.push(pid);
         continue;
       }
-      await deps.sendSignal(pid, "TERM");
-      signalled.push(pid);
+      await deps.sendSignal(pid, signal);
+      sent++;
+      if (!signalled.includes(pid)) signalled.push(pid);
     }
+    return sent;
+  };
+  const killedPids = new Set<number>();
+  let survivors: number[];
+  let exhausted = false;
+  try {
+    await adopt(initial);
+    await signalAll(known, "TERM");
     const waitSeconds = Math.max(1, Math.floor(options.maxWaitSeconds));
     for (let i = 0; i < waitSeconds; i++) {
-      if ((await runningOf(deps, signalled, gone)).length === 0) break;
+      const born = await rescan();
+      await signalAll(born, "TERM");
+      if (
+        born.length === 0 &&
+        (await runningOf(deps, signalled, gone)).length === 0
+      ) break;
       await deps.sleep(1000);
     }
-    for (const pid of await runningOf(deps, signalled, gone)) {
-      if (!(await stillOurs(pid))) {
-        skipped.push(pid);
-        continue;
+    // KILL until a rescan finds nothing new and nothing is left to KILL, so a
+    // tagged child born while the pass ran is found before it is called clear.
+    exhausted = true;
+    for (let round = 0; round < MAX_KILL_ROUNDS; round++) {
+      const born = await rescan();
+      const running = await runningOf(deps, signalled, gone);
+      // A pid already sent KILL is not sent it again: one that survives it
+      // is reported, not retried.
+      const targets = [...born, ...running].filter((pid) =>
+        !killedPids.has(pid)
+      );
+      for (const pid of targets) killedPids.add(pid);
+      const killed = await signalAll(targets, "KILL");
+      if (born.length === 0 && killed === 0) {
+        exhausted = false;
+        break;
       }
-      await deps.sendSignal(pid, "KILL");
+      await deps.sleep(POST_KILL_SETTLE_MS);
     }
-    await deps.sleep(POST_KILL_SETTLE_MS);
-    survivors = (await runningOf(deps, signalled, gone)).filter((pid) =>
-      !skipped.includes(pid)
-    );
+    // After the last round, anything tagged and still running is a survivor.
+    const late = exhausted ? await rescan() : [];
+    survivors = (await runningOf(deps, [...signalled, ...late], gone)).filter((
+      pid,
+    ) => !skipped.includes(pid));
   } catch (error) {
     const cause = errorText(error);
     const done = signalled.length > 0 ? signalled.join(",") : "none";
     // Not proven gone: a pid the pass never confirmed absent, so it is listed
     // as unknown rather than as clear. A skipped pid is not ours to report.
-    const unproven = pids.filter((pid) =>
+    const unproven = known.filter((pid) =>
       !gone.has(pid) && !skipped.includes(pid)
     );
     logger?.error(
@@ -347,15 +455,29 @@ export async function reapAgentLeftovers(
     };
   }
 
-  const described = pids
-    .map((pid) => `${pid}(${names.get(pid) ?? "unknown"})`)
-    .join(", ");
-  logger?.warn(
-    `The ${label} left ${pids.length} process(es) running after it exited: ` +
-      `${described}; terminated (Issue #4815)` +
-      (survivors.length > 0 ? `; still running: ${survivors.join(", ")}` : "") +
-      (skipped.length > 0 ? `; skipped: ${skipped.join(", ")}` : ""),
-  );
+  const leftovers = known.filter((pid) => !untagged.has(pid));
+  if (leftovers.length > 0) {
+    const described = leftovers
+      .map((pid) => `${pid}(${names.get(pid) ?? "unknown"})`)
+      .join(", ");
+    logger?.warn(
+      `The ${label} left ${leftovers.length} process(es) running after it ` +
+        `exited: ${described}; terminated (Issue #4815)` +
+        (survivors.length > 0
+          ? `; still running: ${survivors.join(", ")}`
+          : "") +
+        (exhausted
+          ? `; new tagged processes kept appearing for ${MAX_KILL_ROUNDS} ` +
+            "KILL rounds, so cleanup is incomplete"
+          : "") +
+        (skipped.length > 0 ? `; skipped: ${skipped.join(", ")}` : ""),
+    );
+  } else if (skipped.length > 0) {
+    logger?.warn(
+      `Skipped ${skipped.join(", ")}: no longer carried the ${label}'s ` +
+        "spawn tag when checked, so it was not signalled (Issue #4815)",
+    );
+  }
   logger?.security?.(
     "AGENT_LEFTOVERS_COLLECTED",
     `collected=${signalled.join(",")} survivors=${survivors.join(",")}`,
