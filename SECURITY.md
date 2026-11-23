@@ -512,7 +512,12 @@ attacker-influenced text — model stdout, subprocess output — so a pattern th
 backtracks super-linearly stalls the whole event loop, and with it the
 single-instance worker. Bound or anchor every quantifier over a broad character
 class: `[a-z][a-z0-9+.-]*://` was quadratic on a long alphanumeric run until the
-scheme was capped at 64 characters. The answer is a bounded *pattern*, never a
+scheme was capped at 64 characters. The `*_TOKEN=` rule's key was quadratic on
+a long run of key characters holding many credential keywords, such as a list of
+variable names the decode pass joins into one run, until the key-character runs
+either side of the keyword were capped at 63 characters each (Issue #5373); a
+key with more than 63 key characters before or after its keyword is no longer
+matched. The answer is a bounded *pattern*, never a
 bounded *input* — capping the text would silently leave its tail unmasked, in
 direct conflict with "redact before you truncate" above.
 
