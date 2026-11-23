@@ -63,6 +63,8 @@ interface Fixture {
   checks: Record<string, Array<{ id: number; name: string }>>;
   /** The compare status of each head against the default branch. */
   compare: Record<string, string | "error">;
+  /** Refs whose check-runs read fails with a `gh` error. */
+  checkReadErrors?: string[];
 }
 
 /** A recording logger, so the scan's warnings and skips can be asserted. */
@@ -152,6 +154,9 @@ function ghStub(
     }
     const run = /commits\/(.+)\/check-runs/.exec(key);
     if (run !== null) {
+      if (fx.checkReadErrors?.includes(run[1] ?? "")) {
+        return Promise.reject(new Error("HTTP 500: Internal Server Error"));
+      }
       const checks = fx.checks[run[1] ?? ""] ?? [];
       return Promise.resolve(JSON.stringify(
         checks.map((check) => ({
@@ -436,6 +441,25 @@ Deno.test("findFailedCiChecks - a sync PR whose ancestry cannot be read gets no 
   assertEquals(logger.warns.length, 1);
   assertStringIncludes(logger.warns[0] ?? "", "cannot tell");
   assertStringIncludes(logger.warns[0] ?? "", "sync");
+});
+
+Deno.test("findFailedCiChecks - an off-default sync PR stands down when the default tip's check runs cannot be read, and opens no repair PR (Issue #5437)", async () => {
+  const fx = redMainFixture(
+    [syncPr(7, "sync/milestone-g", SYNC_ONLY_HEAD)],
+    {
+      checks: { "sync/milestone-g": [{ id: 17, name: "lint" }] },
+      compare: { [SYNC_ONLY_HEAD]: "diverged" },
+    },
+  );
+  fx.checkReadErrors = [TIP];
+  const { value, calls, logger } = await scan(fx);
+
+  // Unreadable is not green: the sync PR is not handed to the CI-fix agent.
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(logger.skips.length, 0);
+  assert(logger.warns.some((w) => w.includes("HTTP 500")));
+  assert(logger.warns.some((w) => w.includes("cannot read the checks red")));
 });
 
 // ---------------------------------------------------------------------------

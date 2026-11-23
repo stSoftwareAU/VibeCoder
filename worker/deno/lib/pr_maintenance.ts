@@ -821,7 +821,61 @@ async function fetchPrReviews(
 const JQ_CONCLUSION_PATTERN = /^[a-z_]+$/;
 
 /**
+ * Reject a conclusion that would not be safe in the jq filter.
+ *
+ * @throws Error when a conclusion does not match {@link JQ_CONCLUSION_PATTERN}
+ */
+function assertCheckRunConclusions(conclusions: readonly string[]): void {
+  for (const conclusion of conclusions) {
+    if (!JQ_CONCLUSION_PATTERN.test(conclusion)) {
+      throw new Error(
+        `Invalid check-run conclusion for jq filter: ${conclusion}`,
+      );
+    }
+  }
+}
+
+/**
+ * Fetch failed check runs for a branch, failing loudly (Issue #5437).
+ *
+ * The strict twin of {@link fetchFailedCheckRuns}: the same request and
+ * parse, but a `gh` or parse failure is thrown rather than read as "no failed
+ * checks". A caller that must tell "green" from "could not read" uses this one.
+ *
+ * @param repo - Repository in "owner/repo" format
+ * @param branchName - Branch or commit to check
+ * @param ghCommandFn - Function to run gh commands
+ * @param conclusions - Conclusions to keep (default `["failure"]`)
+ * @returns Array of failed check run entries
+ * @throws Error when a conclusion is invalid, or the `gh` call or its output
+ *   cannot be read
+ */
+export async function fetchFailedCheckRunsStrict(
+  repo: string,
+  branchName: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  conclusions: readonly string[] = ["failure"],
+): Promise<CheckRunEntry[]> {
+  assertCheckRunConclusions(conclusions);
+  const select = conclusions
+    .map((conclusion) => `.conclusion == "${conclusion}"`)
+    .join(" or ");
+  const output = await ghCommandFn([
+    "api",
+    `repos/${repo}/commits/${branchName}/check-runs?per_page=100`,
+    "--paginate",
+    "--jq",
+    `.check_runs | [.[] | select(${select}) | {id: .id, name: .name, status: .status, conclusion: .conclusion}]`,
+  ]);
+  return parseJsonArrayPages(output) as CheckRunEntry[];
+}
+
+/**
  * Fetch failed check runs for a branch.
+ *
+ * A `gh` or parse failure reads as no failed checks here. A caller that must
+ * not mistake an unreadable head for a green one uses
+ * {@link fetchFailedCheckRunsStrict}, which throws instead.
  *
  * @param repo - Repository in "owner/repo" format
  * @param branchName - Branch to check
@@ -838,25 +892,14 @@ export async function fetchFailedCheckRuns(
   ghCommandFn: (args: string[]) => Promise<string>,
   conclusions: readonly string[] = ["failure"],
 ): Promise<CheckRunEntry[]> {
-  for (const conclusion of conclusions) {
-    if (!JQ_CONCLUSION_PATTERN.test(conclusion)) {
-      throw new Error(
-        `Invalid check-run conclusion for jq filter: ${conclusion}`,
-      );
-    }
-  }
-  const select = conclusions
-    .map((conclusion) => `.conclusion == "${conclusion}"`)
-    .join(" or ");
+  assertCheckRunConclusions(conclusions);
   try {
-    const output = await ghCommandFn([
-      "api",
-      `repos/${repo}/commits/${branchName}/check-runs?per_page=100`,
-      "--paginate",
-      "--jq",
-      `.check_runs | [.[] | select(${select}) | {id: .id, name: .name, status: .status, conclusion: .conclusion}]`,
-    ]);
-    return parseJsonArrayPages(output) as CheckRunEntry[];
+    return await fetchFailedCheckRunsStrict(
+      repo,
+      branchName,
+      ghCommandFn,
+      conclusions,
+    );
   } catch {
     return [];
   }
@@ -1733,8 +1776,19 @@ function createDefaultBranchState(
     redTip ??= (async () => {
       const sha = await tipSha();
       if (sha === null) return null;
-      const runs = await fetchFailedCheckRuns(repo, sha, ghCommandFn);
-      return new Set(runs.map((check) => check.name));
+      try {
+        const runs = await fetchFailedCheckRunsStrict(repo, sha, ghCommandFn);
+        return new Set(runs.map((check) => check.name));
+      } catch (error) {
+        logger.warn(
+          `${repo}: could not read the checks red on ${defaultBranch} at ${
+            sha.slice(0, 12)
+          }: ${
+            error instanceof Error ? error.message : String(error)
+          } (Issue #5437)`,
+        );
+        return null;
+      }
     })();
     return redTip;
   };
