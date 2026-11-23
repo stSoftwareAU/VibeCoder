@@ -69,6 +69,7 @@ import {
   postRedDefaultBranchStatusComment,
   type RedDefaultBranchRepair,
   type RepairPrCandidate,
+  withdrawSupersededFixStatuses,
 } from "./red_default_branch_repair.ts";
 import {
   describeQueueRemoval,
@@ -2059,8 +2060,10 @@ async function mergeDefaultBranchIntoSyncBranch(
  * held check may not exist yet while CI is in flight. A fleet-authored or bot
  * PR is never waited on. When one is found, the status is posted to it as a comment
  * and no repair PR is made, so the repair is not written a second time while
- * the human's fix runs. If the fix search or the comment read fails, the worker
- * repair PR path runs.
+ * the human's fix runs. A running fix gets the pending wording. If the fix
+ * search or the comment read fails, the worker repair PR path runs. Either way,
+ * a fleet status still standing on any other open PR against the default
+ * branch is then withdrawn, naming the fix now waited on, so one stands.
  *
  * @returns The adopted fix PR's number when one was adopted (the caller then
  *   keeps the worker's repair PR out of this scan's hand-offs), the worker's
@@ -2137,6 +2140,20 @@ async function repairHeldDefaultBranch(input: {
     ghCommandFn,
     logger,
   });
+  // Issue #5437: once the fix is settled, a status left on any other PR (a
+  // pending fix whose held check then failed) is withdrawn, so one stands.
+  const withdrawOthers = (currentFixPr: number | null) =>
+    withdrawSupersededFixStatuses({
+      repo,
+      defaultBranch,
+      tipSha,
+      checkNames,
+      currentFixPr,
+      isSyncBranch: (headRefName) => isMilestoneSyncBranch(headRefName),
+      fleetLogins: scanAuthors,
+      ghCommandFn,
+      logger,
+    });
   if (fix !== null) {
     const outcome = await postRedDefaultBranchStatusComment({
       repo,
@@ -2146,12 +2163,14 @@ async function repairHeldDefaultBranch(input: {
       heldPrNumbers,
       allHeldAreSync,
       prNumber: fix.number,
+      pending: fix.pending,
       fleetLogins: scanAuthors,
       ghCommandFn,
       logger,
     });
     // Only an unreadable comment list falls through to the worker repair PR.
     if (outcome !== "read-failed") {
+      await withdrawOthers(fix.number);
       return { adoptedFixPr: fix.number, repair: null, checkNames };
     }
   }
@@ -2167,6 +2186,7 @@ async function repairHeldDefaultBranch(input: {
     ghCommandFn,
     logger,
   });
+  await withdrawOthers(repair?.number ?? null);
   return { adoptedFixPr: null, repair, checkNames };
 }
 

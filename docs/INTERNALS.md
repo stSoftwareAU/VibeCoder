@@ -5378,6 +5378,8 @@ flowchart TD
     H --> R{"Tip red on a held check?"}
     R -- yes --> G{"Open human fix PR green on every held check, or still running with none failed?"}
     G -- yes --> C["One status comment, edited in place; no repair PR"]
+    C --> W["A fleet status on any other PR is withdrawn, naming the fix"]
+    P --> W
     G -- no --> P["One repair PR per repo: fix/red-default-branch-sha12"]
     P --> Q["Its own red CI goes to the CI-fix agent first"]
     style P fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -5456,6 +5458,21 @@ flowchart TD
   Once a fix is adopted, the worker's own repair PR in that repo is not handed
   to the CI-fix agent in the same scan, since that would write the same fix
   twice. Its failure is skipped with the reason `red-default-branch-fix-adopted`.
+- **One fix status stands.** A pending fix's status says its CI is still
+  running and that the fleet cannot tell whether it fixes the failure, and its
+  marker carries `state="pending"`, so the status is edited to the green
+  wording once the PR turns green. Once the fix is settled (an adopted PR, the
+  worker's repair PR, or neither when the repair could not be opened), every
+  other open PR against the default branch, except sync and repair PRs, is
+  checked. Its newest fleet status comment, when it still carries the hold
+  marker, is edited in place (`withdrawSupersededFixStatuses` in
+  `red_default_branch_repair.ts`) to say the PR is no longer taken as the fix
+  and to name the fix now waited on. The withdrawn comment ends with a
+  `vibe-red-default-branch-withdrawn` marker naming the tip and that fix. It is
+  edited again only when either changes, and a PR adopted again has the same
+  comment edited back. This reads the comments of up to 30 PRs on each red
+  scan. A failed list, read or edit is logged with its error, and the next scan
+  tries again.
 - **One repair PR.** A repair PR is raised only when the tip itself is red on a
   held check, and no human fix PR was found that is green on every held check
   or still running with none failed. It is an empty commit on the

@@ -8,8 +8,10 @@ PRs, repairs the default branch once, refreshes the sync PRs and cleans the
 shift-left count. This PR closes the gap that let the fix be written twice in
 the incident: a human fix PR against the default branch whose CI is **still
 running** (as #5434 was) is now adopted as the fix, so the worker opens no
-repair PR of its own while that CI runs. It also names the repair-PR exception
-in the CI-fix prompt's base-branch rule.
+repair PR of its own while that CI runs. The status on such a PR says its CI is
+still running, and a fleet status left on a PR that is no longer the fix is
+withdrawn and made to name the current fix, so one "fix in #N" status stands. It
+also names the repair-PR exception in the CI-fix prompt's base-branch rule.
 
 Part of #5437.
 
@@ -19,8 +21,25 @@ Part of #5437.
   meets all four conditions: a human author, a head containing the red tip, no
   held check completed without `success`, `neutral` or `skipped`, and at least
   one check run still running that started within two hours
-  (`RUNNING_FIX_WAIT_MS`). The status comment and the "repair PR waits" path are
-  the same as for a green fix.
+  (`RUNNING_FIX_WAIT_MS`). The "repair PR waits" path is the same as for a green
+  fix. `GreenFixPr.pending` records which case applied.
+- **Pending wording:** `formatRedDefaultBranchStatus` with `pending: true` says
+  "fix in #N, its CI still running", and that the fleet cannot tell whether the
+  PR fixes the failure and opens its own repair PR if a held check fails. It
+  does not say "This PR exists to repair main". The marker gains
+  `state="pending"`, so the comment is edited to the green wording once the PR
+  turns green.
+- **Withdrawal:** `withdrawSupersededFixStatuses`
+  (`worker/deno/lib/red_default_branch_repair.ts`) runs from
+  `repairHeldDefaultBranch` once the fix is settled: the adopted PR, the
+  worker's repair PR, or neither. It reads the comments of every other open PR
+  against the default branch (not sync or repair PRs, at most 30). It edits a
+  fleet status still carrying the hold marker in place to
+  `formatWithdrawnFixStatus`, which names the fix now waited on and ends with a
+  `vibe-red-default-branch-withdrawn sha=… fix=…` marker. A withdrawn comment is
+  edited again only when the tip or the fix changes.
+  `postRedDefaultBranchStatusComment` counts a withdrawn comment as the PR's
+  status, so a PR adopted again has the same comment edited back.
 - **Not waited on:** a fleet login (`isFleetAuthor`, case-blind) or a bot
   account (`isBotAuthorForMaintenance` after `normaliseGhAppLogin`, so
   `app/dependabot` counts). A run with no usable start time does not count as
@@ -57,7 +76,10 @@ Part of #5437.
 - Any human PR that contains the red tip and has CI running counts as the
   pending fix. The worker cannot tell from GitHub whether a PR fixes the check.
   The cost is that the repair can wait for an unrelated human PR's CI, which is
-  bounded by that CI's run time.
+  bounded by that CI's run time. The status says so, and is withdrawn when the
+  PR stops being the fix.
+- Withdrawing edits the old comment rather than deleting it, so the human sees
+  why the fleet stopped waiting, and only one comment per PR is ever kept.
 
 ### Undiscoverable Facts
 
@@ -83,9 +105,11 @@ flowchart TD
     G -- no --> P{"Human, non-bot candidate: no held check failed, a check running for under 2h?"}
     P -- yes --> C
     P -- "no, or its check runs unreadable (warned, next candidate)" --> X["Open or adopt the one repair PR"]
+    C --> W["Withdraw a fleet status on any other open PR, naming the fix"]
+    X --> W
 ```
 
-- The 15 new tests in `worker/deno/tests/red_default_branch_repair_5437_test.ts`
+- The 21 new tests in `worker/deno/tests/red_default_branch_repair_5437_test.ts`
   drive the real `findFailedCiChecks` scan, or `fetchCheckRunStates` directly.
   They run against a `gh` stub that answers each call from its arguments and
   fixture.
@@ -119,11 +143,10 @@ flowchart TD
   against `main` (or the existing one, like #5434), give it top priority, and do
   **not** ci-fix sync PRs for that failure. — evidence:
   `worker/deno/tests/red_default_branch_repair_5437_test.ts::findFailedCiChecks - a human fix PR still running its CI, with the held check not yet created, is adopted: no repair PR, and its status is commented on it once (Issue #5437)`
-  — reviewer: met — reason: the reviewer judged it met but flagged that any
-  human PR containing the tip counts as the fix. A check that scans only a PR's
-  own commits (gitleaks on `base.sha..head.sha`) passes on an unrelated human
-  PR, which can then be adopted as a green fix while `main` stays red. That rule
-  came from #5459 and is not fixed here
+  — reviewer: partial — reason: any human PR containing the tip and green on the
+  held checks is adopted as the fix, so a check that scans only a PR's own
+  commits (gitleaks on `base.sha..head.sha`) passes on an unrelated human PR,
+  which is adopted while `main` stays red; no guard tells a real fix apart
 - **met** — Re-sync after the repair. Once `main` is green, update or recreate
   the sync PRs so they pick up the repair, rather than leaving them on the stale
   red head. — evidence:
@@ -140,8 +163,11 @@ flowchart TD
 - **met** — Leave a single, visible "main is red: holding sync PRs, fix in #N"
   status (for example on the fix PR), so a human can see why streams are held. —
   evidence:
+  `worker/deno/tests/red_default_branch_repair_5437_test.ts::findFailedCiChecks - a running human fix is adopted with the pending status; once its held check fails, the repair PR is opened and the earlier status is withdrawn naming it (Issue #5437)`
+  and
   `worker/deno/tests/red_default_branch_repair_5437_test.ts::findFailedCiChecks - a changed held set edits the one fleet status comment in place: one PATCH to its id, no new comment (Issue #5437)`
-  (delivered in #5459) — reviewer: met
+  — reviewer: met — reason: a stale pending status is withdrawn and names the
+  current fix, and a withdrawn one is edited again when the tip or fix changes
 - **met** — Tests cover: a red `main` with N open sync PRs leads to exactly one
   fix PR against `main` and no ci-fix pushes to `sync/milestone-*` branches. —
   evidence:
@@ -192,8 +218,16 @@ flowchart TD
 
 ## Test Plan
 
-- 15 tests added in `worker/deno/tests/red_default_branch_repair_5437_test.ts`.
+- 21 tests added in `worker/deno/tests/red_default_branch_repair_5437_test.ts`.
   The scan-level ones cover each path:
+  - two scans: a running human PR is adopted with the pending status, then its
+    held check fails, the repair PR is opened and the earlier status is
+    withdrawn naming it (a third scan edits nothing)
+  - a green fix adopted after a pending one withdraws the pending one's status
+  - a pending status edited to the green one when the PR turns green
+  - a withdrawn status edited back, not duplicated, when the PR is adopted again
+  - a status withdrawn while no fix stood is edited again to name the repair PR
+  - an unreadable comment list on another PR warns with the `gh` error
   - a running human fix with the held check not yet created is adopted
   - a fleet PR, a bot PR (`app/dependabot`) and a case-differing fleet login are
     not waited on
@@ -207,10 +241,13 @@ flowchart TD
 - The five direct `fetchCheckRunStates` tests cover a run started 60 seconds
   inside and 60 seconds outside the window, no usable start time, `timed_out` as
   failed, and a nameless row throwing.
-- Red before each fix: the running-fix, bot (`app/dependabot`), case-blind
-  fleet, `timed_out` and skip-and-continue tests each failed against the code
-  before their change. The fleet-PR test passed on the base code, as expected:
-  the old code waited on no PR at all.
+- Red before the withdrawal: with the two `withdrawOthers` calls in
+  `repairHeldDefaultBranch` removed, the two-scan test, the green-supersedes
+  test and the unreadable-comments test failed (72 passed, 3 failed).
+- Red before each earlier fix: the running-fix, bot (`app/dependabot`),
+  case-blind fleet, `timed_out` and skip-and-continue tests each failed against
+  the code before their change. The fleet-PR test passed on the base code, as
+  expected: the old code waited on no PR at all.
 - Existing tests edited:
   - The test "with a green human fix PR adopted, the worker's repair PR failure
     is not handed to the CI-fix agent, and another PR's failure is" now expects
@@ -220,18 +257,17 @@ flowchart TD
   - The direct test "findGreenFixPr - a PR row without its head commit fails the
     read, and the warn names headRefOid" gained the now-required `fleetLogins`
     and `readCheckRunStates` fields. Its assertions are unchanged.
-- `deno task test:unit tests/red_default_branch_repair_5437_test.ts tests/pr_maintenance_test.ts`:
-  157 passed, 0 failed. Eight other test files importing `pr_maintenance.ts`
-  also passed: 147 passed, 0 failed.
-- `./quality.sh` on `4500013bf` passed
-  (`Result: PASSED (with skipped
-  checks)`). Two checks were skipped because
-  their tools are not on this host: config integration (no `.config.json`) and
-  checkov (not on `PATH`).
+- `deno test -A tests/red_default_branch_repair_5437_test.ts tests/pr_maintenance_test.ts`
+  (stdin from `/dev/null`): 163 passed, 0 failed. Every test file importing
+  `pr_maintenance.ts` or `red_default_branch_repair.ts` (39 files): 625 passed,
+  0 failed. `deno lint` and `deno fmt --check` on the three changed code files
+  are clean.
+- `./quality.sh` was not re-run in this turn; the worker re-runs the quality
+  gate over the changed tree.
 - Docs and rules checked: the red default branch section of `docs/INTERNALS.md`
-  (flowchart node, the adoption bullet, the "One repair PR" bullet), and
-  `prompts/ci_fix/prompt.md` lines 10 and 198. I applied the prompt rule to this
-  diff and found nothing more to change.
+  (flowchart node, the adoption bullet, the new "One fix status stands" bullet,
+  the "One repair PR" bullet), and `prompts/ci_fix/prompt.md` lines 10 and 198.
+  I applied the prompt rule to this diff and found nothing more to change.
 
 Not checked: the running-fix path has not run against real GitHub, only the
 input-aware stub. The shift-left limit (a merge base with no check runs) and the

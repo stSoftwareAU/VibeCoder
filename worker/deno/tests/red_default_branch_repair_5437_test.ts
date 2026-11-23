@@ -39,6 +39,7 @@ import {
   bodyCarriesRedDefaultBranchMarker,
   findGreenFixPr,
   formatRedDefaultBranchStatus,
+  formatWithdrawnFixStatus,
   postRedDefaultBranchStatusComment,
   RED_DEFAULT_BRANCH_REPAIR_PREFIX,
   redDefaultBranchMarker,
@@ -2187,4 +2188,214 @@ Deno.test("postRedDefaultBranchStatusComment - a comment without a user.login re
     logger.warns.some((w) => w.includes("user.login")),
     `warns: ${logger.warns}`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// One fix status stands: a superseded one is withdrawn (Issue #5437)
+// ---------------------------------------------------------------------------
+
+/** The status body of the one `gh pr comment` a scan posted. */
+function postedCommentBody(calls: string[][]): string {
+  const comments = callsTo(calls, "pr", "comment");
+  assertEquals(comments.length, 1);
+  return argAfter(comments[0] ?? [], "--body") ?? "";
+}
+
+/** The body a PATCH to comment `id` wrote. */
+function patchedBody(calls: string[][], id: number): string {
+  const patches = patchesTo(calls, `repos/org/repo/issues/comments/${id}`);
+  assertEquals(patches.length, 1);
+  return (argAfter(patches[0] ?? [], "-f") ?? "").replace(/^body=/, "");
+}
+
+Deno.test("findFailedCiChecks - a running human fix is adopted with the pending status; once its held check fails, the repair PR is opened and the earlier status is withdrawn naming it (Issue #5437)", async () => {
+  // Scan 1: #5434's CI is running and gitleaks has not been created yet.
+  const first = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  first.fixPrs = [
+    humanFixPr(5434, "fix/unrelated-docs", FIX_HEAD, "nleck"),
+  ];
+  first.compare[FIX_HEAD] = "ahead";
+  first.checkRunStates = { [FIX_HEAD]: [runningRun("lint")] };
+  const one = await scan(first);
+
+  assertEquals(prCreateCalls(one.calls).length, 0);
+  const pendingBody = postedCommentBody(one.calls);
+  assertEquals(callsTo(one.calls, "pr", "comment")[0]?.[2], "5434");
+  assertStringIncludes(
+    pendingBody,
+    "holding sync PRs #1, #2, #3, fix in #5434, its CI still running.",
+  );
+  assertStringIncludes(pendingBody, "It cannot tell from GitHub whether");
+  assert(!pendingBody.includes("This PR exists to repair"));
+  assert(bodyCarriesRedDefaultBranchMarker(pendingBody, TIP, [1, 2, 3], true));
+  assert(!bodyCarriesRedDefaultBranchMarker(pendingBody, TIP, [1, 2, 3]));
+
+  // Scan 2: gitleaks has now failed on #5434, which carries scan 1's status.
+  const second = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  second.fixPrs = first.fixPrs;
+  second.compare[FIX_HEAD] = "ahead";
+  second.checkRunStates = {
+    [FIX_HEAD]: [failedRun("gitleaks"), runningRun("lint")],
+  };
+  second.comments = {
+    5434: [{ id: 7100, login: "testbot", body: pendingBody }],
+  };
+  const two = await scan(second);
+
+  assertEquals(prCreateCalls(two.calls).length, 1);
+  assertEquals(callsTo(two.calls, "pr", "comment").length, 0);
+  assertEquals(patchCalls(two.calls).length, 1);
+  const withdrawn = patchedBody(two.calls, 7100);
+  assertStringIncludes(
+    withdrawn,
+    `is no longer taken as its fix: fix in #${CREATED_PR}.`,
+  );
+  assert(!bodyCarriesRedDefaultBranchMarker(withdrawn, TIP, [1, 2, 3], true));
+  assert(!withdrawn.includes("fix in #5434"));
+  assertEquals(two.logger.warns, []);
+
+  // Scan 3: the status is already withdrawn, so it is not edited again.
+  const third = {
+    ...second,
+    comments: { 5434: [{ id: 7100, login: "testbot", body: withdrawn }] },
+  };
+  const three = await scan(third);
+  assertEquals(patchCalls(three.calls).length, 0);
+});
+
+Deno.test("findFailedCiChecks - a green fix adopted after an earlier pending one withdraws the earlier status, naming the green fix (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/unrelated-docs", FIX_HEAD, "nleck"),
+    humanFixPr(5435, "fix/green", GREEN_FIX_HEAD, "alice"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.compare[GREEN_FIX_HEAD] = "ahead";
+  fx.greenChecks = { [GREEN_FIX_HEAD]: ["gitleaks"] };
+  fx.checkRunStates = { [FIX_HEAD]: [failedRun("gitleaks")] };
+  fx.comments = {
+    5434: [{
+      id: 7200,
+      login: "testbot",
+      body: formatRedDefaultBranchStatus({
+        defaultBranch: DEFAULT_BRANCH,
+        heldPrNumbers: [1, 2, 3],
+        repairPrNumber: 5434,
+        checkNames: ["gitleaks"],
+        tipSha: TIP,
+        pending: true,
+      }),
+    }],
+  };
+  const { calls, logger } = await scan(fx);
+
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "comment")[0]?.[2], "5435");
+  assertStringIncludes(
+    patchedBody(calls, 7200),
+    "is no longer taken as its fix: fix in #5435.",
+  );
+  assertEquals(logger.warns, []);
+});
+
+Deno.test("findFailedCiChecks - a pending fix that turns green has its pending status edited in place to the green one (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [humanFixPr(5434, "fix/gitleaks", FIX_HEAD, "nleck")];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.comments = {
+    5434: [{
+      id: 7300,
+      login: "testbot",
+      body: formatRedDefaultBranchStatus({
+        defaultBranch: DEFAULT_BRANCH,
+        heldPrNumbers: [1, 2, 3],
+        repairPrNumber: 5434,
+        checkNames: ["gitleaks"],
+        tipSha: TIP,
+        pending: true,
+      }),
+    }],
+  };
+  const { calls } = await scan(fx);
+
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  const green = patchedBody(calls, 7300);
+  assertStringIncludes(green, "holding sync PRs #1, #2, #3, fix in #5434.");
+  assert(bodyCarriesRedDefaultBranchMarker(green, TIP, [1, 2, 3]));
+});
+
+Deno.test("findFailedCiChecks - a PR adopted again after its status was withdrawn has that comment edited back, not a second one posted (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [humanFixPr(5434, "fix/gitleaks", FIX_HEAD, "nleck")];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [runningRun("gitleaks")] };
+  fx.comments = {
+    5434: [{
+      id: 7400,
+      login: "testbot",
+      body: formatWithdrawnFixStatus({
+        defaultBranch: DEFAULT_BRANCH,
+        fixPrNumber: CREATED_PR,
+        checkNames: ["gitleaks"],
+        tipSha: TIP,
+      }),
+    }],
+  };
+  const { calls } = await scan(fx);
+
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertStringIncludes(
+    patchedBody(calls, 7400),
+    "fix in #5434, its CI still running.",
+  );
+});
+
+Deno.test("findFailedCiChecks - an unreadable comment list on another PR warns with the gh error and the repair PR still stands (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [humanFixPr(5434, "fix/unrelated-docs", FIX_HEAD, "nleck")];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [failedRun("gitleaks")] };
+  fx.commentReadError = "HTTP 503: comments boom";
+  const { calls, logger } = await scan(fx);
+
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(patchCalls(calls).length, 0);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not read the comments on org/repo#5434") &&
+      warn.includes("to withdraw a superseded fix status") &&
+      warn.includes("HTTP 503: comments boom")
+    ),
+    `warns: ${logger.warns}`,
+  );
+});
+
+Deno.test("findFailedCiChecks - a status withdrawn while no fix PR stood is edited again to name the repair PR once it is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [humanFixPr(5434, "fix/unrelated-docs", FIX_HEAD, "nleck")];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [failedRun("gitleaks")] };
+  fx.comments = {
+    5434: [{
+      id: 7500,
+      login: "testbot",
+      body: formatWithdrawnFixStatus({
+        defaultBranch: DEFAULT_BRANCH,
+        fixPrNumber: null,
+        checkNames: ["gitleaks"],
+        tipSha: TIP,
+      }),
+    }],
+  };
+  const { calls } = await scan(fx);
+
+  assertEquals(prCreateCalls(calls).length, 1);
+  const body = patchedBody(calls, 7500);
+  assertStringIncludes(
+    body,
+    `no longer taken as its fix: fix in #${CREATED_PR}.`,
+  );
+  assert(!body.includes("no fix PR stands yet"));
 });

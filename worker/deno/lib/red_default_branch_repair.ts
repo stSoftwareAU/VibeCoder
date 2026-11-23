@@ -21,6 +21,10 @@
  *   then records the status there as one comment, edited in place when the
  *   tip or the held set changes, so the human's body is never overwritten.
  *   Only when no such PR exists does the worker open or adopt its repair PR.
+ *   A PR adopted while its CI runs gets the pending wording.
+ * - `withdrawSupersededFixStatuses` then edits a fleet status left on any
+ *   other open PR against the default branch, naming the fix now waited on,
+ *   so one "fix in #N" status stands.
  *
  * Only a `fix/red-default-branch-*` head targeting the default branch is ever
  * adopted as the repair PR. A human-authored fix PR is never edited, only
@@ -57,7 +61,15 @@ const BRANCH_NAME_PATTERN = /^[A-Za-z0-9._/-]+$/;
  * whitespace quantifier before `$`.
  */
 const TRAILING_MARKER_PATTERN =
-  /<!-- vibe-red-default-branch-hold sha="([0-9a-f]{40})" held="([0-9,]*)" -->$/;
+  /<!-- vibe-red-default-branch-hold sha="([0-9a-f]{40})" held="([0-9,]*)"( state="pending")? -->$/;
+
+/**
+ * The marker a withdrawn status comment ends with (Issue #5437): the PR it is
+ * on is no longer the fix the fleet waits on. Anchored like
+ * {@link TRAILING_MARKER_PATTERN}.
+ */
+const WITHDRAWN_MARKER_PATTERN =
+  /<!-- vibe-red-default-branch-withdrawn sha="[0-9a-f]{40}" fix="\d*" -->$/;
 
 /** The fields a repair-PR decision reads from a listed PR. */
 export interface RepairPrCandidate {
@@ -106,6 +118,13 @@ export interface RedDefaultBranchStatusInput {
    * "PRs" so a held PR that is not a sync PR is named accurately.
    */
   allHeldAreSync?: boolean;
+  /**
+   * `true` when the status is for a human PR whose CI is still running, not
+   * one green on the held checks (Issue #5437). The wording then says the
+   * fleet is waiting on it and cannot tell whether it fixes the failure, and
+   * the marker records the state so a later green status replaces it.
+   */
+  pending?: boolean;
 }
 
 /** Whether a listed PR is a repair PR for `defaultBranch` (Issue #5437). */
@@ -122,25 +141,53 @@ function sortedHeld(heldPrNumbers: readonly number[]): number[] {
   return [...new Set(heldPrNumbers)].sort((a, b) => a - b);
 }
 
-/** The worker marker for `tipSha` and the held PRs (Issue #5437). */
+/**
+ * The worker marker for `tipSha` and the held PRs (Issue #5437). A pending
+ * status (a fix PR whose CI is still running) adds `state="pending"`.
+ */
 export function redDefaultBranchMarker(
   tipSha: string,
   heldPrNumbers: readonly number[],
+  pending = false,
 ): string {
   const held = sortedHeld(heldPrNumbers).join(",");
-  return `<!-- vibe-red-default-branch-hold sha="${tipSha}" held="${held}" -->`;
+  const state = pending ? ' state="pending"' : "";
+  return `<!-- vibe-red-default-branch-hold sha="${tipSha}" held="${held}"${state} -->`;
 }
 
-/** Whether a PR body already carries the marker for this tip and hold set. */
+/**
+ * Whether a PR body already carries the marker for this tip, hold set and
+ * pending state (Issue #5437).
+ */
 export function bodyCarriesRedDefaultBranchMarker(
   body: string | null | undefined,
   tipSha: string,
   heldPrNumbers: readonly number[],
+  pending = false,
 ): boolean {
   const match = TRAILING_MARKER_PATTERN.exec((body ?? "").trimEnd());
   if (match === null) return false;
   return match[1] === tipSha &&
-    match[2] === sortedHeld(heldPrNumbers).join(",");
+    match[2] === sortedHeld(heldPrNumbers).join(",") &&
+    (match[3] !== undefined) === pending;
+}
+
+/**
+ * The marker of a withdrawn status for `tipSha`, naming the fix now waited on
+ * (Issue #5437). A later scan with another tip or fix edits the comment again.
+ */
+export function redDefaultBranchWithdrawnMarker(
+  tipSha: string,
+  fixPrNumber: number | null,
+): string {
+  return `<!-- vibe-red-default-branch-withdrawn sha="${tipSha}" fix="${
+    fixPrNumber ?? ""
+  }" -->`;
+}
+
+/** Whether a body ends with a withdrawn-status marker (Issue #5437). */
+function bodyEndsWithWithdrawnMarker(body: string | null | undefined): boolean {
+  return WITHDRAWN_MARKER_PATTERN.test((body ?? "").trimEnd());
 }
 
 /**
@@ -170,6 +217,21 @@ export function formatRedDefaultBranchStatus(
     : `fix in #${input.repairPrNumber}`;
   const names = input.checkNames.map((name) => `\`${name}\``).join(", ");
   const shortSha = input.tipSha.slice(0, 12);
+  if (input.pending === true) {
+    return [
+      `**${input.defaultBranch} is red: holding ${heldKind} ${heldText}, ${fixText}, its CI still running.**`,
+      "",
+      `Failing on ${input.defaultBranch} at \`${shortSha}\`: ${names}.`,
+      "",
+      `The fleet waits on this PR's CI as the fix, so it opens no repair PR ` +
+      `of its own while that CI runs. It cannot tell from GitHub whether this ` +
+      `PR fixes the failure: if a held check fails here, or the CI stops ` +
+      `running before the held checks pass, the fleet opens its own repair PR ` +
+      `and this status is withdrawn.`,
+      "",
+      redDefaultBranchMarker(input.tipSha, held, true),
+    ].join("\n");
+  }
   return [
     `**${input.defaultBranch} is red: holding ${heldKind} ${heldText}, ${fixText}.**`,
     "",
@@ -179,6 +241,42 @@ export function formatRedDefaultBranchStatus(
     `is this PR's to fix, not a pre-existing base failure to defer.`,
     "",
     redDefaultBranchMarker(input.tipSha, held),
+  ].join("\n");
+}
+
+/** Inputs to {@link formatWithdrawnFixStatus}. */
+export interface WithdrawnFixStatusInput {
+  defaultBranch: string;
+  /** The fix the fleet now waits on, or `null` when none stands yet. */
+  fixPrNumber: number | null;
+  checkNames: readonly string[];
+  tipSha: string;
+}
+
+/**
+ * The body a superseded fix status is edited to (Issue #5437): it says this
+ * PR is no longer the fix the fleet waits on and names the one that is, so no
+ * stale "fix in #N" status is left beside the current one.
+ */
+export function formatWithdrawnFixStatus(
+  input: WithdrawnFixStatusInput,
+): string {
+  const fixText = input.fixPrNumber === null
+    ? "no fix PR stands yet"
+    : `fix in #${input.fixPrNumber}`;
+  const names = input.checkNames.map((name) => `\`${name}\``).join(", ");
+  return [
+    `**${input.defaultBranch} is still red, and this PR is no longer taken as its fix: ${fixText}.**`,
+    "",
+    `Failing on ${input.defaultBranch} at \`${
+      input.tipSha.slice(0, 12)
+    }\`: ${names}.`,
+    "",
+    `The fleet no longer waits on this PR for the repair: a held check failed ` +
+    `here, its CI stopped running, or it no longer contains ` +
+    `${input.defaultBranch}'s tip. The first line names the fix it waits on now.`,
+    "",
+    redDefaultBranchWithdrawnMarker(input.tipSha, input.fixPrNumber),
   ].join("\n");
 }
 
@@ -534,6 +632,11 @@ export interface GreenFixPr {
   number: number;
   headRefName: string;
   authorLogin: string;
+  /**
+   * `true` when the PR is adopted because its CI is still running, not
+   * because it is green on every held check (Issue #5437).
+   */
+  pending: boolean;
 }
 
 /**
@@ -583,6 +686,33 @@ function parseFixCandidates(output: string): FixCandidate[] {
 }
 
 /**
+ * The open PRs against `defaultBranch`, as fix candidates (Issue #5437).
+ * Throws when the list cannot be read or a row lacks a field.
+ */
+async function listOpenPrsAgainst(
+  repo: string,
+  defaultBranch: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<FixCandidate[]> {
+  return parseFixCandidates(
+    await ghCommandFn([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--base",
+      defaultBranch,
+      "--state",
+      "open",
+      "--json",
+      "number,headRefName,headRefOid,author",
+      "--limit",
+      "30",
+    ]),
+  );
+}
+
+/**
  * Find an open fix PR against the default branch for the held checks (Issue
  * #5437), such as a human's fix. A candidate is any open PR against
  * `defaultBranch` with a head commit, other than a sync branch, a repair-prefix
@@ -623,21 +753,10 @@ export async function findGreenFixPr(
 
   let listed: FixCandidate[];
   try {
-    listed = parseFixCandidates(
-      await request.ghCommandFn([
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--base",
-        defaultBranch,
-        "--state",
-        "open",
-        "--json",
-        "number,headRefName,headRefOid,author",
-        "--limit",
-        "30",
-      ]),
+    listed = await listOpenPrsAgainst(
+      repo,
+      defaultBranch,
+      request.ghCommandFn,
     );
   } catch (error) {
     logger.warn(
@@ -689,6 +808,7 @@ export async function findGreenFixPr(
         number: pr.number,
         headRefName: pr.headRefName,
         authorLogin: pr.authorLogin,
+        pending: false,
       };
     }
     if (
@@ -722,6 +842,7 @@ export async function findGreenFixPr(
       number: pendingFix.number,
       headRefName: pendingFix.headRefName,
       authorLogin: pendingFix.authorLogin,
+      pending: true,
     };
   }
   return null;
@@ -748,10 +869,72 @@ export interface FixStatusCommentRequest {
   allHeldAreSync: boolean;
   /** The adopted fix PR, which the status names. */
   prNumber: number;
+  /**
+   * `true` when the fix PR is adopted while its CI is still running, which
+   * selects the pending wording (Issue #5437). Defaults to `false`.
+   */
+  pending?: boolean;
   /** The scan's fleet login set. Only these authors' markers count. */
   fleetLogins: readonly string[];
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Logger;
+}
+
+/** A PR comment, as the status reads it. */
+interface StatusComment {
+  id: number;
+  login: string;
+  body: string;
+}
+
+/**
+ * The comments on `prNumber`, oldest first (Issue #5437). Throws when the list
+ * cannot be read or a comment lacks its id or login.
+ */
+async function readPrComments(
+  repo: string,
+  prNumber: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<StatusComment[]> {
+  const output = await ghCommandFn([
+    "api",
+    `repos/${repo}/issues/${prNumber}/comments`,
+    "--paginate",
+    "--jq",
+    ".[] | {id: .id, login: .user.login, body: .body} | tojson",
+  ]);
+  return output.split("\n").filter((line) => line.trim() !== "").map(
+    (line) => {
+      const fields = JSON.parse(line) as Record<string, unknown>;
+      if (typeof fields.id !== "number") {
+        throw new Error(`a comment without a numeric id: ${line}`);
+      }
+      if (typeof fields.login !== "string") {
+        throw new Error(`a comment without a user.login: ${line}`);
+      }
+      return {
+        id: fields.id,
+        login: fields.login,
+        body: typeof fields.body === "string" ? fields.body : "",
+      };
+    },
+  );
+}
+
+/**
+ * The newest comment by a fleet login that ends with a worker status marker,
+ * held or withdrawn (Issue #5437). GitHub lists comments oldest first.
+ */
+function newestFleetStatus(
+  comments: readonly StatusComment[],
+  fleetLogins: readonly string[],
+): StatusComment | undefined {
+  const fleet = new Set(fleetLogins.map((login) => login.toLowerCase()));
+  return comments.filter((comment) =>
+    fleet.has(comment.login.toLowerCase()) &&
+    (bodyEndsWithRedDefaultBranchMarker(comment.body) ||
+      bodyEndsWithWithdrawnMarker(comment.body))
+  ).at(-1);
 }
 
 /**
@@ -780,31 +963,10 @@ export async function postRedDefaultBranchStatusComment(
   } = request;
   const checkNames = request.checkNames.map(oneLine);
 
-  let comments: Array<{ id: number; login: string; body: string }>;
+  const pending = request.pending === true;
+  let comments: StatusComment[];
   try {
-    const output = await ghCommandFn([
-      "api",
-      `repos/${repo}/issues/${prNumber}/comments`,
-      "--paginate",
-      "--jq",
-      ".[] | {id: .id, login: .user.login, body: .body} | tojson",
-    ]);
-    comments = output.split("\n").filter((line) => line.trim() !== "").map(
-      (line) => {
-        const fields = JSON.parse(line) as Record<string, unknown>;
-        if (typeof fields.id !== "number") {
-          throw new Error(`a comment without a numeric id: ${line}`);
-        }
-        if (typeof fields.login !== "string") {
-          throw new Error(`a comment without a user.login: ${line}`);
-        }
-        return {
-          id: fields.id,
-          login: fields.login,
-          body: typeof fields.body === "string" ? fields.body : "",
-        };
-      },
-    );
+    comments = await readPrComments(repo, prNumber, ghCommandFn);
   } catch (error) {
     logger.warn(
       `Red default branch: could not read the comments on ${repo}#${prNumber}: ${
@@ -814,16 +976,16 @@ export async function postRedDefaultBranchStatusComment(
     return "read-failed";
   }
 
-  // GitHub lists comments oldest first, so the newest status is the last one.
-  const fleet = new Set(fleetLogins.map((login) => login.toLowerCase()));
-  const statuses = comments.filter((comment) =>
-    fleet.has(comment.login.toLowerCase()) &&
-    bodyEndsWithRedDefaultBranchMarker(comment.body)
-  );
-  const status = statuses.at(-1);
+  // A withdrawn status counts too, so a PR adopted again keeps one comment.
+  const status = newestFleetStatus(comments, fleetLogins);
   if (
     status !== undefined &&
-    bodyCarriesRedDefaultBranchMarker(status.body, tipSha, heldPrNumbers)
+    bodyCarriesRedDefaultBranchMarker(
+      status.body,
+      tipSha,
+      heldPrNumbers,
+      pending,
+    )
   ) {
     return "already-posted";
   }
@@ -835,6 +997,7 @@ export async function postRedDefaultBranchStatusComment(
     checkNames,
     tipSha,
     allHeldAreSync: request.allHeldAreSync,
+    pending,
   });
   if (status !== undefined) {
     try {
@@ -885,4 +1048,122 @@ export async function postRedDefaultBranchStatusComment(
     } (Issue #5437)`,
   );
   return "posted";
+}
+
+/** Inputs to {@link withdrawSupersededFixStatuses}. */
+export interface WithdrawFixStatusRequest {
+  repo: string;
+  defaultBranch: string;
+  tipSha: string;
+  /** The held checks red on the tip. */
+  checkNames: readonly string[];
+  /**
+   * The fix the fleet now waits on: the adopted fix PR or the worker's repair
+   * PR, or `null` when neither stands. Its own status is left alone.
+   */
+  currentFixPr: number | null;
+  /** Whether a head branch is a sync branch, which never carries a status. */
+  isSyncBranch: (headRefName: string) => boolean;
+  /** The scan's fleet login set. Only these authors' statuses count. */
+  fleetLogins: readonly string[];
+  ghCommandFn: (args: string[]) => Promise<string>;
+  logger: Logger;
+}
+
+/**
+ * Withdraw a fix status the fleet left on an open PR that is no longer the fix
+ * (Issue #5437), such as a human PR adopted while its CI ran whose held check
+ * then failed. Every open PR against `defaultBranch` other than
+ * `currentFixPr`, a sync branch or a repair-prefix branch is checked. When its
+ * newest fleet status comment still carries the hold marker, or a withdrawn
+ * marker for another tip or fix, that comment is edited in place to
+ * {@link formatWithdrawnFixStatus}, naming the current fix, so only one
+ * "fix in #N" status stands and a withdrawn one never points at an old fix. A
+ * comment already withdrawn for this tip and fix is left alone. This reads the
+ * comments of each listed PR (at most 30) on every red scan. A failed list,
+ * read or edit is logged with its error and the rest go on; the next scan
+ * tries again.
+ *
+ * @returns The PR numbers whose status was withdrawn. Never throws.
+ */
+export async function withdrawSupersededFixStatuses(
+  request: WithdrawFixStatusRequest,
+): Promise<number[]> {
+  const { repo, defaultBranch, currentFixPr, ghCommandFn, logger } = request;
+  if (!BRANCH_NAME_PATTERN.test(defaultBranch)) return [];
+  let listed: FixCandidate[];
+  try {
+    listed = await listOpenPrsAgainst(repo, defaultBranch, ghCommandFn);
+  } catch (error) {
+    logger.warn(
+      `Red default branch: could not list the open PRs against ${defaultBranch} on ${repo} to withdraw a superseded fix status: ${
+        errorText(error)
+      }; the next scan tries again (Issue #5437)`,
+    );
+    return [];
+  }
+  const body = formatWithdrawnFixStatus({
+    defaultBranch,
+    fixPrNumber: currentFixPr,
+    checkNames: request.checkNames.map(oneLine),
+    tipSha: request.tipSha,
+  });
+  const withdrawn: number[] = [];
+  for (const pr of listed) {
+    if (
+      pr.number === currentFixPr ||
+      request.isSyncBranch(pr.headRefName) ||
+      pr.headRefName.startsWith(RED_DEFAULT_BRANCH_REPAIR_PREFIX)
+    ) {
+      continue;
+    }
+    let status: StatusComment | undefined;
+    try {
+      status = newestFleetStatus(
+        await readPrComments(repo, pr.number, ghCommandFn),
+        request.fleetLogins,
+      );
+    } catch (error) {
+      logger.warn(
+        `Red default branch: could not read the comments on ${repo}#${pr.number} to withdraw a superseded fix status: ${
+          errorText(error)
+        }; the next scan tries again (Issue #5437)`,
+      );
+      continue;
+    }
+    if (
+      status === undefined ||
+      status.body.trimEnd().endsWith(
+        redDefaultBranchWithdrawnMarker(request.tipSha, currentFixPr),
+      )
+    ) {
+      continue;
+    }
+    try {
+      await ghCommandFn([
+        "api",
+        "-X",
+        "PATCH",
+        `repos/${repo}/issues/comments/${status.id}`,
+        "-f",
+        `body=${body}`,
+      ]);
+    } catch (error) {
+      logger.warn(
+        `Red default branch: could not withdraw the fix status on comment ${status.id} on ${repo}#${pr.number}: ${
+          errorText(error)
+        }; the next scan tries again (Issue #5437)`,
+      );
+      continue;
+    }
+    logger.info(
+      `Red default branch: withdrew the fix status on ${repo}#${pr.number}, which is no longer the fix for ${defaultBranch}; ${
+        currentFixPr === null
+          ? "no fix PR stands yet"
+          : `the fix is #${currentFixPr}`
+      } (Issue #5437)`,
+    );
+    withdrawn.push(pr.number);
+  }
+  return withdrawn;
 }
