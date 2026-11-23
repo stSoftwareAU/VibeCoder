@@ -232,7 +232,7 @@ the AWS Emulator (`infra/cloudformation/test-aws-emulator.sh` via
 runs the same script as `agent` in a fresh container of the built image. The
 coding standard and the agent and reviewer prompts carry the AWS
 integration-testing policy (#5111); the best-practices detector and migration
-findings are planned (#5112).
+findings are delivered (#5112).
 
 ### What is installed
 

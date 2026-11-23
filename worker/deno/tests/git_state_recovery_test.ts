@@ -9,6 +9,10 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { recoverGitState } from "../lib/git_state_recovery.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 /** Create a temporary git repository for testing. */
 async function createTempRepo(): Promise<string> {
@@ -16,15 +20,16 @@ async function createTempRepo(): Promise<string> {
 
   const run = async (args: string[]) => {
     const cmd = new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       cwd: dir,
+      env: NO_HOST_GIT_CONFIG,
       stdout: "piped",
       stderr: "piped",
     });
     await cmd.output();
   };
 
-  await run(["init"]);
+  await run(["init", "-b", "main"]);
   await run(["config", "user.email", "test@example.com"]);
   await run(["config", "user.name", "Test"]);
 
@@ -72,7 +77,8 @@ Deno.test("git state recovery - recoverGitState recovers from detached HEAD", as
   try {
     // Create a detached HEAD by checking out a commit hash
     const getHash = new Deno.Command("git", {
-      args: ["rev-parse", "HEAD"],
+      args: [...NO_HOST_HOOKS_ARGS, "rev-parse", "HEAD"],
+      env: NO_HOST_GIT_CONFIG,
       cwd: dir,
       stdout: "piped",
     });
@@ -80,7 +86,8 @@ Deno.test("git state recovery - recoverGitState recovers from detached HEAD", as
     const hash = new TextDecoder().decode(hashOutput.stdout).trim();
 
     const detach = new Deno.Command("git", {
-      args: ["checkout", hash],
+      args: [...NO_HOST_HOOKS_ARGS, "checkout", hash],
+      env: NO_HOST_GIT_CONFIG,
       cwd: dir,
       stdout: "piped",
       stderr: "piped",
@@ -89,7 +96,8 @@ Deno.test("git state recovery - recoverGitState recovers from detached HEAD", as
 
     // Verify HEAD is detached
     const checkHead = new Deno.Command("git", {
-      args: ["rev-parse", "--abbrev-ref", "HEAD"],
+      args: [...NO_HOST_HOOKS_ARGS, "rev-parse", "--abbrev-ref", "HEAD"],
+      env: NO_HOST_GIT_CONFIG,
       cwd: dir,
       stdout: "piped",
     });
@@ -118,8 +126,9 @@ Deno.test("git state recovery - recoverGitState aborts in-progress merge", async
   try {
     const run = async (args: string[]) => {
       const cmd = new Deno.Command("git", {
-        args,
+        args: [...NO_HOST_HOOKS_ARGS, ...args],
         cwd: dir,
+        env: NO_HOST_GIT_CONFIG,
         stdout: "piped",
         stderr: "piped",
       });

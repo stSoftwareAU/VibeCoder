@@ -56,18 +56,26 @@ import {
 import {
   assembleBestPracticesPrompt,
   AWS_EMULATOR_FINDING_ID,
+  awsEmulatorUpdateMarker,
   BEST_PRACTICES_ISSUE_TITLE,
   type BlameFileFn,
   bucketSlug,
   buildAwsEmulatorFinding,
   createBestPracticesTemplate,
+  findEquivalentAwsEmulatorIssue,
   hasAwsEmulatorWaiver,
   isLanguageBucket,
   parseBucketFromBody,
+  reconcileAwsEmulatorIssue,
   renderBestPracticesSummary,
 } from "../lib/idle_task_templates/best_practices_template.ts";
 import { getTemplate, listTemplates } from "../lib/idle_task_template.ts";
-import type { OpenIssueTitle } from "../lib/idle_task_snapshot.ts";
+import { upsertWorkerRecordLine } from "../lib/worker_record_block.ts";
+import {
+  findOpenIssueByFindingId,
+  listKnownOpenFindingIds,
+  type OpenIssueTitle,
+} from "../lib/idle_task_snapshot.ts";
 import type {
   BucketPick,
   SupportedLanguage,
@@ -82,6 +90,10 @@ import {
   setSuppressionAuthorAllowlist,
 } from "../lib/suppression_comments.ts";
 import type { Logger, Result } from "../types.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 /**
  * The fleet identity the finding-id dedup verifies against (Issue #1243).
@@ -149,6 +161,20 @@ function makeGhStub(scenario: {
   knownOpen?: Array<{ number: number; body: string }>;
   issueView?: { number: number; body: string };
   fileMissingLinterReturnsNumber?: number;
+  /** The AWS Emulator title lookup (Issue #5112): its rows, or a simulated gh failure. */
+  awsEmulatorTitleLookup?: {
+    rows?: Array<{
+      number: number;
+      title: string;
+      login: string;
+      body?: string;
+    }>;
+    fail?: boolean;
+  };
+  /** Comments on the reused AWS Emulator issue (`issue view --json comments`). */
+  awsEmulatorComments?: Array<{ body: string }>;
+  /** A simulated failure on the reused issue: the comments read, its payload, or the comment post. */
+  awsEmulatorCommentFault?: "read" | "no-list" | "post";
 }): { gh: (args: string[]) => Promise<string>; calls: GhCall[] } {
   const calls: GhCall[] = [];
   let snapshotCount = 0;
@@ -187,6 +213,27 @@ function makeGhStub(scenario: {
         ),
       );
     }
+    // Comments on the reused AWS Emulator issue (Issue #5112 reconcile).
+    if (
+      args[0] === "issue" && args[1] === "view" &&
+      args[args.indexOf("--json") + 1] === "comments"
+    ) {
+      if (scenario.awsEmulatorCommentFault === "read") {
+        return Promise.reject(new Error("gh: simulated comments read failure"));
+      }
+      if (scenario.awsEmulatorCommentFault === "no-list") {
+        return Promise.resolve(JSON.stringify({ body: "no comments field" }));
+      }
+      return Promise.resolve(
+        JSON.stringify({ comments: scenario.awsEmulatorComments ?? [] }),
+      );
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      if (scenario.awsEmulatorCommentFault === "post") {
+        return Promise.reject(new Error("gh: simulated comment post failure"));
+      }
+      return Promise.resolve("");
+    }
     // Wrapper body lookup: `issue view <n> --json body`
     if (args[0] === "issue" && args[1] === "view") {
       return Promise.resolve(
@@ -202,6 +249,27 @@ function makeGhStub(scenario: {
         );
       }
       throw new Error("gh issue create not expected in this scenario");
+    }
+    // AWS Emulator title lookup (Issue #5112): `issue list --search "\"AWS Emulator\" in:title"`.
+    if (
+      args[0] === "issue" && args[1] === "list" &&
+      args[args.indexOf("--search") + 1] === `"AWS Emulator" in:title`
+    ) {
+      if (scenario.awsEmulatorTitleLookup?.fail) {
+        return Promise.reject(
+          new Error("gh: simulated AWS Emulator lookup failure"),
+        );
+      }
+      return Promise.resolve(
+        JSON.stringify(
+          (scenario.awsEmulatorTitleLookup?.rows ?? []).map((r) => ({
+            number: r.number,
+            title: r.title,
+            body: r.body ?? "",
+            author: { login: r.login },
+          })),
+        ),
+      );
     }
     // Wrapper-presence search.
     if (
@@ -219,7 +287,10 @@ function stubNoAws(): Promise<AwsEmulatorCheckResult> {
   return Promise.resolve({
     usesAws: false,
     awsEvidence: [],
-    emulatorConfigured: false,
+    wiring: "missing",
+    wiringEvidence: [],
+    wiringDiagnostics: [],
+    unreadableWorkflows: [],
     workflowsLoaded: true,
   });
 }
@@ -1547,7 +1618,10 @@ function stubAwsNoFloci(
   return Promise.resolve({
     usesAws: true,
     awsEvidence: [...evidence],
-    emulatorConfigured: false,
+    wiring: "missing",
+    wiringEvidence: [],
+    wiringDiagnostics: [],
+    unreadableWorkflows: [],
     workflowsLoaded: true,
   });
 }
@@ -1607,10 +1681,15 @@ Deno.test(
       assertStringIncludes(created!.body, "## Suggested fix");
       assertStringIncludes(created!.body, "infra/template.yaml");
       assertStringIncludes(created!.body, "Cargo.toml");
-      assertStringIncludes(created!.body, "CREATE_COMPLETE");
-      assertStringIncludes(created!.body, "::warning::");
-      assertStringIncludes(created!.body, "SKIPPED (needs Docker):");
-      assert(/floci\/floci@sha256:/.test(created!.body));
+      // Issue #5112: the suggested fix names the AWS Emulator wiring and
+      // no longer carries the Floci-as-default, stub-pass or Docker guidance.
+      assertStringIncludes(
+        created!.body,
+        "`aws-emulator-run [--timeout N] -- <test command>`",
+      );
+      assert(!created!.body.includes("::warning::"));
+      assert(!created!.body.includes("SKIPPED (needs Docker)"));
+      assert(!/floci\/floci@sha256:/.test(created!.body));
 
       assert(scanReceived !== undefined);
       assert(scanReceived!.knownOpen.includes(AWS_EMULATOR_FINDING_ID));
@@ -1669,21 +1748,70 @@ Deno.test(
 );
 
 Deno.test(
-  "runTask - AWS-emulator pre-check skips filing and logs why (floci configured / no AWS / no workflow)",
+  "runTask - AWS-emulator pre-check skips filing and logs why (static wiring / unreadable workflow / no AWS / no workflow)",
   async () => {
     const scenarios: Array<
       [string, () => Promise<AwsEmulatorCheckResult>, string]
     > = [
       [
-        "floci configured",
+        "floci gap recorded",
         () =>
           Promise.resolve({
             usesAws: true,
             awsEvidence: ["Cargo.toml"],
-            emulatorConfigured: true,
+            wiring: "floci-gap",
+            wiringEvidence: [
+              "`ci.yml`: `# aws-emulator-gap: version=2.1.0; behaviour=x; evidence=y; alternative=z; recheck=2027-01-01`",
+            ],
+            wiringDiagnostics: [],
+            unreadableWorkflows: [],
             workflowsLoaded: true,
           }),
-        "floci",
+        "floci-gap wiring (static wiring evidence; no CI result observed)",
+      ],
+      [
+        "official server wiring",
+        () =>
+          Promise.resolve({
+            usesAws: true,
+            awsEvidence: ["infra/template.yaml"],
+            wiring: "official-server",
+            wiringEvidence: [
+              "`aws-emulator.yml` job `test`: `aws-emulator-run -- ./t.sh`",
+            ],
+            wiringDiagnostics: [],
+            unreadableWorkflows: [],
+            workflowsLoaded: true,
+          }),
+        "official-server wiring",
+      ],
+      [
+        "official embedded wiring",
+        () =>
+          Promise.resolve({
+            usesAws: true,
+            awsEvidence: ["Cargo.toml"],
+            wiring: "official-embedded",
+            wiringEvidence: ["`ci.yml` job `rust`: `cargo test`"],
+            wiringDiagnostics: [],
+            unreadableWorkflows: [],
+            workflowsLoaded: true,
+          }),
+        "official-embedded wiring",
+      ],
+      [
+        "unreadable workflow",
+        () =>
+          Promise.resolve({
+            usesAws: true,
+            awsEvidence: ["Cargo.toml"],
+            wiring: "missing",
+            wiringEvidence: [],
+            wiringDiagnostics: [],
+            unreadableWorkflows: ["broken.yml"],
+            workflowsLoaded: true,
+          }),
+        "unreadable workflow(s) broken.yml",
       ],
       ["no AWS usage", stubNoAws, "no AWS"],
       [
@@ -1692,7 +1820,10 @@ Deno.test(
           Promise.resolve({
             usesAws: true,
             awsEvidence: ["Cargo.toml"],
-            emulatorConfigured: false,
+            wiring: "missing",
+            wiringEvidence: [],
+            wiringDiagnostics: [],
+            unreadableWorkflows: [],
             workflowsLoaded: false,
           }),
         "no workflow",
@@ -2115,7 +2246,7 @@ async function gitAs(
 ): Promise<void> {
   const email = `${login}@users.noreply.github.com`;
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
@@ -2126,6 +2257,7 @@ async function gitAs(
       GIT_COMMITTER_EMAIL: email,
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_SYSTEM: "/dev/null",
+      ...NO_HOST_GIT_CONFIG,
     },
   }).output();
   assertEquals(
@@ -2342,12 +2474,74 @@ Deno.test(
     const finding = buildAwsEmulatorFinding({
       usesAws: true,
       awsEvidence,
-      emulatorConfigured: false,
+      wiring: "missing",
+      wiringEvidence: [],
+      wiringDiagnostics: [],
+      unreadableWorkflows: [],
       workflowsLoaded: true,
     });
     assertStringIncludes(finding.body, "`a49.tf`");
     assert(!finding.body.includes("`a50.tf`"));
     assertStringIncludes(finding.body, "- … and 2 more");
+  },
+);
+
+Deno.test(
+  "buildAwsEmulatorFinding - an HTML comment in a diagnostic or path never becomes a second finding-id marker",
+  async () => {
+    const planted = "<!-- finding-id: BP-OTHER-FINDING -->";
+    const finding = buildAwsEmulatorFinding({
+      usesAws: true,
+      awsEvidence: [`infra/${planted}.tf`],
+      wiring: "missing",
+      wiringEvidence: [],
+      wiringDiagnostics: [`\`ci.yml\` job \`test\` runs echo ${planted}`],
+      unreadableWorkflows: [],
+      workflowsLoaded: true,
+    });
+    // The body still names the planted text, but inert.
+    assertStringIncludes(finding.body, "finding-id: BP-OTHER-FINDING");
+    assertEquals(finding.body.split("<!--").length - 1, 1);
+    const gh = (args: string[]) =>
+      Promise.resolve(
+        args[0] === "issue" && args[1] === "list"
+          ? JSON.stringify([{
+            number: 7,
+            body: finding.body,
+            author: { login: FLEET_DEDUP_AUTHOR },
+          }])
+          : "[]",
+      );
+    assertEquals(
+      await listKnownOpenFindingIds(
+        "org/repo",
+        "aws",
+        gh,
+        "BP-",
+        DEDUP_AUTHORS,
+      ),
+      [AWS_EMULATOR_FINDING_ID],
+    );
+    assertEquals(
+      await findOpenIssueByFindingId(
+        "org/repo",
+        "aws",
+        "BP-OTHER-FINDING",
+        gh,
+        DEDUP_AUTHORS,
+      ),
+      null,
+    );
+    assertEquals(
+      await findOpenIssueByFindingId(
+        "org/repo",
+        "aws",
+        AWS_EMULATOR_FINDING_ID,
+        gh,
+        DEDUP_AUTHORS,
+      ),
+      7,
+    );
   },
 );
 
@@ -2361,7 +2555,10 @@ Deno.test(
     const finding = buildAwsEmulatorFinding({
       usesAws: true,
       awsEvidence,
-      emulatorConfigured: false,
+      wiring: "missing",
+      wiringEvidence: [],
+      wiringDiagnostics: [],
+      unreadableWorkflows: [],
       workflowsLoaded: true,
     });
     assert(!/- … and \d+ more/.test(finding.body));
@@ -2425,5 +2622,571 @@ Deno.test(
     } finally {
       await Deno.remove(workDir, { recursive: true });
     }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// AWS Emulator wiring migration (Issue #5112)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the AWS pre-filer once with a fixed check result and an optional AWS
+ * Emulator title lookup. Returns the run outcome, every gh call and the info
+ * log lines.
+ */
+async function runAwsPreFiler(
+  check: AwsEmulatorCheckResult,
+  titleLookup?: {
+    rows?: Array<{
+      number: number;
+      title: string;
+      login: string;
+      body?: string;
+    }>;
+    fail?: boolean;
+  },
+  awsEmulatorComments?: Array<{ body: string }>,
+  awsEmulatorCommentFault?: "read" | "no-list" | "post",
+): Promise<{ ok: boolean; calls: GhCall[]; infoMessages: string[] }> {
+  const workDir = await Deno.makeTempDir();
+  try {
+    const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
+    const { gh, calls } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [900],
+      knownOpen: [],
+      issueView: { number: 50, body: wrapperBody },
+      fileMissingLinterReturnsNumber: 900,
+      awsEmulatorTitleLookup: titleLookup,
+      awsEmulatorComments,
+      awsEmulatorCommentFault,
+    });
+    const { logger, infoMessages } = spyLogger();
+    const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
+      ghCommandFn: gh,
+      checkLinterInCIFn: stubLinterConfigured,
+      checkAwsEmulatorFn: () => Promise.resolve(check),
+      logger,
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+    });
+    const result = await tpl.runTask({
+      repo: "org/repo",
+      workDir,
+      idleTaskIssueNumber: 50,
+    });
+    return { ok: result.ok, calls, infoMessages };
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+}
+
+/** A check result for a repo with AWS usage and the given wiring. */
+function awsCheck(
+  wiring: AwsEmulatorCheckResult["wiring"],
+  wiringDiagnostics: string[] = [],
+): AwsEmulatorCheckResult {
+  return {
+    usesAws: true,
+    awsEvidence: ["infra/template.yaml"],
+    wiring,
+    wiringEvidence: [],
+    wiringDiagnostics,
+    unreadableWorkflows: [],
+    workflowsLoaded: true,
+  };
+}
+
+/** Count the `issue create` calls in a gh call log. */
+function createCount(calls: GhCall[]): number {
+  return calls.filter((c) => c.args[0] === "issue" && c.args[1] === "create")
+    .length;
+}
+
+Deno.test(
+  "runTask - floci-only files ONE finding with the migration title and no Floci-default, docker.sock or stub-pass text",
+  async () => {
+    const run = await runAwsPreFiler(
+      awsCheck("floci-only", ["`ci.yml` job `test` runs floci/floci"]),
+    );
+    assert(run.ok);
+    assertEquals(createCount(run.calls), 1);
+    const created = readIssueCreate(run.calls);
+    assert(created !== null);
+    assertEquals(
+      created!.title,
+      "🟡 Migrate Floci-only AWS tests to AWS Emulator",
+    );
+    assert(created!.labels.includes("severity:medium"));
+    for (
+      const banned of [
+        "docker.sock",
+        "::warning::",
+        "ALLOW_STUB",
+        "FLOCI_SERVICES",
+        "SKIPPED (needs Docker)",
+        "one test per AWS service",
+        "Run `floci/floci@sha256",
+        "start `floci`",
+      ]
+    ) {
+      assert(
+        !created!.body.includes(banned),
+        `body must not contain ${banned}`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "runTask - missing wiring files the no-test-wiring title, not the Floci migration title",
+  async () => {
+    const run = await runAwsPreFiler(awsCheck("missing"));
+    assert(run.ok);
+    assertEquals(createCount(run.calls), 1);
+    assertEquals(
+      readIssueCreate(run.calls)!.title,
+      "🟡 No AWS Emulator test wiring in CI",
+    );
+  },
+);
+
+Deno.test(
+  "runTask - a fleet-authored open AWS Emulator issue with another title suppresses filing and is logged by number",
+  async () => {
+    const run = await runAwsPreFiler(awsCheck("missing"), {
+      rows: [{
+        number: 77,
+        title: "Add AWS Emulator tests to the CI pipeline",
+        login: FLEET_DEDUP_AUTHOR,
+      }],
+    });
+    assert(run.ok);
+    assertEquals(createCount(run.calls), 0);
+    assert(
+      run.infoMessages.some((m) => m.includes("#77")),
+      `expected #77 in the log, got: ${run.infoMessages.join(" | ")}`,
+    );
+  },
+);
+
+/** The body the base code filed for BP-AWS-EMULATOR-MISSING before #5112: it told the repo to run Floci. */
+/** An older scan-filed body: the marker on its first line, Floci advice below. */
+const OLD_FLOCI_FINDING_BODY = [
+  "<!-- finding-id: BP-AWS-EMULATOR-MISSING -->",
+  "",
+  "Run floci/floci as a service container; mount /var/run/docker.sock.",
+].join("\n");
+
+function editCalls(calls: GhCall[]): GhCall[] {
+  return calls.filter((c) => c.args[0] === "issue" && c.args[1] === "edit");
+}
+
+function commentCalls(calls: GhCall[]): GhCall[] {
+  return calls.filter((c) => c.args[0] === "issue" && c.args[1] === "comment");
+}
+
+/** The `--body` of a gh call. */
+function bodyArg(call: GhCall | undefined): string {
+  const args = call?.args ?? [];
+  return args[args.indexOf("--body") + 1] ?? "";
+}
+
+async function sha256HexOf(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+Deno.test(
+  "runTask - an open old-body AWS finding ('No AWS emulator (Floci) in CI') gets the current finding as one comment, is not edited and is not re-filed",
+  async () => {
+    const check = awsCheck("floci-only");
+    const run = await runAwsPreFiler(check, {
+      rows: [{
+        number: 81,
+        title: "🟡 No AWS emulator (Floci) in CI",
+        login: FLEET_DEDUP_AUTHOR,
+        body: OLD_FLOCI_FINDING_BODY,
+      }],
+    });
+    assert(run.ok);
+    assertEquals(createCount(run.calls), 0);
+    assertEquals(editCalls(run.calls).length, 0);
+    const comments = commentCalls(run.calls);
+    assertEquals(comments.length, 1);
+    assertEquals(comments[0]?.args.slice(0, 5), [
+      "issue",
+      "comment",
+      "81",
+      "--repo",
+      "org/repo",
+    ]);
+    const finding = buildAwsEmulatorFinding(check);
+    const posted = bodyArg(comments[0]);
+    assertEquals(
+      posted.split("\n", 1)[0],
+      awsEmulatorUpdateMarker(
+        finding.findingId,
+        await sha256HexOf(finding.body),
+      ),
+    );
+    assert(posted.includes(finding.title));
+    assert(posted.includes("## Why this matters"));
+    // The comment is never read as a second finding.
+    assert(!posted.includes("<!-- finding-id:"));
+    assert(!posted.includes("docker.sock"));
+    assert(
+      run.infoMessages.some((m) =>
+        m.includes("#81") && m.includes("posted on it as a comment")
+      ),
+    );
+  },
+);
+
+Deno.test(
+  "runTask - the same current finding is not commented twice on a reused AWS Emulator issue",
+  async () => {
+    const check = awsCheck("floci-only");
+    const finding = buildAwsEmulatorFinding(check);
+    const marker = awsEmulatorUpdateMarker(
+      finding.findingId,
+      await sha256HexOf(finding.body),
+    );
+    const run = await runAwsPreFiler(check, {
+      rows: [{
+        number: 81,
+        title: "🟡 No AWS emulator (Floci) in CI",
+        login: FLEET_DEDUP_AUTHOR,
+        body: OLD_FLOCI_FINDING_BODY,
+      }],
+    }, [{ body: `${marker}\n\nThe current finding.` }]);
+    assert(run.ok);
+    assertEquals(commentCalls(run.calls).length, 0);
+    assertEquals(editCalls(run.calls).length, 0);
+    assertEquals(createCount(run.calls), 0);
+    // A comment that only quotes the marker further down does not count.
+    const quoted = await runAwsPreFiler(check, {
+      rows: [{
+        number: 81,
+        title: "🟡 No AWS emulator (Floci) in CI",
+        login: FLEET_DEDUP_AUTHOR,
+        body: OLD_FLOCI_FINDING_BODY,
+      }],
+    }, [{ body: `Someone pasted \`${marker}\` here.` }]);
+    assertEquals(commentCalls(quoted.calls).length, 1);
+  },
+);
+
+Deno.test(
+  "runTask - a reused AWS finding whose body carries a worker record block keeps it: the body is never edited",
+  async () => {
+    const check = awsCheck("missing");
+    const current = buildAwsEmulatorFinding(check);
+    const deferred = upsertWorkerRecordLine(
+      current.body,
+      "Deferred until 2026-12-01T00:00:00Z",
+    );
+    // The current finding plus a record block is up to date: nothing is posted.
+    const upToDate = await runAwsPreFiler(check, {
+      rows: [{
+        number: 84,
+        title: current.title,
+        login: FLEET_DEDUP_AUTHOR,
+        body: deferred,
+      }],
+    });
+    assert(upToDate.ok);
+    assertEquals(editCalls(upToDate.calls).length, 0);
+    assertEquals(commentCalls(upToDate.calls).length, 0);
+    // An older finding with a record block gets a comment; the body, and so
+    // the record discovery reads, is not rewritten.
+    const older = await runAwsPreFiler(check, {
+      rows: [{
+        number: 85,
+        title: "🟡 No AWS emulator (Floci) in CI",
+        login: FLEET_DEDUP_AUTHOR,
+        body: upsertWorkerRecordLine(
+          OLD_FLOCI_FINDING_BODY,
+          "Deferred until 2026-12-01T00:00:00Z",
+        ),
+      }],
+    });
+    assert(older.ok);
+    assertEquals(editCalls(older.calls).length, 0);
+    assertEquals(commentCalls(older.calls).length, 1);
+    assertEquals(createCount(older.calls), 0);
+  },
+);
+
+Deno.test(
+  "runTask - a failed comments read, a comments payload with no list, or a failed comment post on a reused AWS finding fails the run and files nothing",
+  async () => {
+    const check = awsCheck("floci-only");
+    for (const fault of ["read", "no-list", "post"] as const) {
+      const run = await runAwsPreFiler(
+        check,
+        {
+          rows: [{
+            number: 81,
+            title: "🟡 No AWS emulator (Floci) in CI",
+            login: FLEET_DEDUP_AUTHOR,
+            body: OLD_FLOCI_FINDING_BODY,
+          }],
+        },
+        [],
+        fault,
+      );
+      assertEquals(run.ok, false, fault);
+      assertEquals(createCount(run.calls), 0, fault);
+      assertEquals(editCalls(run.calls).length, 0, fault);
+      // The post was attempted only in the "post" case, and it failed.
+      assertEquals(
+        commentCalls(run.calls).length,
+        fault === "post" ? 1 : 0,
+        fault,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "reconcileAwsEmulatorIssue - each gh fault throws an error naming the issue and the cause",
+  async () => {
+    const check = awsCheck("floci-only");
+    const finding = buildAwsEmulatorFinding(check);
+    const issue = {
+      number: 81,
+      title: "🟡 No AWS emulator (Floci) in CI",
+      body: OLD_FLOCI_FINDING_BODY,
+    };
+    const cases: Array<
+      [string, (args: string[]) => Promise<string>, string[]]
+    > = [
+      [
+        "comments read rejects",
+        (args) =>
+          args[1] === "view"
+            ? Promise.reject(new Error("gh: HTTP 502"))
+            : Promise.resolve(""),
+        ["cannot read the comments", "#81", "org/repo", "HTTP 502"],
+      ],
+      [
+        "comments payload has no list",
+        (args) =>
+          args[1] === "view"
+            ? Promise.resolve(JSON.stringify({ body: "x" }))
+            : Promise.resolve(""),
+        ["cannot read the comments", "#81", "org/repo", "no comments list"],
+      ],
+      [
+        "comment post rejects",
+        (args) =>
+          args[1] === "view"
+            ? Promise.resolve(JSON.stringify({ comments: [] }))
+            : Promise.reject(new Error("gh: HTTP 403")),
+        ["cannot comment the current finding", "#81", "org/repo", "HTTP 403"],
+      ],
+    ];
+    for (const [label, gh, fragments] of cases) {
+      const err = await assertRejects(
+        () => reconcileAwsEmulatorIssue("org/repo", issue, finding, gh),
+        Error,
+      );
+      for (const fragment of fragments) {
+        assert(err.message.includes(fragment), `${label}: ${err.message}`);
+      }
+    }
+  },
+);
+
+Deno.test(
+  "runTask - a reused AWS Emulator issue whose marker is not its first line is left alone",
+  async () => {
+    const check = awsCheck("missing");
+    for (
+      const body of [
+        // An owner's paragraph above the generated text.
+        "Owner note: we will wire this after the Q1 freeze.\n\n" +
+        OLD_FLOCI_FINDING_BODY,
+        // A body that only quotes the marker in a code span.
+        "Tracking `<!-- finding-id: BP-AWS-EMULATOR-MISSING -->` from the scan.",
+      ]
+    ) {
+      const run = await runAwsPreFiler(check, {
+        rows: [{
+          number: 86,
+          title: "AWS Emulator wiring",
+          login: FLEET_DEDUP_AUTHOR,
+          body,
+        }],
+      });
+      assert(run.ok);
+      assertEquals(editCalls(run.calls).length, 0, body);
+      assertEquals(commentCalls(run.calls).length, 0, body);
+      assertEquals(createCount(run.calls), 0, body);
+    }
+  },
+);
+
+Deno.test(
+  "runTask - an open AWS finding already matching the current finding, or a hand-written AWS Emulator issue, is not edited",
+  async () => {
+    const check = awsCheck("missing");
+    const current = buildAwsEmulatorFinding(check);
+    const upToDate = await runAwsPreFiler(check, {
+      rows: [{
+        number: 82,
+        title: current.title,
+        login: FLEET_DEDUP_AUTHOR,
+        body: current.body,
+      }],
+    });
+    assert(upToDate.ok);
+    assertEquals(editCalls(upToDate.calls).length, 0);
+    assertEquals(createCount(upToDate.calls), 0);
+    const handWritten = await runAwsPreFiler(check, {
+      rows: [{
+        number: 83,
+        title: "Add AWS Emulator tests",
+        login: FLEET_DEDUP_AUTHOR,
+        body: "Please wire the AWS Emulator into CI.",
+      }],
+    });
+    assert(handWritten.ok);
+    assertEquals(editCalls(handWritten.calls).length, 0);
+    assertEquals(createCount(handWritten.calls), 0);
+  },
+);
+
+Deno.test(
+  "runTask - a non-fleet-authored open AWS Emulator issue does not suppress filing",
+  async () => {
+    const run = await runAwsPreFiler(awsCheck("missing"), {
+      rows: [{
+        number: 78,
+        title: "AWS Emulator tests please",
+        login: "a-stranger",
+      }],
+    });
+    assert(run.ok);
+    assertEquals(createCount(run.calls), 1);
+  },
+);
+
+Deno.test(
+  "runTask - an open issue whose title does not name the AWS Emulator does not suppress filing",
+  async () => {
+    const run = await runAwsPreFiler(awsCheck("missing"), {
+      rows: [{
+        number: 79,
+        title: "Fix the login page",
+        login: FLEET_DEDUP_AUTHOR,
+      }],
+    });
+    assert(run.ok);
+    assertEquals(createCount(run.calls), 1);
+  },
+);
+
+Deno.test(
+  "runTask - a gh failure in the AWS Emulator issue lookup fails the run and files nothing",
+  async () => {
+    const run = await runAwsPreFiler(awsCheck("missing"), { fail: true });
+    assertEquals(run.ok, false);
+    assertEquals(createCount(run.calls), 0);
+  },
+);
+
+Deno.test(
+  "findEquivalentAwsEmulatorIssue - queries open issues by AWS Emulator title and returns the fleet-authored number",
+  async () => {
+    const seen: string[][] = [];
+    const gh = (args: string[]): Promise<string> => {
+      seen.push([...args]);
+      return Promise.resolve(JSON.stringify([
+        { number: 5, title: "AWS Emulator", author: { login: "a-stranger" } },
+        {
+          number: 6,
+          title: "Use the aws emulator in CI",
+          author: { login: FLEET_DEDUP_AUTHOR },
+        },
+      ]));
+    };
+    const found = await findEquivalentAwsEmulatorIssue(
+      "org/repo",
+      gh,
+      DEDUP_AUTHORS,
+    );
+    assertEquals(found?.number, 6);
+    const args = seen[0] ?? [];
+    assertEquals(args.slice(0, 3), ["issue", "list", "--repo"]);
+    assertEquals(
+      args[args.indexOf("--search") + 1],
+      `"AWS Emulator" in:title`,
+    );
+    assertEquals(args[args.indexOf("--state") + 1], "open");
+    assertEquals(args[args.indexOf("--limit") + 1], "50");
+    assert(args[args.indexOf("--json") + 1]?.includes("title"));
+  },
+);
+
+Deno.test(
+  "findEquivalentAwsEmulatorIssue - a gh failure throws with context, so the lookup never reads as no match",
+  async () => {
+    await assertRejects(
+      () =>
+        findEquivalentAwsEmulatorIssue(
+          "org/repo",
+          () => Promise.reject(new Error("rate limited")),
+          DEDUP_AUTHORS,
+        ),
+      Error,
+      "cannot look up open AWS Emulator issues in org/repo",
+    );
+  },
+);
+
+Deno.test(
+  "buildAwsEmulatorFinding - body lists diagnostics, states what was checked, links the standard and is medium",
+  () => {
+    const finding = buildAwsEmulatorFinding(awsCheck("missing", [
+      "`ci.yml` job `test`: step running `aws-emulator-run -- x` sets continue-on-error",
+    ]));
+    assertStringIncludes(finding.body, "**Severity:** medium");
+    assertStringIncludes(finding.body, "## What the scan found");
+    // Backticks in a diagnostic are escaped so the code span cannot break.
+    assertStringIncludes(
+      finding.body,
+      "- 'ci.yml' job 'test': step running 'aws-emulator-run -- x' sets continue-on-error",
+    );
+    assertStringIncludes(
+      finding.body,
+      "configured execution, not an observed green CI run",
+    );
+    assertStringIncludes(
+      finding.body,
+      "https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#aws-integration-testing",
+    );
+    assertStringIncludes(
+      finding.body,
+      "`aws-emulator-run [--timeout N] -- <test command>`",
+    );
+    assertStringIncludes(finding.body, "`cargo test` or `cargo nextest`");
+    assert(!finding.body.includes("docker.sock"));
+    assert(!finding.body.includes("::warning::"));
+    assert(!finding.body.includes("SKIPPED (needs Docker)"));
+  },
+);
+
+Deno.test(
+  "buildAwsEmulatorFinding - a missing wiring finding says so when there are no diagnostics",
+  () => {
+    const finding = buildAwsEmulatorFinding(awsCheck("missing"));
+    assertStringIncludes(finding.body, "- No AWS Emulator wiring was found.");
   },
 );

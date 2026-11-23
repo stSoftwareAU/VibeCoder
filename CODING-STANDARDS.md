@@ -80,9 +80,14 @@ own reference CI path (`infra/cloudformation/test-aws-emulator.sh`).
 Issue #5111 carries this policy into the agent guidelines
 (`prompts/coding_guidelines/prompt.md`) and the review brief
 (`prompts/pr_review_brief/prompt.md`), so review applies it. The
-best-practices scan's existing `BP-AWS-EMULATOR-MISSING` pre-filer checks only
-that CI runs an emulator at all; not yet: #5112 will add the test-wiring
-detector and the migration findings.
+best-practices scan's `BP-AWS-EMULATOR-MISSING` pre-filer (Issue #5112)
+checks the static test wiring in CI and files the migration finding where it
+is missing; see [`docs/BEST-PRACTICES-SCAN.md`](docs/BEST-PRACTICES-SCAN.md#aws-emulator-in-ci-bp-aws-emulator-missing).
+It reads workflow and script text only: it does not observe CI results or
+judge test adequacy. Its markers are a YAML comment
+`# aws-emulator-gap: version=…; behaviour=…; evidence=…; alternative=…; recheck=…`
+in a Floci workflow, and `# aws-emulator-embedded: version=<X.Y.Z>; justification=…`
+on the `run:` of a Rust test step.
 
 References: [AWS Emulator](https://docs.aws.amazon.com/emulator/latest/userguide/what-is-service.html)
 and [AWS Blocks local development](https://docs.aws.amazon.com/blocks/latest/devguide/local-development.html).
@@ -2130,7 +2135,8 @@ the core deliverable is genuinely blocked on another open issue after work
 is committed: a `## Blocked:` heading followed by a `Depends on owner/repo#N`
 (or `Blocked by`) line naming an issue that is still open then defers the
 issue and raises no PR. A closed or unreadable dependency does not defer;
-the committed run hands off to a human and raises no PR.
+the committed run raises no PR and the issue is retried as not finished
+(Issue #4227).
 The worker enforces this itself, not only a reviewer, because a PR into a
 milestone branch merges unreviewed on green CI (Issue #3177): a summary
 whose `## Acceptance Criteria` block marks any criterion `partial` or `missing` is raised

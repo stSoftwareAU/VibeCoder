@@ -391,14 +391,17 @@ flowchart LR
   All three hooks are always named, so a host-side parser reads a fixed set of
   hook fields. When that line is written — the liveness guard returned ok — it
   also ends with `mem_available_mib=<n|unavailable>`, `pressure_memory=<text>`
-  and `pressure_cpu=<text>`. `<n>` is `MemAvailable` from `/proc/meminfo`,
-  converted from kibibytes to mebibytes and rounded to an integer; `0` is a real
-  reading. `<text>` is `/proc/pressure/memory` or `/proc/pressure/cpu` with each
-  run of whitespace collapsed to a comma, or `empty` when that file was readable
-  but blank. A file that cannot be read, and a meminfo with no `MemAvailable:`
-  line, is the token `unavailable` — the field is still present, and it is not
-  `0`. A guard error logs a warning and does not write the tick line, so these
-  fields are absent then too. The `[liveness] ALERT` line does not carry them.
+  and `pressure_cpu=<text>`. `<n>` is `Deno.systemMemoryInfo().available` (on
+  Linux, the kernel's `MemAvailable`) converted from bytes to mebibytes and
+  rounded to an integer; `0` is a real reading. `<text>` is
+  `/proc/pressure/memory` or `/proc/pressure/cpu` with each run of whitespace
+  collapsed to a comma, or `empty` when that file was readable but blank. Both
+  PSI files are read through `cat`, because Deno refuses every `/proc` read
+  short of `--allow-all`. A file that cannot be read, and a failed
+  `Deno.systemMemoryInfo()` call, is the token `unavailable` — the field is
+  still present, and it is not `0`. A guard error logs a warning and does not
+  write the tick line, so these fields are absent then too. The
+  `[liveness] ALERT` line does not carry them.
 - **`fleet-summary:` carries `hook_failures=N`** — failing hook invocations this
   run — beside `claims=`, `successes=` and `failures=`, so a run whose every
   heartbeat was lost cannot read as clean.
@@ -658,7 +661,7 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_TURNS`                        | `telemetry.turns`               | no             | Turns the run took, summed across its invocations                                                                                                                                                                                                                                        |
 | `VIBECODER_MODEL`                        | `telemetry.model`               | no             | Main served model of the invocation with the biggest token total (its sub-agents' tokens count toward that total, but the reported model is the invocation's own main model, not a sub-agent's)                                                                                          |
 | `VIBECODER_EFFORT`                       | `telemetry.effort`              | no             | Effort that same dominant invocation was started with (`low`, `medium`, `high`, `xhigh`, `max`) — Issue #2573                                                                                                                                                                            |
-| `VIBECODER_TELEMETRY_ABSENT_REASON`      | `telemetryAbsentReason`         | no             | Why telemetry is missing (`agent_not_invoked`, `usage_not_reported`, `provider_unsupported`), judged from the providers the run's invocations reported; the configured provider is the fallback only when none named one (Issue #5295)                                                   |
+| `VIBECODER_TELEMETRY_ABSENT_REASON`      | `telemetryAbsentReason`         | no             | Why telemetry is missing (`agent_not_invoked`, `usage_not_reported`, `provider_unsupported`), judged from the invocations' providers, else the configured one (Issue #5295); `run_unreported` = threw or abandoned before reporting, so an agent may have run (Issue #5296)              |
 | `VIBECODER_OUTCOME_KIND`                 | `outcome.kind`                  | no             | Structured result: `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale`                                                                                                                                                                                    |
 | `VIBECODER_OUTCOME_CATEGORY`             | `outcome.category`              | no             | `FailureCategory` when `kind` is `no_pr`, or when a `pr` run was failed by a later step (Issue #2044)                                                                                                                                                                                    |
 | `VIBECODER_OUTCOME_PHASE`                | `outcome.phase`                 | no             | Phase that terminated the run                                                                                                                                                                                                                                                            |

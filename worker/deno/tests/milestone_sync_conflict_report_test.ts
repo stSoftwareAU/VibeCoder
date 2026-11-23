@@ -40,16 +40,21 @@ import {
   loadSyncStreaks,
   milestoneSyncStreakPath,
 } from "../lib/milestone_sync_streak.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 async function git(
   args: string[],
   cwd: string,
 ): Promise<{ code: number; stdout: string }> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   return { code: out.code, stdout: new TextDecoder().decode(out.stdout) };
 }

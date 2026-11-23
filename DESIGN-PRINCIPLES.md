@@ -1874,32 +1874,54 @@ audit — **no linter or compiler is actually invoked**. The compile half was
 added in (extending) after a Deno syntax error reached `main` in a
 monitored repo because no `deno check` ran in CI.
 
-**AWS emulator in CI.** A second deterministic pre-filer runs on
-**every** best-practices scan, whatever bucket the draw picked, before
-Claude runs. `checkAwsEmulatorInCI()` detects AWS usage from dependency
-manifests, CloudFormation templates, or `.tf` files, and checks
-whether any GitHub Actions workflow runs an emulator: the `floci/floci`
-image as a service container, job container, `docker://` step, or
-`docker run` step, or the official AWS Emulator: a `run:` step in command
-position that runs a repository test through `aws-emulator-run`
-(`[--ready-timeout N] [--timeout N] -- COMMAND` with a COMMAND that is not a
-no-op such as `true` or `:`), directly or through a repository script that
-itself does so (one level deep). The invocation must be able to run: a
-statically false job or step `if:`, a command after `exit`, a statically false
-branch, a function body or a here-document earns no credit, in the workflow and
-in the repository script alike. The helper's `--smoke` self-check,
-`--smoke-client` and `--help` run no repository test, so they do not count. Merely installing the pinned
-`container/toolchains/aws-emulator.sh` is not coverage. A repo that uses AWS
-without either emulator wired
-into CI, and without a valid `best-practice-ignore: BP-AWS-EMULATOR-MISSING`
-waiver, gets one `severity:medium` finding with the fixed id
-`BP-AWS-EMULATOR-MISSING`, deduplicated through the same
-`fileFindingOnce` mechanism as `BP-LINTER-<bucket>` and added to the
-known-open list passed to Claude. No finding is filed when the repo
-does not use AWS, when no workflow loaded (status unknown — the same
-fail-safe as the zero-workflows rule), or when an emulator (Floci or the
-official AWS Emulator) already runs in CI. See [docs/BEST-PRACTICES-SCAN.md → AWS emulator in CI](docs/BEST-PRACTICES-SCAN.md#aws-emulator-in-ci-bp-aws-emulator-missing)
-for the full trigger table, waiver syntax, and suggested-fix contract.
+**AWS emulator in CI.** A second deterministic pre-filer runs on **every**
+best-practices scan, whatever bucket the draw picked, before Claude runs.
+`checkAwsEmulatorInCI()` detects AWS usage from dependency manifests,
+CloudFormation templates, or Terraform that carries AWS evidence (an AWS
+provider block, `aws_*` resources or data sources, an AWS `required_providers`
+entry, an AWS provider source, or an AWS module source). Other Terraform does
+not trigger it. It then checks the static wiring of the repo's GitHub Actions
+workflows; it does not read any CI result. The official AWS Emulator passes in
+one of two forms. Server mode is a reachable `run:` step that invokes
+`aws-emulator-run [--ready-timeout N] [--timeout N] -- COMMAND` with a COMMAND
+that is not a no-op, directly or through a repository script the step runs (one
+level deep, confined to the checkout). Embedded mode, for Rust repos only, is a
+`# aws-emulator-embedded: version=<X.Y.Z>; justification=<text>` marker on a
+status-preserving `cargo test` or `cargo nextest` step. Either form passes only
+when the workflow runs on `pull_request` (directly, or through a `workflow_call`
+workflow that a `pull_request` workflow calls), neither the job nor the step
+sets `continue-on-error`, the failure is propagated (errexit-aware, as the scan
+doc defines it), and the invocation can run: a statically false `if:`, a
+command after `exit`, a statically false branch, a function body or a
+here-document earns no credit. Installing the pinned
+`container/toolchains/aws-emulator.sh`, the helper's `--smoke` self-checks,
+echoes and comments do not count. Floci (`floci/floci`) never counts as the
+official emulator. A workflow that runs it passes only with a valid
+`# aws-emulator-gap: version=…; behaviour=…; evidence=…; alternative=…; recheck=…`
+record (all five keys non-empty, version containing a digit) in a
+`pull_request`-applicable workflow whose Floci job is not statically disabled,
+has no `continue-on-error`, and runs a test step whose failure fails the job. Floci without such a record ("Floci-only") gets
+the migration finding.
+
+A repo that uses AWS and does not pass, with no valid
+`best-practice-ignore: BP-AWS-EMULATOR-MISSING` waiver, gets one
+`severity:medium` finding with the fixed id `BP-AWS-EMULATOR-MISSING`, titled
+"No AWS Emulator test wiring in CI" (or "Migrate Floci-only AWS tests to AWS
+Emulator" for a Floci-only repo). It is deduplicated through the same
+`fileFindingOnce` mechanism as `BP-LINTER-<bucket>` and added to the known-open
+list passed to Claude. No finding is filed when the repo does not use AWS; when
+no workflow loaded, or any workflow failed to parse (status unknown, so an
+unreadable workflow is never read as a missing gate, and the next scheduled scan
+retries it); when wiring or a documented gap passes; when a valid waiver exists;
+or when an open fleet-authored issue already covers it, including an open
+fleet-authored issue whose title contains "AWS Emulator". Only fleet-authored
+issues count, because titles written by others are attacker-writable. A throw
+from the detector, or a `gh` failure in that lookup, fails the scan run rather
+than filing. Passing wiring is static evidence only: it is not a CI result and
+not a judgement of test adequacy, which remain the repo's CI run and code review
+against [`CODING-STANDARDS.md#aws-integration-testing`](CODING-STANDARDS.md#aws-integration-testing).
+See [docs/BEST-PRACTICES-SCAN.md → AWS emulator in CI](docs/BEST-PRACTICES-SCAN.md#aws-emulator-in-ci-bp-aws-emulator-missing)
+for the full trigger rules, waiver syntax, and suggested-fix contract.
 
 **Cap and priority order.** A single run files at most six standalone findings,
 ordered missing-linter > `severity:high` > `severity:medium` > `severity:low`.

@@ -19,6 +19,10 @@ import {
   milestoneSyncStreakPath,
 } from "../lib/milestone_sync_streak.ts";
 import type { Logger } from "../types.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const MILESTONE_BRANCH = "milestone/1780-presync";
 const REPO = "owner/repo";
@@ -37,10 +41,11 @@ const silentLogger: Logger = {
 
 async function git(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
     stdout: "piped",
     stderr: "piped",
+    env: NO_HOST_GIT_CONFIG,
   }).output();
   if (out.code !== 0) {
     throw new Error(

@@ -16,6 +16,10 @@
  */
 
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   assert,
   assertEquals,
   assertStringIncludes,
@@ -163,10 +167,11 @@ function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 /** Run one real git command in `dir`, failing loud on a non-zero exit. */
 async function git(dir: string, args: string[]): Promise<void> {
   const result = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd: dir,
     stdout: "piped",
     stderr: "piped",
+    env: { ...NO_HOST_GIT_CONFIG },
   }).output();
   if (result.code !== 0) {
     throw new Error(

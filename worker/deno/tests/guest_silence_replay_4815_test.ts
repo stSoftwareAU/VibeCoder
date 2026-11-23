@@ -1,10 +1,14 @@
 /**
- * Bounded replay of the archived completion wedges (Issue #4815).
+ * Bounded replay of archived silent-guest watchdog kills (Issues #4815, #5250).
  *
  * GRQ-3 posted the redacted facts of three completion-phase watchdog kills on
  * Issue #4815 (PR #5294 backfill). In every one the guest did not answer its
  * exec probe, and the last step logged differs (`agent turn` twice,
  * `pre-PR verifier` once): the guest VM itself hung, not one completion step.
+ * GRQ-25 posted one issue-phase kill on Issue #5250 (`agent turn`). The guest
+ * did not answer, and it was silent for 31m 22s before capture. It was
+ * captured on 17 November, before the early silent-guest reap from Issue #5161
+ * landed, so it ran to the full watchdog deadline.
  * The repair for a hung guest is the launcher's early silent-guest reap
  * (Issue #5161). This replay drives each kill's recorded silence through the
  * real `checkGuestSilence` decision on a synthetic five-minute cadence.
@@ -25,25 +29,39 @@ import {
 
 const REPLAY_INTERVAL_SECONDS = 300;
 
-/** The three kills whose facts were posted on Issue #4815. */
+/** Archived kills whose facts were posted on Issue #4815 and Issue #5250. */
 const KILLS = [
   {
+    issue: 4815,
+    host: "GRQ-3",
     container: "vibe-coder-46887",
     lastStep: "pre-PR verifier",
     lastLog: "2026-11-04T21:16:02Z",
     capturedAt: "2026-11-04T22:17:09.220Z",
   },
   {
+    issue: 4815,
+    host: "GRQ-3",
     container: "vibe-coder-53371",
     lastStep: "agent turn",
     lastLog: "2026-11-03T04:28:08Z",
     capturedAt: "2026-11-03T04:58:25.232Z",
   },
   {
+    issue: 4815,
+    host: "GRQ-3",
     container: "vibe-coder-9753",
     lastStep: "agent turn",
     lastLog: "2026-11-02T20:17:17Z",
     capturedAt: "2026-11-02T21:47:37.378Z",
+  },
+  {
+    issue: 5250,
+    host: "GRQ-25",
+    container: "vibe-coder-98651",
+    lastStep: "agent turn",
+    lastLog: "2026-11-17T11:25:47Z",
+    capturedAt: "2026-11-17T11:57:09.137Z",
   },
 ] as const;
 
@@ -51,6 +69,7 @@ const KILLS = [
 function replaySeams(
   lastLogMs: number,
   guestAnswers: boolean,
+  host: string,
 ): EvidenceSeams {
   return {
     runRuntime: () =>
@@ -65,7 +84,7 @@ function replaySeams(
     writeFile: () => Promise.resolve(),
     diskReading: () => Promise.resolve(null),
     memoryReading: () => Promise.resolve({ level: "unknown" }),
-    hostname: () => "GRQ-3",
+    hostname: () => host,
     timeout: () => ({ promise: new Promise<void>(() => {}), cancel: () => {} }),
   };
 }
@@ -85,7 +104,7 @@ async function firstWedgedSilence(
   const lastLogMs = Date.parse(kill.lastLog);
   for (let silent = offset; silent < limit; silent += cadence) {
     const nowMs = lastLogMs + silent * 1000;
-    const seams = replaySeams(lastLogMs, guestAnswers);
+    const seams = replaySeams(lastLogMs, guestAnswers, kill.host);
     const verdict = await checkGuestSilence(seams, {
       containerName: kill.container,
       evidenceDir: "/logs",
@@ -102,7 +121,7 @@ async function firstWedgedSilence(
 }
 
 for (const kill of KILLS) {
-  Deno.test(`replay #4815 ${kill.container} (${kill.lastStep}) - the guest is judged wedged before the recorded silence`, async () => {
+  Deno.test(`replay #${kill.issue} ${kill.container} (${kill.lastStep}) - the guest is judged wedged before the recorded silence`, async () => {
     const cadence = REPLAY_INTERVAL_SECONDS;
     const observed = (Date.parse(kill.capturedAt) - Date.parse(kill.lastLog)) /
       1000;
@@ -131,7 +150,7 @@ for (const kill of KILLS) {
     }
   });
 
-  Deno.test(`replay #4815 ${kill.container} (${kill.lastStep}) - a guest that still answers is never judged wedged`, async () => {
+  Deno.test(`replay #${kill.issue} ${kill.container} (${kill.lastStep}) - a guest that still answers is never judged wedged`, async () => {
     const cadence = REPLAY_INTERVAL_SECONDS;
     const observed = (Date.parse(kill.capturedAt) - Date.parse(kill.lastLog)) /
       1000;

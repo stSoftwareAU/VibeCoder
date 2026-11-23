@@ -22,6 +22,10 @@
 import { assertEquals } from "@std/assert";
 import { commitAndPushPending, pushUnpushedCommits } from "../lib/git_push.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 import { RUN_ID_TRAILER_KEY } from "../lib/run_id.ts";
 
 const DEFAULT_BRANCH = "Develop";
@@ -32,7 +36,10 @@ const TEST_RUN_ID = "vibe-963-single-branch-sentinel";
 
 /** Run a git command in a repo, failing loudly on a non-zero exit. */
 async function git(args: string[], cwd: string): Promise<string> {
-  const result = await runGitCommand(args, { cwd });
+  const result = await runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
+    cwd,
+    env: NO_HOST_GIT_CONFIG,
+  });
   if (!result.ok) throw result.error;
   if (result.value.code !== 0) {
     throw new Error(
@@ -94,8 +101,14 @@ async function remoteTip(
   branch: string,
 ): Promise<string | null> {
   const result = await runGitCommand(
-    ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
-    { cwd: remotePath },
+    [
+      ...NO_HOST_HOOKS_ARGS,
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `refs/heads/${branch}`,
+    ],
+    { cwd: remotePath, env: NO_HOST_GIT_CONFIG },
   );
   if (!result.ok || result.value.code !== 0) return null;
   return result.value.stdout.trim();

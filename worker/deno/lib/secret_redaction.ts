@@ -60,12 +60,24 @@ export const REDACTION_PLACEHOLDER = "***REDACTED***";
  * match. The `replace` callback receives the standard `String.replace`
  * arguments so a rule can preserve a non-secret prefix (e.g. the `Bearer `
  * scheme or a `TOKEN=` key) while masking only the secret portion.
+ *
+ * A rule whose verdict on one match depends on the matches around it supplies
+ * a whole-text `apply` and its matching `detect` instead (Issue #5310): the
+ * `secret-assignment` rule, whose walk gives an outer candidate up for the
+ * credential label inside it. One implementation serves both, so
+ * `redactSecrets` and `containsSecret` cannot disagree.
  */
-interface RedactionRule {
-  readonly name: string;
-  readonly pattern: RegExp;
-  readonly replace: (match: string, ...groups: string[]) => string;
-}
+type RedactionRule =
+  | {
+    readonly name: string;
+    readonly pattern: RegExp;
+    readonly replace: (match: string, ...groups: string[]) => string;
+  }
+  | {
+    readonly name: string;
+    readonly apply: (text: string) => string;
+    readonly detect: (text: string) => boolean;
+  };
 
 /**
  * The complete Markdown a cross-line assignment value can be, and no
@@ -133,6 +145,10 @@ const MIN_CROSS_LINE_LENGTH = 8;
  * structure, the parent's first child, never a credential. Bounded and
  * anchored, so it is constant work per candidate (the Issue #3942 linearity
  * rule).
+ *
+ * A credential-labelled child key (`API_TOKEN:`) whose own value is masked
+ * never reaches this test: `walkAssignments` gives the parent up for the child
+ * (Issue #5310), so the scan reaches the child and judges the child's value.
  */
 const MAPPING_KEY_VALUE = /^[A-Za-z0-9_.-]{1,128}:$/;
 
@@ -659,6 +675,20 @@ const RULES: readonly RedactionRule[] = [
   // still masked. Both lookaheads are fixed-width alternations — constant
   // work per candidate (the Issue #3942 linearity rule).
   //
+  // A credential label in the value of the label before it is judged as a
+  // label, not masked as that value (Issue #5310). In
+  // `credentials: DEPLOY_TOKEN = <value>` the bare-value branch stops at
+  // whitespace, so the outer match masked only `DEPLOY_TOKEN`, the scan
+  // resumed after it, and the real value was published. The pattern itself is
+  // unchanged; `walkAssignments` makes the decision where the value is judged
+  // — see there. That holds within the limits `trailingLabel` and
+  // `innerAssignment` apply: the inner separator and value start within
+  // `INNER_ASSIGNMENT_SPAN` (256) characters of the outer value's end, a
+  // double-quoted inner value closes within `INNER_QUOTED_MAX` (4,096)
+  // characters, the label is at most `INNER_LABEL_MAX` (128) characters, and
+  // the embedded-quote case (`DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
+  // Past them the base behaviour applies.
+  //
   // JSON structure survives the mask (Issue #4169's transcript tee is the
   // sink that showed it). Every stream-json line the agent emits carries a
   // `"usage":{"input_tokens":50,...}` block — a key that merely *contains*
@@ -685,26 +715,8 @@ const RULES: readonly RedactionRule[] = [
   //     on its own output.
   {
     name: "secret-assignment",
-    pattern: SECRET_ASSIGNMENT_PATTERN,
-    replace: (
-      match: string,
-      key: string,
-      sep: string,
-      value: string,
-      offset: unknown,
-      text: unknown,
-    ) => {
-      // `String.replace` passes the match offset and the whole string after
-      // the groups; the rule interface types the tail as strings, so narrow.
-      // Without them `following` is empty and the prose-heading exemption is
-      // refused, so the value stays masked (Issue #5253).
-      const following = typeof offset === "number" && typeof text === "string"
-        ? textAfter(text, offset + match.length)
-        : "";
-      if (!assignmentIsMasked(key, sep, value, following)) return match;
-      const quote = QUOTED_VALUE.test(value) ? value.charAt(0) : "";
-      return `${key}${sep}${quote}${REDACTION_PLACEHOLDER}${quote}`;
-    },
+    apply: redactAssignments,
+    detect: detectsSecretAssignment,
   },
   // Space-separated CLI flag carrying a secret (Issue #3648). The
   // `secret-assignment` rule above requires an `=` or `:` separator, so a
@@ -775,9 +787,7 @@ const RULES: readonly RedactionRule[] = [
  */
 function matchesSignatureRule(text: string): boolean {
   return RULES.some((rule) =>
-    rule.pattern === SECRET_ASSIGNMENT_PATTERN
-      ? detectsSecretAssignment(text)
-      : text.search(rule.pattern) !== -1
+    "detect" in rule ? rule.detect(text) : text.search(rule.pattern) !== -1
   );
 }
 
@@ -788,7 +798,7 @@ function matchesSignatureRule(text: string): boolean {
  * pattern-only scan made `containsSecret` disagree with `redactSecrets` — it
  * reported a secret in a PR body whose only "secret" was a Mermaid fence after
  * a `credential:` lead-in. Every candidate is put through
- * `assignmentIsMasked`, the same verdict the rule's `replace` returns.
+ * `assignmentIsMasked`, the same verdict `redactAssignments` applies.
  *
  * Running *every* rule through `replace` and comparing would answer this too,
  * and it was tried — but it silently narrowed the other rules:
@@ -802,26 +812,1221 @@ function matchesSignatureRule(text: string): boolean {
  * scan depend on this one.
  */
 function detectsSecretAssignment(text: string): boolean {
+  return walkAssignments(text).some((a) => a.masked);
+}
+
+/** One `secret-assignment` candidate and the verdict on it. */
+interface AssignmentVerdict {
+  readonly index: number;
+  readonly end: number;
+  readonly key: string;
+  readonly sep: string;
+  readonly value: string;
+  readonly masked: boolean;
+}
+
+/**
+ * How far past the outer value an inner label's assignment is searched
+ * (Issue #5310). A ReDoS ceiling (Issue #3942), not a syntax rule: it bounds
+ * the extra scan each candidate costs.
+ */
+const INNER_ASSIGNMENT_SPAN = 256;
+
+/** Run the shared pattern once from `from`, saving and restoring `lastIndex`. */
+function execAssignmentAt(
+  text: string,
+  from: number,
+): RegExpExecArray | null {
   const pattern = SECRET_ASSIGNMENT_PATTERN;
   const resume = pattern.lastIndex;
-  pattern.lastIndex = 0;
+  pattern.lastIndex = from;
   try {
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text)) !== null) {
-      const following = textAfter(text, match.index + match[0].length);
-      if (
-        assignmentIsMasked(
-          match[1] ?? "",
-          match[2] ?? "",
-          match[3] ?? "",
-          following,
-        )
-      ) return true;
-    }
-    return false;
+    return pattern.exec(text);
   } finally {
     pattern.lastIndex = resume;
   }
+}
+
+/** Judge one pattern match with {@link assignmentIsMasked}. */
+function verdictOf(text: string, match: RegExpExecArray): AssignmentVerdict {
+  const end = match.index + match[0].length;
+  const key = match[1] ?? "";
+  const sep = match[2] ?? "";
+  const value = match[3] ?? "";
+  return {
+    index: match.index,
+    end,
+    key,
+    sep,
+    value,
+    masked: assignmentIsMasked(key, sep, value, textAfter(text, end)),
+  };
+}
+
+/**
+ * Every `secret-assignment` candidate in `text`, in order, with its verdict —
+ * the one walk both {@link redactAssignments} and
+ * {@link detectsSecretAssignment} use, so they cannot disagree.
+ *
+ * Issue #5310: the value a label captured can itself be a credential label —
+ * `credentials: DEPLOY_TOKEN = <value>`, `credentials: "app.DEPLOY-TOKEN" =
+ * <value>`. Masking that run masked the inner label and published the inner
+ * value, because the scan resumed after the run. So when the value ends in a
+ * credential label (see {@link trailingLabel}) whose assignment runs past the
+ * value's end and is itself masked, the walk resumes at the inner label, whose
+ * own match masks its value.
+ *
+ * The outer candidate is given up unmasked only when its whole value is that
+ * label (see {@link isLabelOnly}). When real text sits before the label —
+ * `password: hunter2,token: <value>`, `TOKEN=abc123;SECRET='d9 e8'` — the
+ * outer value is still judged and masked whole, as before; the inner label's
+ * key and separator then sit inside that mask, so only the part of the inner
+ * value past the outer value's end is masked again. Otherwise the outer value
+ * is judged and masked exactly as before — an inner label with no value, a
+ * switch word or a cross-line value judged as prose never costs the outer
+ * mask.
+ */
+function walkAssignments(text: string): AssignmentVerdict[] {
+  // A nested walk (the decode-then-rescan check runs one on a joined run)
+  // gets its own memo, and the outer walk's is put back after it, so the
+  // memo always belongs to one walk (PR #5322 review round 12).
+  const outer = { ...INNER_MEMO };
+  INNER_MEMO.text = text;
+  INNER_MEMO.results = new Map();
+  INNER_MEMO.quotes = null;
+  INNER_MEMO.unclosedFlags = new Map();
+  INNER_MEMO.masks = [];
+  INNER_MEMO.maskThrough = new Map();
+  INNER_MEMO.flagValueStarts = null;
+  try {
+    return walkAssignmentsMemoised(text);
+  } finally {
+    Object.assign(INNER_MEMO, outer);
+  }
+}
+
+/** {@link walkAssignments} with its {@link INNER_MEMO} in place. */
+function walkAssignmentsMemoised(text: string): AssignmentVerdict[] {
+  const verdicts: AssignmentVerdict[] = [];
+  let from = 0;
+  // Where the last outer mask kept for an inner label ends; a later verdict
+  // starting before it only masks what lies past it.
+  let floor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = execAssignmentAt(text, from)) !== null) {
+    const through = INNER_MEMO.maskThrough.get(match.index);
+    if (through !== undefined) {
+      // An inner value masked through a flag's value past its closing quote
+      // (see mainReadsPastInnerValue): one mask, and the walk resumes after it.
+      const verdict = verdictOf(text, match);
+      const valueStart = verdict.end - verdict.value.length;
+      const kept = pastFloor(text, {
+        ...verdict,
+        end: through,
+        value: text.slice(valueStart, through),
+        masked: true,
+      }, floor);
+      if (kept) {
+        verdicts.push(kept);
+        INNER_MEMO.masks.push({
+          start: kept.end - kept.value.length,
+          end: through,
+        });
+      }
+      // Main's scan resumed inside the quoted value, so read on from there:
+      // a match that starts inside the mask is masked only past it.
+      floor = Math.max(floor, through);
+      from = valueStart > match.index ? valueStart : match.index + 1;
+      continue;
+    }
+    const outer = verdictOf(text, match);
+    const valueStart = outer.end - outer.value.length;
+    const inner = innerAssignment(text, valueStart, outer.end, 0, outer.masked);
+    if (
+      inner && !inner.keepsOuter && !quotedRunOn(text, outer) &&
+      isLabelOnly(text, valueStart, inner.labelStart)
+    ) {
+      from = inner.resume;
+      continue;
+    }
+    const kept = pastFloor(text, outer, floor);
+    if (kept) {
+      verdicts.push(kept);
+      if (kept.masked && kept.value !== "") {
+        INNER_MEMO.masks.push({
+          start: kept.end - kept.value.length,
+          end: kept.end,
+        });
+      }
+    }
+    if (inner) {
+      floor = outer.end;
+      from = inner.resume;
+      continue;
+    }
+    from = outer.end > outer.index ? outer.end : outer.index + 1;
+  }
+  return verdicts;
+}
+
+/**
+ * Whether the outer value from `valueStart` holds nothing before the inner
+ * label at `labelStart` but an optional opening quote and label characters
+ * (Issue #5310) — `DEPLOY_TOKEN`, `"app.DEPLOY-TOKEN`. Anything else there
+ * (`hunter2,`, `abc123;`, `ab#`) is text the outer value masks.
+ */
+function isLabelOnly(
+  text: string,
+  valueStart: number,
+  labelStart: number,
+): boolean {
+  return LABEL_PREFIX.test(text.slice(valueStart, labelStart));
+}
+
+/**
+ * What may precede an inner label for the outer value to be just the label. A
+ * leading `-`, or `--` anywhere, is not label text: `credentials: --token =
+ * <value>` and `credentials: x--token = <value>` hold a CLI flag, and given up
+ * unmasked they would leave `--token = ***REDACTED***` for the
+ * `secret-cli-flag` rule to rewrite, so a second call would mask `--token`
+ * (PR #5322 review rounds 5 and 6).
+ */
+const LABEL_PREFIX = /^["']?(?!-)(?![^]*--)[A-Za-z0-9_.-]*$/;
+
+/**
+ * Whether the outer value is a closed quoted run that the text runs straight
+ * on from (Issue #5310, PR #5322 review round 5): `credentials:
+ * 'DEPLOY_TOKEN='<value>`. Masking the inner value would join the run and the
+ * placeholder into one bare outer value, which the next call masks whole, so
+ * the outer value keeps its mask now. The quoted run is matched with its
+ * quotes, so the decision needs no further walk however often the shape
+ * repeats.
+ */
+function quotedRunOn(text: string, outer: AssignmentVerdict): boolean {
+  return QUOTED_VALUE.test(outer.value) && outer.end < text.length &&
+    !/\s/.test(text.charAt(outer.end));
+}
+
+/**
+ * `verdict` cut to the part past `floor`, the end of an outer mask it starts
+ * inside (Issue #5310), or `null` when nothing is left. Its key and separator
+ * then lie inside that mask, so only the value's remainder is masked again.
+ */
+function pastFloor(
+  text: string,
+  verdict: AssignmentVerdict,
+  floor: number,
+): AssignmentVerdict | null {
+  if (verdict.index >= floor) return verdict;
+  const start = Math.max(verdict.end - verdict.value.length, floor);
+  if (start >= verdict.end) return null;
+  return {
+    index: start,
+    end: verdict.end,
+    key: "",
+    sep: "",
+    value: text.slice(start, verdict.end),
+    masked: verdict.masked,
+  };
+}
+
+/**
+ * Longest inner label {@link trailingLabel} accepts (Issue #5310). A ReDoS
+ * ceiling (Issue #3942), not a syntax rule: the pattern's key group is
+ * quadratic on a long run of credential keywords, so a run longer than this
+ * is never re-scanned as a key and keeps the base mask.
+ */
+const INNER_LABEL_MAX = 128;
+
+/** One character of the pattern's key group. */
+const KEY_CHAR = /^[A-Za-z0-9_]$/;
+
+/** What may sit between an inner label and the outer value's end. */
+const LABEL_SUFFIX_CHAR = /^["'=:]$/;
+
+/** A credential keyword in a key-shaped run (Issue #5310). */
+const CREDENTIAL_KEYWORD =
+  /TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL/i;
+
+/** The start of the pattern's separator group, right after a key. */
+const SEPARATOR_START = /^["']?\s*[=:]/;
+
+/**
+ * How far past {@link INNER_ASSIGNMENT_SPAN} the already-masked check reads:
+ * an opening quote and the whole placeholder (Issue #5310).
+ */
+const MASKED_REACH = REDACTION_PLACEHOLDER.length + 1;
+
+/** The pattern's separator then the placeholder: a value already masked. */
+const MASKED_SEPARATOR = /^["']?\s*[=:]\s*["']?\*\*\*REDACTED\*\*\*/;
+
+/**
+ * The credential label that ends the value `[start, end)`, or `null` (Issue
+ * #5310). The label is the shape the pattern's key group matches: a run of
+ * key characters holding a credential keyword, followed by nothing but up to
+ * two closing characters (a quote, or the `=`/`:` the value swallowed). That
+ * is the only place an inner assignment that runs past the value can start —
+ * the value's own run stops where the inner separator's whitespace or quote
+ * begins. The one exception is a single-quoted inner value holding a space,
+ * `DEPLOY_TOKEN='a b'`: the bare value takes `'a` with it, so the label is
+ * also looked for just before one of the value's last three `'`, within
+ * {@link INNER_ASSIGNMENT_SPAN}. Three, not two: on a second pass the label of
+ * `token'='d9 e8'` sits before the third-last quote of
+ * `token'='***REDACTED***'`, and that pass must find the label the first found
+ * (PR #5322 review round 5). A keyword elsewhere in the value is not a
+ * label, and a run longer than {@link INNER_LABEL_MAX} is not looked at.
+ * Constant work per candidate.
+ */
+function trailingLabel(
+  text: string,
+  start: number,
+  end: number,
+):
+  | { readonly start: number; readonly end: number; readonly viaQuote: boolean }
+  | null {
+  const atEnd = labelEndingAt(text, start, end);
+  if (atEnd) return { ...atEnd, viaQuote: false };
+  const from = Math.max(start, end - INNER_ASSIGNMENT_SPAN);
+  const tail = text.slice(from, end);
+  // The last quote, or one of the two before it when the value closed its own
+  // quote or its label carries one (`token'='***REDACTED***'`).
+  // (`DEPLOY_TOKEN='***REDACTED***'`, a second pass over the first's output).
+  let quote = tail.lastIndexOf("'");
+  for (let tries = 0; tries < 3 && quote > 0; tries++) {
+    const label = labelEndingAt(text, start, from + quote + 1);
+    if (label) return { ...label, viaQuote: true };
+    quote = tail.lastIndexOf("'", quote - 1);
+  }
+  return null;
+}
+
+/**
+ * Longest whitespace run either side of the separator that
+ * {@link spacedSuffixStart} walks over (PR #5322 review round 7). The
+ * pattern's separator group takes any `\s*`, line breaks included; this is
+ * the same span bound the walk already puts on an inner assignment
+ * ({@link INNER_ASSIGNMENT_SPAN}), so the extra work per candidate stays
+ * constant (Issue #3942).
+ */
+const SPACED_SUFFIX_RUN = 256;
+
+/**
+ * Where a separator with whitespace in it, then the closing quote of the
+ * value, starts when it ends the value at `end` (PR #5322 review rounds 6 and
+ * 7): `'API_TOKEN = '`, `'API_TOKEN ='`, `'API_TOKEN:\n  '`. Walks back over
+ * the closing quote, at most {@link SPACED_SUFFIX_RUN} whitespace characters,
+ * the `=` or `:`, at most as many again, and an optional quote; -1 when the
+ * value does not end so, or the run holds no whitespace (the unspaced form is
+ * read by {@link labelEndingAt} directly). Linear in the bound, never a
+ * regular-expression scan.
+ */
+function spacedSuffixStart(text: string, start: number, end: number): number {
+  let at = end - 1;
+  if (at < start || (text[at] !== "'" && text[at] !== '"')) return -1;
+  const isSpace = (ch: string | undefined) => ch !== undefined && /\s/.test(ch);
+  let spaces = 0;
+  let run = 0;
+  while (at - 1 >= start && run < SPACED_SUFFIX_RUN && isSpace(text[at - 1])) {
+    at--;
+    run++;
+  }
+  spaces += run;
+  if (at - 1 < start || (text[at - 1] !== "=" && text[at - 1] !== ":")) {
+    return -1;
+  }
+  at--;
+  run = 0;
+  while (at - 1 >= start && run < SPACED_SUFFIX_RUN && isSpace(text[at - 1])) {
+    at--;
+    run++;
+  }
+  spaces += run;
+  if (at - 1 >= start && (text[at - 1] === "'" || text[at - 1] === '"')) at--;
+  return spaces > 0 ? at : -1;
+}
+
+/**
+ * The keyword halves the pattern's key group joins with a `-`: `API-KEY`,
+ * `ACCESS-KEY`, `PRIVATE-KEY` (PR #5322 review round 6). The hyphen is the
+ * only non-key character a key may hold, and only between these halves.
+ */
+const HYPHEN_KEYWORD_HEAD = /(?:API|ACCESS|PRIVATE)$/i;
+const HYPHEN_KEYWORD_TAIL = /^KEY/i;
+
+/**
+ * Where the key ending at `keyEnd` starts, walking back over the key
+ * characters and the one `-` a hyphenated keyword holds, or -1 past
+ * {@link INNER_LABEL_MAX}. In `x-api-key` the key is `api-key`, as the
+ * pattern's `\b` and key group read it.
+ */
+function keyStartBefore(text: string, start: number, keyEnd: number): number {
+  let keyStart = keyEnd;
+  let hyphens = 0;
+  for (;;) {
+    if (keyStart > start && KEY_CHAR.test(text.charAt(keyStart - 1))) {
+      if (keyEnd - keyStart >= INNER_LABEL_MAX) return -1;
+      keyStart--;
+      continue;
+    }
+    if (
+      hyphens === 0 && keyStart - 1 > start &&
+      text.charAt(keyStart - 1) === "-" &&
+      HYPHEN_KEYWORD_TAIL.test(text.slice(keyStart, keyStart + 3)) &&
+      HYPHEN_KEYWORD_HEAD.test(
+        text.slice(Math.max(start, keyStart - 8), keyStart - 1),
+      )
+    ) {
+      hyphens++;
+      keyStart--;
+      continue;
+    }
+    return keyStart;
+  }
+}
+
+/** The label {@link trailingLabel} describes, ending exactly at `end`. */
+function labelEndingAt(
+  text: string,
+  start: number,
+  end: number,
+): { readonly start: number; readonly end: number } | null {
+  let keyEnd = end;
+  while (
+    keyEnd > start && end - keyEnd < 2 &&
+    LABEL_SUFFIX_CHAR.test(text.charAt(keyEnd - 1))
+  ) keyEnd--;
+  const label = keyLabel(text, start, keyEnd);
+  if (label) return label;
+  // A quoted value whose own run ends in a label and a spaced separator:
+  // `'API_TOKEN = '`, `'API_TOKEN =\n'` (PR #5322 review rounds 6 and 7).
+  const suffix = spacedSuffixStart(text, start, end);
+  if (suffix === -1) return null;
+  return keyLabel(text, start, suffix);
+}
+
+/** The credential key ending at `keyEnd`, or `null`. */
+function keyLabel(
+  text: string,
+  start: number,
+  keyEnd: number,
+): { readonly start: number; readonly end: number } | null {
+  const keyStart = keyStartBefore(text, start, keyEnd);
+  if (keyStart === -1 || keyStart === keyEnd) return null;
+  if (!CREDENTIAL_KEYWORD.test(text.slice(keyStart, keyEnd))) return null;
+  return { start: keyStart, end: keyEnd };
+}
+
+/**
+ * The inner label ending the value `[start, end)` opens, when
+ * it runs past `end`, or `null` (Issue #5310). Only that label is tried (see
+ * {@link trailingLabel}); the search past the value is cut to
+ * {@link INNER_ASSIGNMENT_SPAN}, so each candidate costs bounded extra work.
+ * The full text is then matched from the label, so the verdict is the one the
+ * walk itself will reach there.
+ *
+ * A label whose value is already the placeholder — the first pass's own
+ * output, `api_key: ***REDACTED***` — also counts, so a second pass changes
+ * nothing. The pattern refuses a redacted value, so without this the second
+ * pass would mask the label — but only when the placeholder reaches the outer
+ * value's end (bar a closing quote); text after it keeps the outer mask.
+ */
+function innerAssignment(
+  text: string,
+  start: number,
+  end: number,
+  depth = 0,
+  outerMasked = true,
+): InnerLabel | null {
+  // One answer per value within a walk (see INNER_MEMO): a long chain looks
+  // ahead once per link, not once per link per candidate.
+  const memo = INNER_MEMO.text === text ? INNER_MEMO.results : null;
+  const key = `${start}:${end}:${outerMasked ? 1 : 0}`;
+  const hit = memo?.get(key);
+  if (hit !== undefined) return hit;
+  const result = innerAssignmentUncached(text, start, end, depth, outerMasked);
+  memo?.set(key, result);
+  return result;
+}
+
+/**
+ * Answers of {@link innerAssignment} for the text being walked. A chain's
+ * look-ahead asks about each later link, and the walk then asks about the
+ * same link again, so without it a long chain cost the look-ahead's depth per
+ * link (PR #5322 review round 11; Issue #3942 linearity). The first answer
+ * for a value stands for the rest of the walk, so a link refused at the end
+ * of one candidate's look-ahead is refused for every candidate, which keeps
+ * main's result for a chain longer than the look-ahead.
+ */
+const INNER_MEMO: {
+  text: string | null;
+  results: Map<string, InnerLabel | null>;
+  quotes: QuoteIndex | null;
+  unclosedFlags: Map<number, boolean>;
+  masks: Array<{ start: number; end: number }>;
+  maskThrough: Map<number, number>;
+  flagValueStarts: Set<number> | null;
+} = {
+  text: null,
+  results: new Map(),
+  quotes: null,
+  unclosedFlags: new Map(),
+  masks: [],
+  maskThrough: new Map(),
+  flagValueStarts: null,
+};
+
+/** Sorted positions of each quote kind in a text, read once per walk. */
+interface QuoteIndex {
+  single: number[];
+  double: number[];
+}
+
+/**
+ * The {@link QuoteIndex} of `text`: the walk's own, built on first use, or a
+ * fresh one when `text` is not the text being walked.
+ */
+function quoteIndex(text: string): QuoteIndex {
+  if (INNER_MEMO.text === text && INNER_MEMO.quotes !== null) {
+    return INNER_MEMO.quotes;
+  }
+  const index: QuoteIndex = { single: [], double: [] };
+  for (const m of text.matchAll(/['"]/g)) {
+    (m[0] === "'" ? index.single : index.double).push(m.index);
+  }
+  if (INNER_MEMO.text === text) INNER_MEMO.quotes = index;
+  return index;
+}
+
+/** Index of the first entry of the sorted `list` at or after `at`. */
+function firstAtOrAfter(list: number[], at: number): number {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((list[mid] ?? 0) < at) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** Position of the last `quote` before `before` in `text`, or -1. */
+function quoteBefore(text: string, quote: string, before: number): number {
+  const index = quoteIndex(text);
+  const list = quote === "'" ? index.single : index.double;
+  return list[firstAtOrAfter(list, before) - 1] ?? -1;
+}
+
+/** Position of the first `quote` at or after `from` in `text`, or -1. */
+function quoteFrom(text: string, quote: string, from: number): number {
+  const index = quoteIndex(text);
+  const list = quote === "'" ? index.single : index.double;
+  return list[firstAtOrAfter(list, from)] ?? -1;
+}
+
+/** {@link innerAssignment} without the per-walk memo. */
+function innerAssignmentUncached(
+  text: string,
+  start: number,
+  end: number,
+  depth: number,
+  outerMasked: boolean,
+): InnerLabel | null {
+  const label = trailingLabel(text, start, end);
+  if (!label) return null;
+  const window = text.slice(label.start, end + INNER_ASSIGNMENT_SPAN);
+  const afterKey = window.slice(label.end - label.start);
+  // The first pass masks an inner value whose first character lies inside the
+  // window, so its placeholder (after an optional opening quote) can run past
+  // the window's end. The already-masked check reads that far, so a second
+  // pass sees the whole placeholder wherever the first could write one.
+  const masked = MASKED_SEPARATOR.exec(
+    text.slice(label.end, end + INNER_ASSIGNMENT_SPAN + MASKED_REACH),
+  );
+  if (masked) {
+    // The placeholder must reach the value's end (bar a closing quote); text
+    // after it belongs to the outer value, which stays masked whole.
+    const rest = text.slice(label.end + masked[0].length, end);
+    return rest === "" || rest === "'" || rest === '"'
+      ? { labelStart: label.start, resume: end, keepsOuter: false }
+      : null;
+  }
+  if (!SEPARATOR_START.test(afterKey)) return null;
+  const probe = execAssignmentAt(window, 0);
+  if (
+    (!probe || probe.index !== 0) &&
+    !closesWithinReach(text, label.end, afterKey)
+  ) return null;
+  const match = execAssignmentAt(text, label.start);
+  if (!match || match.index !== label.start) return null;
+  const verdict = verdictOf(text, match);
+  if (!(verdict.end > end && verdict.masked)) return null;
+  // Keep main's result whenever main's own scan would read past the inner
+  // value (PR #5322 review round 8). Main masked the inner label as the outer
+  // value and resumed right after it, so a `secret-assignment` match or a
+  // credential flag that starts inside what is now the inner value, and runs
+  // past its end, was main's to mask: `DEPLOY_TOKEN = 'token:x'<value>`,
+  // `DEPLOY_TOKEN = '--token '<value>`, `DEPLOY_TOKEN = --token <value>`,
+  // `DEPLOY_TOKEN: API_TOKEN=\nhunter2`. Reading the inner label there would
+  // mask the inner value whole and publish that text, so no inner label is
+  // read. One check, with no whitespace or length bound of its own: wherever
+  // main's scan reaches past the inner value, main's result stands.
+  const pastInner = mainReadsPastInnerValue(
+    text,
+    verdict,
+    depth,
+    outerMasked ? end : -1,
+    start,
+  );
+  if (pastInner === true) return null;
+  if (typeof pastInner === "number") {
+    INNER_MEMO.maskThrough.set(label.start, pastInner);
+    return { labelStart: label.start, resume: label.start, keepsOuter: false };
+  }
+  // A single-quoted inner value holding a space, found before one of the
+  // value's quotes, that runs straight into more text (`DEPLOY_TOKEN='a b'.`):
+  // its mask removes the space, so a second pass reads the label, placeholder
+  // and that text as one outer value and masks it whole. Keep the outer mask
+  // now, so the first pass already gives that output and a second changes
+  // nothing.
+  // The same holds when the outer bare value stopped at a `"` inside the inner
+  // quoted value (PR #5322 review round 9: `DEPLOY_TOKEN='"abc"'--token
+  // <value>`): the mask removes that `"`, so a second walk would read the
+  // label, placeholder and the text after it as one outer value. Keeping the
+  // outer mask makes the first walk final and leaves a flag after the quote
+  // visible to the `secret-cli-flag` rule.
+  const innerStart = verdict.end - verdict.value.length;
+  const stoppedInside = text.charAt(end) === '"' && end > innerStart &&
+    end < verdict.end;
+  const runsOn = (label.viaQuote || stoppedInside) &&
+    verdict.end < text.length && !/\s/.test(text.charAt(verdict.end));
+  return { labelStart: label.start, resume: label.start, keepsOuter: runsOn };
+}
+
+/**
+ * Whether the inner value after the label ending at `labelEnd` opens with `"`
+ * inside the window but closes past it, within {@link INNER_QUOTED_MAX}
+ * (Issue #5310). The pattern matches a double-quoted value only with its
+ * closing quote, so the window probe fails on a long one
+ * (`DEPLOY_TOKEN = "<300 characters>"`) and the value would be published; the
+ * full-text match then decides. The search for the closing quote is capped,
+ * so each candidate costs bounded extra work (the Issue #3942 linearity rule).
+ */
+function closesWithinReach(
+  text: string,
+  labelEnd: number,
+  afterKey: string,
+): boolean {
+  const sep = OPEN_DOUBLE_QUOTE.exec(afterKey);
+  if (!sep) return false;
+  const open = labelEnd + sep[0].length - 1;
+  // A value of INNER_QUOTED_MAX characters closes at that offset.
+  const close = text.slice(open + 1, open + 2 + INNER_QUOTED_MAX).indexOf('"');
+  // Closed inside the window: the probe already judged it.
+  return close !== -1 && open + 1 + close >= labelEnd + afterKey.length;
+}
+
+/**
+ * A credential flag and its value at one position (sticky), as the
+ * `secret-cli-flag` rule reads them,
+ * without that rule's refusal of an already-masked value: on a second pass the
+ * placeholder after a flag must read the same as the value did on the first
+ * (PR #5322 review round 8). The flag-name runs are bounded as in that rule
+ * (Issue #3942).
+ */
+const CLI_FLAG_AT =
+  /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+(?!-)(?:"[^"]+"|'[^']+'|\S+)/iy;
+
+/**
+ * Whether main's scan, resuming right after the inner label it masked as the
+ * outer value, would mask text past the end of `inner`'s value (PR #5322
+ * review round 8): a masked `secret-assignment` match, or a credential flag
+ * and its value, that starts inside the inner value and ends past it, other
+ * than the label that ends the inner value, which the walk reads next; or a
+ * run from the inner value wrapped onto the next line that the
+ * decode-then-rescan pass would mask, read after the assignment rule's own
+ * masks ({@link maskedValueStart}). Every search reads only the inner
+ * value, then each match from where it starts inside it, so the work per
+ * candidate is bounded by the inner value and what it reaches.
+ */
+function mainReadsPastInnerValue(
+  text: string,
+  inner: AssignmentVerdict,
+  depth: number,
+  maskedUntil: number,
+  outerStart: number,
+): boolean | number {
+  const start = inner.end - inner.value.length;
+  // A flag inside a quoted inner value whose own value takes the closing
+  // quote (`DEPLOY_TOKEN: 'deploy --token '<value>'`): main's result masks the
+  // flag's value from that quote on and leaves the quote's opening run
+  // unclosed, which a second walk reads differently. When nothing else
+  // below keeps main's result, the inner value is masked through the flag's
+  // value instead, so the first walk's output is final (PR #5322 review
+  // round 13). When something else does, main's result stands: its other
+  // masks past the inner value are main's to make. The walk then never reads
+  // a label ending the inner value as the next chain link, so that label is
+  // probed like any other key. Read once, first, as it is the costliest read
+  // here; flags too many to read keep main's result (Issue #3942 linearity;
+  // PR #5322 review round 15).
+  const through = quotedValueFlagEnd(text, inner, start);
+  if (through === TOO_MANY_FLAGS) return true;
+  // A credential flag whose quoted value opens before the outer value and
+  // reaches a quote in the outer or inner value
+  // (`--token 'alpha credentials: DEPLOY_TOKEN = 'tail`,
+  // `--password 'x secrets: DEPLOY_TOKEN': y`): the `secret-cli-flag` rule
+  // pairs the quotes of the text the walk leaves, and main masked the outer
+  // value where the walk masks the inner one, so the walk would change which
+  // quote closes the flag's value and the rule would mask only its first word
+  // (PR #5322 review round 13). Main's result stands then; this comes before
+  // the masked-through flag below, whose mask would take that quote too.
+  if (
+    flagQuoteReaches(
+      text,
+      outerStart,
+      inner,
+      through === -1,
+    )
+  ) return true;
+  // An inner value already holding the placeholder after other text
+  // (`,***REDACTED***`) is a first pass's output where main's result stood, so
+  // a second pass keeps main's result too and changes nothing (PR #5322 review
+  // round 9).
+  if (inner.value.includes(REDACTION_PLACEHOLDER)) return true;
+  // A label that ends the inner value is exempt only when the walk's next
+  // step really reads it as an inner label and masks its value (a chain,
+  // `credentials: secret: DEPLOY_TOKEN = <value>`). When that step is refused,
+  // its match counts like any other, so the chain gets main's result. The
+  // look-ahead is bounded by MAX_CHAIN_LOOKAHEAD; past it the chain is not
+  // exempt.
+  const label = trailingLabel(text, start, inner.end);
+  const chained = label !== null && depth < MAX_CHAIN_LOOKAHEAD &&
+      innerAssignment(text, start, inner.end, depth + 1, true) !== null
+    ? label.start
+    : -1;
+  // Every `secret-assignment` key that starts inside the inner value, found
+  // by its credential keyword in the inner value alone and matched from its
+  // start, so no search leaves the inner value. At most MAX_INNER_PROBES keys
+  // are read; past that main's result stands (Issue #3942 linearity).
+  const value = text.slice(start, inner.end);
+  // `matchAll` steps a copy of the regex: the loop's body can re-enter the
+  // walk (through `verdictOf`), which must not move this loop's position
+  // (PR #5322 review round 16).
+  let probes = 0;
+  let lastKey = -1;
+  for (const k of value.matchAll(CREDENTIAL_KEYWORD_ALL)) {
+    const keyStart = keyStartBefore(text, start, start + k.index);
+    if (
+      keyStart === -1 || keyStart === lastKey ||
+      (through === -1 && keyStart === chained)
+    ) {
+      continue;
+    }
+    lastKey = keyStart;
+    if (++probes > MAX_INNER_PROBES) return true;
+    SECRET_ASSIGNMENT_AT.lastIndex = keyStart;
+    const match = SECRET_ASSIGNMENT_AT.exec(text);
+    if (match === null) continue;
+    const verdict = verdictOf(text, match);
+    // Masked or not: main's scan resumes after this match either way, so a
+    // match that reaches past the inner value changes what main reads next
+    // (PR #5322 review round 11).
+    if (verdict.end > inner.end) return true;
+  }
+  // Every credential flag whose `--` starts inside the inner value, read with
+  // its whitespace and value from there, so a flag after any amount of
+  // whitespace still counts.
+  for (
+    let at = value.indexOf("--");
+    at !== -1;
+    at = value.indexOf("--", at + 1)
+  ) {
+    CLI_FLAG_AT.lastIndex = start + at;
+    const flag = CLI_FLAG_AT.exec(text);
+    if (
+      through === -1 && flag !== null && start + at + flag[0].length > inner.end
+    ) return true;
+  }
+  // The decode-then-rescan pass joins a run that wraps onto the next line
+  // (`API_TOKEN=` then `hunter2`) and masks it when the joined text is a
+  // secret. Read the runs as that pass reads them on main: from where a run
+  // through the inner label can start, walked back over the candidate
+  // characters and line breaks (at most WRAP_LOOKBACK of them), so a run that
+  // begins at the separator's `=` or on the label's line counts (PR #5322
+  // review round 10). When a wrapped run the pass would mask reaches past the
+  // inner value, or covers the inner label, main's result stands.
+  // Which text the decode pass sees around the inner label depends on what
+  // stays visible (PR #5322 review round 11). When the inner value is itself a
+  // chained label the walk keeps visible, head's own pass sees the label line
+  // joined to it (`app.token=` then `DEPLOY_TOKEN = …`), so a run may start on
+  // the label's line and a run covering the label counts. Otherwise the inner
+  // value is masked in head's output, and on main the outer value (the inner
+  // label, up to `maskedUntil`) was masked when its verdict was, so a run can
+  // start no earlier than the end of that mask, and only a run reaching past
+  // the inner value counts (`DEPLOY_TOKEN=` then `<value>` keeps the value
+  // masked).
+  const labelVisible = chained !== -1;
+  const floor = labelVisible ? 0 : Math.max(maskedUntil, 0);
+  let windowStart = Math.max(inner.index, floor);
+  for (
+    let steps = 0;
+    windowStart > floor && steps < WRAP_LOOKBACK &&
+    WRAP_WINDOW_CHAR.test(text[windowStart - 1] ?? "");
+    steps++
+  ) windowStart--;
+  // Run starts are found in the window and the inner value alone; each run is
+  // then read from its start over at most WRAP_RUN_MAX characters, and a run
+  // longer than that keeps main's result, so the work per candidate stays
+  // bounded (Issue #3942).
+  const window = text.slice(windowStart, inner.end + 4);
+  // `matchAll` steps a copy of the regex. The loop's body decodes the run
+  // and walks the decoded text, which reaches this check again; a shared
+  // `lastIndex` was reset there, and the loop found the same run without end
+  // (PR #5322 review round 16).
+  for (const found of window.matchAll(WRAPPED_RUN_G)) {
+    if (windowStart + found.index >= inner.end) break;
+    const runStart = windowStart + found.index;
+    const reach = text.slice(runStart, runStart + WRAP_RUN_MAX + 1);
+    WRAPPED_RUN_AT.lastIndex = 0;
+    const run = WRAPPED_RUN_AT.exec(reach);
+    WRAPPED_RUN_AT.lastIndex = 0;
+    if (run === null) continue;
+    // Main's decode pass runs after its assignment rule, so it sees the run
+    // cut at the first value that rule masks after the inner value (PR #5322
+    // review round 15). A run too long to read whole keeps main's result.
+    // The rules after it (`secret-cli-flag`, `hex32-credential`) also run
+    // before that pass, so the run is cut at the first value they mask too
+    // (`<value>\nmd5=<32 hex>`, `<value>\n--password\nUSER=bob`; PR #5322
+    // review round 16).
+    const long = run[0].length > WRAP_RUN_MAX;
+    const seen = long ? run[0] : run[0].slice(
+      0,
+      laterRuleCut(
+        text,
+        Math.max(runStart, inner.end),
+        maskedValueStart(text, inner.end, runStart + run[0].length),
+      ) - runStart,
+    );
+    const runEnd = runStart + seen.length;
+    if (runEnd <= inner.index) continue;
+    if (
+      !(runEnd > inner.end || (labelVisible && runStart < start)) ||
+      !/\n/.test(seen)
+    ) {
+      continue;
+    }
+    if (long) return true;
+    if (
+      redactTransformedSecrets(
+        seen,
+        matchesSignatureRule,
+        REDACTION_PLACEHOLDER,
+      ) !==
+        seen
+    ) return true;
+  }
+  // A second pass over a first pass's output where a flag after an unclosed
+  // quote kept main's result (`'deploy --token ***REDACTED***`): the inner
+  // value is now the bare `'deploy`, so read the flag after it as the first
+  // pass read it inside the quote (PR #5322 review round 10). An inner value
+  // that is itself a chained label (`'api_key: ***REDACTED***`) was read as
+  // the chain's next link on the first pass too, so a masked flag after it
+  // was masked on its own and the chain is read again (PR #5322 review round
+  // 13).
+  const opener = inner.value[0];
+  if (
+    chained === -1 && (opener === "'" || opener === '"') &&
+    inner.value.indexOf(opener, 1) === -1 &&
+    unclosedRunHasMaskedFlag(text, inner.end, opener)
+  ) return true;
+  return through !== -1 ? through : false;
+}
+
+/**
+ * Where the first value the rules after `secret-assignment` mask, inside
+ * `[from, to)`, begins; `to` when there is none. Main's decode-then-rescan
+ * pass runs after every rule, so a run it joins ends before such a value: a
+ * credential flag's value (the flag's name stays visible) or a 32-hex run
+ * (PR #5322 review round 16). `from` is no earlier than the end of the inner
+ * value: text before it lies in the outer or inner value, which the
+ * assignment rule masks before these rules run. Each rule is read over `[from, to)` and at most
+ * {@link LATER_RULE_CONTEXT} characters before it, so a flag named just
+ * before the run still counts; the run is at most {@link WRAP_RUN_MAX} long,
+ * so the work per run stays bounded (Issue #3942).
+ */
+function laterRuleCut(text: string, from: number, to: number): number {
+  if (to <= from) return to;
+  const base = Math.max(0, from - LATER_RULE_CONTEXT);
+  const slice = text.slice(base, to);
+  let cut = to;
+  for (const m of slice.matchAll(CLI_FLAG_RULE_G)) {
+    const valueStart = base + m.index + (m[1]?.length ?? 0);
+    if (valueStart >= to) break;
+    if (valueStart + (m[0].length - (m[1]?.length ?? 0)) > from) {
+      cut = Math.min(cut, Math.max(valueStart, from));
+      break;
+    }
+  }
+  for (const m of slice.matchAll(HEX32_CREDENTIAL_G)) {
+    const at = base + m.index;
+    if (at >= cut) break;
+    if (at + m[0].length > from) {
+      cut = Math.max(at, from);
+      break;
+    }
+  }
+  return cut;
+}
+
+/** How far before a run {@link laterRuleCut} reads for a flag's name. */
+const LATER_RULE_CONTEXT = 256;
+
+/** The `hex32-credential` rule's pattern, for {@link laterRuleCut}. */
+const HEX32_CREDENTIAL_G = /(?<![0-9A-Za-z])[0-9a-f]{32}(?![0-9A-Za-z])/gi;
+
+/**
+ * Where the first `secret-assignment` value this walk masks, whose key starts
+ * in `[from, to)`, begins; `to` when there is none. Main's decode-then-rescan
+ * pass reads the text after that rule's masks, so a run it joins ends at the
+ * separator before such a value (`API_KEY=`), not at the value (PR #5322
+ * review round 15). A match whose verdict is not masked (`API_KEY=true`) stays
+ * in the run. At most {@link MAX_INNER_PROBES} keys are read; past that the
+ * run is read whole.
+ */
+function maskedValueStart(text: string, from: number, to: number): number {
+  const span = text.slice(from, to);
+  let probes = 0;
+  let lastKey = -1;
+  for (const k of span.matchAll(CREDENTIAL_KEYWORD_ALL)) {
+    const keyStart = keyStartBefore(text, from, from + k.index);
+    if (keyStart === -1 || keyStart === lastKey) continue;
+    lastKey = keyStart;
+    if (++probes > MAX_INNER_PROBES) return to;
+    SECRET_ASSIGNMENT_AT.lastIndex = keyStart;
+    const match = SECRET_ASSIGNMENT_AT.exec(text);
+    if (match === null) continue;
+    const verdict = verdictOf(text, match);
+    if (verdict.masked) return verdict.end - verdict.value.length;
+  }
+  return to;
+}
+
+/**
+ * Where the value of the first credential flag inside the quoted `inner`
+ * value ends, when that value takes the closing quote (it ends on or past
+ * it, so the `secret-cli-flag` rule would remove the quote), moved on past
+ * any flag value the mask would cut; -1 when the inner value is not a closed
+ * quoted value, no flag inside it reaches the quote, or a credential keyword
+ * lies between the quote and that end; {@link TOO_MANY_FLAGS} when more than
+ * {@link MAX_FLAG_VISITS} `--` runs would be read.
+ */
+function quotedValueFlagEnd(
+  text: string,
+  inner: AssignmentVerdict,
+  start: number,
+): number {
+  const quote = inner.value[0];
+  if (
+    (quote !== "'" && quote !== '"') || inner.value.length < 2 ||
+    !inner.value.endsWith(quote)
+  ) return -1;
+  const value = inner.value;
+  for (
+    let at = value.indexOf("--"), visited = 1;
+    at !== -1;
+    at = value.indexOf("--", at + 1), visited++
+  ) {
+    if (visited > MAX_FLAG_VISITS) return TOO_MANY_FLAGS;
+    CLI_FLAG_AT.lastIndex = start + at;
+    const flag = CLI_FLAG_AT.exec(text);
+    if (flag !== null && start + at + flag[0].length >= inner.end) {
+      const through = flagsThrough(text, start, start + at + flag[0].length);
+      if (through === TOO_MANY_FLAGS) return TOO_MANY_FLAGS;
+      // A credential keyword past the inner value may start a match main
+      // masks before the flag rule runs, which moves the flag value's closing
+      // quote on main; the mask cannot follow that, so main's result stands.
+      return CREDENTIAL_KEYWORD_ANY.test(text.slice(inner.end, through))
+        ? -1
+        : through;
+    }
+  }
+  return -1;
+}
+
+/**
+ * What {@link quotedValueFlagEnd} and {@link flagsThrough} return when more
+ * than {@link MAX_FLAG_VISITS} `--` runs would be read: main's result stands.
+ */
+const TOO_MANY_FLAGS = -2;
+
+/**
+ * Most `--` runs one {@link quotedValueFlagEnd} call reads, so a chain of
+ * flags that each reach past the last cannot make every candidate rescan the
+ * rest of the text (Issue #3942 linearity; PR #5322 review round 15).
+ */
+const MAX_FLAG_VISITS = 64;
+
+/** {@link CREDENTIAL_KEYWORD} as a plain test, without the global flag. */
+const CREDENTIAL_KEYWORD_ANY = new RegExp(CREDENTIAL_KEYWORD.source, "i");
+
+/**
+ * `end`, moved on past the value of every credential flag that starts before
+ * it (from `start`) and runs past it, so a mask from `start` to the result
+ * never takes a flag's name and leaves its value. Each `--` is read once, and
+ * at most {@link MAX_FLAG_VISITS} are read: past that it returns
+ * {@link TOO_MANY_FLAGS} instead of an end, and the caller keeps main's result.
+ */
+function flagsThrough(text: string, start: number, end: number): number {
+  let through = end;
+  for (
+    let at = text.indexOf("--", start), visited = 1;
+    at !== -1 && at < through;
+    at = text.indexOf("--", at + 1), visited++
+  ) {
+    if (visited > MAX_FLAG_VISITS) return TOO_MANY_FLAGS;
+    CLI_FLAG_AT.lastIndex = at;
+    const flag = CLI_FLAG_AT.exec(text);
+    if (flag !== null && at + flag[0].length > through) {
+      through = at + flag[0].length;
+    }
+  }
+  return through;
+}
+
+/**
+ * Whether the text after an inner value that opens with `opener` and never
+ * closes it, up to the next `opener` (or the end of the text), holds a
+ * credential flag whose value starts with the placeholder: the first pass found that
+ * flag inside the quoted run and kept main's result, so the second keeps it
+ * too (PR #5322 review rounds 10, 12 and 13). Every character but `opener`,
+ * an earlier placeholder included, may sit inside the original quoted run,
+ * and the run has no length bound, because the first pass read the flag
+ * wherever it stood. Distinct openers read disjoint runs, and each run is
+ * read once per walk, so the work stays linear (Issue #3942).
+ */
+function unclosedRunHasMaskedFlag(
+  text: string,
+  from: number,
+  opener: string,
+): boolean {
+  const memo = INNER_MEMO.text === text ? INNER_MEMO.unclosedFlags : null;
+  const hit = memo?.get(from);
+  if (hit !== undefined) return hit;
+  const close = quoteFrom(text, opener, from);
+  const run = text.slice(from, close === -1 ? text.length : close);
+  let found = false;
+  for (let at = run.indexOf("--"); at !== -1; at = run.indexOf("--", at + 1)) {
+    CLI_FLAG_AT.lastIndex = from + at;
+    const flag = CLI_FLAG_AT.exec(text);
+    // The flag's value starts with the placeholder; text may run on after it
+    // (`--token ***REDACTED***;`), as the flag rule's `\S+` took it on the
+    // first call (PR #5322 review round 14).
+    if (
+      flag !== null &&
+      flag[0].replace(/^\S+\s+/, "").startsWith(REDACTION_PLACEHOLDER)
+    ) {
+      found = true;
+      break;
+    }
+  }
+  memo?.set(from, found);
+  return found;
+}
+
+/**
+ * Whether a credential flag's quoted value, as the `secret-cli-flag` rule
+ * reads it after the walk, opens before `outerStart` and closes at a quote
+ * the walk's mask would remove: one in the outer value (main masked it, the
+ * walk keeps it) or inside the inner value's mask (PR #5322 review rounds 13
+ * and 14). For each quote kind, the last quote of that kind before
+ * `outerStart` that no earlier mask of this walk covers must be where the
+ * rule opens a flag's value (a quote that closes an earlier flag's value,
+ * as in `--token 'x --password '`, does not count), and the next quote of
+ * that kind must lie in that span. A closed quoted inner value keeps both its
+ * quotes when masked (`keepsQuotes`: it is not masked through a flag), so
+ * its opening quote does not count. More than
+ * {@link MAX_MASK_HOPS} masks to skip keeps main's result (Issue #3942).
+ */
+function flagQuoteReaches(
+  text: string,
+  outerStart: number,
+  inner: AssignmentVerdict,
+  keepsQuotes: boolean,
+): boolean {
+  const start = inner.end - inner.value.length;
+  const opener = inner.value[0];
+  const closedQuoted = keepsQuotes && (opener === "'" || opener === '"') &&
+    inner.value.length > 1 && inner.value.endsWith(opener);
+  const maskStart = closedQuoted ? start + 1 : start;
+  const maskEnd = closedQuoted ? inner.end - 1 : inner.end;
+  for (const quote of ["'", '"']) {
+    const next = quoteFrom(text, quote, outerStart);
+    if (
+      next === -1 ||
+      !(next < start || (next >= maskStart && next < maskEnd))
+    ) continue;
+    let open = quoteBefore(text, quote, outerStart);
+    for (let hops = 0; open !== -1; hops++) {
+      const mask = maskCovering(open);
+      if (mask === null) break;
+      if (hops >= MAX_MASK_HOPS) return true;
+      open = quoteBefore(text, quote, mask.start);
+    }
+    if (open !== -1 && next > open + 1 && flagValueStartsAt(text, open)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The `secret-cli-flag` rule's pattern, read once over the walk's text to
+ * find where it opens each flag's value.
+ */
+const CLI_FLAG_RULE_G =
+  /(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+)(?!-)(?!\*\*\*REDACTED)(?:"[^"]+"|'[^']+'|\S+)/gi;
+
+/**
+ * Whether the `secret-cli-flag` rule, reading `text` from the start, opens a
+ * flag's value at `at`. The rule's matches are read once per walk.
+ */
+function flagValueStartsAt(text: string, at: number): boolean {
+  let starts = INNER_MEMO.text === text ? INNER_MEMO.flagValueStarts : null;
+  if (starts === null) {
+    starts = new Set();
+    for (const m of text.matchAll(CLI_FLAG_RULE_G)) {
+      starts.add(m.index + (m[1]?.length ?? 0));
+    }
+    if (INNER_MEMO.text === text) INNER_MEMO.flagValueStarts = starts;
+  }
+  return starts.has(at);
+}
+
+/** Most earlier masks {@link flagQuoteReaches} skips back over. */
+const MAX_MASK_HOPS = 16;
+
+/** The mask of this walk covering `at`, or null (masks are kept in order). */
+function maskCovering(at: number): { start: number; end: number } | null {
+  const masks = INNER_MEMO.masks;
+  let lo = 0;
+  let hi = masks.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((masks[mid]?.end ?? 0) <= at) lo = mid + 1;
+    else hi = mid;
+  }
+  const mask = masks[lo];
+  return mask !== undefined && mask.start <= at ? mask : null;
+}
+
+/** How many chain links {@link mainReadsPastInnerValue} looks ahead. */
+const MAX_CHAIN_LOOKAHEAD = 16;
+
+/**
+ * How many `secret-assignment` matches inside one inner value
+ * {@link mainReadsPastInnerValue} reads before keeping main's result (Issue
+ * #3942 linearity).
+ */
+const MAX_INNER_PROBES = 8;
+
+/**
+ * A run the decode-then-rescan pass reads as one candidate, optionally
+ * wrapped onto following lines (`secret_transform_redaction.ts`'s candidate
+ * pattern), matched at one position. Linear: the classes cannot match a line
+ * break.
+ */
+const WRAPPED_RUN_AT = /[A-Za-z0-9+/=_-]{4,}(?:\r?\n[A-Za-z0-9+/=_-]{4,})*/y;
+
+/** A candidate character or line break, walked back over to find a run's start. */
+const WRAP_WINDOW_CHAR = /^[A-Za-z0-9+/=_\r\n-]$/;
+
+/** How far back {@link mainReadsPastInnerValue} looks for a run's start. */
+const WRAP_LOOKBACK = 1024;
+
+/** Longest wrapped run {@link mainReadsPastInnerValue} reads before keeping main's result. */
+const WRAP_RUN_MAX = 4096;
+
+/** The decode-then-rescan pass's candidate runs (global). */
+const WRAPPED_RUN_G = /[A-Za-z0-9+/=_-]{4,}(?:\r?\n[A-Za-z0-9+/=_-]{4,})*/g;
+
+/** Every credential keyword in a string (global; reset before each use). */
+const CREDENTIAL_KEYWORD_ALL = new RegExp(CREDENTIAL_KEYWORD.source, "gi");
+
+/** The `secret-assignment` pattern matched at one position (sticky). */
+const SECRET_ASSIGNMENT_AT = new RegExp(SECRET_ASSIGNMENT_PATTERN.source, "iy");
+
+/** The pattern's separator, then the opening `"` of a double-quoted value. */
+const OPEN_DOUBLE_QUOTE = /^["']?\s*[=:]\s*"/;
+
+/**
+ * Longest double-quoted inner value, past the window, that
+ * {@link closesWithinReach} looks for the end of (Issue #5310). A ReDoS
+ * ceiling (Issue #3942), not a syntax rule: a longer value keeps the base
+ * behaviour.
+ */
+const INNER_QUOTED_MAX = 4096;
+
+/**
+ * An inner credential label {@link innerAssignment} found (Issue #5310): where
+ * it starts, and where the walk resumes — at the label, whose own match masks
+ * its value, or past the outer value when that value is already the
+ * placeholder.
+ */
+interface InnerLabel {
+  readonly labelStart: number;
+  readonly resume: number;
+  /** The outer value stays masked even when it is only the label. */
+  readonly keepsOuter: boolean;
+}
+
+/**
+ * Mask every `secret-assignment` value {@link walkAssignments} judges masked
+ * (Issue #5310). The walk itself decides each shape so that its output is
+ * final: a second walk over it masks nothing, `redactSecrets` is idempotent on
+ * this rule and `containsSecret` is false on its output. One known shape is
+ * not yet final (PR #5322 review round 14): a single-quoted value of glued
+ * labels that the walk reads as the next chain link (`'app.token=password:`),
+ * whose closing quote a later flag takes. A second walk masks that value too;
+ * nothing is published. The decode pass that follows can mask a run a label's
+ * value was glued to, so {@link redactSecrets} walks the assignments once
+ * more after it (PR #5322 review round 17). The shapes where a
+ * mask changes how the next walk reads the text around it are decided in the
+ * walk — {@link quotedRunOn}, `keepsOuter`, the leading-`-` rule in
+ * {@link LABEL_PREFIX} and the placeholder reach of {@link innerAssignment}.
+ *
+ * The output is then walked again, up to {@link MAX_ASSIGNMENT_PASSES} times
+ * in all, until a walk changes nothing. That is a bounded backstop for a shape
+ * the walk does not yet decide, not the guarantee: a backstop can be outrun by
+ * repeating such a shape more often than the cap.
+ */
+function redactAssignments(text: string): string {
+  let out = text;
+  for (let pass = 0; pass < MAX_ASSIGNMENT_PASSES; pass++) {
+    const next = redactAssignmentsOnce(out);
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+/**
+ * How many walks {@link redactAssignments} runs at most (Issue #5310): the
+ * first, and up to three backstop walks. Text with nothing to mask costs one
+ * walk and text with a secret two; the cap bounds the work on hostile input.
+ */
+const MAX_ASSIGNMENT_PASSES = 4;
+
+/** One walk of {@link walkAssignments}, masking what it judges masked. */
+function redactAssignmentsOnce(text: string): string {
+  let out = "";
+  let last = 0;
+  for (const a of walkAssignments(text)) {
+    if (!a.masked) continue;
+    const quote = QUOTED_VALUE.test(a.value) ? a.value.charAt(0) : "";
+    out += text.slice(last, a.index) +
+      `${a.key}${a.sep}${quote}${REDACTION_PLACEHOLDER}${quote}`;
+    last = a.end;
+  }
+  return out + text.slice(last);
 }
 
 /**
@@ -829,7 +2034,8 @@ function detectsSecretAssignment(text: string): boolean {
  *
  * Signature rules run first, then the decode-then-rescan pass
  * ({@link redactTransformedSecrets}) masks anything hidden under a reversible
- * transform — base64, hex, `rev`, or a credential split across lines.
+ * transform — base64, hex, `rev`, or a credential split across lines. A last
+ * assignment walk then reads what that pass left of a label's value.
  *
  * @param text - Arbitrary text destined for a log sink.
  * @returns The text with any detected secrets replaced by
@@ -840,13 +2046,24 @@ export function redactSecrets(text: string): string {
   let out = text;
   for (const rule of RULES) {
     // Each rule's pattern is global; replace handles every match in the line.
-    out = out.replace(
+    out = "apply" in rule ? rule.apply(out) : out.replace(
       rule.pattern,
       rule.replace as (substring: string, ...args: unknown[]) => string,
     );
   }
-  return redactTransformedSecrets(
+  const decoded = redactTransformedSecrets(
     out,
+    matchesSignatureRule,
+    REDACTION_PLACEHOLDER,
+  );
+  // The decode pass can mask the run a label's value was glued to
+  // (`credentials:app.password<base64>`), which the walk had read as the
+  // inner value: what stays of the outer value is then a plain value of its
+  // label. Walk the assignments once more so the output is final (PR #5322
+  // review round 17).
+  const walked = redactAssignments(decoded);
+  return walked === decoded ? decoded : redactTransformedSecrets(
+    walked,
     matchesSignatureRule,
     REDACTION_PLACEHOLDER,
   );

@@ -41,6 +41,10 @@ import type {
   MilestoneConflictAgentFn,
   MilestoneConflictAgentRequest,
 } from "../lib/milestone_conflict_ladder.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
 
 const REASON =
   "ephemeral cargo root over budget (55.3 GB free, floor 46.0 GB + headroom " +
@@ -322,8 +326,9 @@ Deno.test("mergeOnlyBindings - a tree whose projects cannot be listed cannot byp
 
 async function git(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
-    args,
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
     cwd,
+    env: NO_HOST_GIT_CONFIG,
     stdout: "piped",
     stderr: "piped",
   }).output();

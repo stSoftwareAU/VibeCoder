@@ -10,8 +10,9 @@
  *
  * - (a) a step invokes `infra/cloudformation/test-aws-emulator.sh` in command
  *   position (an `echo` or a comment does not count), and a failure of the
- *   script fails the job: the step's code (comment lines dropped) has no `|`,
- *   `;` or `&`, so nothing follows, pipes or backgrounds the call; the step
+ *   script fails the job: the step's code (comment lines, as Bash reads them,
+ *   dropped) has no `|`, `;` or `&`, so nothing follows, pipes or backgrounds
+ *   the call; the step
  *   consists only of `set -euo pipefail` (optional) and that one call, so no
  *   `if`, `exit` or second command can skip or replace it; no `!` or
  *   `if`/`while`/`until` word precedes the call, because `! ./script` turns
@@ -22,7 +23,9 @@
  *   `sh`, then only `--noprofile`, `--norc` and `-e`/`-u`/`-x`/`-o <name>`
  *   options, then optionally `{0}`; `-c`, `-s`, `-n`, `-o noexec`, extra
  *   words, `true {0}` and the like could pass without running the body
- *   (PR #5276 review);
+ *   (PR #5276 review); and neither the step, the job nor the workflow sets
+ *   `env:`, since `SHELLOPTS=noexec` makes bash exit 0 without running the
+ *   body and `BASH_ENV` runs code first;
  * - (b) a step runs `container/toolchains/aws-emulator.sh` (the pinned,
  *   checksum-verified install), a step runs `container/toolchains/aws-cli.sh`
  *   (the pinned aws-cli, not the runner's own), and a step installs
@@ -43,7 +46,12 @@
  * (`[gate-soft]`), and has a step that runs `.github/scripts/gate.sh` by its
  * exact path as its only command with `NEEDS_JSON: ${{ toJSON(needs) }}`, no
  * `if:` or soft `continue-on-error`, and a shell that runs the body, with no
- * other step but `actions/checkout` (`[gate-script]`).
+ * other step but `actions/checkout` (`[gate-script]`). The checkout's `with:`
+ * sets only `persist-credentials` and `fetch-depth`; the step's `env:` sets
+ * only `NEEDS_JSON`; the gate job and the workflow set no `env:`; the gate job
+ * sets no `container:`; and no `working-directory` (step, job or workflow
+ * `defaults.run`) is set, since each can change which script runs or stop
+ * bash running it.
  *
  * `checkContainerBuildRunsAwsEmulator` checks the parsed container-build.yml:
  * job `container` has a step that runs the reference command as `agent` in a
@@ -62,10 +70,14 @@
  * request event, sets no other env but `EVENT_NAME`, has an effective shell
  * that runs the body, and has exactly the `FILTER_CODE` allowlist as its code
  * (ending in `.github/scripts/detect-image-changes.sh "$BASE_SHA"
- * "$HEAD_SHA"`). Job `changes` has no other step but `actions/checkout` and no
+ * "$HEAD_SHA"`). The filter step sets no `working-directory` (step, job
+ * `changes` or workflow `defaults.run`), since it changes which script the
+ * relative call runs. Job `changes` has no other step but `actions/checkout`
+ * (with `with:` absent or only `persist-credentials` and `fetch-depth`, as
+ * `ref`, `repository` and `path` change the checked-out tree) and no
  * `env:`, and the workflow sets no `env:`. Without these `IMAGE_CHANGED` may
- * not be `true`, so the image
- * steps and the agent run skip and the required check passes without the run.
+ * not be `true`, so the image steps and the agent run skip and the required
+ * check passes without the run.
  * The check is textual and does not prove that the script itself is sound.
  *
  * Each finding names its invariant in square brackets, e.g. `[test-step]`.
@@ -109,12 +121,75 @@ function stepsOf(job: Record<string, unknown>): unknown[] {
 }
 
 /**
- * The `run:` text of a step with comment lines (trimmed line starting with
- * `#`) dropped.
+ * Whether a physical `run:` line is a Bash comment line: no backslash
+ * continuation is pending into it, and its first character after spaces and
+ * tabs (Bash's only blanks, unlike JavaScript's `trim()`) is `#`. A `#` line
+ * that a trailing backslash continues into is part of that command (Issue
+ * #5304).
+ */
+function isCommentLine(pending: string, physical: string): boolean {
+  return pending === "" && physical.replace(/^[ \t]+/, "").startsWith("#");
+}
+
+/**
+ * Whether a line ends in a backslash continuation: an odd run of trailing
+ * backslashes. An even run is escaped backslashes, so the command ends at the
+ * newline (`FOO=\\` assigns one backslash and the next line is its own
+ * command), as Bash reads it outside quotes.
+ */
+function endsInContinuation(line: string): boolean {
+  let run = 0;
+  for (let i = line.length - 1; i >= 0 && line[i] === "\\"; i--) run++;
+  return run % 2 === 1;
+}
+
+/**
+ * Whether a physical line that a continuation reaches opens a comment: its
+ * first character after spaces and tabs is `#`, and that `#` starts a word in
+ * the joined line, because blanks sit before it on this line or at the end of
+ * the pending text (`set -e \` then `# note`). A comment ends at its physical
+ * newline, so a backslash at its end is comment text, not a continuation
+ * (ShellCheck SC1143). `sh\` then `#` is the word `sh#`, not a comment.
+ */
+function continuedIntoComment(pending: string, physical: string): boolean {
+  const lead = /^[ \t]*#/.exec(physical);
+  if (lead === null) return false;
+  return lead[0].length > 1 || /[ \t]$/.test(pending);
+}
+
+/**
+ * The `run:` text of a step as Bash reads it: backslash-newline removed with
+ * no blank inserted (the next line's leading whitespace is kept), and comment
+ * lines, per {@link isCommentLine}, dropped. Joining without a blank keeps
+ * `sh\` + `#` as the word `sh#`, as Bash does. A line joins the next only on
+ * a real continuation, per {@link endsInContinuation}, outside a comment: a
+ * line ending in an escaped backslash stays its own command, and so does the
+ * line after a `#` comment that a continuation reached (see
+ * {@link continuedIntoComment}), whatever the comment ends in.
  */
 function codeOf(step: unknown): string {
-  return runOf(step).split("\n").filter((l) => !l.trim().startsWith("#"))
-    .join("\n");
+  const lines: string[] = [];
+  let continued = "";
+  for (const physical of runOf(step).split("\n")) {
+    if (isCommentLine(continued, physical)) continue;
+    const line = continued + physical;
+    if (continued !== "" && continuedIntoComment(continued, physical)) {
+      // The comment ends the command here and contributes no code; keeping
+      // its text would hand a trailing backslash to `shellCommands`, which
+      // would join the next line onto it.
+      lines.push(continued);
+      continued = "";
+      continue;
+    }
+    if (endsInContinuation(line)) {
+      continued = line.slice(0, -1);
+      continue;
+    }
+    continued = "";
+    lines.push(line);
+  }
+  if (continued !== "") lines.push(continued);
+  return lines.join("\n");
 }
 
 /**
@@ -294,6 +369,14 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
       );
     }
 
+    if (
+      [testStep, job, workflow].some((o) => isObject(o) && o.env !== undefined)
+    ) {
+      problems.push(
+        `[test-step] the ${SCRIPT_PATH} step, job ${jobId} and the workflow must set no env: a variable such as SHELLOPTS=noexec or BASH_ENV can stop bash running the body or run code first`,
+      );
+    }
+
     // (b) the pinned install and the runner install come before the test.
     const toolchainIndex = steps.findIndex((s) =>
       stepInvokes(s, TOOLCHAIN_PATH)
@@ -404,10 +487,14 @@ export function checkAwsEmulatorWorkflow(workflow: unknown): string[] {
  */
 const DOCKER_VALUE_FLAGS = ["--user", "-u", "--volume", "-v", "--entrypoint"];
 const DOCKER_BOOLEAN_FLAGS = ["--rm"];
-/** Container-job env keys that would reach the agent-run step's shell or docker. */
+/**
+ * Container-job env keys that would reach the agent-run step's shell or
+ * docker: `SHELLOPTS=noexec` makes bash exit 0 without running the body.
+ */
 const INHERITED_ENV_REFUSED = [
   "BASH_ENV",
   "ENV",
+  "SHELLOPTS",
   "PATH",
   "DOCKER_HOST",
   "DOCKER_CONTEXT",
@@ -591,8 +678,7 @@ function codeLines(step: unknown): string[] {
   const logical: string[] = [];
   let continued = "";
   for (const physical of code.split("\n")) {
-    const leftTrimmed = physical.replace(/^[ \t]+/, "");
-    if (continued === "" && leftTrimmed.startsWith("#")) {
+    if (isCommentLine(continued, physical)) {
       // In Bash a comment ends at its physical newline. A trailing backslash
       // is part of the comment, not a continuation (ShellCheck SC1143).
       // Refuse it explicitly so it cannot hide the command on the next line.
@@ -639,14 +725,46 @@ function filterCodeIsCanonical(step: unknown): boolean {
     lines.every((l, i) => l === FILTER_CODE[i]);
 }
 
+/** The only `with:` inputs a plain checkout may set. */
+const CHECKOUT_WITH_KEYS = ["persist-credentials", "fetch-depth"];
+
 /**
  * Whether a step only runs `actions/checkout` (pinned or tagged), with no
- * `run:`, `env:` or `shell:` of its own.
+ * `run:`, `env:` or `shell:` of its own, and a `with:` that is absent or sets
+ * only {@link CHECKOUT_WITH_KEYS}. `ref`, `repository`, `path` and the other
+ * inputs change the checked-out tree, so the relative script path could name
+ * a look-alike; a `with:` that is not an object (an expression) is not plain.
  */
 function stepIsPlainCheckout(step: unknown): boolean {
   return isObject(step) && typeof step.uses === "string" &&
     step.uses.startsWith("actions/checkout@") && step.run === undefined &&
-    step.env === undefined && step.shell === undefined;
+    step.env === undefined && step.shell === undefined &&
+    (step.with === undefined ||
+      (isObject(step.with) &&
+        Object.keys(step.with).every((k) => CHECKOUT_WITH_KEYS.includes(k))));
+}
+
+/**
+ * Whether a step's working directory may be set: its own `working-directory`,
+ * or `defaults.run.working-directory` on its job or the workflow. It changes
+ * which file a relative script call names. Fails closed: `defaults` or
+ * `defaults.run` that is defined but not an object (an expression) counts as
+ * setting one.
+ */
+function setsWorkingDirectory(
+  workflow: Record<string, unknown>,
+  job: Record<string, unknown>,
+  step: unknown,
+): boolean {
+  if (isObject(step) && step["working-directory"] !== undefined) return true;
+  return [job, workflow].some((record) => {
+    const defaults = record.defaults;
+    if (defaults === undefined) return false;
+    if (!isObject(defaults)) return true;
+    const run = defaults.run;
+    if (run === undefined) return false;
+    return !isObject(run) || run["working-directory"] !== undefined;
+  });
 }
 
 /**
@@ -723,9 +841,13 @@ function imageGateProblems(
     problems.push(
       `${tag} the changes filter step's shell (step, job changes or workflow defaults.run.shell) must be bash or sh that runs the body: otherwise the filter may not run, ${skipNote}`,
     );
+  } else if (setsWorkingDirectory(workflow, changes, filter)) {
+    problems.push(
+      `${tag} the changes filter step may have no working-directory (step, job changes or workflow defaults.run): it changes which ${DETECT_SCRIPT_PATH} the relative call runs, ${skipNote}`,
+    );
   } else if (!others.every(stepIsPlainCheckout)) {
     problems.push(
-      `${tag} job changes may have no step but the filter step and actions/checkout steps (no run:, no env:): another step could rewrite ${DETECT_SCRIPT_PATH} or write GITHUB_ENV before the filter runs, ${skipNote}`,
+      `${tag} job changes may have no step but the filter step and actions/checkout steps (no run:, no env:, no with: but persist-credentials and fetch-depth, since ref, repository or path change the checked-out tree and the relative script path could name a look-alike): another step could rewrite ${DETECT_SCRIPT_PATH} or write GITHUB_ENV before the filter runs, ${skipNote}`,
     );
   } else if (
     Object.keys(filter.env ?? {}).some((k) => !FILTER_ENV_KEYS.includes(k))
@@ -767,7 +889,10 @@ function imageGateProblems(
  * `continue-on-error`, takes its SHAs from the pull request event, sets no
  * other env, has a shell that runs the body, and has exactly the allowlisted
  * code ending in the detect script call. The job allows only checkout and the
- * filter step, no job container and no job env. The workflow may set no env,
+ * filter step, no job container and no job env. The checkout's `with:` may
+ * set only `persist-credentials` and `fetch-depth`, and no `working-directory`
+ * (step, job or workflow `defaults.run`) may reach the filter step. The
+ * workflow may set no env,
  * and the raw filter body may contain no GitHub expression. Never throws on
  * malformed input.
  */
@@ -895,7 +1020,11 @@ export function checkContainerBuildRunsAwsEmulator(
  * runs `.github/scripts/gate.sh` by its exact path as its only command with
  * `NEEDS_JSON` set to `${{ toJSON(needs) }}`, no `if:` or soft
  * `continue-on-error`, and a shell that runs the body; no other step but
- * `actions/checkout`. Never throws on malformed input.
+ * `actions/checkout` whose `with:` sets only `persist-credentials` and
+ * `fetch-depth`. The gate step's env sets only `NEEDS_JSON`; the gate job and
+ * the workflow set no `env:`; the gate job sets no `container:`; and no
+ * `working-directory` (step, job or workflow `defaults.run`) is set. Never
+ * throws on malformed input.
  */
 export function checkQualityCallsAwsEmulator(quality: unknown): string[] {
   if (!isObject(quality)) return ["quality workflow is not an object"];
@@ -942,11 +1071,12 @@ const GATE_COMMANDS = GATE_SCRIPT_PATHS.flatMap((
  * file.
  *
  * The lines come from {@link codeLines}, which joins backslash continuations
- * before it treats a `#` line as a comment, as Bash does. Reading the step
- * with {@link segmentsOf} instead would drop a `# || true` line that follows
- * `.github/scripts/gate.sh\`, although Bash runs it as part of that command
- * (`.github/scripts/gate.sh# || true`), so the script never runs and the step
- * is always green (Issue #5110).
+ * before it treats a `#` line as a comment, as Bash does. `codeLines` and
+ * {@link codeOf} share {@link isCommentLine}, so neither drops a `#` line that
+ * a continuation reaches (`.github/scripts/gate.sh\` then `# || true` is
+ * `.github/scripts/gate.sh# || true`, so the script never runs and the step is
+ * always green). The gate step uses `codeLines` because it compares exact
+ * lines against an allowlist (Issue #5110).
  */
 function stepRunsGateScript(step: unknown): boolean {
   const lines = codeLines(step);
@@ -957,7 +1087,9 @@ function stepRunsGateScript(step: unknown): boolean {
 /**
  * The findings for the rest of the chain that turns a skipped, cancelled or
  * failed needed job into a red `gate`: the job runs always, is not soft, and
- * has a step that runs the gate script on `toJSON(needs)`.
+ * has a step that runs the gate script on `toJSON(needs)`. Env, `container:`
+ * and `working-directory` settings that could replace the script, stop bash
+ * running it or run code first are findings of their own.
  */
 function gateJudgesNeeds(
   quality: Record<string, unknown>,
@@ -990,7 +1122,7 @@ function gateJudgesNeeds(
   }
   if (!gateSteps.every((s) => s === step || stepIsPlainCheckout(s))) {
     problems.push(
-      `[gate-script] the gate job may have no step but actions/checkout and the gate script step, since another step could replace or skip the script`,
+      `[gate-script] the gate job may have no step but actions/checkout (with: only persist-credentials and fetch-depth) and the gate script step, since another step could replace or skip the script, or check out another tree`,
     );
   }
   const env = step.env;
@@ -1016,6 +1148,36 @@ function gateJudgesNeeds(
       `[gate-script] the gate script step's shell must be bash or sh that runs the body; got ${
         JSON.stringify(shell.value)
       }`,
+    );
+  }
+  const envReason =
+    "another variable such as SHELLOPTS=noexec or BASH_ENV can stop bash running the body or run code first";
+  if (
+    env !== undefined &&
+    (!isObject(env) || Object.keys(env).some((k) => k !== "NEEDS_JSON"))
+  ) {
+    problems.push(
+      `[gate-script] the gate script step's env must set only NEEDS_JSON: ${envReason}`,
+    );
+  }
+  if (gate.env !== undefined) {
+    problems.push(
+      `[gate-script] the gate job must set no env: ${envReason}`,
+    );
+  }
+  if (quality.env !== undefined) {
+    problems.push(
+      `[gate-script] quality.yml must set no workflow env: ${envReason}`,
+    );
+  }
+  if (gate.container !== undefined) {
+    problems.push(
+      "[gate-script] the gate job must set no container: a container can replace the checked-out gate script or its shell",
+    );
+  }
+  if (setsWorkingDirectory(quality, gate, step)) {
+    problems.push(
+      `[gate-script] the gate script step may have no working-directory (step, job gate or workflow defaults.run): it changes which ${GATE_SCRIPT_PATH} the relative call runs`,
     );
   }
   return problems;

@@ -39,6 +39,10 @@
 import { assert, assertEquals } from "@std/assert";
 import { TOKEN_ECONOMIZER_KEYS } from "../lib/token_economizer_config.ts";
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   type DocSection,
   flat,
   flatWholeFile,
@@ -942,15 +946,17 @@ async function withIgnoredFixture(
     await write(".config.json", '{"token_economizer":{}}\n');
     await write(".config.json.grq-backup-1", '{"token_economizer":{}}\n');
     const git = await new Deno.Command("git", {
-      args: ["init", "-q"],
+      args: [...NO_HOST_HOOKS_ARGS, "init", "-q"],
       cwd: root,
       stdin: "null",
+      env: NO_HOST_GIT_CONFIG,
     }).output();
     assert(git.success, "git init must succeed in the fixture");
     const add = await new Deno.Command("git", {
-      args: ["add", ".gitignore", "README.md"],
+      args: [...NO_HOST_HOOKS_ARGS, "add", ".gitignore", "README.md"],
       cwd: root,
       stdin: "null",
+      env: NO_HOST_GIT_CONFIG,
     }).output();
     assert(add.success, "git add must succeed in the fixture");
     await body(root);

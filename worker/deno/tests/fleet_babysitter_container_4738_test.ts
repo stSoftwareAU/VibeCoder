@@ -9,6 +9,10 @@
  */
 
 import {
+  NO_HOST_GIT_CONFIG,
+  NO_HOST_HOOKS_ARGS,
+} from "./support/no_host_git_config.ts";
+import {
   assert,
   assertEquals,
   assertRejects,
@@ -985,10 +989,11 @@ Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while
     ]
   ) {
     const result = await new Deno.Command("git", {
-      args,
+      args: [...NO_HOST_HOOKS_ARGS, ...args],
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
+      env: NO_HOST_GIT_CONFIG,
     }).output();
     assert(result.success, new TextDecoder().decode(result.stderr));
   }
