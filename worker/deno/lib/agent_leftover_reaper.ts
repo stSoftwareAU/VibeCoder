@@ -79,7 +79,8 @@ export interface LeftoverReaperDeps {
   /**
    * Whether the process now holding `pid` carries `envEntry`. Read after the
    * identity is captured, so the fingerprint is bound to a tagged process.
-   * Any doubt answers `false`.
+   * An unreadable or unmatched process answers `false`; a probe timeout or
+   * spawn failure throws, and the pass reports it as an error.
    */
   hasTag: (pid: number, envEntry: string) => Promise<boolean>;
   /** Command name (never arguments) for each pid, when readable. */
@@ -251,8 +252,11 @@ async function runningOf(
 }
 
 /**
- * Terminate every same-user process that carries the agent's spawn tag.
- * Call once the agent has exited. Each pid is fingerprinted after the scan,
+ * Terminate the same-user processes that carry the agent's spawn tag.
+ * Normally called once the agent has exited; the error path of the runner
+ * calls it while the agent may still be running, and it is terminated too
+ * (it carries the tag). The pass is bounded by {@link MAX_KILL_ROUNDS}.
+ * Each pid is fingerprinted after the scan,
  * and its tag is read again after the fingerprint, so a pid reused since the
  * scan is never taken for a leftover. The fingerprint is re-checked
  * immediately before every TERM and KILL; a pid with no fingerprint, no tag

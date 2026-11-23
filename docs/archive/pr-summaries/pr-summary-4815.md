@@ -2,8 +2,9 @@
 
 ## Summary
 
-Partial mitigation for #4815. An agent run now terminates every process it
-leaves running once the agent has exited. This stops a verified leak: a detached
+Partial mitigation for #4815. An agent run now terminates the tagged
+processes it leaves running once the agent has exited, within a bounded number
+of KILL rounds; survivors and skipped pids are reported, not signalled. This stops a verified leak: a detached
 `( … & )` job is re-parented to PID 1 at once, so it never appears in the
 descendant snapshot (Issue #4382), and on a normal exit the collector is not run
 at all. Nothing in the worker bounded such a job before.
@@ -173,7 +174,7 @@ quoted from its words.
 - **missing** — "use a bounded replay or the next applicable recurrence to
   diagnose and repair the completion failure" — reason: the cause of the guest
   that stopped answering is still undiagnosed; the new events would show a
-  leftover on a recurrence, and no recurrence has happened since this merged
+  leftover on a recurrence, and no live fleet host has been checked for one
 
 Part of #4815.
 
