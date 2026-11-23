@@ -4,10 +4,11 @@
  *
  * Three fleet PRs (#5014, #5091, #5119) failed the blocking `gitleaks / gitleaks`
  * CI check, and nothing had scanned them locally, so each was met as a red PR
- * after the push. This stage runs the same scan the licence-less CI fallback in
- * `.github/workflows/gitleaks.yml` runs: the same pinned CLI version, the same
+ * after the push. This stage runs the same scan as the PR job's commit-range step in
+ * `.github/workflows/gitleaks.yml`: the same pinned CLI version, the same
  * repository config and the same flags, over the same commit set CI scans
- * (`base..HEAD`). A local pass therefore predicts a CI pass.
+ * (`base..HEAD`). CI also scans the merged result (Issue #5436), which this
+ * stage does not, so a local pass predicts the CI range scan's pass.
  *
  * Pipeline:
  *   1. Not a git repository → SKIPPED (there is no commit range to scan).
@@ -56,7 +57,7 @@ import { redactedLineTail } from "./redacted_text.ts";
 /** The gitleaks version `.github/workflows/gitleaks.yml` downloads. */
 export const GITLEAKS_VERSION = "8.30.1";
 
-/** The repository config both the licensed action and the CLI fallback read. */
+/** The repository config every gitleaks scan in `.github/workflows/gitleaks.yml` reads. */
 export const GITLEAKS_CONFIG_PATH = ".github/gitleaks.toml";
 
 /**
@@ -92,7 +93,7 @@ export interface GitleaksCheckResult {
 
 /**
  * Arguments for the gitleaks scan of a commit range. The first four flags after
- * `git` mirror the CI fallback in `gitleaks.yml`. `--verbose` and `--no-color`
+ * `git` mirror the commit-range scan in `gitleaks.yml`. `--verbose` and `--no-color`
  * are local additions, so the finding's file, line and rule are printed (the
  * secret stays redacted). They do not change the verdict.
  */

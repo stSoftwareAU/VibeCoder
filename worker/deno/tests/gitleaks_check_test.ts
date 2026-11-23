@@ -16,7 +16,7 @@
  *     `blocked`, a missing scanner or unresolvable history is `infrastructure`;
  *   - gitleaks absent is SKIPPED on a host but FAILED inside the fleet image;
  *   - a version drift is named while the scan still runs;
- *   - the CI pin, flags and fallback command in `gitleaks.yml` match the module;
+ *   - the CI pin, flags and range-scan command in `gitleaks.yml` match the module;
  *   - the real quality gate registers the stage only where `gitleaks.yml` exists;
  *   - a real-tool scan of a temp repository (skipped where gitleaks is not
  *     installed).
@@ -502,10 +502,10 @@ Deno.test("runGitleaksCheck - a version drift is named and the scan still runs",
 });
 
 // ---------------------------------------------------------------------------
-// Twin of the CI fallback in gitleaks.yml
+// Twin of the CI range scan in gitleaks.yml
 // ---------------------------------------------------------------------------
 
-Deno.test("gitleaks.yml - every pinned GITLEAKS_VERSION matches the module, and the fallback flags are scanned", async () => {
+Deno.test("gitleaks.yml - every pinned GITLEAKS_VERSION matches the module, and the range-scan flags are scanned", async () => {
   const workflow = await Deno.readTextFile(
     new URL("../../../.github/workflows/gitleaks.yml", import.meta.url),
   );
@@ -518,14 +518,14 @@ Deno.test("gitleaks.yml - every pinned GITLEAKS_VERSION matches the module, and 
     assertEquals(pin, GITLEAKS_VERSION);
   }
 
-  // The pin is read from the CI fallback command itself, so adding, removing
+  // The pin is read from the CI range-scan command itself, so adding, removing
   // or changing a flag in gitleaks.yml (or in gitleaksScanArgs) turns this red.
-  const ciArgs = ciFallbackScanArgs(workflow);
+  const ciArgs = ciRangeScanArgs(workflow);
   const ciRange = ciArgs.find((arg) => arg.startsWith("--log-opts="));
   assertEquals(
     ciRange,
     "--log-opts=${BASE_SHA}..${HEAD_SHA}",
-    "the CI fallback must scan the <base>..<head> commit range",
+    "the CI range scan must scan the <base>..<head> commit range",
   );
 
   // The local stage adds only --verbose and --no-color (for readable gate
@@ -538,27 +538,37 @@ Deno.test("gitleaks.yml - every pinned GITLEAKS_VERSION matches the module, and 
 });
 
 /**
- * Extract the `./gitleaks git …` command from the CLI-fallback step of
- * gitleaks.yml, joining `\` continuation lines, and split it into arguments
- * with shell-style double quotes removed.
+ * Extract the `gitleaks git …` command that scans the `<base>..<head>` range
+ * from gitleaks.yml, joining `\` continuation lines, and split it into
+ * arguments with shell-style double quotes removed. Exactly one command must
+ * carry that range.
  */
-function ciFallbackScanArgs(workflow: string): string[] {
+function ciRangeScanArgs(workflow: string): string[] {
   const lines = workflow.split("\n");
-  const start = lines.findIndex((line) =>
-    line.trim().startsWith("./gitleaks git ")
-  );
-  assert(start >= 0, "gitleaks.yml must run `./gitleaks git` in the fallback");
-  let command = "";
-  for (let i = start; i < lines.length; i++) {
-    const line = (lines[i] ?? "").trim();
-    if (line.endsWith("\\")) {
-      command += line.slice(0, -1) + " ";
-    } else {
-      command += line;
-      break;
+  const commands: string[] = [];
+  for (let start = 0; start < lines.length; start++) {
+    if (!(lines[start] ?? "").trim().startsWith("gitleaks git ")) continue;
+    let command = "";
+    for (let i = start; i < lines.length; i++) {
+      const line = (lines[i] ?? "").trim();
+      if (line.endsWith("\\")) {
+        command += line.slice(0, -1) + " ";
+      } else {
+        command += line;
+        break;
+      }
     }
+    commands.push(command);
   }
-  const tokens = command.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+  const matching = commands.filter((command) =>
+    command.includes('--log-opts="${BASE_SHA}..${HEAD_SHA}"')
+  );
+  assertEquals(
+    matching.length,
+    1,
+    "gitleaks.yml must run exactly one `gitleaks git` over ${BASE_SHA}..${HEAD_SHA}",
+  );
+  const tokens = matching[0]!.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
   return tokens.slice(1).map((token) => token.replaceAll('"', ""));
 }
 

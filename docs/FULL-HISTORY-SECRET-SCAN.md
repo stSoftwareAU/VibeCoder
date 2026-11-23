@@ -5,7 +5,8 @@ of this repository (Issue,
 part of the
 proving-ground hardening).
 
-`.github/workflows/gitleaks.yml` scans a pull request's commit range. That is
+`.github/workflows/gitleaks.yml` scans every commit in a pull request's `base..head` range and then the
+merged result. That is
 the right gate for new work and the wrong one for history: a credential that
 leaked into an old commit on a branch nobody merges — or into a tag — never
 appears in a PR diff again, yet it stays live until somebody rotates it. A
@@ -132,7 +133,7 @@ finding is rotation, not a rewrite.
 
 | Job | Trigger | Scope |
 | --- | ------- | ----- |
-| `gitleaks` | `pull_request` | The PR commit range only |
+| `gitleaks` | `pull_request` | Every commit in the PR's `base..head` range, then the merged result |
 | `full-history` | weekly `schedule` + `workflow_dispatch` | Every ref, both scanners |
 
 The scheduled job installs both CLIs pinned by version and verified against a

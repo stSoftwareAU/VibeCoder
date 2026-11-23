@@ -191,7 +191,7 @@ inside the fleet container image: the worker runs the gate non-strict, and a
 skipped stage would let the PR through with its commit range never scanned. The
 failure says the history is "not available in the worker environment", so the
 failure classifier reads it as an infrastructure fault (`missing_tools`), not a
-finding. Uncommitted changes are not scanned by this stage, as in CI. It runs the CI fallback's invocation,
+finding. Uncommitted changes are not scanned by this stage, as in CI. It runs the PR job's commit-range invocation,
 `gitleaks git --config .github/gitleaks.toml --redact --no-banner --exit-code 1 --log-opts=<base>..HEAD .`
 (the `--config` only when `.github/gitleaks.toml` exists), plus `--verbose
 --no-color`, so each finding prints its file, line and rule with the secret
