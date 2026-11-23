@@ -118,6 +118,14 @@ interface Fixture {
   refError?: string;
   /** The message the `merges` POST fails with, when set. */
   mergeError?: string;
+  /**
+   * Files each repair branch changes against the default branch, read through
+   * `compare/...` with `--jq '.files | length'`; absent is 0 (the empty
+   * repair commit). `error` fails the read.
+   */
+  repairFiles?: Record<string, number | "error">;
+  /** Names of the check runs still running, keyed by the ref read. */
+  pendingChecks?: Record<string, string[]>;
 }
 
 /** A recording logger, so the scan's warnings and skips can be asserted. */
@@ -264,6 +272,14 @@ function ghStub(
       }
       return Promise.resolve(`${base}\n`);
     }
+    if (args.includes(".files | length")) {
+      const ref = (args[1] ?? "").split("...")[1] ?? "";
+      const files = fx.repairFiles?.[ref] ?? 0;
+      if (files === "error") {
+        return Promise.reject(new Error("HTTP 502: Bad Gateway"));
+      }
+      return Promise.resolve(`${files}\n`);
+    }
     const compare = args.find((arg) => arg.includes("/compare/"));
     if (compare !== undefined) {
       const sha = compare.split("...")[1] ?? "";
@@ -277,6 +293,12 @@ function ghStub(
     if (run !== null) {
       if (fx.checkReadErrors?.includes(run[1] ?? "")) {
         return Promise.reject(new Error("HTTP 500: Internal Server Error"));
+      }
+      // The repair PR's running-check read selects incomplete check runs.
+      if (args.some((arg) => arg.includes('"completed"'))) {
+        return Promise.resolve(
+          JSON.stringify(fx.pendingChecks?.[run[1] ?? ""] ?? []),
+        );
       }
       // The strict reader for passing checks selects `success` conclusions.
       if (args.some((arg) => arg.includes('"success"'))) {
@@ -346,11 +368,10 @@ function argAfter(args: string[], flag: string): string | undefined {
  */
 function redMainFixture(
   prs: PrFixture[],
-  extra: Partial<
-    Pick<Fixture, "checks" | "compare" | "openRepairPrs" | "repairListError">
-  > = {},
+  extra: Partial<Omit<Fixture, "prs" | "tip">> = {},
 ): Fixture {
   return {
+    ...extra,
     prs,
     tip: TIP,
     checks: { [TIP]: [{ id: 1, name: "gitleaks" }], ...extra.checks },
@@ -506,6 +527,81 @@ Deno.test("findFailedCiChecks - an adopted repair PR that does not reproduce the
   assert(
     logger.infos.some((line) =>
       line.includes("does not reproduce gitleaks") && line.includes("#1's")
+    ),
+  );
+});
+
+Deno.test("findFailedCiChecks - a repair PR that already carries a pushed fix and is green is not handed the held failure, and nothing reports a human (Issue #5437)", async () => {
+  // The CI-fix agent pushed a fix to the repair branch: it now changes files
+  // against main and its CI is green, while the tip and the sync PRs stay red
+  // until it merges.
+  const repair: PrFixture = {
+    number: 20,
+    headRefName: REPAIR_BRANCH,
+    headRefOid: NEW_COMMIT,
+    baseRefName: DEFAULT_BRANCH,
+  };
+  const fx = redMainFixture([...THREE_SYNC_PRS, repair], {
+    checks: THREE_SYNC_CHECKS,
+    greenChecks: { [REPAIR_BRANCH]: ["gitleaks"] },
+    repairFiles: { [REPAIR_BRANCH]: 2 },
+  });
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assert(
+    logger.infos.some((line) => line.includes("#20 already changes 2 file(s)")),
+  );
+  assertEquals(
+    logger.skips.filter((line) =>
+      line.startsWith("red-default-branch-repair-needs-human")
+    ),
+    [],
+  );
+  assertEquals(
+    logger.warns.filter((line) => line.includes("needs a human")),
+    [],
+  );
+});
+
+Deno.test("findFailedCiChecks - a repair PR whose held check is still running is not handed the held failure this scan (Issue #5437)", async () => {
+  const repair: PrFixture = {
+    number: 20,
+    headRefName: REPAIR_BRANCH,
+    headRefOid: TIP,
+    baseRefName: DEFAULT_BRANCH,
+  };
+  const fx = redMainFixture([...THREE_SYNC_PRS, repair], {
+    checks: THREE_SYNC_CHECKS,
+    pendingChecks: { [REPAIR_BRANCH]: ["gitleaks"] },
+  });
+  const { value, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assert(
+    logger.infos.some((line) => line.includes("#20 is still running gitleaks")),
+  );
+});
+
+Deno.test("findFailedCiChecks - an unreadable repair-branch compare hands nothing over and warns with the gh error (Issue #5437)", async () => {
+  const repair: PrFixture = {
+    number: 20,
+    headRefName: REPAIR_BRANCH,
+    headRefOid: TIP,
+    baseRefName: DEFAULT_BRANCH,
+  };
+  const fx = redMainFixture([...THREE_SYNC_PRS, repair], {
+    checks: THREE_SYNC_CHECKS,
+    repairFiles: { [REPAIR_BRANCH]: "error" },
+  });
+  const { value, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assert(
+    logger.warns.some((line) =>
+      line.includes("could not read whether repair PR") &&
+      line.includes("HTTP 502: Bad Gateway")
     ),
   );
 });

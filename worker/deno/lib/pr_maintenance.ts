@@ -2085,6 +2085,76 @@ async function repairHeldDefaultBranch(input: {
 }
 
 /**
+ * Whether the repair PR still carries no fix for the held failure, so handing
+ * it the held PR's failing check run is the only way the fix gets written
+ * (Issue #5437).
+ *
+ * The repair PR starts as an empty commit on the tip, which changes no file.
+ * Once the CI-fix agent pushes a fix, the repair branch changes files against
+ * the default branch, and its green or still-running CI is the fix waiting to
+ * merge, not a missed reproduction. Handing the old failure over again would
+ * spend the retry budget on a fixed branch and then report the default branch
+ * for a human. A held check still running on the repair head is left to
+ * finish first. An unreadable compare or check-run read hands nothing over.
+ */
+async function repairStillAwaitsFix(input: {
+  repo: string;
+  defaultBranch: string;
+  repair: RedDefaultBranchRepair;
+  tipRedNames: readonly string[];
+  ghCommandFn: (args: string[]) => Promise<string>;
+  logger: Logger;
+}): Promise<boolean> {
+  const { repo, defaultBranch, repair, ghCommandFn, logger } = input;
+  const at = `${repo}#${repair.number}`;
+  try {
+    const changed = Number(
+      (await ghCommandFn([
+        "api",
+        `repos/${repo}/compare/${defaultBranch}...${repair.headRefName}`,
+        "--jq",
+        ".files | length",
+      ])).trim(),
+    );
+    if (!Number.isInteger(changed)) {
+      throw new Error("the compare read did not return a file count");
+    }
+    if (changed > 0) {
+      logger.info(
+        `Red default branch: repair PR ${at} already changes ${changed} file(s) against ${defaultBranch}, so the held failure is not handed to it again; it waits for its CI and merge (Issue #5437)`,
+      );
+      return false;
+    }
+    const pending = parseJsonArrayPages(
+      await ghCommandFn([
+        "api",
+        `repos/${repo}/commits/${repair.headRefName}/check-runs?per_page=100`,
+        "--paginate",
+        "--jq",
+        '.check_runs | [.[] | select(.status != "completed") | .name]',
+      ]),
+    );
+    const running = input.tipRedNames.filter((name) => pending.includes(name));
+    if (running.length > 0) {
+      logger.info(
+        `Red default branch: repair PR ${at} is still running ${
+          running.join(", ")
+        }, so the held failure is not handed to it this scan (Issue #5437)`,
+      );
+      return false;
+    }
+    return true;
+  } catch (error) {
+    logger.warn(
+      `Red default branch: could not read whether repair PR ${at} carries a fix (${
+        errorText(error)
+      }); the held failure is not handed to it this scan (Issue #5437)`,
+    );
+    return false;
+  }
+}
+
+/**
  * Hand the held failure to the CI-fix agent on the repair branch when the
  * repair PR does not reproduce it (Issue #5437).
  *
@@ -2096,8 +2166,10 @@ async function repairHeldDefaultBranch(input: {
  * lowest-numbered held PR's failing check run (its id, name and annotations)
  * is handed over as a failure of the repair PR, so the agent fixes the default
  * branch on the repair branch. A PR opened this scan is left to its own CI
- * first. Once that check run's retry budget is spent the hand-over stops and
- * the repair PR is reported for a human, never left as a silent green PR.
+ * first, and so is a repair PR that already carries a fix or whose held
+ * checks are still running ({@link repairStillAwaitsFix}). Once that check
+ * run's retry budget is spent the hand-over stops and the repair PR is
+ * reported for a human, never left as a silent green PR.
  */
 async function handHeldFailureToRepairPr(input: {
   repo: string;
@@ -2118,6 +2190,7 @@ async function handHeldFailureToRepairPr(input: {
     tipRed.has(failure.checkName)
   );
   if (reproduced) return;
+  if (!(await repairStillAwaitsFix(input))) return;
   const source = [...input.held]
     .sort((a, b) => a.prNumber - b.prNumber)
     .flatMap((entry) =>

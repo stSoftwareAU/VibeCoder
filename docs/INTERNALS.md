@@ -5464,7 +5464,11 @@ flowchart TD
   adopted repair PR has no failure of its own on a held check, the lowest held
   PR's failing check run (its id, name and annotations) is handed to the CI-fix
   agent as a failure of the repair PR, on the repair branch. A repair PR opened
-  in the same scan is left to its own CI first. Once that check run's retry
+  in the same scan is left to its own CI first. So is a repair PR that already
+  carries a fix (its branch changes files against the default branch, read
+  through `compare/<default>...<repair branch>`), which waits for its CI and
+  merge, and one whose held check is still running. An unreadable read hands
+  nothing over and warns with the `gh` error. Once that check run's retry
   budget is spent, the scan warns that the default branch needs a human and logs
   `red-default-branch-repair-needs-human` instead of handing it over again.
 - **Status wording.** The status reads "holding sync PRs" when every held PR is

@@ -29,9 +29,13 @@ Part of #5437.
   adopted repair PR has no failure of its own on a held check, the lowest held
   PR's failing check run (id, name, annotations) is handed to the CI-fix agent
   as the repair PR's failure (`handHeldFailureToRepairPr` in
-  `worker/deno/lib/pr_maintenance.ts`). Once that check run's retries are spent
-  the scan warns that the default branch needs a human
-  (`red-default-branch-repair-needs-human`).
+  `worker/deno/lib/pr_maintenance.ts`). The hand-over happens only while the
+  repair PR carries no fix: its branch changes no file against the default
+  branch (`compare/<default>...<repair branch>`, `.files | length`) and no held
+  check is still running on it (`repairStillAwaitsFix`). A repair PR with a
+  pushed fix waits for its CI and merge, and an unreadable read hands nothing
+  over. Once that check run's retries are spent the scan warns that the default
+  branch needs a human (`red-default-branch-repair-needs-human`).
 - **Re-sync:** a held sync head behind the tip is fast-forwarded
   (`force=false`). A stale merge-commit sync head gets the default branch merged
   in server-side once the tip is green on its checks.
@@ -263,7 +267,18 @@ claimed in `docs/audits/lib-sweep-coverage/top-up-5437.json`.
   by the `--search head:` lookup, no `pr create`) and an unreadable lookup (no
   `pr create`, warning names the `gh` error). Four existing tests that adopt a
   green repair PR now expect the hand-over (`value?.prNumber === 20`) instead of
-  `null`. Run:
+  `null`.
+- Verifier follow-up 2 (a pushed fix kept being handed the old failure): the
+  same file adds
+  `findFailedCiChecks - a repair PR that already carries a pushed fix and is green is not handed the held failure, and nothing reports a human (Issue #5437)`,
+  `…a repair PR whose held check is still running is not handed the held failure this scan…`
+  and
+  `…an unreadable repair-branch compare hands nothing over and warns with the gh error…`.
+  The `gh` stub answers the `.files | length` compare (`repairFiles`, default 0)
+  and the running-check read (`pendingChecks`), and `redMainFixture` now passes
+  every extra fixture field through. Observed red: with the
+  `repairStillAwaitsFix` guard commented out, all three failed (52 passed, 3
+  failed); with it, 55 passed. Run:
   `deno task test:unit tests/red_default_branch_repair_5437_test.ts tests/pr_maintenance_test.ts tests/pr_maintenance_ci_deferral_test.ts tests/pr_maintenance_merge_queue_test.ts tests/shift_left_failures_test.ts`
   gave 208 passed, 0 failed.
 - `worker/deno/tests/default_branch_ancestry_5437_test.ts` (new) covers every
@@ -280,12 +295,13 @@ claimed in `docs/audits/lib-sweep-coverage/top-up-5437.json`.
 - Red against base: with `worker/deno/lib/pr_maintenance.ts` and
   `worker/deno/lib/shift_left_failures.ts` restored to `8596aa75b`, 53 tests
   failed (observed at `da3d654ae`).
-- Targeted run on the final code head `c500e1c92`:
+- Targeted run on the code head after verifier follow-up 2 (this commit):
   `deno task test:unit tests/red_default_branch_repair_5437_test.ts tests/pr_maintenance_test.ts tests/pr_maintenance_ci_deferral_test.ts tests/pr_maintenance_merge_queue_test.ts tests/shift_left_failures_test.ts tests/default_branch_ancestry_5437_test.ts tests/pr_ci_processor_deferral_test.ts tests/ci_fix_prompt_v4_test.ts`
-  gave 273 passed, 0 failed.
-- Full gate: `./quality.sh` passed on the final code head `c500e1c92`
+  gave 276 passed, 0 failed.
+- Full gate: `./quality.sh` passed on the earlier code head `c500e1c92`
   (`Result: PASSED (with skipped checks)`; config integration and checkov are
-  skipped because their tools are not installed on the host).
+  skipped because their tools are not installed on the host). It was not run on
+  this head; the worker re-runs it before the PR is raised.
 - `deno task pr-summary-check` on this summary: 0 gates blocked, 0 not checked.
 - `worker/deno/tests/ci_fix_prompt_v4_test.ts` (edited) adds
   `buildCiFixPrompt - a repair PR for a red default branch is told not to defer to its base, and an ordinary PR is not (Issue #5437)`.
