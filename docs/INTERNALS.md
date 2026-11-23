@@ -5376,8 +5376,10 @@ flowchart TD
     H --> F{"Head behind the tip?"}
     F -- yes --> FF["Fast-forward to the tip, force=false"]
     H --> R{"Tip red on a held check?"}
-    R -- yes --> G{"Open human fix PR green on every held check?"}
+    R -- yes --> G{"Open human fix PR green on every held check, or still running with none failed?"}
     G -- yes --> C["One status comment, edited in place; no repair PR"]
+    C --> W["A fleet status on any other PR is withdrawn, naming the fix"]
+    P --> W
     G -- no --> P["One repair PR per repo: fix/red-default-branch-sha12"]
     P --> Q["Its own red CI goes to the CI-fix agent first"]
     style P fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -5424,14 +5426,23 @@ flowchart TD
   `PATCH git/refs/heads/<branch>` and `force=false`, so GitHub refuses anything
   that is not a fast-forward and no commit is lost. Once a repair lands, the
   stale sync PRs pick it up on the next scan.
-- **A green human fix is adopted, not duplicated.** Before a repair PR is opened
+- **A human fix that is green, or still running, is adopted, not duplicated.** Before a repair PR is opened
   or adopted, the open PRs against the default branch are listed
   (`gh pr list --base <default> --state open`, limit 30). The first one that is
   not a sync or repair PR, is not held, whose head contains the default
   branch's tip (the compare status is `ahead`, so a stale branch cut before the
   red commit does not count), and whose head commit has succeeded on every held
-  check is the fix. A candidate whose ancestry cannot be read is skipped with a
-  warning quoting the error. The status is then kept as one comment on it,
+  check is the fix, and a green fix always wins. Failing that, the first
+  candidate by a login outside the fleet and not a bot account, with no held
+  check completed without `success`, `neutral` or `skipped` (so `failure`,
+  `timed_out` and `cancelled` all count) and at least one check run not yet
+  `completed` that
+  started within two hours (`RUNNING_FIX_WAIT_MS`), is the pending fix. A held
+  check may not exist yet while CI is in flight (the `gate` check runs after the
+  others), so an absent one is not a failure. A fleet or bot PR is never waited
+  on, and a run with no usable start time does not hold the repair. A candidate whose ancestry
+  cannot be read is skipped with a warning quoting the error. The status is then
+  kept as one comment on it,
   carrying the `vibe-red-default-branch-hold` marker, and no repair PR is made.
   The status is the newest comment by a fleet login whose body ends with a
   marker. If it carries the identical marker (the tip and the held set), a
@@ -5439,14 +5450,32 @@ flowchart TD
   place with `PATCH repos/<repo>/issues/comments/<id>`, so a changed held set
   never adds a second status comment. With no such comment, one is posted.
   Comments by other logins are ignored, and the fix PR's body is never edited.
-  A failed list, check-run read or comment read is logged with its error, and
-  the worker's repair PR path runs instead. A failed post or edit is logged with
+  A failed list, successful-check read or comment read is logged with its error,
+  and the worker's repair PR path runs instead. A failed check-run states read
+  is logged with its error, that candidate is not waited on, and the search
+  goes on to the next candidate. A failed post or edit is logged with
   its error and no repair PR is made this scan; it is retried next scan.
   Once a fix is adopted, the worker's own repair PR in that repo is not handed
   to the CI-fix agent in the same scan, since that would write the same fix
   twice. Its failure is skipped with the reason `red-default-branch-fix-adopted`.
+- **One fix status stands.** A pending fix's status says its CI is still
+  running and that the fleet cannot tell whether it fixes the failure, and its
+  marker carries `state="pending"`, so the status is edited to the green
+  wording once the PR turns green. Once the fix is settled (an adopted PR, the
+  worker's repair PR, or neither when the repair could not be opened), every
+  other open PR against the default branch, except sync and repair PRs, is
+  checked. Its newest fleet status comment, when it still carries the hold
+  marker, is edited in place (`withdrawSupersededFixStatuses` in
+  `red_default_branch_repair.ts`) to say the PR is no longer taken as the fix
+  and to name the fix now waited on. The withdrawn comment ends with a
+  `vibe-red-default-branch-withdrawn` marker naming the tip and that fix. It is
+  edited again only when either changes, and a PR adopted again has the same
+  comment edited back. This reads the comments of up to 30 PRs on each red
+  scan. A failed list, read or edit is logged with its error, and the next scan
+  tries again.
 - **One repair PR.** A repair PR is raised only when the tip itself is red on a
-  held check, and no green human fix PR was found. It is an empty commit on the
+  held check, and no human fix PR was found that is green on every held check
+  or still running with none failed. It is an empty commit on the
   tip (GitHub refuses a PR with no commits), on a `fix/red-default-branch-<sha12>`
   branch, opened against the default branch. A later scan adopts an open repair
   PR with that prefix (the lowest number) rather than opening another: one in

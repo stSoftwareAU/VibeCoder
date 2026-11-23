@@ -69,6 +69,7 @@ import {
   postRedDefaultBranchStatusComment,
   type RedDefaultBranchRepair,
   type RepairPrCandidate,
+  withdrawSupersededFixStatuses,
 } from "./red_default_branch_repair.ts";
 import {
   describeQueueRemoval,
@@ -876,6 +877,86 @@ export async function fetchFailedCheckRunsStrict(
     `.check_runs | [.[] | select(${select}) | {id: .id, name: .name, status: .status, conclusion: .conclusion}]`,
   ]);
   return parseJsonArrayPages(output) as CheckRunEntry[];
+}
+
+/**
+ * How long a check run may have been running and still hold the repair for a
+ * human fix PR (Issue #5437). A run started longer ago than this, or with no
+ * usable start time, does not hold it: a queued run that never starts must not
+ * hold the repair forever.
+ */
+export const RUNNING_FIX_WAIT_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * The completed conclusions that do not count as a failed check for the fix
+ * wait (Issue #5437). Any other completed conclusion does.
+ */
+const PASSING_CONCLUSIONS: ReadonlySet<string> = new Set([
+  "success",
+  "neutral",
+  "skipped",
+]);
+
+/**
+ * The check runs of a commit that bear on waiting for a human fix PR (Issue
+ * #5437), read with one `gh` call. `failed` names the checks completed without
+ * a `success`, `neutral` or `skipped` conclusion, so `failure`, `timed_out`,
+ * `cancelled`, `action_required` and `startup_failure` all count. `running`
+ * names the checks not yet completed whose `started_at` parses and lies within
+ * {@link RUNNING_FIX_WAIT_MS} of `now`.
+ *
+ * @throws Error when the call or its rows cannot be read, naming the field
+ */
+export async function fetchCheckRunStates(
+  repo: string,
+  sha: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  now: number = Date.now(),
+): Promise<{ failed: Set<string>; running: Set<string> }> {
+  const rows = parseJsonArrayPages(
+    await ghCommandFn([
+      "api",
+      `repos/${repo}/commits/${sha}/check-runs?per_page=100`,
+      "--paginate",
+      "--jq",
+      ".check_runs | [.[] | {name: .name, status: .status, conclusion: .conclusion, started_at: .started_at}]",
+    ]),
+  );
+  const failed = new Set<string>();
+  const running = new Set<string>();
+  for (const row of rows) {
+    const fields =
+      (typeof row === "object" && row !== null ? row : {}) as Record<
+        string,
+        unknown
+      >;
+    if (typeof fields.name !== "string") {
+      throw new Error(
+        `a check run on ${sha} has no name: ${JSON.stringify(row)}`,
+      );
+    }
+    if (typeof fields.status !== "string") {
+      throw new Error(`check run "${fields.name}" on ${sha} has no status`);
+    }
+    if (
+      fields.status === "completed" &&
+      !(typeof fields.conclusion === "string" &&
+        PASSING_CONCLUSIONS.has(fields.conclusion))
+    ) {
+      failed.add(fields.name);
+    }
+    const started = typeof fields.started_at === "string"
+      ? Date.parse(fields.started_at)
+      : Number.NaN;
+    if (
+      fields.status !== "completed" &&
+      Number.isFinite(started) &&
+      Math.abs(now - started) <= RUNNING_FIX_WAIT_MS
+    ) {
+      running.add(fields.name);
+    }
+  }
+  return { failed, running };
 }
 
 /**
@@ -1974,9 +2055,15 @@ async function mergeDefaultBranchIntoSyncBranch(
  * has (a repair has landed) needs no PR.
  *
  * Before a worker repair PR is opened or adopted, an open human fix PR against
- * the default branch that is green on every held check is looked for. When one
- * is found, the status is posted to it as a comment and no repair PR is made.
- * If the fix search or the comment read fails, the worker repair PR path runs.
+ * the default branch is looked for: one that is green on every held check, or
+ * whose CI is still running with no held check failed (Issue #5437), since a
+ * held check may not exist yet while CI is in flight. A fleet-authored or bot
+ * PR is never waited on. When one is found, the status is posted to it as a comment
+ * and no repair PR is made, so the repair is not written a second time while
+ * the human's fix runs. A running fix gets the pending wording. If the fix
+ * search or the comment read fails, the worker repair PR path runs. Either way,
+ * a fleet status still standing on any other open PR against the default
+ * branch is then withdrawn, naming the fix now waited on, so one stands.
  *
  * @returns The adopted fix PR's number when one was adopted (the caller then
  *   keeps the worker's repair PR out of this scan's hand-offs), the worker's
@@ -2048,9 +2135,25 @@ async function repairHeldDefaultBranch(input: {
         (await fetchFailedCheckRunsStrict(repo, sha, ghCommandFn, ["success"]))
           .map((check) => check.name),
       ),
+    fleetLogins: scanAuthors,
+    readCheckRunStates: (sha) => fetchCheckRunStates(repo, sha, ghCommandFn),
     ghCommandFn,
     logger,
   });
+  // Issue #5437: once the fix is settled, a status left on any other PR (a
+  // pending fix whose held check then failed) is withdrawn, so one stands.
+  const withdrawOthers = (currentFixPr: number | null) =>
+    withdrawSupersededFixStatuses({
+      repo,
+      defaultBranch,
+      tipSha,
+      checkNames,
+      currentFixPr,
+      isSyncBranch: (headRefName) => isMilestoneSyncBranch(headRefName),
+      fleetLogins: scanAuthors,
+      ghCommandFn,
+      logger,
+    });
   if (fix !== null) {
     const outcome = await postRedDefaultBranchStatusComment({
       repo,
@@ -2060,12 +2163,14 @@ async function repairHeldDefaultBranch(input: {
       heldPrNumbers,
       allHeldAreSync,
       prNumber: fix.number,
+      pending: fix.pending,
       fleetLogins: scanAuthors,
       ghCommandFn,
       logger,
     });
     // Only an unreadable comment list falls through to the worker repair PR.
     if (outcome !== "read-failed") {
+      await withdrawOthers(fix.number);
       return { adoptedFixPr: fix.number, repair: null, checkNames };
     }
   }
@@ -2081,6 +2186,7 @@ async function repairHeldDefaultBranch(input: {
     ghCommandFn,
     logger,
   });
+  await withdrawOthers(repair?.number ?? null);
   return { adoptedFixPr: null, repair, checkNames };
 }
 
@@ -2269,7 +2375,8 @@ async function handHeldFailureToRepairPr(input: {
  * tip is red on them it is held for the repair PR, and once the tip is green on
  * them the default branch is merged into the sync branch. A sync PR whose ancestry cannot be decided gets no CI-fix
  * target this scan. Before a repair PR is opened, an open human fix PR that is
- * green on every held check is adopted: the status is commented on it.
+ * green on every held check, or whose CI is still running with no held check
+ * failed (Issue #5437), is adopted: the status is commented on it.
  *
  * @param options - CI check scan options
  * @returns Result containing the highest priority failed check, or null
@@ -2936,8 +3043,9 @@ export async function findFailedCiChecks(
           ghCommandFn,
           logger,
         });
-      // Issue #5437: a human fix PR already passes the held checks, so this
-      // repo's worker repair PR is not handed to the CI-fix agent too. That
+      // Issue #5437: a human fix PR is green on the held checks, or still
+      // running with none failed, so this repo's worker repair PR is not handed
+      // to the CI-fix agent too. That
       // would write the same fix twice. Filtered after the step, because the
       // repair PR's failures were collected in the PR loop above.
       if (adoptedFixPr !== null) {
@@ -2945,7 +3053,7 @@ export async function findFailedCiChecks(
           if (failure.repo !== repo) continue;
           logger.skipReason(
             "red-default-branch-fix-adopted",
-            `${repo}#${failure.prNumber}: ${repo}#${adoptedFixPr} already passes the held checks; the repair PR waits (Issue #5437)`,
+            `${repo}#${failure.prNumber}: ${repo}#${adoptedFixPr} is the fix for the held checks (green, or CI still running with none failed); the repair PR waits (Issue #5437)`,
           );
         }
         const kept = repairFailures.filter((failure) => failure.repo !== repo);

@@ -11,6 +11,8 @@
  * - a sync failure the default branch does not share still gets its fix;
  * - a green human fix PR is adopted only when its head contains the default
  *   branch's tip, so a stale branch cannot pass for the fix;
+ * - a human fix PR whose CI is still running, with no held check failed, is
+ *   waited on rather than duplicated; a fleet or bot PR or a stale run is not;
  * - an undecidable ancestry stands the sync PR down for the scan;
  * - a non-sync PR is held only when the tip and its merge base are both red
  *   on the check, so a check its own base lacks is never inherited;
@@ -21,15 +23,23 @@
  * Uses Australian English throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   type CiCheckScanOptions,
+  fetchCheckRunStates,
   findFailedCiChecks,
+  RUNNING_FIX_WAIT_MS,
 } from "../lib/pr_maintenance.ts";
 import {
   bodyCarriesRedDefaultBranchMarker,
   findGreenFixPr,
   formatRedDefaultBranchStatus,
+  formatWithdrawnFixStatus,
   postRedDefaultBranchStatusComment,
   RED_DEFAULT_BRANCH_REPAIR_PREFIX,
   redDefaultBranchMarker,
@@ -126,6 +136,21 @@ interface Fixture {
   repairFiles?: Record<string, number | "error">;
   /** Names of the check runs still running, keyed by the ref read. */
   pendingChecks?: Record<string, string[]>;
+  /**
+   * The check runs of each ref with their status, conclusion and start time,
+   * as the fix search's states read sees them (Issue #5437).
+   */
+  checkRunStates?: Record<string, CheckRunStateFixture[]>;
+  /** Refs whose check-run states read fails with a `gh` error (Issue #5437). */
+  checkRunStateReadErrors?: string[];
+}
+
+/** One check run in a {@link Fixture.checkRunStates} answer (Issue #5437). */
+interface CheckRunStateFixture {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  started_at: string | null;
 }
 
 /** A recording logger, so the scan's warnings and skips can be asserted. */
@@ -293,6 +318,15 @@ function ghStub(
     if (run !== null) {
       if (fx.checkReadErrors?.includes(run[1] ?? "")) {
         return Promise.reject(new Error("HTTP 500: Internal Server Error"));
+      }
+      // The fix search's states read names `started_at` (Issue #5437).
+      if (args.some((arg) => arg.includes("started_at"))) {
+        if (fx.checkRunStateReadErrors?.includes(run[1] ?? "")) {
+          return Promise.reject(new Error("HTTP 504: Gateway Timeout"));
+        }
+        return Promise.resolve(
+          JSON.stringify(fx.checkRunStates?.[run[1] ?? ""] ?? []),
+        );
       }
       // The repair PR's running-check read selects incomplete check runs.
       if (args.some((arg) => arg.includes('"completed"'))) {
@@ -1747,9 +1781,259 @@ Deno.test("findFailedCiChecks - with a green human fix PR adopted, the worker's 
     logger.skips.some((skip) =>
       skip.startsWith("red-default-branch-fix-adopted: ") &&
       skip.includes(
-        "org/repo#20: org/repo#5434 already passes the held checks; the repair PR waits",
+        "org/repo#20: org/repo#5434 is the fix for the held checks (green, or CI still running with none failed); the repair PR waits",
       )
     ),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// A human fix PR still running its CI is waited on (Issue #5437)
+// ---------------------------------------------------------------------------
+
+/** A green-on-gitleaks head, for a second human fix PR in these cases. */
+const GREEN_FIX_HEAD = "f7".repeat(20);
+/** A start time far outside the wait window. */
+const LONG_AGO = "2026-01-01T00:00:00Z";
+
+/** A check run still running, started now (inside the wait window). */
+function runningRun(name: string): CheckRunStateFixture {
+  return {
+    name,
+    status: "in_progress",
+    conclusion: null,
+    started_at: new Date().toISOString(),
+  };
+}
+
+/** A check run that has completed with a failure. */
+function failedRun(name: string): CheckRunStateFixture {
+  return {
+    name,
+    status: "completed",
+    conclusion: "failure",
+    started_at: LONG_AGO,
+  };
+}
+
+/** Every check-run states read, which names `started_at` in its `--jq`. */
+function statesReads(calls: string[][]) {
+  return calls.filter((args) =>
+    args[0] === "api" && args.some((arg) => arg.includes("started_at"))
+  );
+}
+
+Deno.test("findFailedCiChecks - a human fix PR still running its CI, with the held check not yet created, is adopted: no repair PR, and its status is commented on it once (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [runningRun("lint")] };
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(gitWrites(calls).length, 0);
+  const comments = callsTo(calls, "pr", "comment");
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]?.[2], "5434");
+  assert(
+    logger.infos.some((info) =>
+      info.includes("org/repo#5434") &&
+      info.includes("by nleck") &&
+      info.includes("still running")
+    ),
+    `infos: ${logger.infos}`,
+  );
+  assertEquals(logger.warns, []);
+});
+
+Deno.test("findFailedCiChecks - a fleet-authored PR still running its CI is not waited on: the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  // `testbot` is the scan's own login, so it is in the fleet author set.
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "testbot"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [runningRun("lint")] };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertEquals(statesReads(calls).length, 0);
+});
+
+Deno.test("findFailedCiChecks - a bot-authored fix PR still running its CI is not waited on: the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  // Dependabot is a bot, not in the fleet author set: only the bot check applies.
+  fx.fixPrs = [
+    humanFixPr(
+      5434,
+      "dependabot/npm_and_yarn/lint",
+      FIX_HEAD,
+      "app/dependabot",
+    ),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [runningRun("lint")] };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertEquals(statesReads(calls).length, 0);
+});
+
+Deno.test("findFailedCiChecks - a fleet PR whose login differs only in case is not waited on: the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  // The scan's login is `testbot`; GitHub logins compare case-insensitively.
+  fx.fixPrs = [humanFixPr(5434, "fix/mixed-case", FIX_HEAD, "TestBot")];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [runningRun("lint")] };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertEquals(statesReads(calls).length, 0);
+});
+
+Deno.test("findFailedCiChecks - a held check that timed out while another check runs is a failure: not waited on, and the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = {
+    [FIX_HEAD]: [{
+      name: "gitleaks",
+      status: "completed",
+      conclusion: "timed_out",
+      started_at: LONG_AGO,
+    }, runningRun("lint")],
+  };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(statesReads(calls).length, 1);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+});
+
+Deno.test("findFailedCiChecks - a candidate whose check-run states cannot be read is skipped, and a later green candidate is still adopted (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/unreadable-states", FIX_HEAD, "nleck"),
+    humanFixPr(5435, "fix/green", GREEN_FIX_HEAD, "alice"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.compare[GREEN_FIX_HEAD] = "ahead";
+  fx.greenChecks = { [GREEN_FIX_HEAD]: ["gitleaks"] };
+  fx.checkRunStateReadErrors = [FIX_HEAD];
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  const comments = callsTo(calls, "pr", "comment");
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]?.[2], "5435");
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not read the check runs on org/repo#5434") &&
+      warn.includes("HTTP 504: Gateway Timeout") &&
+      warn.includes("it is not waited on")
+    ),
+    `warns: ${logger.warns}`,
+  );
+});
+
+Deno.test("findFailedCiChecks - a human fix PR with a held check failed while another check runs is not waited on: the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = {
+    [FIX_HEAD]: [failedRun("gitleaks"), runningRun("lint")],
+  };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(statesReads(calls).length, 1);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+});
+
+Deno.test("findFailedCiChecks - a human fix PR whose only running check started long ago is not waited on: the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = {
+    [FIX_HEAD]: [{
+      name: "lint",
+      status: "in_progress",
+      conclusion: null,
+      started_at: LONG_AGO,
+    }],
+  };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(statesReads(calls).length, 1);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+});
+
+Deno.test("findFailedCiChecks - a running human fix PR does not win over a second candidate green on every held check: the green one is commented on (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/still-running", FIX_HEAD, "nleck"),
+    humanFixPr(5435, "fix/green", GREEN_FIX_HEAD, "alice"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.compare[GREEN_FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [runningRun("lint")] };
+  fx.greenChecks = { [GREEN_FIX_HEAD]: ["gitleaks"] };
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(statesReads(calls).length, 1);
+  assertEquals(prCreateCalls(calls).length, 0);
+  const comments = callsTo(calls, "pr", "comment");
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]?.[2], "5435");
+  assertStringIncludes(
+    argAfter(comments[0] ?? [], "--body") ?? "",
+    "fix in #5435.",
+  );
+  assertEquals(
+    logger.infos.some((info) => info.includes("org/repo#5434")),
+    false,
+  );
+});
+
+Deno.test("findFailedCiChecks - a failed check-run states read warns with the gh error and opens the repair PR (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStateReadErrors = [FIX_HEAD];
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not read the check runs on org/repo#5434") &&
+      warn.includes("HTTP 504: Gateway Timeout")
+    ),
+    `warns: ${logger.warns}`,
   );
 });
 
@@ -1764,6 +2048,12 @@ Deno.test("findGreenFixPr - a PR row without its head commit fails the read, and
     readAncestry: () =>
       Promise.resolve({ status: "contains-default" as const }),
     readSuccessfulCheckNames: () => Promise.resolve(new Set(["lint"])),
+    fleetLogins: [],
+    readCheckRunStates: () =>
+      Promise.resolve({
+        failed: new Set<string>(),
+        running: new Set<string>(),
+      }),
     ghCommandFn: () =>
       Promise.resolve(JSON.stringify([
         { number: 12, headRefName: "human/fix", author: { login: "alice" } },
@@ -1774,6 +2064,107 @@ Deno.test("findGreenFixPr - a PR row without its head commit fails the read, and
   assert(
     logger.warns.some((w) => w.includes("headRefOid")),
     `warns: ${logger.warns}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The check-run states the fix wait reads, with a fixed clock (Issue #5437)
+// ---------------------------------------------------------------------------
+
+/** A fixed clock for the wait-window cases. */
+const WINDOW_NOW = Date.parse("2026-11-23T12:00:00Z");
+
+/** A `gh` answer that returns `rows` as the check-run array. */
+function rowsGh(rows: unknown[]): (args: string[]) => Promise<string> {
+  return () => Promise.resolve(JSON.stringify(rows));
+}
+
+Deno.test("fetchCheckRunStates - a run started just inside the wait window is running (Issue #5437)", async () => {
+  const startedAt = new Date(WINDOW_NOW - (RUNNING_FIX_WAIT_MS - 60_000))
+    .toISOString();
+  const states = await fetchCheckRunStates(
+    REPO,
+    TIP,
+    rowsGh([{
+      name: "lint",
+      status: "in_progress",
+      conclusion: null,
+      started_at: startedAt,
+    }]),
+    WINDOW_NOW,
+  );
+  assertEquals([...states.running], ["lint"]);
+  assertEquals(states.failed.size, 0);
+});
+
+Deno.test("fetchCheckRunStates - a run started just outside the wait window is not running (Issue #5437)", async () => {
+  const startedAt = new Date(WINDOW_NOW - (RUNNING_FIX_WAIT_MS + 60_000))
+    .toISOString();
+  const states = await fetchCheckRunStates(
+    REPO,
+    TIP,
+    rowsGh([{
+      name: "lint",
+      status: "in_progress",
+      conclusion: null,
+      started_at: startedAt,
+    }]),
+    WINDOW_NOW,
+  );
+  assertEquals(states.running.size, 0);
+  assertEquals(states.failed.size, 0);
+});
+
+Deno.test("fetchCheckRunStates - a run with no usable start time is not running (Issue #5437)", async () => {
+  const states = await fetchCheckRunStates(
+    REPO,
+    TIP,
+    rowsGh([{
+      name: "lint",
+      status: "queued",
+      conclusion: null,
+      started_at: null,
+    }]),
+    WINDOW_NOW,
+  );
+  assertEquals(states.running.size, 0);
+});
+
+Deno.test("fetchCheckRunStates - a completed timed_out run is failed, and a success is not (Issue #5437)", async () => {
+  const states = await fetchCheckRunStates(
+    REPO,
+    TIP,
+    rowsGh([
+      {
+        name: "gitleaks",
+        status: "completed",
+        conclusion: "timed_out",
+        started_at: LONG_AGO,
+      },
+      {
+        name: "lint",
+        status: "completed",
+        conclusion: "success",
+        started_at: LONG_AGO,
+      },
+    ]),
+    WINDOW_NOW,
+  );
+  assertEquals([...states.failed], ["gitleaks"]);
+  assertEquals(states.running.size, 0);
+});
+
+Deno.test("fetchCheckRunStates - a check run row without a name throws, naming the field (Issue #5437)", async () => {
+  await assertRejects(
+    () =>
+      fetchCheckRunStates(
+        REPO,
+        TIP,
+        rowsGh([{ status: "completed", conclusion: "success" }]),
+        WINDOW_NOW,
+      ),
+    Error,
+    "has no name",
   );
 });
 
@@ -1797,4 +2188,214 @@ Deno.test("postRedDefaultBranchStatusComment - a comment without a user.login re
     logger.warns.some((w) => w.includes("user.login")),
     `warns: ${logger.warns}`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// One fix status stands: a superseded one is withdrawn (Issue #5437)
+// ---------------------------------------------------------------------------
+
+/** The status body of the one `gh pr comment` a scan posted. */
+function postedCommentBody(calls: string[][]): string {
+  const comments = callsTo(calls, "pr", "comment");
+  assertEquals(comments.length, 1);
+  return argAfter(comments[0] ?? [], "--body") ?? "";
+}
+
+/** The body a PATCH to comment `id` wrote. */
+function patchedBody(calls: string[][], id: number): string {
+  const patches = patchesTo(calls, `repos/org/repo/issues/comments/${id}`);
+  assertEquals(patches.length, 1);
+  return (argAfter(patches[0] ?? [], "-f") ?? "").replace(/^body=/, "");
+}
+
+Deno.test("findFailedCiChecks - a running human fix is adopted with the pending status; once its held check fails, the repair PR is opened and the earlier status is withdrawn naming it (Issue #5437)", async () => {
+  // Scan 1: #5434's CI is running and gitleaks has not been created yet.
+  const first = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  first.fixPrs = [
+    humanFixPr(5434, "fix/unrelated-docs", FIX_HEAD, "nleck"),
+  ];
+  first.compare[FIX_HEAD] = "ahead";
+  first.checkRunStates = { [FIX_HEAD]: [runningRun("lint")] };
+  const one = await scan(first);
+
+  assertEquals(prCreateCalls(one.calls).length, 0);
+  const pendingBody = postedCommentBody(one.calls);
+  assertEquals(callsTo(one.calls, "pr", "comment")[0]?.[2], "5434");
+  assertStringIncludes(
+    pendingBody,
+    "holding sync PRs #1, #2, #3, fix in #5434, its CI still running.",
+  );
+  assertStringIncludes(pendingBody, "It cannot tell from GitHub whether");
+  assert(!pendingBody.includes("This PR exists to repair"));
+  assert(bodyCarriesRedDefaultBranchMarker(pendingBody, TIP, [1, 2, 3], true));
+  assert(!bodyCarriesRedDefaultBranchMarker(pendingBody, TIP, [1, 2, 3]));
+
+  // Scan 2: gitleaks has now failed on #5434, which carries scan 1's status.
+  const second = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  second.fixPrs = first.fixPrs;
+  second.compare[FIX_HEAD] = "ahead";
+  second.checkRunStates = {
+    [FIX_HEAD]: [failedRun("gitleaks"), runningRun("lint")],
+  };
+  second.comments = {
+    5434: [{ id: 7100, login: "testbot", body: pendingBody }],
+  };
+  const two = await scan(second);
+
+  assertEquals(prCreateCalls(two.calls).length, 1);
+  assertEquals(callsTo(two.calls, "pr", "comment").length, 0);
+  assertEquals(patchCalls(two.calls).length, 1);
+  const withdrawn = patchedBody(two.calls, 7100);
+  assertStringIncludes(
+    withdrawn,
+    `is no longer taken as its fix: fix in #${CREATED_PR}.`,
+  );
+  assert(!bodyCarriesRedDefaultBranchMarker(withdrawn, TIP, [1, 2, 3], true));
+  assert(!withdrawn.includes("fix in #5434"));
+  assertEquals(two.logger.warns, []);
+
+  // Scan 3: the status is already withdrawn, so it is not edited again.
+  const third = {
+    ...second,
+    comments: { 5434: [{ id: 7100, login: "testbot", body: withdrawn }] },
+  };
+  const three = await scan(third);
+  assertEquals(patchCalls(three.calls).length, 0);
+});
+
+Deno.test("findFailedCiChecks - a green fix adopted after an earlier pending one withdraws the earlier status, naming the green fix (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/unrelated-docs", FIX_HEAD, "nleck"),
+    humanFixPr(5435, "fix/green", GREEN_FIX_HEAD, "alice"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.compare[GREEN_FIX_HEAD] = "ahead";
+  fx.greenChecks = { [GREEN_FIX_HEAD]: ["gitleaks"] };
+  fx.checkRunStates = { [FIX_HEAD]: [failedRun("gitleaks")] };
+  fx.comments = {
+    5434: [{
+      id: 7200,
+      login: "testbot",
+      body: formatRedDefaultBranchStatus({
+        defaultBranch: DEFAULT_BRANCH,
+        heldPrNumbers: [1, 2, 3],
+        repairPrNumber: 5434,
+        checkNames: ["gitleaks"],
+        tipSha: TIP,
+        pending: true,
+      }),
+    }],
+  };
+  const { calls, logger } = await scan(fx);
+
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "comment")[0]?.[2], "5435");
+  assertStringIncludes(
+    patchedBody(calls, 7200),
+    "is no longer taken as its fix: fix in #5435.",
+  );
+  assertEquals(logger.warns, []);
+});
+
+Deno.test("findFailedCiChecks - a pending fix that turns green has its pending status edited in place to the green one (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [humanFixPr(5434, "fix/gitleaks", FIX_HEAD, "nleck")];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.comments = {
+    5434: [{
+      id: 7300,
+      login: "testbot",
+      body: formatRedDefaultBranchStatus({
+        defaultBranch: DEFAULT_BRANCH,
+        heldPrNumbers: [1, 2, 3],
+        repairPrNumber: 5434,
+        checkNames: ["gitleaks"],
+        tipSha: TIP,
+        pending: true,
+      }),
+    }],
+  };
+  const { calls } = await scan(fx);
+
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  const green = patchedBody(calls, 7300);
+  assertStringIncludes(green, "holding sync PRs #1, #2, #3, fix in #5434.");
+  assert(bodyCarriesRedDefaultBranchMarker(green, TIP, [1, 2, 3]));
+});
+
+Deno.test("findFailedCiChecks - a PR adopted again after its status was withdrawn has that comment edited back, not a second one posted (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [humanFixPr(5434, "fix/gitleaks", FIX_HEAD, "nleck")];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [runningRun("gitleaks")] };
+  fx.comments = {
+    5434: [{
+      id: 7400,
+      login: "testbot",
+      body: formatWithdrawnFixStatus({
+        defaultBranch: DEFAULT_BRANCH,
+        fixPrNumber: CREATED_PR,
+        checkNames: ["gitleaks"],
+        tipSha: TIP,
+      }),
+    }],
+  };
+  const { calls } = await scan(fx);
+
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertStringIncludes(
+    patchedBody(calls, 7400),
+    "fix in #5434, its CI still running.",
+  );
+});
+
+Deno.test("findFailedCiChecks - an unreadable comment list on another PR warns with the gh error and the repair PR still stands (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [humanFixPr(5434, "fix/unrelated-docs", FIX_HEAD, "nleck")];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [failedRun("gitleaks")] };
+  fx.commentReadError = "HTTP 503: comments boom";
+  const { calls, logger } = await scan(fx);
+
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(patchCalls(calls).length, 0);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not read the comments on org/repo#5434") &&
+      warn.includes("to withdraw a superseded fix status") &&
+      warn.includes("HTTP 503: comments boom")
+    ),
+    `warns: ${logger.warns}`,
+  );
+});
+
+Deno.test("findFailedCiChecks - a status withdrawn while no fix PR stood is edited again to name the repair PR once it is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [humanFixPr(5434, "fix/unrelated-docs", FIX_HEAD, "nleck")];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [failedRun("gitleaks")] };
+  fx.comments = {
+    5434: [{
+      id: 7500,
+      login: "testbot",
+      body: formatWithdrawnFixStatus({
+        defaultBranch: DEFAULT_BRANCH,
+        fixPrNumber: null,
+        checkNames: ["gitleaks"],
+        tipSha: TIP,
+      }),
+    }],
+  };
+  const { calls } = await scan(fx);
+
+  assertEquals(prCreateCalls(calls).length, 1);
+  const body = patchedBody(calls, 7500);
+  assertStringIncludes(
+    body,
+    `no longer taken as its fix: fix in #${CREATED_PR}.`,
+  );
+  assert(!body.includes("no fix PR stands yet"));
 });
