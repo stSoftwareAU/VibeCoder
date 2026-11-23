@@ -30,7 +30,7 @@ import {
 import { CODEX_HOME_ENV_VAR } from "./codex_auth.ts";
 import { resolveCodexAuthMode } from "./codex_auth_mode.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
-import { readMcpServerEntries } from "./mcp_server_entries.ts";
+import { readMcpServerEntries, SAFE_MCP_NAME } from "./mcp_server_entries.ts";
 import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 
@@ -428,7 +428,7 @@ function tomlStringArray(values: readonly string[]): string {
 function tomlInlineTable(record: Record<string, unknown>): string {
   const parts: string[] = [];
   for (const [key, value] of Object.entries(record)) {
-    if (!/^[A-Za-z0-9_-]+$/.test(key)) continue;
+    if (!SAFE_MCP_NAME.test(key)) continue;
     if (typeof value !== "string") continue;
     parts.push(`${key} = ${tomlString(value)}`);
   }

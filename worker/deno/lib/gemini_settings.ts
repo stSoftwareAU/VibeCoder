@@ -18,7 +18,7 @@
 
 import type { AgentRunSettings, ToolDenialSettings } from "./agent_provider.ts";
 import type { EnvLookup } from "./env_lookup.ts";
-import { readMcpServerEntries } from "./mcp_server_entries.ts";
+import { readMcpServerEntries, SAFE_MCP_NAME } from "./mcp_server_entries.ts";
 import type { Result } from "../types.ts";
 
 /** The environment variable the Gemini CLI reads its system settings path from. */
@@ -111,9 +111,6 @@ export interface GeminiMcpServer {
   env?: Record<string, string>;
 }
 
-/** Environment names kept for a server: the same filter Codex applies. */
-const SAFE_ENV_NAME = /^[A-Za-z0-9_-]+$/;
-
 /**
  * Maps the run's MCP config into Gemini's `mcpServers` setting (Issue #5343).
  *
@@ -137,7 +134,7 @@ export function buildGeminiMcpServers(
     if (entry.env !== undefined) {
       const env: [string, string][] = [];
       for (const [key, value] of Object.entries(entry.env)) {
-        if (!SAFE_ENV_NAME.test(key) || typeof value !== "string") continue;
+        if (!SAFE_MCP_NAME.test(key) || typeof value !== "string") continue;
         env.push([key, value]);
       }
       server.env = Object.fromEntries(env);

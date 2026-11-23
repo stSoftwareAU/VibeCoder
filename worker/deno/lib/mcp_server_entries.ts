@@ -5,7 +5,8 @@
  * Codex takes these servers as `-c mcp_servers.*` overrides
  * (`codex_executor.ts`) and Gemini as the `mcpServers` map of its per-run
  * settings file (`gemini_settings.ts`). This module is the one reader, so both
- * providers accept and refuse the same servers.
+ * providers skip the same unsafe names and malformed fields; Gemini additionally
+ * skips a server with no `command`.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
@@ -22,8 +23,8 @@ export interface McpServerEntry {
   env?: Record<string, unknown>;
 }
 
-/** Names both providers accept: no dots, quotes or spaces. */
-const SAFE_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
+/** Names both providers accept for a server or an env key: no dots, quotes or spaces. */
+export const SAFE_MCP_NAME = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Reads the servers the run's MCP config names.
@@ -55,7 +56,7 @@ export function readMcpServerEntries(configJson: string): McpServerEntry[] {
   for (
     const [name, spec] of Object.entries(servers as Record<string, unknown>)
   ) {
-    if (!SAFE_SERVER_NAME.test(name)) continue;
+    if (!SAFE_MCP_NAME.test(name)) continue;
     if (spec === null || typeof spec !== "object" || Array.isArray(spec)) {
       continue;
     }
