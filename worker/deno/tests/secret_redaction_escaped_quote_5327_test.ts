@@ -8,8 +8,9 @@
  * shape, that `containsSecret` is false on that output, that a second pass
  * changes nothing, and that the secret tail is gone. The controls keep the
  * base behaviour for a plain quoted value and for an escape that never closes.
- * The linearity cases (Issue #3942) assert output only, with no stopwatch, as
- * in `secret_redaction_redos_test.ts`.
+ * The linearity cases (the linearity rule in the `secret_redaction.ts` module
+ * header) assert output only, with no stopwatch, as in
+ * `secret_redaction_redos_test.ts`.
  */
 
 import { assert, assertEquals } from "@std/assert";
@@ -113,20 +114,20 @@ Deno.test("Issue #5327: containsSecret is true on each raw escaped input", () =>
 // The `a` after the opening quote puts an alphanumeric inside the rule's
 // lookahead (`(?=\S{0,63}[A-Za-z0-9])`), so the escape branches run rather than
 // the rule being rejected before they are reached.
-Deno.test("Issue #5327 (Issue #3942): an unclosed backslash run passes through unchanged", () => {
+Deno.test("Issue #5327 (linearity): an unclosed backslash run passes through unchanged", () => {
   const N = 131_072;
   const input = 'PASSWORD="a' + "\\".repeat(N);
   assertEquals(redactSecrets(input), input);
 });
 
-Deno.test("Issue #5327 (Issue #3942): escaped quotes past the bound fall back to the first quote", () => {
+Deno.test("Issue #5327 (linearity): escaped quotes past the bound fall back to the first quote", () => {
   const N = 131_072;
   const input = 'PASSWORD="a' + '\\"'.repeat(N / 2);
   const expected = 'PASSWORD="***REDACTED***"' + '\\"'.repeat(N / 2 - 1);
   assertEquals(redactSecrets(input), expected);
 });
 
-Deno.test("Issue #5327 (Issue #3942): a long run of doubled single quotes is masked in bounded time", () => {
+Deno.test("Issue #5327 (linearity): a long run of doubled single quotes is masked and the output is final", () => {
   const N = 131_072;
   const input = "PASSWORD='a" + "''".repeat(N / 2) + "x";
   const output = redactSecrets(input);
@@ -139,7 +140,7 @@ Deno.test("Issue #5327 (Issue #3942): a long run of doubled single quotes is mas
   assertEquals(redactSecrets(output), output);
 });
 
-Deno.test("Issue #5327 (Issue #3942): a long run of shell idioms is masked in bounded time", () => {
+Deno.test("Issue #5327 (linearity): a long run of shell idioms is masked and the output is final", () => {
   const N = 131_072;
   const input = "PASSWORD='a" + "'\\''".repeat(N / 4);
   const output = redactSecrets(input);

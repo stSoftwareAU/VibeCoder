@@ -761,12 +761,13 @@ const RULES: readonly RedactionRule[] = [
   // literal is masked; before, they stopped at the escaped quote, masked the
   // leading part and published the rest. Each escape-aware branch is bounded at
   // 4,096 characters or escapes, and the alternatives are told apart by their
-  // first two characters, so the pattern stays linear (Issue #3942). A longer
-  // value, or one whose escape never closes (`"C:\dir\"`), falls back to the old branches
-  // that end at the first quote, which is the base behaviour. A backslash is
-  // read as an escape in single quotes too, although the shell treats it as
-  // literal there; that can mask past a Windows path's trailing backslash up to
-  // the next quote, which errs towards masking.
+  // first two characters, so the pattern stays linear (the linearity rule in
+  // the module header). A longer value, or one whose escape never closes
+  // (`"C:\dir\"`), falls back to the old branches that end at the first quote,
+  // which is the base behaviour. A backslash is read as an escape in single
+  // quotes too, although the shell treats it as literal there; that can mask
+  // past a Windows path's trailing backslash up to the next quote, which errs
+  // towards masking.
   //
   // JSON structure survives the mask (Issue #4169's transcript tee is the
   // sink that showed it). Every stream-json line the agent emits carries a
