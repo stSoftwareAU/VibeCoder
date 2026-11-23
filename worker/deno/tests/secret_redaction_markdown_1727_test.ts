@@ -2,9 +2,8 @@
  * A credential label at the end of a line must not consume the next Markdown
  * line as its value (Issue #1727).
  *
- * The `secret-assignment` rule's separator (`["']?\s*[=:]\s*`) spans line
- * breaks, so prose ending in `credential:` adopted the following line as the
- * assignment's value. When that line was a Mermaid fence the fence itself was
+ * The `secret-assignment` rule's separator spans line breaks, so prose ending
+ * in `credential:` adopted the following line as the assignment's value. When that line was a Mermaid fence the fence itself was
  * replaced with the placeholder and the diagram stopped rendering in the
  * published PR body — `CODING-STANDARDS.md` requires that diagram.
  *
