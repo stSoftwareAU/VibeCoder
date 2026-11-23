@@ -2857,6 +2857,79 @@ Deno.test("checkAwsEmulatorInCI - a .tf file over the 1 MiB cap is not read, so 
   }
 });
 
+Deno.test("checkAwsEmulatorInCI - a manifest or CloudFormation candidate over the 1 MiB cap is not read, so it is not evidence; one at the cap still is (Issue #5360)", async () => {
+  const MIB = 1024 * 1024;
+  // Each kind carries AWS evidence in its head. The filler pads the file to an
+  // exact size inside a comment or a string, so the file still parses.
+  const kinds = [
+    {
+      slug: "pkg-json",
+      file: "package.json",
+      head: '{"dependencies":{"aws-sdk":"2.1.0"},"description":"',
+      filler: "x",
+      tail: '"}\n',
+    },
+    {
+      slug: "cargo",
+      file: "Cargo.toml",
+      head: '[dependencies]\naws-sdk-s3 = "1"\n',
+      filler: "#",
+      tail: "\n",
+    },
+    {
+      slug: "pom",
+      file: "pom.xml",
+      head:
+        "<project><dependencies><dependency><groupId>software.amazon.awssdk</groupId></dependency></dependencies><!--",
+      filler: "x",
+      tail: "--></project>\n",
+    },
+    {
+      slug: "requirements",
+      file: "requirements.txt",
+      head: "boto3==1.34.0\n",
+      filler: "#",
+      tail: "\n",
+    },
+    {
+      slug: "cfn-yaml",
+      file: "template.yaml",
+      head: 'AWSTemplateFormatVersion: "2010-09-09"\n',
+      filler: "#",
+      tail: "\n",
+    },
+    {
+      slug: "cfn-json",
+      file: "template.json",
+      head: '{"AWSTemplateFormatVersion":"2010-09-09","Description":"',
+      filler: "x",
+      tail: '"}\n',
+    },
+  ];
+  const root = await makeTempRepo();
+  try {
+    const expected: string[] = [];
+    for (const kind of kinds) {
+      const bodyLength = kind.head.length + kind.tail.length;
+      const build = (fillerLength: number) =>
+        kind.head + kind.filler.repeat(fillerLength) + kind.tail;
+      const big = `${kind.slug}/big/${kind.file}`;
+      const atCap = `${kind.slug}/at-cap/${kind.file}`;
+      const small = `${kind.slug}/small/${kind.file}`;
+      await writeFile(root, big, build(MIB + 1 - bodyLength));
+      await writeFile(root, atCap, build(MIB - bodyLength));
+      await writeFile(root, small, build(0));
+      assertEquals((await Deno.stat(`${root}/${big}`)).size, MIB + 1);
+      assertEquals((await Deno.stat(`${root}/${atCap}`)).size, MIB);
+      expected.push(atCap, small);
+    }
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.awsEvidence, expected.sort());
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 // PR #5332 review: a failure swallowed one level out, around a group or a
 // compound, is not credited, and neither is `|| exit 1` after a negated
 // runner. Each form is refused in the workflow and in a repository script,

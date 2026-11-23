@@ -469,7 +469,12 @@ export function workflowRunsFloci(parsedYaml: unknown): boolean {
 }
 
 const AWS_EMULATOR_RUN_COMMAND = /(?:^|\/)aws-emulator-run$/;
-/** Largest repository script read for the one-level indirection check. */
+/**
+ * Largest file this check reads. A repository script larger than this is not
+ * followed by the one-level indirection check; a larger manifest,
+ * CloudFormation candidate or `.tf` file is skipped unread by the walk and is
+ * not evidence.
+ */
 const MAX_SCRIPT_BYTES = 1024 * 1024;
 
 /** Reads a repo-relative script's text, or null when it is unavailable. */
@@ -1922,8 +1927,8 @@ async function checkFile(
     CFN_LIKE_FILE.test(name);
   if (!isCandidate) return;
 
-  const text = await readFileOrSkip(path);
-  if (text === null) return; // vanished mid-walk: nothing left to read
+  const text = await readFileOrSkip(path, MAX_SCRIPT_BYTES);
+  if (text === null) return; // vanished mid-walk, or over the cap: not read
 
   if (name === "Cargo.toml") {
     if (cargoTomlUsesAws(text)) evidence.add(relPath);
@@ -1957,18 +1962,16 @@ async function checkFile(
 }
 
 /**
- * Read a file's text, or null when it vanished mid-walk or (when `maxBytes` is
- * given) is larger than `maxBytes`, so an oversized file is never loaded. Other
- * read errors throw, wrapped with the path.
+ * Read a file's text, or null when it vanished mid-walk or is larger than
+ * `maxBytes`, so an oversized file is never loaded. Other read errors throw,
+ * wrapped with the path.
  */
 async function readFileOrSkip(
   path: string,
-  maxBytes?: number,
+  maxBytes: number,
 ): Promise<string | null> {
   try {
-    if (maxBytes !== undefined && (await Deno.stat(path)).size > maxBytes) {
-      return null;
-    }
+    if ((await Deno.stat(path)).size > maxBytes) return null;
     return await Deno.readTextFile(path);
   } catch (err) {
     if (err instanceof Deno.errors.NotFound) return null;
