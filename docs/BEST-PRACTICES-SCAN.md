@@ -486,8 +486,11 @@ done )` as the last command is credited: errexit inside the subshell ends it
 on the first failing pass.
 
 The command word, once shell reserved words, `sudo`/`env`/`exec`,
-`VAR=value` and the `time`/`nice`/`timeout`/`command` wrappers are
-skipped and quotes are stripped, must be `aws-emulator-run` or a path
+`VAR=value` (with an unquoted name; after `env`, every operand containing
+`=` once quotes are removed, so `env "X"=1 aws-emulator-run …` counts and
+`aws-emulator-run -- env "X"=./pytest` runs no test) and the
+`time`/`nice`/`timeout`/`command` wrappers are skipped and quotes are
+stripped, must be `aws-emulator-run` or a path
 ending `/aws-emulator-run`. The invocation must also be able to run: a
 job or step whose `if:` is statically false (`false`, `${{ false }}`,
 `0`) earns no credit, nor does a command after an unconditional `exit`,

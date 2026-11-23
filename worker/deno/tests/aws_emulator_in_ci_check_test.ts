@@ -28,6 +28,7 @@ import {
 import { parse as parseYaml } from "@std/yaml/parse";
 import {
   reachableCommands,
+  removeQuotes,
   shellSegments,
 } from "../lib/shell_command_words.ts";
 
@@ -793,6 +794,83 @@ jobs:
   );
   assert(workflowRunsAwsEmulator(doc));
 });
+
+// Issue #5351: after `env`, every operand containing `=` once quotes are
+// removed is an assignment; at shell level only an unquoted name counts.
+for (
+  const [label, run, expected] of [
+    [
+      'aws-emulator-run -- env "X"=./pytest',
+      'aws-emulator-run -- env "X"=./pytest',
+      false,
+    ],
+    [
+      "aws-emulator-run -- env ./a=./pytest",
+      "aws-emulator-run -- env ./a=./pytest",
+      false,
+    ],
+    [
+      "aws-emulator-run -- env X=./pytest",
+      "aws-emulator-run -- env X=./pytest",
+      false,
+    ],
+    [
+      'aws-emulator-run -- env "X"=1 pytest',
+      'aws-emulator-run -- env "X"=1 pytest',
+      true,
+    ],
+    [
+      'env "X"=1 aws-emulator-run -- pytest',
+      'env "X"=1 aws-emulator-run -- pytest',
+      true,
+    ],
+    [
+      "env X=1 aws-emulator-run -- pytest",
+      "env X=1 aws-emulator-run -- pytest",
+      true,
+    ],
+    [
+      '"X=1" aws-emulator-run -- pytest',
+      '"X=1" aws-emulator-run -- pytest',
+      false,
+    ],
+    [
+      'env "X"=1 aws-emulator-run -- pytest after set -euo pipefail',
+      'set -euo pipefail\n          env "X"=1 aws-emulator-run -- pytest',
+      true,
+    ],
+  ] as const
+) {
+  Deno.test(`workflowRunsAwsEmulator - ${label} is ${expected} (Issue #5351)`, () => {
+    const doc = parseYaml(
+      `on: pull_request
+jobs:
+  test:
+    steps:
+      - run: |
+          ${run}
+`,
+    );
+    assertEquals(workflowRunsAwsEmulator(doc), expected);
+  });
+}
+
+// Issue #5351: shell quote removal on a word as shellCommands returns it.
+for (
+  const [word, expected] of [
+    ['"X"=1', "X=1"],
+    ["'a b'", "a b"],
+    ["X\\=1", "X=1"],
+    ['"a\\"b"', 'a"b'],
+    ['"a\\zb"', "a\\zb"],
+    ["'a\\b'", "a\\b"],
+    ["plain", "plain"],
+  ] as const
+) {
+  Deno.test(`removeQuotes - ${word} (Issue #5351)`, () => {
+    assertEquals(removeQuotes(word), expected);
+  });
+}
 
 Deno.test("workflowRunsAwsEmulator - step runs aws-emulator-run wrapper", () => {
   const doc = parseYaml(
