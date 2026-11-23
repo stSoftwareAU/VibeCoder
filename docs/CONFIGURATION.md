@@ -2274,10 +2274,11 @@ reads only `command`, `args` and `env` — never sees it. The server is rooted a
 named in its arguments rather than a `cwd`, for the same reason CodeGraph's is
 (Issue #2200). Gemini takes MCP servers too (Issue #5343): its per-run settings
 file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) carries the `graft` entry, restricted
-by `--allowed-mcp-server-names`, so a Gemini run is wired exactly as Claude and
-Codex are. A run whose tools were not handed over reports no query figure at
-all, so "could not ask" is never read as "never asked". A run that names no
-checkout, or whose provider cannot be resolved, logs one
+by `--allowed-mcp-server-names`, so a Gemini run gets the same `command`,
+`args` and `env` Codex does (it does not read `alwaysLoad` either). A run whose
+tools were not handed over reports no query figure at all, so "could not ask" is
+never read as "never asked". A run that names no checkout, or whose provider
+cannot be resolved, logs one
 `[GRAFT_TOOLS_UNAVAILABLE] <reason>` line and proceeds without the tools. The
 calls the agent made are counted from the run's per-tool tally — both the
 `mcp__graft__<tool>` spelling Claude records and the bare name — and reported

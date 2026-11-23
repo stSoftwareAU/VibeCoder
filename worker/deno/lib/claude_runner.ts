@@ -1650,8 +1650,8 @@ async function runClaudeWithTimeoutBody(
     // servers in that file (Issue #5343). Enforcement is a safety control, so it
     // fails closed: the MCP config is written best-effort (ensureAgentMcpConfig
     // logs `config not written` and the run goes on without servers, so the
-    // path may be absent), but a settings file that cannot be written refuses
-    // the spawn.
+    // path may be absent), but a settings file that cannot be written, or a
+    // written MCP config the provider cannot read, refuses the spawn.
     if (provider.prepareRunSettings) {
       const prepared = await provider.prepareRunSettings({
         disallowedTools: invocationRequest.disallowedTools ?? [],
@@ -1664,7 +1664,7 @@ async function runClaudeWithTimeoutBody(
         return {
           ok: false,
           error: new Error(
-            `Refused to start the agent: ${provider.displayName} could not apply its tool denials: ${prepared.error.message} (Issue #5341)`,
+            `Refused to start the agent: ${provider.displayName} could not prepare its run settings: ${prepared.error.message}`,
           ),
         };
       }

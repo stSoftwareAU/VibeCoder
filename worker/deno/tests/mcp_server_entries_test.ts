@@ -1,10 +1,12 @@
 /**
  * The run's MCP server entries (Issue #5343): the shared reader, the Gemini
- * mapping of it, and the runner's "config not written" path.
+ * mapping of it, and the runner's handling of the config for a Gemini run.
  *
- * Every expected value is a literal written out by hand. The last test drives
- * the real runner with a stub Gemini CLI and an MCP config directory that
- * cannot be created, so the config write really fails.
+ * Every expected value is a literal written out by hand. The last two tests
+ * drive the real runner with a stub Gemini CLI: one with an MCP config
+ * directory that cannot be created, so the config write really fails and the
+ * run goes on without servers, and one with a written config, whose servers
+ * must reach both the settings file and `--allowed-mcp-server-names`.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
@@ -181,6 +183,86 @@ exit 0
       assert(flag >= 0, `no allowed-server flag in ${outcome.argv.join(" ")}`);
       assertEquals(outcome.argv[flag + 1], "");
       assertStringIncludes(outcome.argv.join("\n"), "--prompt");
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - a Gemini run with a written MCP config carries its servers in the settings file and the allow-list (Issue #5343)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const root = await Deno.makeTempDir({ prefix: "mcp_entries_5343_" });
+    try {
+      const workDir = `${root}/work`;
+      await Deno.mkdir(workDir);
+      const cwd = `${root}/clone`;
+      await Deno.mkdir(cwd);
+      const lines: string[] = [];
+      const logger = createLogger({ write: (m) => lines.push(m), host: "" });
+      const fixture = await Deno.readTextFile(
+        new URL(
+          "./fixtures/agent_output/gemini-0.68.0-success.jsonl",
+          import.meta.url,
+        ),
+      );
+      const body =
+        `cp "$GEMINI_CLI_SYSTEM_SETTINGS_PATH" "$(dirname "$0")/settings.json"
+printf '%s\\n' "$@" > "$(dirname "$0")/argv.txt"
+cat <<'AGENT_FIXTURE_EOF'
+${fixture}AGENT_FIXTURE_EOF
+exit 0
+`;
+      const outcome = await withAgentStub(
+        body,
+        async (stub) => {
+          const result = await runClaudeWithTimeout({
+            clock: fakeClock(),
+            prompt: "test",
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+            agentProvider: "gemini",
+            agentBinaryPath: stub.path,
+            env: envFrom({
+              [IMAGE_AGENT_PROVIDERS_ENV]: "claude,gemini",
+              TMPDIR: root,
+            }),
+            parentEnv: { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" },
+            cwd,
+            workDir,
+            mcpConfig: true,
+            logger,
+          });
+          const argv = (await Deno.readTextFile(`${stub.dir}/argv.txt`))
+            .split("\n");
+          const settings = JSON.parse(
+            await Deno.readTextFile(`${stub.dir}/settings.json`),
+          );
+          return { result, argv, settings };
+        },
+        { prefix: "mcp_entries_5343_stub_" },
+      );
+
+      assert(
+        outcome.result.ok,
+        outcome.result.ok ? "" : outcome.result.error.message,
+      );
+      assert(
+        !lines.some((l) => l.includes("config not written")),
+        `the config should have been written, got:\n${lines.join("\n")}`,
+      );
+      assertEquals(Object.keys(outcome.settings.mcpServers), ["playwright"]);
+      const command = outcome.settings.mcpServers.playwright.command;
+      assert(
+        typeof command === "string" && command.length > 0,
+        "playwright.command must be a non-empty string",
+      );
+      const flag = outcome.argv.indexOf("--allowed-mcp-server-names");
+      assert(flag >= 0, `no allowed-server flag in ${outcome.argv.join(" ")}`);
+      assertEquals(outcome.argv[flag + 1], "playwright");
     } finally {
       await Deno.remove(root, { recursive: true });
     }

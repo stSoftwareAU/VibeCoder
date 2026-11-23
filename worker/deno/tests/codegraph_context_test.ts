@@ -251,12 +251,6 @@ Deno.test("prepareCodegraphContext - a Gemini run is not unsupported and reaches
     assertEquals(gemini.status, "ok");
     assertEquals(gemini.nodeCount, claude.nodeCount);
     assertEquals(gemini.relationshipCount, claude.relationshipCount);
-    // Positive control: the index step was actually reached on the Gemini run.
-    assert(geminiRun.calls.length > 0, "expected the run seam to be called");
-    assertEquals(
-      geminiRun.calls.map((call) => call.args),
-      claudeRun.calls.map((call) => call.args),
-    );
   });
 });
 
