@@ -17,7 +17,9 @@
  *   code fault. Infrastructure, timing, human-gate, aggregator and
  *   deployment-state failures are never counted. Runs on a milestone sync
  *   branch or on the red-default-branch repair branch are not counted, since
- *   they inherit the default branch's failure (Issue #5437).
+ *   they inherit the default branch's failure. Nor is a job whose check already
+ *   failed on the PR's base commit counted, since the base was red on it before
+ *   the PR was raised (Issue #5437).
  * - Observations are grouped by repository, check and failed step, with
  *   matrix shard numbers folded. A group that has failed on
  *   {@link SHIFT_LEFT_THRESHOLD} distinct fleet PRs within
@@ -609,29 +611,40 @@ function parseLines<T>(text: string): T[] {
   return text.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
 }
 
+/** A fleet PR a run belongs to, with the branch it merges into. */
+interface PrRef {
+  number: number;
+  login: string;
+  base: string | null;
+}
+
 /**
- * The run's PR and its author. GitHub often leaves a run's `pull_requests`
- * empty, so a run without one is matched by its head branch.
+ * The run's PR, its author and its base branch. GitHub often leaves a run's
+ * `pull_requests` empty, so a run without one is matched by its head branch.
  */
 async function resolvePr(
   repo: string,
   run: RunSummary,
-  cache: Map<string, { number: number; login: string } | null>,
+  cache: Map<string, PrRef | null>,
   deps: ShiftLeftScanDeps,
-): Promise<{ number: number; login: string } | null> {
+): Promise<PrRef | null> {
   const linked = run.pull_requests?.[0]?.number;
   const cacheKey = linked !== undefined ? `#${linked}` : `@${run.head_branch}`;
   if (cache.has(cacheKey)) return cache.get(cacheKey)!;
-  let pr: { number: number; login: string } | null = null;
+  let pr: PrRef | null = null;
   if (linked !== undefined) {
-    pr = {
-      number: linked,
-      login: await deps.gh([
+    const data = JSON.parse(
+      await deps.gh([
         "api",
         `repos/${repo}/pulls/${linked}`,
         "--jq",
-        ".user.login",
+        "{login: .user.login, base: .base.ref} | tojson",
       ]),
+    ) as { login?: string | null; base?: string | null };
+    pr = {
+      number: linked,
+      login: data.login ?? "",
+      base: data.base ?? null,
     };
   } else if (run.head_branch) {
     const owner = repo.split("/")[0];
@@ -641,12 +654,81 @@ async function resolvePr(
         encodeURIComponent(run.head_branch)
       }&per_page=1`,
       "--jq",
-      ".[0] | select(. != null) | {number, login: .user.login} | tojson",
+      ".[0] | select(. != null) | {number, login: .user.login, base: .base.ref} | tojson",
     ]);
     pr = line.trim() ? JSON.parse(line) : null;
   }
   cache.set(cacheKey, pr);
   return pr;
+}
+
+/** A lookup that either yields a value, or the cause it failed. */
+type Lookup<T> = { ok: true; value: T } | { ok: false; cause: string };
+
+/** Per-scan caches of the base-commit reads (Issue #5437). */
+interface InheritedCaches {
+  /** Merge-base sha, keyed by the PR head sha. */
+  mergeBases: Map<string, Lookup<string>>;
+  /** Names of the checks that failed, keyed by the merge-base sha. */
+  baseFailures: Map<string, Lookup<Set<string>>>;
+}
+
+/** Runs `load` once per key; a failure is cached as its cause, not thrown. */
+async function lookupOnce<T>(
+  cache: Map<string, Lookup<T>>,
+  key: string,
+  load: () => Promise<T>,
+): Promise<Lookup<T>> {
+  const hit = cache.get(key);
+  if (hit) return hit;
+  let result: Lookup<T>;
+  try {
+    result = { ok: true, value: await load() };
+  } catch (error) {
+    result = { ok: false, cause: String(error) };
+  }
+  cache.set(key, result);
+  return result;
+}
+
+/**
+ * The names of the checks that failed on the commit a PR's head inherits from
+ * its base. A job whose check failed there was red before the PR, so it is not
+ * the PR's local-gate miss (Issue #5437).
+ */
+async function inheritedCheckNames(
+  repo: string,
+  pr: PrRef,
+  headSha: string,
+  caches: InheritedCaches,
+  deps: ShiftLeftScanDeps,
+): Promise<Lookup<Set<string>>> {
+  if (!pr.base) return { ok: false, cause: "the PR has no base branch" };
+  const base = pr.base;
+  const mergeBase = await lookupOnce(caches.mergeBases, headSha, async () => {
+    const sha = (await deps.gh([
+      "api",
+      `repos/${repo}/compare/${encodeURIComponent(base)}...${headSha}`,
+      "--jq",
+      ".merge_base_commit.sha",
+    ])).trim();
+    if (!/^[0-9a-f]{40}$/.test(sha)) {
+      throw new Error(`merge base is not a commit sha: ${JSON.stringify(sha)}`);
+    }
+    return sha;
+  });
+  if (!mergeBase.ok) return { ok: false, cause: mergeBase.cause };
+  const sha = mergeBase.value;
+  return await lookupOnce(caches.baseFailures, sha, async () => {
+    const names = await deps.gh([
+      "api",
+      `repos/${repo}/commits/${sha}/check-runs?per_page=100`,
+      "--paginate",
+      "--jq",
+      '[.check_runs[] | select(.conclusion == "failure") | .name] | .[]',
+    ]);
+    return new Set(names.split("\n").filter((l) => l.trim() !== ""));
+  });
 }
 
 async function observeRepo(
@@ -684,7 +766,11 @@ async function observeRepo(
     ? Date.parse(batch[batch.length - 1]!.created_at)
     : deps.nowMs;
   const fleet = new Set(deps.fleetAuthors.map((a) => a.toLowerCase()));
-  const prs = new Map<string, { number: number; login: string } | null>();
+  const prs = new Map<string, PrRef | null>();
+  const inheritedCaches: InheritedCaches = {
+    mergeBases: new Map(),
+    baseFailures: new Map(),
+  };
   const out: FailureObservation[] = [];
   for (const run of batch) {
     scanned[String(run.id)] = Date.parse(run.created_at) || deps.nowMs;
@@ -704,6 +790,8 @@ async function observeRepo(
         '.jobs[] | select(.conclusion == "failure") | {id, name, steps: [.steps[] | select(.conclusion == "failure") | {name}]} | tojson',
       ]),
     );
+    // Looked up once per run, and only once a job would count (Issue #5437).
+    let inherited: Lookup<Set<string>> | undefined;
     for (const job of jobs) {
       if (seen.has(job.id)) continue;
       const step = job.steps?.[0]?.name ?? "";
@@ -723,6 +811,22 @@ async function observeRepo(
         category !== "code-fix-required" &&
         category !== "history-rewrite-required"
       ) continue;
+      if (inherited === undefined) {
+        inherited = await inheritedCheckNames(
+          repo,
+          pr,
+          run.head_sha,
+          inheritedCaches,
+          deps,
+        );
+        if (!inherited.ok) {
+          deps.log(
+            `shift-left: ${repo} run ${run.id} (PR #${prNumber}): could not ` +
+              `read the base commit, so the failure is counted: ${inherited.cause}`,
+          );
+        }
+      }
+      if (inherited.ok && inherited.value.has(job.name)) continue;
       out.push({
         repo,
         runId: run.id,

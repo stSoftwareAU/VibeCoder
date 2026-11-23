@@ -6,7 +6,7 @@
  * - findPrCommentsToFix — scan for actionable PR comments
  * - findFailedPrChecks — scan for spelling check failures
  * - findFailedCiChecks — scan for CI failures (with retry limits; holds
- *   inherited default-branch failures of sync PRs for one repair, Issue #5437)
+ *   inherited default-branch failures of PRs for one repair, Issue #5437)
  * - updateOpenPrBranches — keep PR branches current with base
  * - ensureAutoMergeOnOpenPrs — enable auto-merge where missing
  * - closeIssuesForMergedPrs — close issues for merged PRs
@@ -59,7 +59,9 @@ import { mergeQueueCheckId } from "./merge_queue_check_id.ts";
 import { commitAncestryOnDefault } from "./default_branch_ancestry.ts";
 import {
   ensureRedDefaultBranchRepairPr,
+  findGreenFixPr,
   isRedDefaultBranchRepairPr,
+  postRedDefaultBranchStatusComment,
   type RepairPrCandidate,
 } from "./red_default_branch_repair.ts";
 import {
@@ -1722,11 +1724,16 @@ async function readScanQueueRemoval(
   return read.value;
 }
 
-/** A sync PR held for one repair against the default branch (Issue #5437). */
-interface HeldSyncPr {
+/**
+ * A PR held for one repair against the default branch (Issue #5437): a sync
+ * PR, or a PR into the default branch whose check the tip is also red on.
+ */
+interface HeldPr {
   prNumber: number;
   /** The inherited checks held on it. */
   checkNames: string[];
+  /** Whether it is a `sync/milestone-*` PR, which sets the status wording. */
+  isSync: boolean;
 }
 
 /**
@@ -1837,34 +1844,93 @@ async function fastForwardHeldSyncBranch(
 }
 
 /**
- * Open or adopt the one repair PR for a red default branch, when a sync PR
- * was held for it (Issue #5437). The repair is for the tip, so it is only
- * raised when the tip is red on a held check: a held failure that the tip no
- * longer has (a repair has landed) needs no PR.
+ * Merge the default branch into a diverged sync branch, server-side, so the
+ * sync PR picks up the default-branch repair (Issue #5437). It adds a merge
+ * commit and destroys nothing. Only called once the tip is green on the PR's
+ * candidate checks. A refusal (for example a conflict) is logged and the
+ * milestone sync lane tries again on its next cycle.
+ */
+async function mergeDefaultBranchIntoSyncBranch(
+  repo: string,
+  branchName: string,
+  prNumber: number,
+  defaultBranch: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  logger: Logger,
+): Promise<void> {
+  try {
+    await ghCommandFn([
+      "api",
+      "-X",
+      "POST",
+      `repos/${repo}/merges`,
+      "-f",
+      `base=${branchName}`,
+      "-f",
+      `head=${defaultBranch}`,
+      "-f",
+      `commit_message=Merge ${defaultBranch} into ${branchName} to pick up the default-branch repair (Issue #5437)`,
+    ]);
+    logger.info(
+      `${repo}#${prNumber}: merged ${defaultBranch} into ${branchName} to pick up the default-branch repair; CI reruns on the new head (Issue #5437)`,
+    );
+  } catch (error) {
+    logger.warn(
+      `${repo}#${prNumber}: could not merge ${defaultBranch} into ${branchName}: ${
+        error instanceof Error ? error.message : String(error)
+      }; the milestone sync lane retries on its next cycle (Issue #5437)`,
+    );
+  }
+}
+
+/**
+ * Open or adopt the one repair PR for a red default branch, when a PR was
+ * held for it (Issue #5437). The repair is for the tip, so it is only raised
+ * when the tip is red on a held check: a held failure that the tip no longer
+ * has (a repair has landed) needs no PR.
+ *
+ * Before a worker repair PR is opened or adopted, an open human fix PR against
+ * the default branch that is green on every held check is looked for. When one
+ * is found, the status is posted to it as a comment and no repair PR is made.
+ * If the fix search or the comment read fails, the worker repair PR path runs.
+ *
+ * @returns The number of the adopted fix PR when one was adopted (the caller
+ *   then keeps the worker's repair PR out of this scan's hand-offs), otherwise
+ *   `null`.
  */
 async function repairHeldDefaultBranch(input: {
   repo: string;
   defaultBranch: string;
-  held: HeldSyncPr[];
+  held: HeldPr[];
   state: DefaultBranchState;
   prs: readonly RepairPrCandidate[];
+  scanAuthors: string[];
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Logger;
-}): Promise<void> {
-  const { repo, defaultBranch, held, state, prs, ghCommandFn, logger } = input;
+}): Promise<number | null> {
+  const {
+    repo,
+    defaultBranch,
+    held,
+    state,
+    prs,
+    scanAuthors,
+    ghCommandFn,
+    logger,
+  } = input;
   const tipSha = await state.tipSha();
   if (tipSha === null) {
     logger.warn(
-      `${repo}: ${defaultBranch}'s tip could not be read, so the held sync PRs wait for the next scan (Issue #5437)`,
+      `${repo}: ${defaultBranch}'s tip could not be read, so the held PRs wait for the next scan (Issue #5437)`,
     );
-    return;
+    return null;
   }
   const redTip = await state.redTipCheckNames();
   if (redTip === null) {
     logger.warn(
       `${repo}: the checks red on ${defaultBranch} could not be read, so no repair PR is opened this scan (Issue #5437)`,
     );
-    return;
+    return null;
   }
   const heldNames = new Set(held.flatMap((entry) => entry.checkNames));
   const failing = [...heldNames].filter((name) => redTip.has(name));
@@ -1874,18 +1940,55 @@ async function repairHeldDefaultBranch(input: {
         tipSha.slice(0, 12)
       } is not red on the held checks, so no repair PR is opened (Issue #5437)`,
     );
-    return;
+    return null;
   }
+  const checkNames = failing.sort();
+  const heldPrNumbers = held.map((entry) => entry.prNumber);
+  const allHeldAreSync = held.every((entry) => entry.isSync);
+
+  const fix = await findGreenFixPr({
+    repo,
+    defaultBranch,
+    checkNames,
+    heldPrNumbers,
+    isSyncBranch: (headRefName) => isMilestoneSyncBranch(headRefName),
+    readSuccessfulCheckNames: async (sha) =>
+      new Set(
+        (await fetchFailedCheckRunsStrict(repo, sha, ghCommandFn, ["success"]))
+          .map((check) => check.name),
+      ),
+    ghCommandFn,
+    logger,
+  });
+  if (fix !== null) {
+    const outcome = await postRedDefaultBranchStatusComment({
+      repo,
+      defaultBranch,
+      tipSha,
+      checkNames,
+      heldPrNumbers,
+      allHeldAreSync,
+      prNumber: fix.number,
+      fleetLogins: scanAuthors,
+      ghCommandFn,
+      logger,
+    });
+    // Only an unreadable comment list falls through to the worker repair PR.
+    if (outcome !== "read-failed") return fix.number;
+  }
+
   await ensureRedDefaultBranchRepairPr({
     repo,
     defaultBranch,
     tipSha,
-    checkNames: failing.sort(),
-    heldPrNumbers: held.map((entry) => entry.prNumber),
+    checkNames,
+    heldPrNumbers,
+    allHeldAreSync,
     prs,
     ghCommandFn,
     logger,
   });
+  return null;
 }
 
 /**
@@ -1910,12 +2013,16 @@ async function repairHeldDefaultBranch(input: {
  * Inherited default-branch failures are held (Issue #5437): a
  * `sync/milestone-*` PR whose head is on the default branch, or whose failing
  * check is also red on the default branch's tip, is not handed to the CI-fix
- * agent. Its inherited checks are held for one repair PR against the default
- * branch, which is returned ahead of every other default-branch failure. A
- * held sync PR whose head is behind the tip is fast-forwarded to it. A sync
- * PR whose head is diverged from the tip is stale: its failures are logged as
- * `stale-sync-head` and neither held nor handed over. A sync PR whose ancestry
- * cannot be decided gets no CI-fix target this scan.
+ * agent. A PR into the default branch that is not a sync PR is held too when
+ * its failing check is red on the tip. Its inherited checks are held for one
+ * repair PR against the default branch, which is returned ahead of every other
+ * default-branch failure. A held sync PR whose head is behind the tip is
+ * fast-forwarded to it. A sync PR whose head is diverged from the tip is stale:
+ * its failures are logged as `stale-sync-head` and neither held nor handed
+ * over, and once the tip is green on them the default branch is merged into
+ * the sync branch. A sync PR whose ancestry cannot be decided gets no CI-fix
+ * target this scan. Before a repair PR is opened, an open human fix PR that is
+ * green on every held check is adopted: the status is commented on it.
  *
  * @param options - CI check scan options
  * @returns Result containing the highest priority failed check, or null
@@ -1981,14 +2088,14 @@ export async function findFailedCiChecks(
     }
 
     // Issue #5437: the default branch's tip and its red checks, read at most
-    // once each for this repo, and the sync PRs held for one repair against it.
+    // once each for this repo, and the PRs held for one repair against it.
     const defaultBranchState = createDefaultBranchState(
       repo,
       defaultBranch,
       ghCommandFn,
       logger,
     );
-    const held: HeldSyncPr[] = [];
+    const held: HeldPr[] = [];
 
     // A draft is work in progress (owner, 2026-10-23): its checks are not
     // run, and its required `gate` fails on purpose. Those by-design failures
@@ -2214,23 +2321,25 @@ export async function findFailedCiChecks(
         );
       }
 
-      // Issue #5437: a sync PR's failure that the default branch also has is
-      // held for one repair against the default branch, never handed to the
-      // CI-fix agent on the sync branch. Judged once per PR, and only when a
-      // sync PR has a failure that would otherwise be pushed.
+      // Issue #5437: a PR's failure that the default branch also has is held
+      // for one repair against the default branch, never handed to the CI-fix
+      // agent. A sync PR is judged by its head's ancestry; any other PR into
+      // the default branch is judged by the checks red on the tip. Judged once
+      // per PR, and only when it has a failure that would otherwise be pushed.
       const inherited = new Set<string>();
-      if (isMilestoneSyncBranch(branchName)) {
-        const candidateNames = failedChecks
-          .map((check) => check.name)
-          .filter((name) =>
-            !aggregators.has(name) && !deferredNames.has(name) &&
-            !gatedNames.has(name)
-          );
-        if (
-          queueRemoval !== null && !deferredNames.has(MERGE_QUEUE_CHECK_NAME)
-        ) {
-          candidateNames.push(MERGE_QUEUE_CHECK_NAME);
-        }
+      const isSyncPr = isMilestoneSyncBranch(branchName);
+      const candidateNames = failedChecks
+        .map((check) => check.name)
+        .filter((name) =>
+          !aggregators.has(name) && !deferredNames.has(name) &&
+          !gatedNames.has(name)
+        );
+      if (
+        queueRemoval !== null && !deferredNames.has(MERGE_QUEUE_CHECK_NAME)
+      ) {
+        candidateNames.push(MERGE_QUEUE_CHECK_NAME);
+      }
+      if (isSyncPr) {
         if (candidateNames.length > 0) {
           const headSha = pr.headRefOid ?? "";
           const ancestry = await commitAncestryOnDefault(
@@ -2256,6 +2365,35 @@ export async function findFailedCiChecks(
                 candidateNames.join(", ")
               } fail on a sync head that lacks commits ${defaultBranch} has since gained, so they are stale; the milestone sync lane re-merges ${defaultBranch} on its next cycle, no CI-fix target (Issue #5437)`,
             );
+            // Issue #5437: the stale head is also refreshed now, but only once
+            // the tip is green on this PR's checks, so the merge picks up a
+            // repair that has landed rather than re-merging a red default.
+            const tipRed = await defaultBranchState.redTipCheckNames();
+            if (tipRed === null) {
+              logger.warn(
+                `${repo}#${prNumber}: cannot read the checks red on ${defaultBranch}, so the stale sync head is not refreshed this scan (Issue #5437)`,
+              );
+            } else {
+              const redOnTip = candidateNames.filter((name) =>
+                tipRed.has(name)
+              );
+              if (redOnTip.length > 0) {
+                logger.info(
+                  `${repo}#${prNumber}: ${defaultBranch} is red on ${
+                    redOnTip.join(", ")
+                  }, so the stale sync head is not refreshed until ${defaultBranch} is green (Issue #5437)`,
+                );
+              } else {
+                await mergeDefaultBranchIntoSyncBranch(
+                  repo,
+                  branchName,
+                  prNumber,
+                  defaultBranch,
+                  ghCommandFn,
+                  logger,
+                );
+              }
+            }
             continue;
           }
           if (ancestry === "on-default") {
@@ -2287,17 +2425,33 @@ export async function findFailedCiChecks(
               if (redTip.has(name)) inherited.add(name);
             }
           }
-          if (inherited.size > 0) {
-            const names = [...inherited];
-            held.push({ prNumber, checkNames: names });
-            logger.skipReason(
-              "inherited-red-default-branch",
-              `${repo}#${prNumber}: ${
-                names.join(", ")
-              } also fail on ${defaultBranch} — held for one repair against ${defaultBranch} (Issue #5437)`,
-            );
+        }
+      } else if (
+        baseRef === defaultBranch && candidateNames.length > 0 &&
+        !isRedDefaultBranchRepairPr(pr, defaultBranch)
+      ) {
+        // Issue #5437: a PR into the default branch, not a sync PR, is held for
+        // a check the tip is also red on. The tip is read only for such a PR.
+        const redTip = await defaultBranchState.redTipCheckNames();
+        if (redTip === null) {
+          logger.warn(
+            `${repo}#${prNumber}: cannot read the checks red on ${defaultBranch}, so this PR gets its ordinary CI-fix target this scan (Issue #5437)`,
+          );
+        } else {
+          for (const name of candidateNames) {
+            if (redTip.has(name)) inherited.add(name);
           }
         }
+      }
+      if (inherited.size > 0) {
+        const names = [...inherited];
+        held.push({ prNumber, checkNames: names, isSync: isSyncPr });
+        logger.skipReason(
+          "inherited-red-default-branch",
+          `${repo}#${prNumber}: ${
+            names.join(", ")
+          } also fail on ${defaultBranch} — held for one repair against ${defaultBranch} (Issue #5437)`,
+        );
       }
 
       for (const check of failedChecks) {
@@ -2486,15 +2640,31 @@ export async function findFailedCiChecks(
     // Issue #5437: once per repo, one repair PR for the default branch when
     // any sync PR was held for it.
     if (held.length > 0) {
-      await repairHeldDefaultBranch({
+      const adoptedFixPr = await repairHeldDefaultBranch({
         repo,
         defaultBranch,
         held,
         state: defaultBranchState,
         prs,
+        scanAuthors,
         ghCommandFn,
         logger,
       });
+      // Issue #5437: a human fix PR already passes the held checks, so this
+      // repo's worker repair PR is not handed to the CI-fix agent too. That
+      // would write the same fix twice. Filtered after the step, because the
+      // repair PR's failures were collected in the PR loop above.
+      if (adoptedFixPr !== null) {
+        for (const failure of repairFailures) {
+          if (failure.repo !== repo) continue;
+          logger.skipReason(
+            "red-default-branch-fix-adopted",
+            `${repo}#${failure.prNumber}: ${repo}#${adoptedFixPr} already passes the held checks; the repair PR waits (Issue #5437)`,
+          );
+        }
+        const kept = repairFailures.filter((failure) => failure.repo !== repo);
+        repairFailures.splice(0, repairFailures.length, ...kept);
+      }
     }
   }
 

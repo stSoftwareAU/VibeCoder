@@ -69,6 +69,33 @@ interface Fixture {
   prCreateError?: string;
   /** The message a ref PATCH fails with, when set. */
   patchError?: string;
+  /** Open PRs against the default branch, as `gh pr list --base` returns them. */
+  fixPrs?: Array<{
+    number: number;
+    headRefName: string;
+    headRefOid: string;
+    author: { login: string };
+  }>;
+  /** The message the `--base` PR listing fails with, when set. */
+  fixListError?: string;
+  /** Names of the checks that succeeded, keyed by the ref read. */
+  greenChecks?: Record<string, string[]>;
+  /** Comments per PR number, as `{login, body}` objects. */
+  comments?: Record<number, Array<{ login: string; body: string }>>;
+  /** The message the comment list read fails with, when set. */
+  commentReadError?: string;
+  /** The message a PR comment post fails with, when set. */
+  commentPostError?: string;
+  /** The message a PR edit fails with, when set. */
+  editError?: string;
+  /** The message the tip's tree read fails with, when set. */
+  treeError?: string;
+  /** The message the empty commit's create fails with, when set. */
+  commitError?: string;
+  /** The message the branch ref's create fails with, when set. */
+  refError?: string;
+  /** The message the `merges` POST fails with, when set. */
+  mergeError?: string;
 }
 
 /** A recording logger, so the scan's warnings and skips can be asserted. */
@@ -128,6 +155,13 @@ function ghStub(
     calls.push(args);
     const key = args.join(" ");
     if (args[0] === "pr" && args[1] === "list") {
+      // The fix search is the only listing that names its base branch.
+      if (args.includes("--base")) {
+        if (fx.fixListError !== undefined) {
+          return Promise.reject(new Error(fx.fixListError));
+        }
+        return Promise.resolve(JSON.stringify(fx.fixPrs ?? []));
+      }
       return Promise.resolve(JSON.stringify(fx.prs));
     }
     if (args[0] === "pr" && args[1] === "create") {
@@ -136,18 +170,56 @@ function ghStub(
       }
       return Promise.resolve(`https://github.com/${REPO}/pull/${CREATED_PR}\n`);
     }
-    if (args[0] === "pr" && args[1] === "edit") return Promise.resolve("");
+    if (args[0] === "pr" && args[1] === "edit") {
+      if (fx.editError !== undefined) {
+        return Promise.reject(new Error(fx.editError));
+      }
+      return Promise.resolve("");
+    }
+    if (args[0] === "pr" && args[1] === "comment") {
+      if (fx.commentPostError !== undefined) {
+        return Promise.reject(new Error(fx.commentPostError));
+      }
+      return Promise.resolve("");
+    }
     if (args[1] === `repos/${REPO}/commits/${DEFAULT_BRANCH}`) {
       return Promise.resolve(`${fx.tip}\n`);
     }
     if (args[1] === `repos/${REPO}/git/commits/${fx.tip}`) {
+      if (fx.treeError !== undefined) {
+        return Promise.reject(new Error(fx.treeError));
+      }
       return Promise.resolve(`${TREE}\n`);
     }
     if (args.includes("POST") && args[3] === `repos/${REPO}/git/commits`) {
+      if (fx.commitError !== undefined) {
+        return Promise.reject(new Error(fx.commitError));
+      }
       return Promise.resolve(`${NEW_COMMIT}\n`);
     }
     if (args.includes("POST") && args[3] === `repos/${REPO}/git/refs`) {
+      if (fx.refError !== undefined) {
+        return Promise.reject(new Error(fx.refError));
+      }
       return Promise.resolve("{}");
+    }
+    if (args.includes("POST") && args[3] === `repos/${REPO}/merges`) {
+      if (fx.mergeError !== undefined) {
+        return Promise.reject(new Error(fx.mergeError));
+      }
+      return Promise.resolve("{}");
+    }
+    const commentsOf = /^repos\/org\/repo\/issues\/(\d+)\/comments$/.exec(
+      args[1] ?? "",
+    );
+    if (args[0] === "api" && commentsOf !== null) {
+      if (fx.commentReadError !== undefined) {
+        return Promise.reject(new Error(fx.commentReadError));
+      }
+      const listed = fx.comments?.[Number(commentsOf[1])] ?? [];
+      return Promise.resolve(
+        listed.map((comment) => JSON.stringify(comment)).join("\n"),
+      );
     }
     if (args.includes("PATCH")) {
       if (fx.patchError !== undefined) {
@@ -168,6 +240,18 @@ function ghStub(
     if (run !== null) {
       if (fx.checkReadErrors?.includes(run[1] ?? "")) {
         return Promise.reject(new Error("HTTP 500: Internal Server Error"));
+      }
+      // The strict reader for passing checks selects `success` conclusions.
+      if (args.some((arg) => arg.includes('"success"'))) {
+        const passing = fx.greenChecks?.[run[1] ?? ""] ?? [];
+        return Promise.resolve(JSON.stringify(
+          passing.map((name, index) => ({
+            id: index + 1,
+            name,
+            status: "completed",
+            conclusion: "success",
+          })),
+        ));
       }
       const checks = fx.checks[run[1] ?? ""] ?? [];
       return Promise.resolve(JSON.stringify(
@@ -644,4 +728,514 @@ Deno.test("findFailedCiChecks - a failed fast-forward warns with the gh error an
     ),
   );
   assertEquals(prCreateCalls(calls).length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for the cases below (Issue #5437)
+// ---------------------------------------------------------------------------
+
+/** A PR into the default branch on a non-sync head, with its own failure. */
+const FEATURE_HEAD = "a7".repeat(20);
+/** A human fix PR's head commit (`nleck`'s, in the observed case). */
+const FIX_HEAD = "f6".repeat(20);
+
+function featurePr(number: number, branch: string): PrFixture {
+  return {
+    number,
+    headRefName: branch,
+    headRefOid: FEATURE_HEAD,
+    baseRefName: DEFAULT_BRANCH,
+  };
+}
+
+/** An open human PR against the default branch, as `gh pr list` reports it. */
+function humanFixPr(
+  number: number,
+  headRefName: string,
+  headRefOid: string,
+  login: string,
+) {
+  return { number, headRefName, headRefOid, author: { login } };
+}
+
+/** Every `gh api -X POST` call to `path`. */
+function postsTo(calls: string[][], path: string) {
+  return calls.filter((args) =>
+    args[0] === "api" && args.includes("POST") && args[3] === path
+  );
+}
+
+/** Every `gh api -X POST` call that writes under the repo's git data. */
+function gitWrites(calls: string[][]) {
+  return calls.filter((args) =>
+    args[0] === "api" && args.includes("POST") &&
+    (args[3] ?? "").startsWith(`repos/${REPO}/git/`)
+  );
+}
+
+/** The status body a fleet or human comment would carry for the red tip. */
+function statusComment(prNumber: number): string {
+  return formatRedDefaultBranchStatus({
+    defaultBranch: DEFAULT_BRANCH,
+    heldPrNumbers: [1, 2, 3],
+    repairPrNumber: prNumber,
+    checkNames: ["gitleaks"],
+    tipSha: TIP,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Non-sync PRs into the default branch (Issue #5437)
+// ---------------------------------------------------------------------------
+
+Deno.test("findFailedCiChecks - a non-sync PR into main failing a check the tip is also red on is held, not handed to the CI-fix agent (Issue #5437)", async () => {
+  const fx = redMainFixture([featurePr(9, "issue-9-fix")], {
+    checks: { "issue-9-fix": [{ id: 9, name: "gitleaks" }] },
+  });
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  const creates = prCreateCalls(calls);
+  assertEquals(creates.length, 1);
+  assertStringIncludes(
+    argAfter(creates[0] ?? [], "--body") ?? "",
+    "main is red: holding PRs #9, fix in this PR.",
+  );
+  assertEquals(logger.skips.length, 1);
+  assertStringIncludes(logger.skips[0] ?? "", "inherited-red-default-branch");
+  assertEquals(logger.warns, []);
+});
+
+Deno.test("findFailedCiChecks - a non-sync PR into main failing a check the tip is not red on still reaches the CI-fix agent (Issue #5437)", async () => {
+  const fx = redMainFixture([featurePr(9, "issue-9-fix")], {
+    checks: { "issue-9-fix": [{ id: 9, name: "lint" }] },
+  });
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value?.prNumber, 9);
+  assertEquals(value?.checkName, "lint");
+  assertEquals(value?.branchName, "issue-9-fix");
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(logger.skips.length, 0);
+});
+
+Deno.test("findFailedCiChecks - a non-sync PR into main still reaches the CI-fix agent, with a warning, when the tip's red checks cannot be read (Issue #5437)", async () => {
+  const fx = redMainFixture([featurePr(9, "issue-9-fix")], {
+    checks: { "issue-9-fix": [{ id: 9, name: "gitleaks" }] },
+  });
+  fx.checkReadErrors = [TIP];
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value?.prNumber, 9);
+  assertEquals(value?.checkName, "gitleaks");
+  assertEquals(prCreateCalls(calls).length, 0);
+  assert(logger.warns.some((warn) => warn.includes("HTTP 500")));
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("cannot read the checks red on main") &&
+      warn.includes("ordinary CI-fix target")
+    ),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Adopting a green human fix PR (Issue #5437)
+// ---------------------------------------------------------------------------
+
+Deno.test("findFailedCiChecks - a green human fix PR against main is adopted: no repair PR, and the status is commented on it once (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks", "gate"] };
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(gitWrites(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "edit").length, 0);
+  const comments = callsTo(calls, "pr", "comment");
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]?.[2], "5434");
+  assertStringIncludes(
+    argAfter(comments[0] ?? [], "--body") ?? "",
+    "holding sync PRs #1, #2, #3, fix in #5434.",
+  );
+  assertEquals(logger.warns, []);
+});
+
+Deno.test("findFailedCiChecks - a fleet-authored comment carrying the identical marker means the fix PR is not commented again (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  // `testbot` is the scan's own login, so it is in the fleet author set.
+  fx.comments = {
+    5434: [{ login: "testbot", body: statusComment(5434) }],
+  };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+});
+
+Deno.test("findFailedCiChecks - a comment with the identical marker from a non-fleet login does not count, so the status is commented (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.comments = {
+    5434: [{ login: "nleck", body: statusComment(5434) }],
+  };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "comment").length, 1);
+});
+
+Deno.test("findFailedCiChecks - a candidate green on only some held checks is not adopted, and the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(
+    [syncPr(1, "sync/milestone-a", TIP), syncPr(2, "sync/milestone-b", TIP)],
+    {
+      checks: {
+        "sync/milestone-a": [{ id: 11, name: "gitleaks" }, {
+          id: 21,
+          name: "lint",
+        }],
+        "sync/milestone-b": [{ id: 12, name: "gitleaks" }, {
+          id: 22,
+          name: "lint",
+        }],
+        [TIP]: [{ id: 1, name: "gitleaks" }, { id: 2, name: "lint" }],
+      },
+    },
+  );
+  fx.fixPrs = [humanFixPr(5440, "fix/partial", FIX_HEAD, "nleck")];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  const creates = prCreateCalls(calls);
+  assertEquals(creates.length, 1);
+  assertStringIncludes(
+    argAfter(creates[0] ?? [], "--body") ?? "",
+    "`gitleaks`, `lint`",
+  );
+});
+
+Deno.test("findFailedCiChecks - a failed fix PR listing warns with the gh error and opens the repair PR (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixListError = "HTTP 503: Service Unavailable";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not list the open PRs") &&
+      warn.includes("HTTP 503: Service Unavailable")
+    ),
+  );
+});
+
+Deno.test("findFailedCiChecks - a failed check-run read on a candidate warns and opens the repair PR (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [humanFixPr(5434, "fix/gitleaks", FIX_HEAD, "nleck")];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.checkReadErrors = [FIX_HEAD];
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not read the checks that passed on org/repo#5434") &&
+      warn.includes("HTTP 500: Internal Server Error")
+    ),
+  );
+});
+
+Deno.test("findFailedCiChecks - a failed comment read warns with the gh error and opens the repair PR (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [humanFixPr(5434, "fix/gitleaks", FIX_HEAD, "nleck")];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.commentReadError = "HTTP 502: Bad Gateway";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not read the comments on org/repo#5434") &&
+      warn.includes("HTTP 502: Bad Gateway")
+    ),
+  );
+});
+
+Deno.test("findFailedCiChecks - a failed status comment post warns with the gh error and opens no repair PR (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [humanFixPr(5434, "fix/gitleaks", FIX_HEAD, "nleck")];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks"] };
+  fx.commentPostError = "HTTP 403: Resource not accessible";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "comment").length, 1);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not post the status on org/repo#5434") &&
+      warn.includes("HTTP 403: Resource not accessible")
+    ),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Refreshing a diverged sync head by merging the default branch (Issue #5437)
+// ---------------------------------------------------------------------------
+
+const MERGES_PATH = `repos/${REPO}/merges`;
+
+Deno.test("findFailedCiChecks - a diverged sync PR is refreshed by merging main into it once the tip is green on its checks (Issue #5437)", async () => {
+  const fx = redMainFixture(
+    [syncPr(8, "sync/milestone-h", SYNC_ONLY_HEAD)],
+    {
+      checks: {
+        [SYNC_ONLY_HEAD]: [],
+        "sync/milestone-h": [{ id: 18, name: "gitleaks" }],
+        [TIP]: [],
+      },
+      compare: { [SYNC_ONLY_HEAD]: "diverged" },
+    },
+  );
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  const merges = postsTo(calls, MERGES_PATH);
+  assertEquals(merges.length, 1);
+  assert(merges[0]?.includes("base=sync/milestone-h"));
+  assert(merges[0]?.includes("head=main"));
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(logger.skips.length, 1);
+  assertStringIncludes(logger.skips[0] ?? "", "stale-sync-head");
+  assert(
+    logger.infos.some((info) =>
+      info.includes("merged main into sync/milestone-h")
+    ),
+  );
+  assertEquals(logger.warns, []);
+});
+
+Deno.test("findFailedCiChecks - a diverged sync PR is not refreshed while the tip is red on its checks (Issue #5437)", async () => {
+  const fx = redMainFixture(
+    [syncPr(8, "sync/milestone-h", SYNC_ONLY_HEAD)],
+    {
+      checks: {
+        [SYNC_ONLY_HEAD]: [],
+        "sync/milestone-h": [{ id: 18, name: "gitleaks" }],
+      },
+      compare: { [SYNC_ONLY_HEAD]: "diverged" },
+    },
+  );
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(postsTo(calls, MERGES_PATH).length, 0);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assert(
+    logger.infos.some((info) => info.includes("is red on gitleaks")),
+  );
+});
+
+Deno.test("findFailedCiChecks - a failed merge refresh warns with the gh error and hands no CI-fix target (Issue #5437)", async () => {
+  const fx = redMainFixture(
+    [syncPr(8, "sync/milestone-h", SYNC_ONLY_HEAD)],
+    {
+      checks: {
+        [SYNC_ONLY_HEAD]: [],
+        "sync/milestone-h": [{ id: 18, name: "gitleaks" }],
+        [TIP]: [],
+      },
+      compare: { [SYNC_ONLY_HEAD]: "diverged" },
+    },
+  );
+  fx.mergeError = "HTTP 409: Merge conflict";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(postsTo(calls, MERGES_PATH).length, 1);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not merge main into sync/milestone-h") &&
+      warn.includes("HTTP 409: Merge conflict")
+    ),
+  );
+});
+
+Deno.test("findFailedCiChecks - a diverged sync PR is not refreshed, with a warning, when the tip's red checks cannot be read (Issue #5437)", async () => {
+  const fx = redMainFixture(
+    [syncPr(8, "sync/milestone-h", SYNC_ONLY_HEAD)],
+    {
+      checks: {
+        [SYNC_ONLY_HEAD]: [],
+        "sync/milestone-h": [{ id: 18, name: "gitleaks" }],
+      },
+      compare: { [SYNC_ONLY_HEAD]: "diverged" },
+    },
+  );
+  fx.checkReadErrors = [TIP];
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(postsTo(calls, MERGES_PATH).length, 0);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("cannot read the checks red on main") &&
+      warn.includes("is not refreshed this scan")
+    ),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Repair PR open failures: each names its step and keeps the sync PRs held
+// ---------------------------------------------------------------------------
+
+Deno.test("findFailedCiChecks - a failed tip tree read warns naming the step and leaves the sync PRs held (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.treeError = "HTTP 500: tree boom";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(gitWrites(calls).length, 0);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(logger.skips.length, 3);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("reading the tip's tree failed: HTTP 500: tree boom") &&
+      warn.includes("held PRs stay held")
+    ),
+  );
+});
+
+Deno.test("findFailedCiChecks - a failed empty-commit create warns naming the step and leaves the sync PRs held (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.commitError = "HTTP 422: commit boom";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(postsTo(calls, `repos/${REPO}/git/commits`).length, 1);
+  assertEquals(postsTo(calls, `repos/${REPO}/git/refs`).length, 0);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(logger.skips.length, 3);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("creating the empty commit failed: HTTP 422: commit boom")
+    ),
+  );
+});
+
+Deno.test("findFailedCiChecks - a failed repair branch create warns naming the branch and leaves the sync PRs held (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.refError = "HTTP 422: Reference already exists";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(postsTo(calls, `repos/${REPO}/git/refs`).length, 1);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(logger.skips.length, 3);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes(
+        `creating branch ${RED_DEFAULT_BRANCH_REPAIR_PREFIX}${
+          TIP.slice(0, 12)
+        } failed: HTTP 422: Reference already exists`,
+      )
+    ),
+  );
+});
+
+Deno.test("findFailedCiChecks - a failed status edit on an adopted repair PR warns with the gh error (Issue #5437)", async () => {
+  const repair: PrFixture = {
+    number: 20,
+    headRefName: REPAIR_BRANCH,
+    headRefOid: TIP,
+    baseRefName: DEFAULT_BRANCH,
+    body: redDefaultBranchMarker(OLD_HEAD, [1, 2]),
+  };
+  const fx = redMainFixture([...THREE_SYNC_PRS, repair], {
+    checks: THREE_SYNC_CHECKS,
+  });
+  fx.editError = "HTTP 422: edit boom";
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "edit").length, 1);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes(
+        "could not update the status of org/repo#20: HTTP 422: edit boom",
+      )
+    ),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// A green human fix makes the repair PR wait (Issue #5437)
+// ---------------------------------------------------------------------------
+
+Deno.test("findFailedCiChecks - with a green human fix PR adopted, the worker's repair PR failure is not handed to the CI-fix agent, and another PR's failure is (Issue #5437)", async () => {
+  const repair: PrFixture = {
+    number: 20,
+    headRefName: REPAIR_BRANCH,
+    headRefOid: TIP,
+    baseRefName: DEFAULT_BRANCH,
+    body: "",
+  };
+  // A PR into a non-default base: the positive control, which must be returned.
+  const otherBase: PrFixture = {
+    number: 9,
+    headRefName: "issue-9-lint",
+    headRefOid: FEATURE_HEAD,
+    baseRefName: "release/1.0",
+  };
+  const fx = redMainFixture(
+    [syncPr(1, "sync/milestone-a", TIP), repair, otherBase],
+    {
+      checks: {
+        "sync/milestone-a": [{ id: 11, name: "gitleaks" }],
+        [REPAIR_BRANCH]: [{ id: 20, name: "gitleaks" }],
+        "issue-9-lint": [{ id: 9, name: "lint" }],
+      },
+    },
+  );
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.greenChecks = { [FIX_HEAD]: ["gitleaks", "gate"] };
+  const { value, calls, logger } = await scan(fx);
+
+  // The repair PR's gitleaks failure is not the result: the fix PR is adopted.
+  assert(value?.prNumber !== 20);
+  assertEquals(value?.prNumber, 9);
+  assertEquals(value?.checkName, "lint");
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(gitWrites(calls).length, 0);
+  assertEquals(callsTo(calls, "pr", "comment").length, 1);
+  assert(
+    logger.skips.some((skip) =>
+      skip.startsWith("red-default-branch-fix-adopted: ") &&
+      skip.includes(
+        "org/repo#20: org/repo#5434 already passes the held checks; the repair PR waits",
+      )
+    ),
+  );
 });

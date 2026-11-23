@@ -10,12 +10,18 @@
  * - `ensureRedDefaultBranchRepairPr` adopts the open repair PR when one
  *   exists, and otherwise opens one (an empty commit on the default tip,
  *   because GitHub refuses a PR with no commits).
- * - `formatRedDefaultBranchStatus` writes the one visible status: which sync
- *   PRs are held, which PR carries the fix, and the worker marker that lets a
+ * - `formatRedDefaultBranchStatus` writes the one visible status: which PRs
+ *   are held, which PR carries the fix, and the worker marker that lets a
  *   later scan tell whether the status is already current.
+ * - `findGreenFixPr` finds an open human-authored fix PR against the default
+ *   branch whose own CI is green on every held check. `postRedDefaultBranchStatusComment`
+ *   then records the status there as a comment, so the human's body is never
+ *   overwritten. Only when no such PR exists does the worker open or adopt its
+ *   repair PR.
  *
  * Only a `fix/red-default-branch-*` head targeting the default branch is ever
- * adopted. A human-authored fix PR is never adopted automatically.
+ * adopted as the repair PR. A human-authored fix PR is never edited, only
+ * commented on, and only once per tip and hold set.
  *
  * Australian English throughout.
  */
@@ -63,10 +69,12 @@ export interface RedDefaultBranchRepairRequest {
   defaultBranch: string;
   /** The default branch's tip, the commit the repair is for. */
   tipSha: string;
-  /** Checks red on the tip that the held sync PRs carry. */
+  /** Checks red on the tip that the held PRs carry. */
   checkNames: readonly string[];
-  /** The sync PRs held for this repair. */
+  /** The PRs held for this repair. */
   heldPrNumbers: readonly number[];
+  /** `true` when every held PR is a sync PR, which sets the status wording. */
+  allHeldAreSync: boolean;
   /** The PRs the current scan listed. */
   prs: readonly RepairPrCandidate[];
   ghCommandFn: (args: string[]) => Promise<string>;
@@ -81,6 +89,11 @@ export interface RedDefaultBranchStatusInput {
   repairPrNumber: number | null;
   checkNames: readonly string[];
   tipSha: string;
+  /**
+   * `true` when every held PR is a sync PR. Defaults to `true`; `false` says
+   * "PRs" so a held PR that is not a sync PR is named accurately.
+   */
+  allHeldAreSync?: boolean;
 }
 
 /** Whether a listed PR is a repair PR for `defaultBranch` (Issue #5437). */
@@ -120,7 +133,7 @@ export function bodyCarriesRedDefaultBranchMarker(
 
 /**
  * The status body of the repair PR (Issue #5437): the visible line naming the
- * held sync PRs and the fix, the failing checks, a sentence that makes the
+ * held PRs and the fix, the failing checks, a sentence that makes the
  * failure this PR's to fix, and the worker marker.
  */
 export function formatRedDefaultBranchStatus(
@@ -128,13 +141,14 @@ export function formatRedDefaultBranchStatus(
 ): string {
   const held = sortedHeld(input.heldPrNumbers);
   const heldText = held.map((n) => `#${n}`).join(", ");
+  const heldKind = input.allHeldAreSync === false ? "PRs" : "sync PRs";
   const fixText = input.repairPrNumber === null
     ? "fix in this PR"
     : `fix in #${input.repairPrNumber}`;
   const names = input.checkNames.map((name) => `\`${name}\``).join(", ");
   const shortSha = input.tipSha.slice(0, 12);
   return [
-    `**${input.defaultBranch} is red: holding sync PRs ${heldText}, ${fixText}.**`,
+    `**${input.defaultBranch} is red: holding ${heldKind} ${heldText}, ${fixText}.**`,
     "",
     `Failing on ${input.defaultBranch} at \`${shortSha}\`: ${names}.`,
     "",
@@ -188,6 +202,7 @@ export async function ensureRedDefaultBranchRepairPr(
         repairPrNumber: existing.number,
         checkNames,
         tipSha,
+        allHeldAreSync: request.allHeldAreSync,
       });
       try {
         await ghCommandFn([
@@ -220,6 +235,7 @@ export async function ensureRedDefaultBranchRepairPr(
     tipSha,
     checkNames,
     heldPrNumbers,
+    allHeldAreSync: request.allHeldAreSync,
     ghCommandFn,
     logger,
   });
@@ -232,6 +248,7 @@ async function openRepairPr(input: {
   tipSha: string;
   checkNames: readonly string[];
   heldPrNumbers: readonly number[];
+  allHeldAreSync: boolean;
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Logger;
 }): Promise<RedDefaultBranchRepair | null> {
@@ -240,7 +257,7 @@ async function openRepairPr(input: {
     logger.warn(
       `Red default branch: could not open a repair PR on ${repo} (${step} failed: ${
         errorText(error)
-      }); sync PRs stay held and the repair is retried next scan (Issue #5437)`,
+      }); held PRs stay held and the repair is retried next scan (Issue #5437)`,
     );
     return null;
   };
@@ -328,6 +345,7 @@ async function openRepairPr(input: {
     repairPrNumber: null,
     checkNames: input.checkNames,
     tipSha,
+    allHeldAreSync: input.allHeldAreSync,
   });
   let output: string;
   try {
@@ -360,4 +378,268 @@ async function openRepairPr(input: {
     `Red default branch: opened repair PR ${repo}#${number} for ${defaultBranch} at ${shortSha} (Issue #5437)`,
   );
   return { number: Number(number), headRefName: branch, opened: true };
+}
+
+/** An open PR against the default branch, as a fix candidate (Issue #5437). */
+interface FixCandidate {
+  number: number;
+  headRefName: string;
+  headRefOid: string;
+  authorLogin: string;
+}
+
+/** Inputs to {@link findGreenFixPr}. */
+export interface GreenFixPrRequest {
+  repo: string;
+  defaultBranch: string;
+  /** The held checks red on the tip. A fix must be green on every one. */
+  checkNames: readonly string[];
+  /** The held PRs, which are never the fix for themselves. */
+  heldPrNumbers: readonly number[];
+  /** Whether a head branch is a `sync/milestone-*` branch. */
+  isSyncBranch: (headRefName: string) => boolean;
+  /**
+   * The names of the checks that succeeded on a commit. Throws when the
+   * commit's check runs cannot be read.
+   */
+  readSuccessfulCheckNames: (sha: string) => Promise<ReadonlySet<string>>;
+  ghCommandFn: (args: string[]) => Promise<string>;
+  logger: Logger;
+}
+
+/** The fix PR {@link findGreenFixPr} found. */
+export interface GreenFixPr {
+  number: number;
+  headRefName: string;
+  authorLogin: string;
+}
+
+/**
+ * The open PRs in a `gh pr list --json number,headRefName,headRefOid,author`
+ * answer. A row missing a number, a head branch or a head commit is skipped.
+ * Throws when the answer is not a JSON array.
+ */
+function parseFixCandidates(output: string): FixCandidate[] {
+  const rows: unknown = JSON.parse(output);
+  if (!Array.isArray(rows)) {
+    throw new Error(`unexpected PR list "${output.trim().slice(0, 80)}"`);
+  }
+  const candidates: FixCandidate[] = [];
+  for (const row of rows) {
+    if (typeof row !== "object" || row === null) continue;
+    const fields = row as Record<string, unknown>;
+    if (
+      typeof fields.number !== "number" ||
+      typeof fields.headRefName !== "string" ||
+      typeof fields.headRefOid !== "string" || fields.headRefOid === ""
+    ) {
+      continue;
+    }
+    const author = fields.author;
+    const login = typeof author === "object" && author !== null
+      ? (author as Record<string, unknown>).login
+      : undefined;
+    candidates.push({
+      number: fields.number,
+      headRefName: fields.headRefName,
+      headRefOid: fields.headRefOid,
+      authorLogin: typeof login === "string" ? login : "unknown",
+    });
+  }
+  return candidates;
+}
+
+/**
+ * Find an open fix PR against the default branch that already passes the
+ * held checks (Issue #5437), such as a human's fix. A candidate is any open
+ * PR against `defaultBranch` with a head commit, other than a sync branch, a
+ * repair-prefix branch or a held PR. The first candidate whose successful
+ * check names include every name in `checkNames` is the fix.
+ *
+ * Returns `null` when no candidate matches, or when a read fails. A failed
+ * read is logged with its error, and the caller falls back to the worker's
+ * repair PR. Never throws.
+ */
+export async function findGreenFixPr(
+  request: GreenFixPrRequest,
+): Promise<GreenFixPr | null> {
+  const { repo, defaultBranch, checkNames, heldPrNumbers, logger } = request;
+  if (checkNames.length === 0) return null;
+
+  let listed: FixCandidate[];
+  try {
+    listed = parseFixCandidates(
+      await request.ghCommandFn([
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--base",
+        defaultBranch,
+        "--state",
+        "open",
+        "--json",
+        "number,headRefName,headRefOid,author",
+        "--limit",
+        "30",
+      ]),
+    );
+  } catch (error) {
+    logger.warn(
+      `Red default branch: could not list the open PRs against ${defaultBranch} on ${repo} to look for a fix: ${
+        errorText(error)
+      }; falling back to the repair PR (Issue #5437)`,
+    );
+    return null;
+  }
+
+  const held = new Set(heldPrNumbers);
+  const candidates = listed.filter((pr) =>
+    !request.isSyncBranch(pr.headRefName) &&
+    !pr.headRefName.startsWith(RED_DEFAULT_BRANCH_REPAIR_PREFIX) &&
+    !held.has(pr.number)
+  );
+  for (const pr of candidates) {
+    let passing: ReadonlySet<string>;
+    try {
+      passing = await request.readSuccessfulCheckNames(pr.headRefOid);
+    } catch (error) {
+      logger.warn(
+        `Red default branch: could not read the checks that passed on ${repo}#${pr.number} (${pr.headRefName}): ${
+          errorText(error)
+        }; falling back to the repair PR (Issue #5437)`,
+      );
+      return null;
+    }
+    if (checkNames.every((name) => passing.has(name))) {
+      logger.info(
+        `Red default branch: ${repo}#${pr.number} (${pr.headRefName}, by ${pr.authorLogin}) passes ${
+          checkNames.join(", ")
+        } on ${defaultBranch}, so it is the fix; no repair PR is opened (Issue #5437)`,
+      );
+      return {
+        number: pr.number,
+        headRefName: pr.headRefName,
+        authorLogin: pr.authorLogin,
+      };
+    }
+  }
+  return null;
+}
+
+/** How {@link postRedDefaultBranchStatusComment} settled (Issue #5437). */
+export type FixStatusCommentOutcome =
+  | "posted"
+  | "already-posted"
+  | "read-failed"
+  | "post-failed";
+
+/** Inputs to {@link postRedDefaultBranchStatusComment}. */
+export interface FixStatusCommentRequest {
+  repo: string;
+  defaultBranch: string;
+  /** The default branch's tip, the commit the status is for. */
+  tipSha: string;
+  /** The held checks red on the tip. */
+  checkNames: readonly string[];
+  heldPrNumbers: readonly number[];
+  /** `true` when every held PR is a sync PR, which sets the status wording. */
+  allHeldAreSync: boolean;
+  /** The adopted fix PR, which the status names. */
+  prNumber: number;
+  /** The scan's fleet login set. Only these authors' markers count. */
+  fleetLogins: readonly string[];
+  ghCommandFn: (args: string[]) => Promise<string>;
+  logger: Logger;
+}
+
+/**
+ * Record the status on an adopted fix PR as one comment, never by editing its
+ * body (Issue #5437). A comment counts as already posted only when its author
+ * is in `fleetLogins` and its body ends with the identical marker. A read
+ * failure is logged and yields `read-failed`, which tells the caller to fall
+ * back to the repair PR. A failed post is logged and yields `post-failed`.
+ * Never throws.
+ */
+export async function postRedDefaultBranchStatusComment(
+  request: FixStatusCommentRequest,
+): Promise<FixStatusCommentOutcome> {
+  const {
+    repo,
+    defaultBranch,
+    tipSha,
+    heldPrNumbers,
+    prNumber,
+    fleetLogins,
+    ghCommandFn,
+    logger,
+  } = request;
+  const checkNames = request.checkNames.map(oneLine);
+
+  let comments: Array<{ login: string; body: string }>;
+  try {
+    const output = await ghCommandFn([
+      "api",
+      `repos/${repo}/issues/${prNumber}/comments`,
+      "--paginate",
+      "--jq",
+      ".[] | {login: .user.login, body: .body} | tojson",
+    ]);
+    comments = output.split("\n").filter((line) => line.trim() !== "").map(
+      (line) => {
+        const fields = JSON.parse(line) as Record<string, unknown>;
+        return {
+          login: typeof fields.login === "string" ? fields.login : "",
+          body: typeof fields.body === "string" ? fields.body : "",
+        };
+      },
+    );
+  } catch (error) {
+    logger.warn(
+      `Red default branch: could not read the comments on ${repo}#${prNumber}: ${
+        errorText(error)
+      }; falling back to the repair PR (Issue #5437)`,
+    );
+    return "read-failed";
+  }
+
+  const fleet = new Set(fleetLogins.map((login) => login.toLowerCase()));
+  const carried = comments.some((comment) =>
+    fleet.has(comment.login.toLowerCase()) &&
+    bodyCarriesRedDefaultBranchMarker(comment.body, tipSha, heldPrNumbers)
+  );
+  if (carried) return "already-posted";
+
+  const body = formatRedDefaultBranchStatus({
+    defaultBranch,
+    heldPrNumbers,
+    repairPrNumber: prNumber,
+    checkNames,
+    tipSha,
+    allHeldAreSync: request.allHeldAreSync,
+  });
+  try {
+    await ghCommandFn([
+      "pr",
+      "comment",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--body",
+      body,
+    ]);
+  } catch (error) {
+    logger.warn(
+      `Red default branch: could not post the status on ${repo}#${prNumber}: ${
+        errorText(error)
+      }; the fix PR is adopted and the status is retried next scan (Issue #5437)`,
+    );
+    return "post-failed";
+  }
+  logger.info(
+    `Red default branch: posted the status on ${repo}#${prNumber}, the fix for ${defaultBranch} at ${
+      tipSha.slice(0, 12)
+    } (Issue #5437)`,
+  );
+  return "posted";
 }
