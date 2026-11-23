@@ -554,6 +554,12 @@ quote and the rest of the credential was published. Two limits: the
 escape-aware read covers at most 4,096 characters or escapes, and a value whose
 escape never closes (`"C:\dir\"`) falls back to ending at the first quote.
 
+The same holds for a credential command-line flag's quoted value:
+`--token "abc\"def"`, `--password 'abc''def'` and `--password 'it'\''s'` are
+masked in full by the `secret-cli-flag` rule, with the same two limits. Before
+Issue #5435 the flag value ended at the escaped quote and the rest of the
+credential was published.
+
 A bare value that starts at the closing quote of a credential flag's quoted
 value keeps that quote in front of the placeholder (Issue #5363). In
 `--password 'alpha beta TOKEN='tail` the `TOKEN=` value opens at that quote;

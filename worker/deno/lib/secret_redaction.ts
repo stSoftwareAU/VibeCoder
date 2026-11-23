@@ -56,6 +56,21 @@ const SECRET_ASSIGNMENT_PATTERN =
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
 
 /**
+ * A credential flag's value as the `secret-cli-flag` rule reads it, shared by
+ * that rule, `CLI_FLAG_AT` and `CLI_FLAG_RULE_G` so the walk reads each flag's
+ * value exactly as the rule masks it (Issue #5435). The quoted branches accept
+ * an escaped quote of their own kind as `SECRET_ASSIGNMENT_PATTERN` does
+ * (Issue #5327): a backslash pair in either quote kind, and in single quotes a
+ * doubled `''` or the shell `'\''` idiom. Each escape-aware branch is bounded
+ * at 4,096 characters or escapes and the alternatives are told apart by their
+ * first two characters, so it stays linear (Issue #3942). A longer value, or
+ * one whose escape never closes (`"C:\dir\"`), falls back to the old branches
+ * that end at the first quote.
+ */
+const CLI_FLAG_VALUE = String
+  .raw`(?:"(?:[^"\\]|\\[^]){1,4096}"|'(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|"[^"]+"|'[^']+'|\S+)`;
+
+/**
  * A single redaction rule: a pattern and the replacement applied to each
  * match. The `replace` callback receives the standard `String.replace`
  * arguments so a rule can preserve a non-secret prefix (e.g. the `Bearer `
@@ -828,14 +843,21 @@ const RULES: readonly RedactionRule[] = [
   // value (`token: --token <value>`, on the same line or the next) is left to
   // this rule by the assignment rule (Issue #5330).
   //
+  // A quoted flag value may hold an escaped quote of its own kind and is masked
+  // whole (Issue #5435): before, the value ended at that quote and the rest
+  // was published. See `CLI_FLAG_VALUE`.
+  //
   // Both flag-name runs are bounded (Issue #3942): unbounded `[A-Za-z0-9-]*`
   // consumed the rest of the text from every `--` position and backtracked
   // looking for the keyword, which is quadratic on a long run of hyphens. No
   // CLI flag name approaches 64 characters either side of the keyword.
   {
     name: "secret-cli-flag",
-    pattern:
-      /(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63})(\s+)(?!-)(?!\*\*\*REDACTED)("[^"]+"|'[^']+'|\S+)/gi,
+    pattern: new RegExp(
+      String
+        .raw`(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63})(\s+)(?!-)(?!\*\*\*REDACTED)(${CLI_FLAG_VALUE})`,
+      "gi",
+    ),
     replace: (_m, flag: string, sep: string) =>
       `${flag}${sep}${REDACTION_PLACEHOLDER}`,
   },
@@ -1579,8 +1601,11 @@ function closesWithinReach(
  * (PR #5322 review round 8). The flag-name runs are bounded as in that rule
  * (Issue #3942).
  */
-const CLI_FLAG_AT =
-  /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+(?!-)(?:"[^"]+"|'[^']+'|\S+)/iy;
+const CLI_FLAG_AT = new RegExp(
+  String
+    .raw`--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+(?!-)${CLI_FLAG_VALUE}`,
+  "iy",
+);
 
 /**
  * Whether main's scan, resuming right after the inner label it masked as the
@@ -2055,8 +2080,11 @@ function credentialFlagTakesValueAt(text: string, at: number): boolean {
  * The `secret-cli-flag` rule's pattern, read once over the walk's text to
  * find where it opens each flag's value.
  */
-const CLI_FLAG_RULE_G =
-  /(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+)(?!-)(?!\*\*\*REDACTED)(?:"[^"]+"|'[^']+'|\S+)/gi;
+const CLI_FLAG_RULE_G = new RegExp(
+  String
+    .raw`(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+)(?!-)(?!\*\*\*REDACTED)${CLI_FLAG_VALUE}`,
+  "gi",
+);
 
 /**
  * Whether the `secret-cli-flag` rule, reading `text` from the start, opens a
