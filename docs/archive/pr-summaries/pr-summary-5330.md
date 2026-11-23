@@ -117,10 +117,10 @@ flowchart LR
   - **Linearity**, with no stopwatch:
     - 20,000 repeats of `x token: --token v` give the exact masked repeat;
     - `token: --token`, then 100,000 spaces, then `-`, keeps its base output.
-- Red run against the unfixed lib: 9 passed and 11 failed. The failures were all
-  9 masked cases, the placeholder idempotence case and the 20,000-repeat case.
-  That case failed after 3m2s on base and takes 62ms on head. After the fix, all
-  21 pass.
+- Red run against the unfixed lib: 10 passed and 11 failed (21 tests). The
+  failures were all 9 masked cases, the placeholder idempotence case and the
+  20,000-repeat case. That case failed after 3m2s on base and takes 62ms on
+  head. After the fix, all 21 pass.
 - The redaction suites were run on the head (from `worker/deno`): the #5330 file
   plus the #1727, #5253, #5310, #5326 and #5327 files, `secret_redaction`,
   ReDoS, bounds, boolean-setting, JSON-structure, cache, prompt-context,
