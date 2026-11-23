@@ -2,12 +2,12 @@
 
 ## Summary
 
-Partial mitigation for #4815. An agent run now terminates the tagged
-processes it leaves running once the agent has exited, within a bounded number
-of KILL rounds; survivors and skipped pids are reported, not signalled. This stops a verified leak: a detached
-`( … & )` job is re-parented to PID 1 at once, so it never appears in the
-descendant snapshot (Issue #4382), and on a normal exit the collector is not run
-at all. Nothing in the worker bounded such a job before.
+Partial mitigation for #4815. An agent run now terminates the tagged processes
+it leaves running once the agent has exited, within a bounded number of KILL
+rounds; survivors and skipped pids are reported, not signalled. This stops a
+verified leak: a detached `( … & )` job is re-parented to PID 1 at once, so it
+never appears in the descendant snapshot (Issue #4382), and on a normal exit the
+collector is not run at all. Nothing in the worker bounded such a job before.
 
 It is not shown that this leak caused the completion wedge. The three archived
 facts posted on the issue establish an unresponsive guest and the last logged
