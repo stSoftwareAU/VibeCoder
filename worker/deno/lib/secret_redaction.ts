@@ -50,7 +50,7 @@ import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
  * means and why every quantifier is bounded.
  */
 const SECRET_ASSIGNMENT_PATTERN =
-  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|[^\s"]+)/gi;
+  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?[*`>]{0,3}\s*(?::|(?<!>)=)(?:[*_]{1,3}(?=\s))?\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("(?:[^"\\]|\\[^]){1,4096}"|'(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|"[^"]+"|'[^']+'|[^\s"]+)/gi;
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -100,8 +100,13 @@ const FENCE_VALUE = /^(?:`{3,}|~{3,})[A-Za-z0-9_+#-]*$/;
 /** A complete inline image — `![alt](path)` — as the whole value. */
 const IMAGE_VALUE = /^!\[[^\][]*\]\([^()]*\)$/;
 
-/** A value in matching quotes: explicit assignment syntax, not prose. */
-const QUOTED_VALUE = /^(?:"[^"]*"|'[^']*')$/;
+/**
+ * A value in matching quotes: explicit assignment syntax, not prose. It accepts
+ * the same escaped quotes as the pattern (Issue #5327), so a masked escaped
+ * value keeps its quotes around the placeholder.
+ */
+const QUOTED_VALUE =
+  /^(?:"(?:[^"\\]|\\[^]){0,4096}"|'(?:[^'\\]|\\[^]|''|'\\''){0,4096}'|"[^"]*"|'[^']*')$/;
 
 /**
  * A single word with no digit, symbol or internal capital — the shape of an
@@ -158,9 +163,12 @@ const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
 /**
  * The separator of a prose heading: a bare colon then spaces, on one line
  * (Issue #5253). No quote, no `=` and no line break, so only `Name: text` reads
- * as a heading.
+ * as a heading. Up to three Markdown emphasis, code-span or `>` markers before
+ * the colon and up to three emphasis (`*` or `_`) markers after it are
+ * rendering, not text, so `**TokenBudget:** text` and
+ * `**TokenBudget**: text` read as headings too (Issue #5326).
  */
-const PROSE_HEADING_SEPARATOR = /^:[ \t]{1,32}$/;
+const PROSE_HEADING_SEPARATOR = /^[*`>]{0,3}:[*_]{0,3}[ \t]{1,32}$/;
 
 /**
  * A Capitalised word or a PascalCase run of them, letters only: the shape of a
@@ -180,6 +188,28 @@ const CREDENTIAL_KEY_ENDING =
   /(?:tokens?|secrets?|passwords?|passwd|keys?|credentials?|values?)$/i;
 
 /**
+ * A key ending in the plural of a credential word: `Tokens`, `Secrets`,
+ * `Passwords`. Under Markdown emphasis it labels a count or a list, as in the
+ * run-stats line `- **Tokens:** input 27 · output 11` (the worker's run-stats comment line, pinned in
+ * `worker/deno/tests/secret_redaction_test.ts`), not one
+ * credential (Issue #5326), provided a further token follows the value on the
+ * line ({@link PLURAL_CONTINUATION}). A singular `GithubToken` is not matched,
+ * and neither is an unmarked `Tokens: input 27`.
+ */
+const PLURAL_CREDENTIAL_KEY_ENDING =
+  /(?:tokens|secrets|passwords|keys|credentials|values)$/i;
+
+/**
+ * Text after a marked plural heading's value: spaces then any further
+ * non-space token on the same line (Issue #5326), so a number or a `·` counts.
+ * Bounded, so it is linear.
+ */
+const PLURAL_CONTINUATION = /^[ \t]{1,32}\S/;
+
+/** A Markdown marker in a separator: the heading is rendered (Issue #5326). */
+const SEPARATOR_MARKER = /[*_`>]/;
+
+/**
  * Text after a prose heading's value: spaces then a further word on the same
  * line (Issue #5253). A heading leads into a sentence; a `Key: word` that ends
  * its line is a field, so it stays masked. Bounded, so it is linear.
@@ -193,7 +223,7 @@ const PROSE_CONTINUATION_SPAN = 33;
  * Report whether a matched `secret-assignment` value is credential-shaped
  * (Issue #1727).
  *
- * The rule's separator — `["']?\s*[=:]\s*` — spans line breaks, so a prose
+ * The rule's separator spans line breaks (it ends in `\s*`), so a prose
  * line ending in a credential-ish label adopted the *next* non-blank line as
  * the assignment's value. A PR body whose lead-in read
  * `… now picks a credential:` had the Mermaid fence on the following line
@@ -251,9 +281,14 @@ export function isCredentialShapedValue(
  * A heading such as `TokenBudget: run the agreed trial` names a product, and
  * its name does not end in a credential word. A credential field's name does
  * (`GithubToken`, `Password`, `Userpassword`), and those stay masked whatever
- * the value. All four must hold: a bare colon, a Capitalised key not ending in
- * a credential word, a plain single word as the value, and a further word after
- * it on the same line (`following` is the text after the value). So a value
+ * the value, with one exception: under Markdown markers a key ending in a
+ * plural credential noun (`**Tokens:** input 27 · output 11`, Issue #5326) is
+ * a heading for a count or list, and needs a further non-space token after the
+ * value ({@link PLURAL_CONTINUATION}), so `**Passwords:** sunshine` ending its
+ * line stays masked. Otherwise all four must hold: a bare colon, a Capitalised
+ * key not ending in a credential word, a plain single word as the value, and a
+ * further word after it on the same line (`following` is the text after the
+ * value). So a value
  * with a digit, symbol, quote or over 15 letters is still masked under any key,
  * as is a `Key: word` that ends its line (`SecretString: hunter`), and so are
  * `=`, quoted keys, `_` keys and lower-camel identifiers.
@@ -266,9 +301,16 @@ function isProseHeading(
 ): boolean {
   if (!PROSE_HEADING_SEPARATOR.test(sep)) return false;
   if (!PROSE_HEADING_KEY.test(key)) return false;
-  if (CREDENTIAL_KEY_ENDING.test(key)) return false;
+  // A plural credential noun under Markdown markers is a heading for a count
+  // or a list (the worker's run-stats comment line `- **Tokens:** input 27`): a number or symbol,
+  // not only a word, may follow the plain word, but something must.
+  const markedPlural = SEPARATOR_MARKER.test(sep) &&
+    PLURAL_CREDENTIAL_KEY_ENDING.test(key);
+  if (CREDENTIAL_KEY_ENDING.test(key) && !markedPlural) return false;
   if (!PLAIN_WORD.test(value)) return false;
-  return PROSE_CONTINUATION.test(following);
+  return markedPlural
+    ? PLURAL_CONTINUATION.test(following)
+    : PROSE_CONTINUATION.test(following);
 }
 
 /** The bounded run of `text` after a match ending at `end` (Issue #5253). */
@@ -676,7 +718,12 @@ const RULES: readonly RedactionRule[] = [
   // spaces, the value is one plain word, and a further word follows it on the
   // same line, the mask is lifted by `isProseHeading`. `=`, quoted keys, `_`
   // keys, lower-camel identifiers, a `Key: word` ending its line and any value
-  // with a digit, symbol or quote stay masked.
+  // with a digit, symbol or quote stay masked. One exception to "a key ending in
+  // a credential word stays masked": under Markdown markers a plural credential
+  // noun (`**Tokens:** input 27 · output 11`, the worker's run-stats comment line)
+  // heads a count or list, so it is exempt when a plain word is followed by any
+  // further token on the line (Issue #5326); `**Passwords:** sunshine` ending
+  // its line stays masked.
   //
   // A bare switch is configuration, not a credential. The
   // `github-actions-audit` idle task filed fourteen issues whose whole
@@ -696,6 +743,25 @@ const RULES: readonly RedactionRule[] = [
   // still masked. Both lookaheads are fixed-width alternations — constant
   // work per candidate (the Issue #3942 linearity rule).
   //
+  // A label wrapped in Markdown is still a label (Issue #5326). The PR and
+  // issue bodies the worker publishes are Markdown, and `**PASSWORD**: <value>`,
+  // `**PASSWORD:** <value>`, `` `API_KEY`=<value> `` and `<PASSWORD>: <value>`
+  // put emphasis, code-span or angle-bracket markers between the key and its
+  // separator, so the rule never matched and the value was published. The
+  // separator now allows up to three `*`, backtick or `>` markers before the
+  // `:` or `=`, and up to three emphasis (`*` or `_`) markers after it
+  // when whitespace follows (so `PASSWORD=**abc**` keeps its value whole and the
+  // placeholder never splits a value). Every quantifier is bounded and the
+  // adjacent pieces use disjoint classes (the linearity rule in the module header). `=` may not follow
+  // `>` directly, so a `>=` comparison (`max_tokens>=limit`) never matches. The
+  // accepted limits: a code span that includes the colon (`` `PASSWORD:` value
+  // ``) is not matched, because that is how prose names a key (a corpus run
+  // over the archived PR summaries showed a backtick after the separator
+  // masking the next prose word), so only emphasis is read after the
+  // separator; and `<TOKEN>=value`, a `>` straight before `=`, is not matched
+  // for that reason. The prose-heading exemption (Issue #5253) and the nested
+  // label check (Issue #5310) read the markers as rendering too.
+  //
   // A credential label in the value of the label before it is judged as a
   // label, not masked as that value (Issue #5310). In
   // `credentials: DEPLOY_TOKEN = <value>` the bare-value branch stops at
@@ -709,6 +775,30 @@ const RULES: readonly RedactionRule[] = [
   // characters, the label is at most `INNER_LABEL_MAX` (128) characters, and
   // the embedded-quote case (`DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
   // Past them the base behaviour applies.
+  //
+  // A quoted value may hold an escaped quote of its own kind (Issue #5327): a
+  // backslash pair in either quote kind, and in single quotes a doubled `''` or
+  // the shell `'\''` idiom. The quoted branches read through it, so the whole
+  // literal is masked; before, they stopped at the escaped quote, masked the
+  // leading part and published the rest. Each escape-aware branch is bounded at
+  // 4,096 characters or escapes, and the alternatives are told apart by their
+  // first two characters, so the pattern stays linear (the linearity rule in
+  // the module header). A longer value, or one whose escape never closes
+  // (`"C:\dir\"`), falls back to the old branches that end at the first quote,
+  // which is the base behaviour. A backslash is read as an escape in single
+  // quotes too, although the shell treats it as literal there; that can mask
+  // past a Windows path's trailing backslash up to the next quote, which errs
+  // towards masking.
+  //
+  // A bare value that starts at the closing quote of a credential flag's quoted
+  // value keeps that quote in front of the placeholder (Issue #5363). In
+  // `--password 'alpha beta TOKEN='tail` the `TOKEN=` value opens at that quote;
+  // masking the quote with the value left `secret-cli-flag` no closing quote,
+  // so it masked only `'alpha` and published `beta`. The quote is kept only when
+  // the flag's opening quote lies outside every mask of the walk. One form is
+  // not covered: the quote sits inside an outer label's value that the walk
+  // masks whole, as in `--token 'alpha beta credentials: TOKEN='tail` (main's
+  // result, see `flagQuoteReaches`). That keeps the base behaviour.
   //
   // JSON structure survives the mask (Issue #4169's transcript tee is the
   // sink that showed it). Every stream-json line the agent emits carries a
@@ -746,6 +836,10 @@ const RULES: readonly RedactionRule[] = [
   // the value is a bare hex blob with no provider prefix. Keep the flag name;
   // mask the following token. The value must not itself start with `-` so an
   // adjacent flag (`--token --verbose`) is never mistaken for a secret.
+  //
+  // A credential flag with a value that an earlier label would capture as its
+  // value (`token: --token <value>`, on the same line or the next) is left to
+  // this rule by the assignment rule (Issue #5330).
   //
   // Both flag-name runs are bounded (Issue #3942): unbounded `[A-Za-z0-9-]*`
   // consumed the rest of the text from every `--` position and backtracked
@@ -868,19 +962,26 @@ function execAssignmentAt(
   }
 }
 
-/** Judge one pattern match with {@link assignmentIsMasked}. */
+/**
+ * Judge one pattern match with {@link assignmentIsMasked}. A value that is a
+ * credential flag with a value after it is not masked; see
+ * {@link credentialFlagTakesValueAt}.
+ */
 function verdictOf(text: string, match: RegExpExecArray): AssignmentVerdict {
   const end = match.index + match[0].length;
   const key = match[1] ?? "";
   const sep = match[2] ?? "";
   const value = match[3] ?? "";
+  const valueStart = end - value.length;
   return {
     index: match.index,
     end,
     key,
     sep,
     value,
-    masked: assignmentIsMasked(key, sep, value, textAfter(text, end)),
+    // Issue #5330: a credential flag with a value is left to `secret-cli-flag`.
+    masked: !credentialFlagTakesValueAt(text, valueStart) &&
+      assignmentIsMasked(key, sep, value, textAfter(text, end)),
   };
 }
 
@@ -1005,14 +1106,16 @@ function isLabelOnly(
 }
 
 /**
- * What may precede an inner label for the outer value to be just the label. A
+ * What may precede an inner label for the outer value to be just the label: an
+ * optional quote and up to three Markdown `*`, backtick or `<` markers (Issue
+ * #5326), then label characters. A
  * leading `-`, or `--` anywhere, is not label text: `credentials: --token =
  * <value>` and `credentials: x--token = <value>` hold a CLI flag, and given up
  * unmasked they would leave `--token = ***REDACTED***` for the
  * `secret-cli-flag` rule to rewrite, so a second call would mask `--token`
  * (PR #5322 review rounds 5 and 6).
  */
-const LABEL_PREFIX = /^["']?(?!-)(?![^]*--)[A-Za-z0-9_.-]*$/;
+const LABEL_PREFIX = /^["']?[*`<]{0,3}(?!-)(?![^]*--)[A-Za-z0-9_.-]*$/;
 
 /**
  * Whether the outer value is a closed quoted run that the text runs straight
@@ -1069,8 +1172,12 @@ const LABEL_SUFFIX_CHAR = /^["'=:]$/;
 const CREDENTIAL_KEYWORD =
   /TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL/i;
 
-/** The start of the pattern's separator group, right after a key. */
-const SEPARATOR_START = /^["']?\s*[=:]/;
+/**
+ * The start of the pattern's separator group, right after a key: an optional
+ * quote, up to three Markdown `*`, backtick or `>` markers (Issue #5326), then
+ * `:` or an `=` that does not follow `>` (that is the `>=` comparison).
+ */
+const SEPARATOR_START = /^["']?[*`>]{0,3}\s*(?::|(?<!>)=)/;
 
 /**
  * How far past {@link INNER_ASSIGNMENT_SPAN} the already-masked check reads:
@@ -1078,8 +1185,13 @@ const SEPARATOR_START = /^["']?\s*[=:]/;
  */
 const MASKED_REACH = REDACTION_PLACEHOLDER.length + 1;
 
-/** The pattern's separator then the placeholder: a value already masked. */
-const MASKED_SEPARATOR = /^["']?\s*[=:]\s*["']?\*\*\*REDACTED\*\*\*/;
+/**
+ * The pattern's separator (with the Markdown markers {@link SEPARATOR_START}
+ * allows, and the emphasis markers the pattern allows after it) then the placeholder: a
+ * value already masked.
+ */
+const MASKED_SEPARATOR =
+  /^["']?[*`>]{0,3}\s*(?::|(?<!>)=)(?:[*_]{1,3}(?=\s))?\s*["']?\*\*\*REDACTED\*\*\*/;
 
 /**
  * The credential label that ends the value `[start, end)`, or `null` (Issue
@@ -1221,9 +1333,32 @@ function labelEndingAt(
   // A quoted value whose own run ends in a label and a spaced separator:
   // `'API_TOKEN = '`, `'API_TOKEN =\n'` (PR #5322 review rounds 6 and 7).
   const suffix = spacedSuffixStart(text, start, end);
-  if (suffix === -1) return null;
-  return keyLabel(text, start, suffix);
+  if (suffix !== -1) return keyLabel(text, start, suffix);
+  // A label wrapped in Markdown markers: `**DEPLOY_TOKEN**:`,
+  // `**DEPLOY_TOKEN:**` (Issue #5326). A short slice keeps the match bounded.
+  const tail = text.slice(Math.max(start, end - MARKED_SUFFIX_SLICE), end);
+  const marked = MARKED_LABEL_SUFFIX.exec(tail)?.[0] ?? "";
+  if (!MARKER_CHAR.test(marked)) return null;
+  return keyLabel(text, start, end - marked.length);
 }
+
+/** How many trailing characters {@link MARKED_LABEL_SUFFIX} is applied to. */
+const MARKED_SUFFIX_SLICE = 8;
+
+/**
+ * What may sit between an inner label and the outer value's end when the label
+ * is wrapped in Markdown markers (Issue #5326): an optional quote, up to three
+ * emphasis, backtick or `>` markers, an optional separator, up to three
+ * emphasis (`*` or `_`) markers. Anchored at the end of a slice of at most
+ * {@link MARKED_SUFFIX_SLICE} characters.
+ */
+const MARKED_LABEL_SUFFIX = /["']?[*`>]{0,3}[=:]?[*_]{0,3}$/;
+
+/**
+ * A Markdown marker: the suffix is accepted only if it holds one. A bare `_`
+ * is a key character, so it counts only straight after a separator.
+ */
+const MARKER_CHAR = /[*`>]|[=:]_/;
 
 /** The credential key ending at `keyEnd`, or `null`. */
 function keyLabel(
@@ -1900,6 +2035,33 @@ function flagQuoteReaches(
 }
 
 /**
+ * A credential flag with a value after it, read where a `secret-assignment`
+ * value starts (Issue #5330): the `secret-cli-flag` rule's flag name and
+ * whitespace, then a value that rule takes or has already masked. A bare `=` or
+ * `:` after the flag is an assignment separator (Issue #5310 shapes such as
+ * `credentials: --token = <value>`), not a value. Sticky, so it reads only at
+ * the given offset.
+ */
+const CLI_FLAG_WITH_VALUE_AT =
+  /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+(?!-|[=:](?:\s|$))\S/iy;
+
+/**
+ * Whether a credential flag with a value starts at `at` (Issue #5330). Such a
+ * flag is left for the `secret-cli-flag` rule, which keeps its name and masks
+ * its value; masking the name instead hid the flag from that rule and
+ * published the value.
+ */
+function credentialFlagTakesValueAt(text: string, at: number): boolean {
+  const pattern = CLI_FLAG_WITH_VALUE_AT;
+  pattern.lastIndex = at;
+  try {
+    return pattern.test(text);
+  } finally {
+    pattern.lastIndex = 0;
+  }
+}
+
+/**
  * The `secret-cli-flag` rule's pattern, read once over the walk's text to
  * find where it opens each flag's value.
  */
@@ -1975,8 +2137,13 @@ const CREDENTIAL_KEYWORD_ALL = new RegExp(CREDENTIAL_KEYWORD.source, "gi");
 /** The `secret-assignment` pattern matched at one position (sticky). */
 const SECRET_ASSIGNMENT_AT = new RegExp(SECRET_ASSIGNMENT_PATTERN.source, "iy");
 
-/** The pattern's separator, then the opening `"` of a double-quoted value. */
-const OPEN_DOUBLE_QUOTE = /^["']?\s*[=:]\s*"/;
+/**
+ * The pattern's separator (Markdown markers before it and emphasis markers after it, as in
+ * {@link SEPARATOR_START} and the pattern), then the opening `"` of a
+ * double-quoted value.
+ */
+const OPEN_DOUBLE_QUOTE =
+  /^["']?[*`>]{0,3}\s*(?::|(?<!>)=)(?:[*_]{1,3}(?=\s))?\s*"/;
 
 /**
  * Longest double-quoted inner value, past the window, that
@@ -2036,18 +2203,61 @@ function redactAssignments(text: string): string {
  */
 const MAX_ASSIGNMENT_PASSES = 4;
 
-/** One walk of {@link walkAssignments}, masking what it judges masked. */
+/**
+ * One walk of {@link walkAssignments}, masking what it judges masked. A bare
+ * value that starts at a credential flag's closing quote keeps that quote in
+ * front of the placeholder (Issue #5363). Masking the quote with the value left
+ * the `secret-cli-flag` rule no closing quote to pair, so it masked only the
+ * flag's opening word and published the rest. The quote is kept only where
+ * {@link flagClosingQuotes} finds it.
+ */
 function redactAssignmentsOnce(text: string): string {
+  const masked = walkAssignments(text).filter((a) => a.masked);
+  const closes = flagClosingQuotes(text, masked);
   let out = "";
   let last = 0;
-  for (const a of walkAssignments(text)) {
-    if (!a.masked) continue;
-    const quote = QUOTED_VALUE.test(a.value) ? a.value.charAt(0) : "";
+  for (const a of masked) {
+    const quoted = QUOTED_VALUE.test(a.value);
+    const quote = quoted ? a.value.charAt(0) : "";
+    const start = a.end - a.value.length;
+    const lead = !quoted && closes.has(start) ? text.charAt(start) : quote;
     out += text.slice(last, a.index) +
-      `${a.key}${a.sep}${quote}${REDACTION_PLACEHOLDER}${quote}`;
+      `${a.key}${a.sep}${lead}${REDACTION_PLACEHOLDER}${quote}`;
     last = a.end;
   }
   return out + text.slice(last);
+}
+
+/**
+ * The positions of the closing quotes of credential flag values that a masked
+ * bare value starts at (Issue #5363). Each is the index of the quote that ends
+ * a `secret-cli-flag` quoted value, kept only when the flag's opening quote lies
+ * outside every mask in `masked`. Those masks are in text order and do not
+ * overlap, so one pointer walks them. The flag rule's pattern is read once per
+ * walk, which keeps the scan linear (Issue #3942). An opener inside a mask is
+ * not returned: the walk already reads that flag's extent, and the Issue #5310
+ * round 13 tests depend on it, so widening the condition would break them.
+ */
+function flagClosingQuotes(
+  text: string,
+  masked: readonly AssignmentVerdict[],
+): Set<number> {
+  const closes = new Set<number>();
+  let i = 0;
+  for (const m of text.matchAll(CLI_FLAG_RULE_G)) {
+    const open = m.index + (m[1]?.length ?? 0);
+    const value = m[0].slice(m[1]?.length ?? 0);
+    const quote = value.charAt(0);
+    if (
+      (quote !== "'" && quote !== '"') || value.length < 2 ||
+      !value.endsWith(quote)
+    ) continue;
+    while (i < masked.length && (masked[i]?.end ?? 0) <= open) i++;
+    const mask = masked[i];
+    if (mask !== undefined && mask.end - mask.value.length <= open) continue;
+    closes.add(m.index + m[0].length - 1);
+  }
+  return closes;
 }
 
 /**
