@@ -168,22 +168,31 @@ function continuedIntoComment(pending: string, physical: string): boolean {
 /** Quoting open at the end of a physical line: none, '…', "…", $'…', or unknown. */
 type QuoteState = "" | "'" | '"' | "$'" | "unknown";
 
+/** A physical line as {@link scanLine} reads it. */
+interface LineScan {
+  /** The quoting open at the end of the line. */
+  open: QuoteState;
+  /** A `#` that starts a word outside quotes ends the line as a comment. */
+  comment: boolean;
+}
+
 /**
- * The quoting open at the end of `physical`, given the `state` at its start.
- * `before` is the text of the same logical line before `physical` (the pending
- * continuation, "" for none), so a `#` at the start of `physical` is checked
- * against the blank or operator before it. A `#` that starts a word outside
- * quotes ends the scan: it is a comment. Quoting this scanner does not model
- * (a backtick, `$(` or `${` with nested quoting, a here-document) is sticky and
- * returns "unknown"; callers treat any state but "" as open, so unknown fails
- * closed (Issue #5353).
+ * The quoting open at the end of `physical`, given the `state` at its start,
+ * and whether the scan reached a comment. `before` is the text of the same
+ * logical line before `physical` (the pending continuation, "" for none), so a
+ * `#` at the start of `physical` is checked against the blank or operator
+ * before it. A `#` that starts a word outside quotes ends the scan: it is a
+ * comment (`comment` is true). Quoting this scanner does not model (a backtick,
+ * `$(` or `${` with nested quoting, a here-document) is sticky and returns
+ * "unknown" with `comment` false; callers treat any state but "" as open, so
+ * unknown fails closed (Issue #5353).
  */
-function quoteStateAfter(
+function scanLine(
   state: QuoteState,
   physical: string,
   before: string,
-): QuoteState {
-  if (state === "unknown") return "unknown";
+): LineScan {
+  if (state === "unknown") return { open: "unknown", comment: false };
   let open: QuoteState = state;
   // Whether a word starts at the next character: nothing, or a blank or
   // operator, precedes it. An escape or quote is a word character.
@@ -203,11 +212,13 @@ function quoteStateAfter(
         open = "";
         i += 1;
       } else if (c === "`" || physical.startsWith("$(", i)) {
-        return "unknown";
+        return { open: "unknown", comment: false };
       } else if (physical.startsWith("${", i)) {
         const close = physical.indexOf("}", i + 2);
-        if (close === -1) return "unknown";
-        if (/['"`]|\$\(/.test(physical.slice(i + 2, close))) return "unknown";
+        if (close === -1) return { open: "unknown", comment: false };
+        if (/['"`]|\$\(/.test(physical.slice(i + 2, close))) {
+          return { open: "unknown", comment: false };
+        }
         i = close + 1;
       } else {
         i += 1;
@@ -223,7 +234,7 @@ function quoteStateAfter(
         i += 1;
       }
     } else if (c === "#" && boundary) {
-      break;
+      return { open, comment: true };
     } else if (c === "\\") {
       boundary = false;
       i += 2;
@@ -236,9 +247,9 @@ function quoteStateAfter(
       boundary = false;
       i += 1;
     } else if (c === "`") {
-      return "unknown";
+      return { open: "unknown", comment: false };
     } else if (c === "<" && physical[i + 1] === "<") {
-      if (physical[i + 2] !== "<") return "unknown";
+      if (physical[i + 2] !== "<") return { open: "unknown", comment: false };
       boundary = true;
       i += 3;
     } else {
@@ -246,7 +257,7 @@ function quoteStateAfter(
       i += 1;
     }
   }
-  return open;
+  return { open, comment: false };
 }
 
 /**
@@ -257,12 +268,19 @@ function quoteStateAfter(
  * a real continuation, per {@link endsInContinuation}, outside a comment: a
  * line ending in an escaped backslash stays its own command, and so does the
  * line after a `#` comment that a continuation reached (see
- * {@link continuedIntoComment}), whatever the comment ends in.
+ * {@link continuedIntoComment}), whatever the comment ends in. A line that
+ * ends in a comment is kept unchanged, trailing backslash included: a comment
+ * ends at its physical newline, so `shellCommands` reads that backslash as
+ * comment text and ends the command there (Issue #5348).
  *
  * A line is a comment only outside a quoted word: the quoting open at each
- * kept line's end is tracked with {@link quoteStateAfter}, so a `#` line
- * inside a quoted word opened on an earlier line is kept as code. Unknown
- * quoting keeps the line too, which fails closed (Issue #5353).
+ * kept line's end is tracked with {@link scanLine}, so a `#` line inside a
+ * quoted word opened on an earlier line is kept as code. Unknown quoting keeps
+ * the line too (Issue #5353), and still joins a continuation: a `#` inside a
+ * backtick substitution does not hide the line end from Bash, and the joined
+ * text keeps every word for the regex readers (`stepMayRetagImage`, the
+ * `GITHUB_ENV`/`GITHUB_PATH` check) while the exact allowlists refuse a
+ * segment holding the backtick or `<<` (Issue #5348).
  */
 function codeOf(step: unknown): string {
   const lines: string[] = [];
@@ -275,15 +293,15 @@ function codeOf(step: unknown): string {
       quote === "" && continued !== "" &&
       continuedIntoComment(continued, physical)
     ) {
-      // The comment ends the command here and contributes no code; keeping
-      // its text would hand a trailing backslash to `shellCommands`, which
-      // would join the next line onto it.
+      // The `#` comment contributes no code: the command ends before it, and
+      // its physical line is dropped.
       lines.push(continued);
       continued = "";
       continue;
     }
-    quote = quoteStateAfter(quote, physical, continued);
-    if (endsInContinuation(line)) {
+    const scan = scanLine(quote, physical, continued);
+    quote = scan.open;
+    if (endsInContinuation(line) && !scan.comment) {
       continued = line.slice(0, -1);
       continue;
     }
@@ -820,7 +838,9 @@ const FILTER_CODE = [
  * A quoted word left open at a line end (a multi-line quoted word, or a
  * trailing backslash inside quotes) is refused, so a `#` line inside it is
  * never read as a comment; the result is then `["invalid open quote"]`
- * (Issue #5353).
+ * (Issue #5353). A `#` comment whose text ends in a backslash is refused the
+ * same way, with `["invalid comment continuation"]`, because Bash ends the
+ * comment at its newline and the next line is its own command (Issue #5348).
  */
 function codeLines(step: unknown): string[] {
   const code = runOf(step);
@@ -850,8 +870,12 @@ function codeLines(step: unknown): string[] {
     // A line starts outside quotes (any open quoting returns below), so a
     // quoted word left open here is multi-line and is refused: a `#` line
     // inside it must never be taken for a comment (Issue #5353).
-    if (quoteStateAfter("", physical, continued) !== "") {
-      return ["invalid open quote"];
+    const scan = scanLine("", physical, continued);
+    if (scan.open !== "") return ["invalid open quote"];
+    // A trailing comment ends at its physical newline, so its backslash is not
+    // a continuation (ShellCheck SC1143). Refuse it, as for a whole-line one.
+    if (scan.comment && physical.endsWith("\\")) {
+      return ["invalid comment continuation"];
     }
     const line = `${continued}${physical}`;
     if (firstBackslash !== -1 && firstBackslash === physical.length - 1) {
@@ -1245,7 +1269,7 @@ const GATE_COMMANDS = exactCommands(GATE_SCRIPT_PATH);
  * {@link codeOf} share {@link isCommentLine}, so neither drops a `#` line that
  * a continuation reaches (`.github/scripts/gate.sh\` then `# || true` is
  * `.github/scripts/gate.sh# || true`, so the script never runs and the step is
- * always green). Both also share {@link quoteStateAfter}, so neither drops a
+ * always green). Both also share {@link scanLine}, so neither drops a
  * `#` line inside a quoted word (Issue #5353). The gate step uses `codeLines`
  * because it compares exact lines against an allowlist (Issue #5110).
  */
