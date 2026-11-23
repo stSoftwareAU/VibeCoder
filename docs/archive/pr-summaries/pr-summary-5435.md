@@ -1,9 +1,9 @@
 ## Summary
 
 The `secret-cli-flag` rule read a credential flag's quoted value as
-`"[^"]+"|'[^']+'|\S+`, so `--token "ab\"cdSECRETtail"` redacted to
-`--token ***REDACTED***cdSECRETtail"` and the rest of the credential was
-published. The rule and the walk's two copies of it (`CLI_FLAG_AT`,
+`"[^"]+"|'[^']+'|\S+`, so a `--token` flag followed by the value
+`"ab\"cdSECRETtail"` had only `"ab\"` masked, and `cdSECRETtail"` (the rest of
+the credential) was published. The rule and the walk's two copies of it (`CLI_FLAG_AT`,
 `CLI_FLAG_RULE_G`) are now built from one shared value pattern,
 `CLI_FLAG_VALUE`. It carries the escape-aware quoted branches Issue #5327 gave
 `SECRET_ASSIGNMENT_PATTERN`, so a flag value holding an escaped quote of its own
@@ -26,7 +26,7 @@ kind is masked whole. Closes #5435.
   of all three regexes are unchanged. Only the value alternation differs.
 - The mask still removes the quotes (`--token ***REDACTED***`), as it did before
   for a plain quoted flag value.
-- A value whose escape never closes (`--token "C:\dir\" more`), or one past
+- A value whose escape never closes (the value `"C:\dir\"` after `--token`), or one past
   the 4,096 bound, still ends at the first quote. That is the base behaviour.
 
 ### Undiscoverable Facts
@@ -46,10 +46,9 @@ This is a backend-only change (`worker/deno/lib/secret_redaction.ts`).
 
 - **Failing first:** the new test file was run against the unfixed rule. The
   six escaped-quote cases, the three walk cases and the many-flags linearity
-  case failed. For example, the issue's own input gave
-  `--token ***REDACTED***cdSECRETtail"`. After the fix, all 15 tests pass.
-- **Walk stays in step:** on the unfixed code, `--password 'al\'pha beta TOKEN='tail`
-  published `pha beta`. With the fix, every copy reads the same value, so the
+  case failed. For example, the issue's own input left `cdSECRETtail"` unmasked. After the fix, all 15 tests pass.
+- **Walk stays in step:** on the unfixed code, a `--password` flag whose value is
+  `'al\'pha beta`, followed by a `TOKEN=` label, published `pha beta`. With the fix, every copy reads the same value, so the
   whole value is masked.
 - **Linearity (Issue #3942):** each escape-aware branch is bounded. Hostile
   inputs (20,000 unclosed `\"`, 20,000 `''`, 10,000 `'\''`, and 5,000 flags)
