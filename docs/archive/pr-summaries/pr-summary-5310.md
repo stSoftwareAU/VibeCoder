@@ -91,7 +91,7 @@ along with both checks on the rule's pattern identity.
 behaviour applies (a 256-character search span, a 4,096-character double-quoted
 inner value, a 128-character label, and the embedded-quote case).
 `.github/gitleaks.toml` exempts two exact historical mentions of the new test's
-synthetic fixture (see Test Plan).
+synthetic fixture and the new test file by path (see Test Plan).
 
 Closes #5310.
 
@@ -395,7 +395,7 @@ flowchart LR
     head was left out because it does not return on some of these inputs.
 - **Review round 15** — two items:
   - **A masked assignment on the line after the inner value.** The wrapped-run
-    check read `<value>\nAPI_KEY=abcdefgh1234` from the unmasked text and kept
+    check read `<value>\nAPI_KEY=<other value>` from the unmasked text and kept
     main's result, but main runs the decode pass after the assignment rule, so
     it sees `<value>\nAPI_KEY=` and masks nothing. The run is now cut at the
     first value the walk masks after the inner value (`maskedValueStart`), so
@@ -738,6 +738,10 @@ flowchart LR
     (Issues #4705, #5083) rather than rewriting the pushed branch.
   - `gitleaks git --config .github/gitleaks.toml --log-opts="origin/main..770765920"`
     reported 1 leak before the edit and none after it.
+  - The test file's many synthetic `API_KEY=`/`ADMIN_TOKEN=` placeholder lines
+    tripped `generic-api-key` in the range scan, so the test file is allowlisted
+    by path, as the other redaction fixtures are. The same placeholder in
+    `SECURITY.md` and this summary is now written as `<other value>`.
   - In a temp directory, a higher-entropy value on the same line shape is still
     reported under the edited config, so the exemption is exact.
   - `gitleaks_template_conformance_test.ts` and `gitleaks_check_test.ts`: 42
@@ -768,7 +772,7 @@ flowchart LR
     covers this shape.
 - When more than 8 credential keys sit between the inner value and the first
   value masked after it (eight lines such as `GITHUB_TOKEN`, `NPM_TOKEN`, ...
-  with no separator, then `ADMIN_TOKEN=abcdefgh1234`), the wrapped run is read
+  with no separator, then `ADMIN_TOKEN=<other value>`), the wrapped run is read
   whole and keeps the base result, so the inner value is published as on base. A
   test pins that output, and seven such lines mask the value.
 - One label-as-value shape is still not final, and publishes nothing: a

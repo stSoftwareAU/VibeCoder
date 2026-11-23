@@ -176,4 +176,10 @@ paths = [
   # the literals in one piece, and the range scan covers it, so only a path
   # allowlist clears it.
   '''worker/deno/tests/secret_redaction_json_structure_test\.ts''',
+  # Fake `API_KEY=` / `ADMIN_TOKEN=` placeholder values (Issue #5310) written
+  # as adjacent labels after a credential label, to prove the assignment rule
+  # masks a label consumed as the value of an earlier credential. The values
+  # are obviously synthetic, and gitleaks scans every commit in the PR range,
+  # so only a path allowlist clears the scan.
+  '''worker/deno/tests/secret_redaction_label_as_value_5310_test\.ts''',
 ]
