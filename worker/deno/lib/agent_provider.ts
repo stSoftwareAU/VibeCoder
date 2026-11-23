@@ -139,8 +139,8 @@ import {
 import type { RepoConfig, Result } from "../types.ts";
 import type { OrchestrationRefusal } from "./orchestration/types.ts";
 import {
-  buildGeminiMcpServers,
   buildGeminiToolSettings,
+  readGeminiMcpServers,
   writeGeminiRunSettings,
 } from "./gemini_settings.ts";
 
@@ -1148,24 +1148,10 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
     const routing = resolveInvocationRouting(this, request);
     let mcpServerNames: string[] = [];
     if (request.mcpConfigPath) {
-      let json: string;
-      try {
-        json = Deno.readTextFileSync(request.mcpConfigPath);
-      } catch (error) {
-        throw new Error(
-          `Gemini MCP config at ${request.mcpConfigPath} could not be read: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-      mcpServerNames = Object.keys(buildGeminiMcpServers(json));
-      if (mcpServerNames.length === 0) {
-        throw new Error(
-          `Gemini MCP config at ${request.mcpConfigPath} produced no ` +
-            `usable mcpServers entry; refusing to run without the requested ` +
-            `MCP servers (Issue #5343).`,
-        );
-      }
+      // The same reader as the settings file's `mcpServers` (Issue #5343).
+      const servers = readGeminiMcpServers(request.mcpConfigPath);
+      if (!servers.ok) throw servers.error;
+      mcpServerNames = Object.keys(servers.value);
     }
     return buildGeminiArgs({
       prompt: request.prompt,

@@ -144,6 +144,46 @@ export function buildGeminiMcpServers(
   return Object.fromEntries(pairs);
 }
 
+/**
+ * Reads the run's MCP config into Gemini's `mcpServers` setting (Issue #5343).
+ *
+ * The one reader behind both the argv's `--allowed-mcp-server-names` and the
+ * settings file's `mcpServers`, so the two carry the same servers and refuse
+ * the same configs. A config that cannot be read, or yields no usable server,
+ * is an error, as Codex's is.
+ *
+ * @param path - The run's `--mcp-config` file.
+ * @returns The servers keyed by name, or why the run must be refused.
+ */
+export function readGeminiMcpServers(
+  path: string,
+): Result<Record<string, GeminiMcpServer>> {
+  let json: string;
+  try {
+    json = Deno.readTextFileSync(path);
+  } catch (error) {
+    return {
+      ok: false,
+      error: new Error(
+        `the Gemini MCP config at ${path} could not be read: ${
+          causeOf(error)
+        }; refusing to run without the requested MCP servers (Issue #5343)`,
+      ),
+    };
+  }
+  const servers = buildGeminiMcpServers(json);
+  if (Object.keys(servers).length === 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `the Gemini MCP config at ${path} produced no usable mcpServers ` +
+          "entry; refusing to run without the requested MCP servers (Issue #5343)",
+      ),
+    };
+  }
+  return { ok: true, value: servers };
+}
+
 /** The cause of a thrown value, as a message. */
 function causeOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -191,31 +231,9 @@ export async function writeGeminiRunSettings(request: {
   if (!built.ok) return { ok: false, error: new Error(built.refusal.message) };
 
   if (request.mcpConfigPath) {
-    const path = request.mcpConfigPath;
-    let json: string;
-    try {
-      json = await Deno.readTextFile(path);
-    } catch (error) {
-      return {
-        ok: false,
-        error: new Error(
-          `the Gemini MCP config at ${path} could not be read: ${
-            causeOf(error)
-          }; refusing to run without the requested MCP servers (Issue #5343)`,
-        ),
-      };
-    }
-    const servers = buildGeminiMcpServers(json);
-    if (Object.keys(servers).length === 0) {
-      return {
-        ok: false,
-        error: new Error(
-          `the Gemini MCP config at ${path} produced no usable mcpServers ` +
-            "entry; refusing to run without the requested MCP servers (Issue #5343)",
-        ),
-      };
-    }
-    built.settings.mcpServers = servers;
+    const servers = readGeminiMcpServers(request.mcpConfigPath);
+    if (!servers.ok) return servers;
+    built.settings.mcpServers = servers.value;
   }
 
   const configuredRoot = (request.env?.("TMPDIR") ?? "").trim();

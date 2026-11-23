@@ -493,6 +493,29 @@ Deno.test("gemini MCP servers (Issue #5343) - a config with no usable server ref
   }
 });
 
+Deno.test("gemini MCP servers (Issue #5343) - the argv and the settings file share one reader, so they refuse with the same error", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_shared_" });
+  try {
+    const mcpConfigPath = await mcpConfigIn(root, "not json");
+    const prepare = gemini.prepareRunSettings;
+    assert(prepare, "the Gemini descriptor writes a per-run settings file");
+    const prepared = await prepare({
+      disallowedTools: [],
+      env: envFrom({ TMPDIR: root }),
+      mcpConfigPath,
+    });
+    assertEquals(prepared.ok, false);
+    if (prepared.ok) return;
+    const thrown = assertThrows(
+      () => gemini.buildInvocation({ prompt: "P", mcpConfigPath }),
+      Error,
+    );
+    assertEquals(thrown.message, prepared.error.message);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Cross-vendor credentials never cross (the denylist enforces it)
 // ---------------------------------------------------------------------------
