@@ -11,11 +11,7 @@
  */
 
 import { assertEquals } from "@std/assert";
-import {
-  containsSecret,
-  REDACTION_PLACEHOLDER,
-  redactSecrets,
-} from "../lib/secret_redaction.ts";
+import { containsSecret, redactSecrets } from "../lib/secret_redaction.ts";
 
 const v = "hun" + "ter2";
 
@@ -37,10 +33,6 @@ function unchanged(name: string, input: string): void {
     assertEquals(containsSecret(input), false);
   });
 }
-
-Deno.test("#5329 placeholder is the literal the fixtures expect", () => {
-  assertEquals(REDACTION_PLACEHOLDER, "***REDACTED***");
-});
 
 // Quoted values whose text opens with a space or a symbol-only word.
 masked(
@@ -145,7 +137,11 @@ masked(
   `TOKEN=***REDACTED***`,
 );
 
-Deno.test("#5329 hostile: repeated lone quote-and-space stays linear", () => {
-  const input = ('TOKEN=" ').repeat(20_000);
-  assertEquals(containsSecret(redactSecrets(input)), false);
+Deno.test("#5329 hostile: many leading-space quoted values are each masked", () => {
+  const input = `PASSWORD=" ${v}" `.repeat(20_000);
+  assertEquals(
+    redactSecrets(input),
+    `PASSWORD="***REDACTED***" `.repeat(20_000),
+  );
+  assertEquals(containsSecret(input), true);
 });

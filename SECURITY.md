@@ -646,10 +646,18 @@ and, apart from that check, **only when the separator crossed a line break**:
 - That handling has limits, past which the base behaviour applies (the label
   is masked as the earlier label's value and the inner value is published):
   the inner label's separator and value must start within 256 characters of
-  the outer value's end, a double-quoted inner value must close within 4,096
-  characters of its opening quote, the label must be at most 128 characters,
-  and a single-quoted inner value whose first word itself holds two `'` (as in
-  `DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
+  the outer value's end, a double-quoted inner value that opens with a line
+  break, or holds no letter or digit within the 256-character window, must
+  close within 4,096 characters of its opening quote (since Issue #5329 any
+  other is read as unterminated and masked whole), the label must be at most
+  128 characters, and a single-quoted inner value whose first word itself
+  holds two `'` (as in `DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
+
+Issue #5329 judges a quoted value inside its quotes: a letter or digit within
+its first 256 characters makes it a credential, so `PASSWORD=" hunter2"` and
+`API_KEY='#! s3cr3t'` are masked. A quoted value whose first letter or digit
+lies further in is not masked by this rule, and a double-quoted value with no
+closing quote is masked to the end of its line.
 
 `containsSecret()` asks the value predicate the same question the replacement
 does, so detection and redaction cannot drift apart — a body that redacts to

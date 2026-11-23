@@ -410,9 +410,12 @@ for (
   }
 }
 
-// Since #5329 the window probe reads the cut-off quoted value as unterminated, so the full-text match masks it.
+// Since #5329 the window probe reads the cut-off quoted value as unterminated,
+// so the full-text match masks it.
 Deno.test("#5310/#5329: a double-quoted inner value over 4,096 characters is masked whole", () => {
-  const once = redactSecrets(`credentials: DEPLOY_TOKEN = "${longValue(4097)}"`);
+  const once = redactSecrets(
+    `credentials: DEPLOY_TOKEN = "${longValue(4097)}"`,
+  );
   assertEquals(once, `credentials: DEPLOY_TOKEN = "${R}"`);
   assertEquals(redactSecrets(once), once);
   assertEquals(containsSecret(once), false);
