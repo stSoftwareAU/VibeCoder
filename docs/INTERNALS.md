@@ -5424,7 +5424,7 @@ flowchart TD
   `PATCH git/refs/heads/<branch>` and `force=false`, so GitHub refuses anything
   that is not a fast-forward and no commit is lost. Once a repair lands, the
   stale sync PRs pick it up on the next scan.
-- **A green human fix is adopted, not duplicated.** Before a repair PR is opened
+- **A human fix that is green, or still running, is adopted, not duplicated.** Before a repair PR is opened
   or adopted, the open PRs against the default branch are listed
   (`gh pr list --base <default> --state open`, limit 30). The first one that is
   not a sync or repair PR, is not held, whose head contains the default
@@ -5432,7 +5432,9 @@ flowchart TD
   red commit does not count), and whose head commit has succeeded on every held
   check is the fix, and a green fix always wins. Failing that, the first
   candidate by a login outside the fleet and not a bot account, with no held
-  check concluded `failure` and at least one check run not yet `completed` that
+  check completed without `success`, `neutral` or `skipped` (so `failure`,
+  `timed_out` and `cancelled` all count) and at least one check run not yet
+  `completed` that
   started within two hours (`RUNNING_FIX_WAIT_MS`), is the pending fix. A held
   check may not exist yet while CI is in flight (the `gate` check runs after the
   others), so an absent one is not a failure. A fleet or bot PR is never waited
@@ -5446,8 +5448,10 @@ flowchart TD
   place with `PATCH repos/<repo>/issues/comments/<id>`, so a changed held set
   never adds a second status comment. With no such comment, one is posted.
   Comments by other logins are ignored, and the fix PR's body is never edited.
-  A failed list, check-run read or comment read is logged with its error, and
-  the worker's repair PR path runs instead. A failed post or edit is logged with
+  A failed list, successful-check read or comment read is logged with its error,
+  and the worker's repair PR path runs instead. A failed check-run states read
+  is logged with its error, that candidate is not waited on, and the search
+  goes on to the next candidate. A failed post or edit is logged with
   its error and no repair PR is made this scan; it is retried next scan.
   Once a fix is adopted, the worker's own repair PR in that repo is not handed
   to the CI-fix agent in the same scan, since that would write the same fix

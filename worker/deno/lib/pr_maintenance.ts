@@ -887,14 +887,26 @@ export async function fetchFailedCheckRunsStrict(
 export const RUNNING_FIX_WAIT_MS = 2 * 60 * 60 * 1000;
 
 /**
+ * The completed conclusions that do not count as a failed check for the fix
+ * wait (Issue #5437). Any other completed conclusion does.
+ */
+const PASSING_CONCLUSIONS: ReadonlySet<string> = new Set([
+  "success",
+  "neutral",
+  "skipped",
+]);
+
+/**
  * The check runs of a commit that bear on waiting for a human fix PR (Issue
- * #5437), read with one `gh` call. `failed` names the checks whose conclusion
- * is `failure`. `running` names the checks not yet completed whose `started_at`
- * parses and lies within {@link RUNNING_FIX_WAIT_MS} of `now`.
+ * #5437), read with one `gh` call. `failed` names the checks completed without
+ * a `success`, `neutral` or `skipped` conclusion, so `failure`, `timed_out`,
+ * `cancelled`, `action_required` and `startup_failure` all count. `running`
+ * names the checks not yet completed whose `started_at` parses and lies within
+ * {@link RUNNING_FIX_WAIT_MS} of `now`.
  *
  * @throws Error when the call or its rows cannot be read, naming the field
  */
-async function fetchCheckRunStates(
+export async function fetchCheckRunStates(
   repo: string,
   sha: string,
   ghCommandFn: (args: string[]) => Promise<string>,
@@ -925,7 +937,13 @@ async function fetchCheckRunStates(
     if (typeof fields.status !== "string") {
       throw new Error(`check run "${fields.name}" on ${sha} has no status`);
     }
-    if (fields.conclusion === "failure") failed.add(fields.name);
+    if (
+      fields.status === "completed" &&
+      !(typeof fields.conclusion === "string" &&
+        PASSING_CONCLUSIONS.has(fields.conclusion))
+    ) {
+      failed.add(fields.name);
+    }
     const started = typeof fields.started_at === "string"
       ? Date.parse(fields.started_at)
       : Number.NaN;
@@ -2337,7 +2355,8 @@ async function handHeldFailureToRepairPr(input: {
  * tip is red on them it is held for the repair PR, and once the tip is green on
  * them the default branch is merged into the sync branch. A sync PR whose ancestry cannot be decided gets no CI-fix
  * target this scan. Before a repair PR is opened, an open human fix PR that is
- * green on every held check is adopted: the status is commented on it.
+ * green on every held check, or whose CI is still running with no held check
+ * failed (Issue #5437), is adopted: the status is commented on it.
  *
  * @param options - CI check scan options
  * @returns Result containing the highest priority failed check, or null
@@ -3004,8 +3023,9 @@ export async function findFailedCiChecks(
           ghCommandFn,
           logger,
         });
-      // Issue #5437: a human fix PR already passes the held checks, so this
-      // repo's worker repair PR is not handed to the CI-fix agent too. That
+      // Issue #5437: a human fix PR is green on the held checks, or still
+      // running with none failed, so this repo's worker repair PR is not handed
+      // to the CI-fix agent too. That
       // would write the same fix twice. Filtered after the step, because the
       // repair PR's failures were collected in the PR loop above.
       if (adoptedFixPr !== null) {
@@ -3013,7 +3033,7 @@ export async function findFailedCiChecks(
           if (failure.repo !== repo) continue;
           logger.skipReason(
             "red-default-branch-fix-adopted",
-            `${repo}#${failure.prNumber}: ${repo}#${adoptedFixPr} already passes the held checks; the repair PR waits (Issue #5437)`,
+            `${repo}#${failure.prNumber}: ${repo}#${adoptedFixPr} is the fix for the held checks (green, or CI still running with none failed); the repair PR waits (Issue #5437)`,
           );
         }
         const kept = repairFailures.filter((failure) => failure.repo !== repo);

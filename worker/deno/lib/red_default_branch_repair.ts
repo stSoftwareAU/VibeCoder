@@ -35,7 +35,11 @@ import {
   errorText,
   FULL_COMMIT_SHA_PATTERN,
 } from "./default_branch_ancestry.ts";
-import { isBotAuthorForMaintenance } from "./trust_exclusions.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
+import {
+  isBotAuthorForMaintenance,
+  normaliseGhAppLogin,
+} from "./trust_exclusions.ts";
 
 /** Head-branch prefix of the repair PR (Issue #5437). */
 export const RED_DEFAULT_BRANCH_REPAIR_PREFIX = "fix/red-default-branch-";
@@ -484,7 +488,10 @@ interface FixCandidate {
 export interface GreenFixPrRequest {
   repo: string;
   defaultBranch: string;
-  /** The held checks red on the tip. A fix must be green on every one. */
+  /**
+   * The held checks red on the tip. A fix must be green on every one, or, while
+   * its CI is still running, none may have failed (Issue #5437).
+   */
   checkNames: readonly string[];
   /** The held PRs, which are never the fix for themselves. */
   heldPrNumbers: readonly number[];
@@ -510,7 +517,8 @@ export interface GreenFixPrRequest {
   fleetLogins: readonly string[];
   /**
    * The check runs of a commit that bear on waiting (Issue #5437). `failed`
-   * names the checks whose conclusion is `failure`. `running` names the checks
+   * names the checks completed without `success`, `neutral` or `skipped`, so a
+   * `timed_out` or `cancelled` check counts too. `running` names the checks
    * not yet completed whose start is within the wait window. Throws when the
    * check runs cannot be read.
    */
@@ -593,9 +601,11 @@ function parseFixCandidates(output: string): FixCandidate[] {
  * The first remembered candidate is the fix when no green one is found, so the
  * caller opens no repair PR while it runs. The log records which case applied.
  *
- * Returns `null` when no candidate matches, or when the PR list or a check-run
- * read fails. A failed read is logged with its error, and the caller falls
- * back to the worker's repair PR. Never throws.
+ * Returns `null` when no candidate matches, or when the PR list or a candidate's
+ * successful-check read fails. A failed read is logged with its error, and the
+ * caller falls back to the worker's repair PR. A candidate whose check-run
+ * states cannot be read is logged with its error and is not waited on; the
+ * search goes on to the next candidate. Never throws.
  */
 export async function findGreenFixPr(
   request: GreenFixPrRequest,
@@ -683,8 +693,8 @@ export async function findGreenFixPr(
     }
     if (
       pendingFix !== null ||
-      request.fleetLogins.includes(pr.authorLogin) ||
-      isBotAuthorForMaintenance(pr.authorLogin)
+      isFleetAuthor(pr.authorLogin, [...request.fleetLogins]) ||
+      isBotAuthorForMaintenance(normaliseGhAppLogin(pr.authorLogin))
     ) {
       continue;
     }
@@ -695,9 +705,9 @@ export async function findGreenFixPr(
       logger.warn(
         `Red default branch: could not read the check runs on ${repo}#${pr.number} (${pr.headRefName}) to see whether its CI is still running: ${
           errorText(error)
-        }; falling back to the repair PR (Issue #5437)`,
+        }; it is not waited on, and the search goes on (Issue #5437)`,
       );
-      return null;
+      continue;
     }
     const heldFailed = checkNames.some((name) => states.failed.has(name));
     if (!heldFailed && states.running.size > 0) {

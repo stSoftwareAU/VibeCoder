@@ -23,10 +23,17 @@
  * Uses Australian English throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   type CiCheckScanOptions,
+  fetchCheckRunStates,
   findFailedCiChecks,
+  RUNNING_FIX_WAIT_MS,
 } from "../lib/pr_maintenance.ts";
 import {
   bodyCarriesRedDefaultBranchMarker,
@@ -1773,7 +1780,7 @@ Deno.test("findFailedCiChecks - with a green human fix PR adopted, the worker's 
     logger.skips.some((skip) =>
       skip.startsWith("red-default-branch-fix-adopted: ") &&
       skip.includes(
-        "org/repo#20: org/repo#5434 already passes the held checks; the repair PR waits",
+        "org/repo#20: org/repo#5434 is the fix for the held checks (green, or CI still running with none failed); the repair PR waits",
       )
     ),
   );
@@ -1865,7 +1872,7 @@ Deno.test("findFailedCiChecks - a bot-authored fix PR still running its CI is no
       5434,
       "dependabot/npm_and_yarn/lint",
       FIX_HEAD,
-      "dependabot[bot]",
+      "app/dependabot",
     ),
   ];
   fx.compare[FIX_HEAD] = "ahead";
@@ -1876,6 +1883,69 @@ Deno.test("findFailedCiChecks - a bot-authored fix PR still running its CI is no
   assertEquals(prCreateCalls(calls).length, 1);
   assertEquals(callsTo(calls, "pr", "comment").length, 0);
   assertEquals(statesReads(calls).length, 0);
+});
+
+Deno.test("findFailedCiChecks - a fleet PR whose login differs only in case is not waited on: the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  // The scan's login is `testbot`; GitHub logins compare case-insensitively.
+  fx.fixPrs = [humanFixPr(5434, "fix/mixed-case", FIX_HEAD, "TestBot")];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [runningRun("lint")] };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertEquals(statesReads(calls).length, 0);
+});
+
+Deno.test("findFailedCiChecks - a held check that timed out while another check runs is a failure: not waited on, and the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = {
+    [FIX_HEAD]: [{
+      name: "gitleaks",
+      status: "completed",
+      conclusion: "timed_out",
+      started_at: LONG_AGO,
+    }, runningRun("lint")],
+  };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(statesReads(calls).length, 1);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+});
+
+Deno.test("findFailedCiChecks - a candidate whose check-run states cannot be read is skipped, and a later green candidate is still adopted (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/unreadable-states", FIX_HEAD, "nleck"),
+    humanFixPr(5435, "fix/green", GREEN_FIX_HEAD, "alice"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.compare[GREEN_FIX_HEAD] = "ahead";
+  fx.greenChecks = { [GREEN_FIX_HEAD]: ["gitleaks"] };
+  fx.checkRunStateReadErrors = [FIX_HEAD];
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  const comments = callsTo(calls, "pr", "comment");
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]?.[2], "5435");
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not read the check runs on org/repo#5434") &&
+      warn.includes("HTTP 504: Gateway Timeout") &&
+      warn.includes("it is not waited on")
+    ),
+    `warns: ${logger.warns}`,
+  );
 });
 
 Deno.test("findFailedCiChecks - a human fix PR with a held check failed while another check runs is not waited on: the repair PR is opened (Issue #5437)", async () => {
@@ -1993,6 +2063,107 @@ Deno.test("findGreenFixPr - a PR row without its head commit fails the read, and
   assert(
     logger.warns.some((w) => w.includes("headRefOid")),
     `warns: ${logger.warns}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The check-run states the fix wait reads, with a fixed clock (Issue #5437)
+// ---------------------------------------------------------------------------
+
+/** A fixed clock for the wait-window cases. */
+const WINDOW_NOW = Date.parse("2026-11-23T12:00:00Z");
+
+/** A `gh` answer that returns `rows` as the check-run array. */
+function rowsGh(rows: unknown[]): (args: string[]) => Promise<string> {
+  return () => Promise.resolve(JSON.stringify(rows));
+}
+
+Deno.test("fetchCheckRunStates - a run started just inside the wait window is running (Issue #5437)", async () => {
+  const startedAt = new Date(WINDOW_NOW - (RUNNING_FIX_WAIT_MS - 60_000))
+    .toISOString();
+  const states = await fetchCheckRunStates(
+    REPO,
+    TIP,
+    rowsGh([{
+      name: "lint",
+      status: "in_progress",
+      conclusion: null,
+      started_at: startedAt,
+    }]),
+    WINDOW_NOW,
+  );
+  assertEquals([...states.running], ["lint"]);
+  assertEquals(states.failed.size, 0);
+});
+
+Deno.test("fetchCheckRunStates - a run started just outside the wait window is not running (Issue #5437)", async () => {
+  const startedAt = new Date(WINDOW_NOW - (RUNNING_FIX_WAIT_MS + 60_000))
+    .toISOString();
+  const states = await fetchCheckRunStates(
+    REPO,
+    TIP,
+    rowsGh([{
+      name: "lint",
+      status: "in_progress",
+      conclusion: null,
+      started_at: startedAt,
+    }]),
+    WINDOW_NOW,
+  );
+  assertEquals(states.running.size, 0);
+  assertEquals(states.failed.size, 0);
+});
+
+Deno.test("fetchCheckRunStates - a run with no usable start time is not running (Issue #5437)", async () => {
+  const states = await fetchCheckRunStates(
+    REPO,
+    TIP,
+    rowsGh([{
+      name: "lint",
+      status: "queued",
+      conclusion: null,
+      started_at: null,
+    }]),
+    WINDOW_NOW,
+  );
+  assertEquals(states.running.size, 0);
+});
+
+Deno.test("fetchCheckRunStates - a completed timed_out run is failed, and a success is not (Issue #5437)", async () => {
+  const states = await fetchCheckRunStates(
+    REPO,
+    TIP,
+    rowsGh([
+      {
+        name: "gitleaks",
+        status: "completed",
+        conclusion: "timed_out",
+        started_at: LONG_AGO,
+      },
+      {
+        name: "lint",
+        status: "completed",
+        conclusion: "success",
+        started_at: LONG_AGO,
+      },
+    ]),
+    WINDOW_NOW,
+  );
+  assertEquals([...states.failed], ["gitleaks"]);
+  assertEquals(states.running.size, 0);
+});
+
+Deno.test("fetchCheckRunStates - a check run row without a name throws, naming the field (Issue #5437)", async () => {
+  await assertRejects(
+    () =>
+      fetchCheckRunStates(
+        REPO,
+        TIP,
+        rowsGh([{ status: "completed", conclusion: "success" }]),
+        WINDOW_NOW,
+      ),
+    Error,
+    "has no name",
   );
 });
 
