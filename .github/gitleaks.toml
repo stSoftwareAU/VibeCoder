@@ -38,6 +38,9 @@
 #    fake TOKEN= value inside stream-json lines asserting the assignment
 #    rule masks them without breaking the line's JSON.
 #  - secret_redaction_label_as_value_5310_test.ts (Issue #5310): fake
+#    `API_KEY=`, `ADMIN_TOKEN=`, `token=` and similar values on the line
+#    after a label-as-value assignment, asserting `redactSecrets()` masks
+#    both values.
 #    DEPLOY_TOKEN / API_KEY / ADMIN_TOKEN values asserting a label consumed
 #    as the value of an earlier credential cannot publish that value.
 #
@@ -116,6 +119,11 @@ regexes = [
   '''^\s*"secrets:\\n  API_TOKEN: abcdefgh12345",\s*$''',
   # The PR summary quoted the same value in one commit; match only that backtick-quoted mention.
   '''`  API_TOKEN: abcdefgh12345`''',
+  # SECURITY.md and the PR summary quote the synthetic next-line values of
+  # the same test (`API_KEY=abcdefgh1234`, `ADMIN_TOKEN=abcdefgh1234`) in
+  # the commit that merged it. Match only a backtick-quoted mention of that
+  # exact value.
+  '''`[^`]*(API_KEY|ADMIN_TOKEN)=abcdefgh1234`''',
   # Issue #5310: SECURITY.md and the PR summary quote the synthetic follow-on
   # assignments (`API_KEY=...`, `ADMIN_TOKEN=...`) of the label-as-value
   # fixtures. Match each quoted mention by its surrounding prose only.
@@ -186,6 +194,11 @@ paths = [
   # the literals in one piece, and the range scan covers it, so only a path
   # allowlist clears it.
   '''worker/deno/tests/secret_redaction_json_structure_test\.ts''',
+  # Fake next-line credential values (`API_KEY=abcdefgh1234`,
+  # `ADMIN_TOKEN=abcdefgh1234`, `token=abc123def456`, ...) fed to
+  # `redactSecrets()` to prove a label-as-value assignment and the line after
+  # it are both masked (Issue #5310). The merge commit carries them literally,
+  # and range scans cover it, so only a path allowlist clears it.
   # Fake DEPLOY_TOKEN / API_KEY / ADMIN_TOKEN values (interpolated from
   # fixtures at run time) fed to `redactSecrets()` to prove a label consumed
   # as the value of an earlier credential cannot publish that value
