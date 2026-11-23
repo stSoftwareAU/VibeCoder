@@ -15,7 +15,9 @@
  *   later scan tell whether the status is already current.
  * - `findGreenFixPr` finds an open human-authored fix PR against the default
  *   branch whose head contains the default branch's tip and whose own CI is
- *   green on every held check. `postRedDefaultBranchStatusComment`
+ *   green on every held check, or is still running with no held check failed
+ *   (Issue #5437: a held check may not exist yet while CI is in flight, and a
+ *   fleet-authored or bot PR is never waited on). `postRedDefaultBranchStatusComment`
  *   then records the status there as one comment, edited in place when the
  *   tip or the held set changes, so the human's body is never overwritten.
  *   Only when no such PR exists does the worker open or adopt its repair PR.
@@ -33,6 +35,7 @@ import {
   errorText,
   FULL_COMMIT_SHA_PATTERN,
 } from "./default_branch_ancestry.ts";
+import { isBotAuthorForMaintenance } from "./trust_exclusions.ts";
 
 /** Head-branch prefix of the repair PR (Issue #5437). */
 export const RED_DEFAULT_BRANCH_REPAIR_PREFIX = "fix/red-default-branch-";
@@ -498,6 +501,22 @@ export interface GreenFixPrRequest {
    * commit's check runs cannot be read.
    */
   readSuccessfulCheckNames: (sha: string) => Promise<ReadonlySet<string>>;
+  /**
+   * The logins of the fleet's own PRs. A PR by one of them is never waited on
+   * while its CI runs: it is not a human fix, and waiting on it would starve
+   * the repair while fleet CI churns (Issue #5437). Bot accounts are never
+   * waited on either, by `isBotAuthorForMaintenance`.
+   */
+  fleetLogins: readonly string[];
+  /**
+   * The check runs of a commit that bear on waiting (Issue #5437). `failed`
+   * names the checks whose conclusion is `failure`. `running` names the checks
+   * not yet completed whose start is within the wait window. Throws when the
+   * check runs cannot be read.
+   */
+  readCheckRunStates: (
+    sha: string,
+  ) => Promise<{ failed: ReadonlySet<string>; running: ReadonlySet<string> }>;
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Logger;
 }
@@ -556,16 +575,23 @@ function parseFixCandidates(output: string): FixCandidate[] {
 }
 
 /**
- * Find an open fix PR against the default branch that already passes the
- * held checks (Issue #5437), such as a human's fix. A candidate is any open
- * PR against `defaultBranch` with a head commit, other than a sync branch, a
- * repair-prefix branch or a held PR. A candidate qualifies only when its head
- * contains the default branch's tip (`contains-default`), so a stale branch
- * that lacks the red commit cannot pass for the fix. The first qualifying
- * candidate whose successful check names include every name in `checkNames`
- * is the fix. A candidate whose ancestry is `on-default` or `diverged` is
- * skipped silently; one whose ancestry is `unknown` is skipped with a warning
- * quoting the cause.
+ * Find an open fix PR against the default branch for the held checks (Issue
+ * #5437), such as a human's fix. A candidate is any open PR against
+ * `defaultBranch` with a head commit, other than a sync branch, a repair-prefix
+ * branch or a held PR. A candidate qualifies only when its head contains the
+ * default branch's tip (`contains-default`), so a stale branch that lacks the
+ * red commit cannot pass for the fix. A candidate whose ancestry is
+ * `on-default` or `diverged` is skipped silently; one whose ancestry is
+ * `unknown` is skipped with a warning quoting the cause.
+ *
+ * A qualifying candidate whose successful check names include every name in
+ * `checkNames` is the fix, and it wins at once. Otherwise, a candidate whose
+ * login is neither in `fleetLogins` nor a bot account
+ * (`isBotAuthorForMaintenance`) and whose CI is still running is remembered,
+ * when no held check has failed on it: a held check may not exist yet while CI
+ * is in flight. Scanning continues past it, so a green candidate still wins.
+ * The first remembered candidate is the fix when no green one is found, so the
+ * caller opens no repair PR while it runs. The log records which case applied.
  *
  * Returns `null` when no candidate matches, or when the PR list or a check-run
  * read fails. A failed read is logged with its error, and the caller falls
@@ -618,6 +644,8 @@ export async function findGreenFixPr(
     !pr.headRefName.startsWith(RED_DEFAULT_BRANCH_REPAIR_PREFIX) &&
     !held.has(pr.number)
   );
+  /** The first candidate whose CI is still running, with no held check failed. */
+  let pendingFix: FixCandidate | null = null;
   for (const pr of candidates) {
     const ancestry = await request.readAncestry(pr.headRefOid);
     if (ancestry.status === "unknown") {
@@ -653,6 +681,38 @@ export async function findGreenFixPr(
         authorLogin: pr.authorLogin,
       };
     }
+    if (
+      pendingFix !== null ||
+      request.fleetLogins.includes(pr.authorLogin) ||
+      isBotAuthorForMaintenance(pr.authorLogin)
+    ) {
+      continue;
+    }
+    let states: { failed: ReadonlySet<string>; running: ReadonlySet<string> };
+    try {
+      states = await request.readCheckRunStates(pr.headRefOid);
+    } catch (error) {
+      logger.warn(
+        `Red default branch: could not read the check runs on ${repo}#${pr.number} (${pr.headRefName}) to see whether its CI is still running: ${
+          errorText(error)
+        }; falling back to the repair PR (Issue #5437)`,
+      );
+      return null;
+    }
+    const heldFailed = checkNames.some((name) => states.failed.has(name));
+    if (!heldFailed && states.running.size > 0) {
+      pendingFix = pr;
+    }
+  }
+  if (pendingFix !== null) {
+    logger.info(
+      `Red default branch: ${repo}#${pendingFix.number} (${pendingFix.headRefName}, by ${pendingFix.authorLogin}) has its CI still running on ${defaultBranch} and no held check has failed, so it is the pending fix; no repair PR is opened while its CI runs (Issue #5437)`,
+    );
+    return {
+      number: pendingFix.number,
+      headRefName: pendingFix.headRefName,
+      authorLogin: pendingFix.authorLogin,
+    };
   }
   return null;
 }

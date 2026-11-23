@@ -11,6 +11,8 @@
  * - a sync failure the default branch does not share still gets its fix;
  * - a green human fix PR is adopted only when its head contains the default
  *   branch's tip, so a stale branch cannot pass for the fix;
+ * - a human fix PR whose CI is still running, with no held check failed, is
+ *   waited on rather than duplicated; a fleet or bot PR or a stale run is not;
  * - an undecidable ancestry stands the sync PR down for the scan;
  * - a non-sync PR is held only when the tip and its merge base are both red
  *   on the check, so a check its own base lacks is never inherited;
@@ -126,6 +128,21 @@ interface Fixture {
   repairFiles?: Record<string, number | "error">;
   /** Names of the check runs still running, keyed by the ref read. */
   pendingChecks?: Record<string, string[]>;
+  /**
+   * The check runs of each ref with their status, conclusion and start time,
+   * as the fix search's states read sees them (Issue #5437).
+   */
+  checkRunStates?: Record<string, CheckRunStateFixture[]>;
+  /** Refs whose check-run states read fails with a `gh` error (Issue #5437). */
+  checkRunStateReadErrors?: string[];
+}
+
+/** One check run in a {@link Fixture.checkRunStates} answer (Issue #5437). */
+interface CheckRunStateFixture {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  started_at: string | null;
 }
 
 /** A recording logger, so the scan's warnings and skips can be asserted. */
@@ -293,6 +310,15 @@ function ghStub(
     if (run !== null) {
       if (fx.checkReadErrors?.includes(run[1] ?? "")) {
         return Promise.reject(new Error("HTTP 500: Internal Server Error"));
+      }
+      // The fix search's states read names `started_at` (Issue #5437).
+      if (args.some((arg) => arg.includes("started_at"))) {
+        if (fx.checkRunStateReadErrors?.includes(run[1] ?? "")) {
+          return Promise.reject(new Error("HTTP 504: Gateway Timeout"));
+        }
+        return Promise.resolve(
+          JSON.stringify(fx.checkRunStates?.[run[1] ?? ""] ?? []),
+        );
       }
       // The repair PR's running-check read selects incomplete check runs.
       if (args.some((arg) => arg.includes('"completed"'))) {
@@ -1753,6 +1779,193 @@ Deno.test("findFailedCiChecks - with a green human fix PR adopted, the worker's 
   );
 });
 
+// ---------------------------------------------------------------------------
+// A human fix PR still running its CI is waited on (Issue #5437)
+// ---------------------------------------------------------------------------
+
+/** A green-on-gitleaks head, for a second human fix PR in these cases. */
+const GREEN_FIX_HEAD = "f7".repeat(20);
+/** A start time far outside the wait window. */
+const LONG_AGO = "2026-01-01T00:00:00Z";
+
+/** A check run still running, started now (inside the wait window). */
+function runningRun(name: string): CheckRunStateFixture {
+  return {
+    name,
+    status: "in_progress",
+    conclusion: null,
+    started_at: new Date().toISOString(),
+  };
+}
+
+/** A check run that has completed with a failure. */
+function failedRun(name: string): CheckRunStateFixture {
+  return {
+    name,
+    status: "completed",
+    conclusion: "failure",
+    started_at: LONG_AGO,
+  };
+}
+
+/** Every check-run states read, which names `started_at` in its `--jq`. */
+function statesReads(calls: string[][]) {
+  return calls.filter((args) =>
+    args[0] === "api" && args.some((arg) => arg.includes("started_at"))
+  );
+}
+
+Deno.test("findFailedCiChecks - a human fix PR still running its CI, with the held check not yet created, is adopted: no repair PR, and its status is commented on it once (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [runningRun("lint")] };
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(gitWrites(calls).length, 0);
+  const comments = callsTo(calls, "pr", "comment");
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]?.[2], "5434");
+  assert(
+    logger.infos.some((info) =>
+      info.includes("org/repo#5434") &&
+      info.includes("by nleck") &&
+      info.includes("still running")
+    ),
+    `infos: ${logger.infos}`,
+  );
+  assertEquals(logger.warns, []);
+});
+
+Deno.test("findFailedCiChecks - a fleet-authored PR still running its CI is not waited on: the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  // `testbot` is the scan's own login, so it is in the fleet author set.
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "testbot"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [runningRun("lint")] };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertEquals(statesReads(calls).length, 0);
+});
+
+Deno.test("findFailedCiChecks - a bot-authored fix PR still running its CI is not waited on: the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  // Dependabot is a bot, not in the fleet author set: only the bot check applies.
+  fx.fixPrs = [
+    humanFixPr(
+      5434,
+      "dependabot/npm_and_yarn/lint",
+      FIX_HEAD,
+      "dependabot[bot]",
+    ),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [runningRun("lint")] };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assertEquals(statesReads(calls).length, 0);
+});
+
+Deno.test("findFailedCiChecks - a human fix PR with a held check failed while another check runs is not waited on: the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = {
+    [FIX_HEAD]: [failedRun("gitleaks"), runningRun("lint")],
+  };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(statesReads(calls).length, 1);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+});
+
+Deno.test("findFailedCiChecks - a human fix PR whose only running check started long ago is not waited on: the repair PR is opened (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStates = {
+    [FIX_HEAD]: [{
+      name: "lint",
+      status: "in_progress",
+      conclusion: null,
+      started_at: LONG_AGO,
+    }],
+  };
+  const { value, calls } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(statesReads(calls).length, 1);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+});
+
+Deno.test("findFailedCiChecks - a running human fix PR does not win over a second candidate green on every held check: the green one is commented on (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/still-running", FIX_HEAD, "nleck"),
+    humanFixPr(5435, "fix/green", GREEN_FIX_HEAD, "alice"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.compare[GREEN_FIX_HEAD] = "ahead";
+  fx.checkRunStates = { [FIX_HEAD]: [runningRun("lint")] };
+  fx.greenChecks = { [GREEN_FIX_HEAD]: ["gitleaks"] };
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(statesReads(calls).length, 1);
+  assertEquals(prCreateCalls(calls).length, 0);
+  const comments = callsTo(calls, "pr", "comment");
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]?.[2], "5435");
+  assertStringIncludes(
+    argAfter(comments[0] ?? [], "--body") ?? "",
+    "fix in #5435.",
+  );
+  assertEquals(
+    logger.infos.some((info) => info.includes("org/repo#5434")),
+    false,
+  );
+});
+
+Deno.test("findFailedCiChecks - a failed check-run states read warns with the gh error and opens the repair PR (Issue #5437)", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
+  fx.fixPrs = [
+    humanFixPr(5434, "fix/gitleaks-allow-5310-fixtures", FIX_HEAD, "nleck"),
+  ];
+  fx.compare[FIX_HEAD] = "ahead";
+  fx.checkRunStateReadErrors = [FIX_HEAD];
+  const { value, calls, logger } = await scan(fx);
+
+  assertEquals(value, null);
+  assertEquals(prCreateCalls(calls).length, 1);
+  assertEquals(callsTo(calls, "pr", "comment").length, 0);
+  assert(
+    logger.warns.some((warn) =>
+      warn.includes("could not read the check runs on org/repo#5434") &&
+      warn.includes("HTTP 504: Gateway Timeout")
+    ),
+    `warns: ${logger.warns}`,
+  );
+});
+
 Deno.test("findGreenFixPr - a PR row without its head commit fails the read, and the warn names headRefOid (Issue #5437)", async () => {
   const logger = makeLogger();
   const fix = await findGreenFixPr({
@@ -1764,6 +1977,12 @@ Deno.test("findGreenFixPr - a PR row without its head commit fails the read, and
     readAncestry: () =>
       Promise.resolve({ status: "contains-default" as const }),
     readSuccessfulCheckNames: () => Promise.resolve(new Set(["lint"])),
+    fleetLogins: [],
+    readCheckRunStates: () =>
+      Promise.resolve({
+        failed: new Set<string>(),
+        running: new Set<string>(),
+      }),
     ghCommandFn: () =>
       Promise.resolve(JSON.stringify([
         { number: 12, headRefName: "human/fix", author: { login: "alice" } },

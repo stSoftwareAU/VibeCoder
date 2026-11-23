@@ -5376,7 +5376,7 @@ flowchart TD
     H --> F{"Head behind the tip?"}
     F -- yes --> FF["Fast-forward to the tip, force=false"]
     H --> R{"Tip red on a held check?"}
-    R -- yes --> G{"Open human fix PR green on every held check?"}
+    R -- yes --> G{"Open human fix PR green on every held check, or still running with none failed?"}
     G -- yes --> C["One status comment, edited in place; no repair PR"]
     G -- no --> P["One repair PR per repo: fix/red-default-branch-sha12"]
     P --> Q["Its own red CI goes to the CI-fix agent first"]
@@ -5430,8 +5430,15 @@ flowchart TD
   not a sync or repair PR, is not held, whose head contains the default
   branch's tip (the compare status is `ahead`, so a stale branch cut before the
   red commit does not count), and whose head commit has succeeded on every held
-  check is the fix. A candidate whose ancestry cannot be read is skipped with a
-  warning quoting the error. The status is then kept as one comment on it,
+  check is the fix, and a green fix always wins. Failing that, the first
+  candidate by a login outside the fleet and not a bot account, with no held
+  check concluded `failure` and at least one check run not yet `completed` that
+  started within two hours (`RUNNING_FIX_WAIT_MS`), is the pending fix. A held
+  check may not exist yet while CI is in flight (the `gate` check runs after the
+  others), so an absent one is not a failure. A fleet or bot PR is never waited
+  on, and a run with no usable start time does not hold the repair. A candidate whose ancestry
+  cannot be read is skipped with a warning quoting the error. The status is then
+  kept as one comment on it,
   carrying the `vibe-red-default-branch-hold` marker, and no repair PR is made.
   The status is the newest comment by a fleet login whose body ends with a
   marker. If it carries the identical marker (the tip and the held set), a
@@ -5446,7 +5453,8 @@ flowchart TD
   to the CI-fix agent in the same scan, since that would write the same fix
   twice. Its failure is skipped with the reason `red-default-branch-fix-adopted`.
 - **One repair PR.** A repair PR is raised only when the tip itself is red on a
-  held check, and no green human fix PR was found. It is an empty commit on the
+  held check, and no human fix PR was found that is green on every held check
+  or still running with none failed. It is an empty commit on the
   tip (GitHub refuses a PR with no commits), on a `fix/red-default-branch-<sha12>`
   branch, opened against the default branch. A later scan adopts an open repair
   PR with that prefix (the lowest number) rather than opening another: one in

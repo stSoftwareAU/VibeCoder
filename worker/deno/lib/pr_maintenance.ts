@@ -879,6 +879,68 @@ export async function fetchFailedCheckRunsStrict(
 }
 
 /**
+ * How long a check run may have been running and still hold the repair for a
+ * human fix PR (Issue #5437). A run started longer ago than this, or with no
+ * usable start time, does not hold it: a queued run that never starts must not
+ * hold the repair forever.
+ */
+export const RUNNING_FIX_WAIT_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * The check runs of a commit that bear on waiting for a human fix PR (Issue
+ * #5437), read with one `gh` call. `failed` names the checks whose conclusion
+ * is `failure`. `running` names the checks not yet completed whose `started_at`
+ * parses and lies within {@link RUNNING_FIX_WAIT_MS} of `now`.
+ *
+ * @throws Error when the call or its rows cannot be read, naming the field
+ */
+async function fetchCheckRunStates(
+  repo: string,
+  sha: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  now: number = Date.now(),
+): Promise<{ failed: Set<string>; running: Set<string> }> {
+  const rows = parseJsonArrayPages(
+    await ghCommandFn([
+      "api",
+      `repos/${repo}/commits/${sha}/check-runs?per_page=100`,
+      "--paginate",
+      "--jq",
+      ".check_runs | [.[] | {name: .name, status: .status, conclusion: .conclusion, started_at: .started_at}]",
+    ]),
+  );
+  const failed = new Set<string>();
+  const running = new Set<string>();
+  for (const row of rows) {
+    const fields =
+      (typeof row === "object" && row !== null ? row : {}) as Record<
+        string,
+        unknown
+      >;
+    if (typeof fields.name !== "string") {
+      throw new Error(
+        `a check run on ${sha} has no name: ${JSON.stringify(row)}`,
+      );
+    }
+    if (typeof fields.status !== "string") {
+      throw new Error(`check run "${fields.name}" on ${sha} has no status`);
+    }
+    if (fields.conclusion === "failure") failed.add(fields.name);
+    const started = typeof fields.started_at === "string"
+      ? Date.parse(fields.started_at)
+      : Number.NaN;
+    if (
+      fields.status !== "completed" &&
+      Number.isFinite(started) &&
+      Math.abs(now - started) <= RUNNING_FIX_WAIT_MS
+    ) {
+      running.add(fields.name);
+    }
+  }
+  return { failed, running };
+}
+
+/**
  * Fetch failed check runs for a branch.
  *
  * A `gh` or parse failure reads as no failed checks here. A caller that must
@@ -1974,9 +2036,13 @@ async function mergeDefaultBranchIntoSyncBranch(
  * has (a repair has landed) needs no PR.
  *
  * Before a worker repair PR is opened or adopted, an open human fix PR against
- * the default branch that is green on every held check is looked for. When one
- * is found, the status is posted to it as a comment and no repair PR is made.
- * If the fix search or the comment read fails, the worker repair PR path runs.
+ * the default branch is looked for: one that is green on every held check, or
+ * whose CI is still running with no held check failed (Issue #5437), since a
+ * held check may not exist yet while CI is in flight. A fleet-authored or bot
+ * PR is never waited on. When one is found, the status is posted to it as a comment
+ * and no repair PR is made, so the repair is not written a second time while
+ * the human's fix runs. If the fix search or the comment read fails, the worker
+ * repair PR path runs.
  *
  * @returns The adopted fix PR's number when one was adopted (the caller then
  *   keeps the worker's repair PR out of this scan's hand-offs), the worker's
@@ -2048,6 +2114,8 @@ async function repairHeldDefaultBranch(input: {
         (await fetchFailedCheckRunsStrict(repo, sha, ghCommandFn, ["success"]))
           .map((check) => check.name),
       ),
+    fleetLogins: scanAuthors,
+    readCheckRunStates: (sha) => fetchCheckRunStates(repo, sha, ghCommandFn),
     ghCommandFn,
     logger,
   });
