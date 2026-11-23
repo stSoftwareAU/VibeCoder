@@ -106,8 +106,8 @@ PRs, repair once (Issue #5437)", and the "Shift-left detection" section of
 `docs/workflows/fleet-pr-babysitter.md`. The "Base-branch failure (deferral)"
 bullet and the paragraph after the deferral chart in `docs/workflows/ci-fix.md`,
 the `ci_fix` row of `docs/PROMPTS.md`, and the `_resolveBaseBranchDeferral` doc
-comment name the repair PR as a second exception to deferral. New modules are claimed in
-`docs/audits/lib-sweep-coverage/top-up-5437.json`.
+comment name the repair PR as a second exception to deferral. New modules are
+claimed in `docs/audits/lib-sweep-coverage/top-up-5437.json`.
 
 ## Reproduction
 
@@ -210,15 +210,15 @@ comment name the repair PR as a second exception to deferral. New modules are cl
   `worker/deno/lib/red_default_branch_repair.ts` — reason: fixed in this diff
   (one `errorText` and one `FULL_COMMIT_SHA_PATTERN` exported from
   `worker/deno/lib/default_branch_ancestry.ts`)
-- **violation** — Every changed call site needs a test that goes red without
-  it: the `repairsDefaultBranch` wiring in `processCiFailure` had no covering
-  test — evidence: `worker/deno/lib/pr_ci_processor.ts:2002` — reason: fixed in
-  this diff (the deferral test records the agent's prompt; with the wiring set
-  to `false` the repair test was observed red on its prompt assertion)
+- **violation** — Every changed call site needs a test that goes red without it:
+  the `repairsDefaultBranch` wiring in `processCiFailure` had no covering test —
+  evidence: `worker/deno/lib/pr_ci_processor.ts:2002` — reason: fixed in this
+  diff (the deferral test records the agent's prompt; with the wiring set to
+  `false` the repair test was observed red on its prompt assertion)
 - **violation** — Adding a member owes a docs change: the new repair-PR refusal
-  was missing from the `_resolveBaseBranchDeferral` doc comment and the
-  operator docs — evidence: `worker/deno/lib/pr_ci_processor.ts:4191` — reason:
-  fixed in this diff (doc comment, `docs/workflows/ci-fix.md`, `docs/PROMPTS.md`)
+  was missing from the `_resolveBaseBranchDeferral` doc comment and the operator
+  docs — evidence: `worker/deno/lib/pr_ci_processor.ts:4191` — reason: fixed in
+  this diff (doc comment, `docs/workflows/ci-fix.md`, `docs/PROMPTS.md`)
 - **clean** — Australian English; log levels; fail loud elsewhere (every catch
   logs the `gh` cause, unknown never holds or hands over); no history
   assumptions (compare API, not local `merge-base`); no test-only members; no
@@ -267,12 +267,12 @@ comment name the repair PR as a second exception to deferral. New modules are cl
   `processCiFailure - a repair PR for a red default branch is never deferred to its red base: it takes the ordinary path and charges an attempt (Issue #5437)`.
   Its input is the red-base deferring test's input with only the head branch
   changed, plus a control on `issue-150-fix` with a green base. The scenario's
-  Claude stub now records the prompt (`Captured.prompts`); no existing
-  assertion changed. Observed red with the branch guard in
-  `_resolveBaseBranchDeferral` disabled (the deferral marker was posted), and
-  red with `repairsDefaultBranch: false` (the prompt lacked the note).
-  `deno task test:unit tests/pr_ci_processor_deferral_test.ts`: 46 passed,
-  0 failed.
+  Claude stub now records the prompt (`Captured.prompts`); no existing assertion
+  changed. Observed red with the branch guard in `_resolveBaseBranchDeferral`
+  disabled (the deferral marker was posted), and red with
+  `repairsDefaultBranch: false` (the prompt lacked the note).
+  `deno task test:unit tests/pr_ci_processor_deferral_test.ts`: 46 passed, 0
+  failed.
 - Twinned rules: none found. This changes a scan, not a PR-summary gate.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
