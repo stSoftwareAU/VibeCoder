@@ -806,6 +806,10 @@ const RULES: readonly RedactionRule[] = [
   // mask the following token. The value must not itself start with `-` so an
   // adjacent flag (`--token --verbose`) is never mistaken for a secret.
   //
+  // A credential flag with a value that an earlier label would capture as its
+  // value (`token: --token <value>`, on the same line or the next) is left to
+  // this rule by the assignment rule (Issue #5330).
+  //
   // Both flag-name runs are bounded (Issue #3942): unbounded `[A-Za-z0-9-]*`
   // consumed the rest of the text from every `--` position and backtracked
   // looking for the keyword, which is quadratic on a long run of hyphens. No
@@ -927,19 +931,26 @@ function execAssignmentAt(
   }
 }
 
-/** Judge one pattern match with {@link assignmentIsMasked}. */
+/**
+ * Judge one pattern match with {@link assignmentIsMasked}. A value that is a
+ * credential flag with a value after it is not masked; see
+ * {@link credentialFlagTakesValueAt}.
+ */
 function verdictOf(text: string, match: RegExpExecArray): AssignmentVerdict {
   const end = match.index + match[0].length;
   const key = match[1] ?? "";
   const sep = match[2] ?? "";
   const value = match[3] ?? "";
+  const valueStart = end - value.length;
   return {
     index: match.index,
     end,
     key,
     sep,
     value,
-    masked: assignmentIsMasked(key, sep, value, textAfter(text, end)),
+    // Issue #5330: a credential flag with a value is left to `secret-cli-flag`.
+    masked: !credentialFlagTakesValueAt(text, valueStart) &&
+      assignmentIsMasked(key, sep, value, textAfter(text, end)),
   };
 }
 
@@ -1990,6 +2001,33 @@ function flagQuoteReaches(
     }
   }
   return false;
+}
+
+/**
+ * A credential flag with a value after it, read where a `secret-assignment`
+ * value starts (Issue #5330): the `secret-cli-flag` rule's flag name and
+ * whitespace, then a value that rule takes or has already masked. A bare `=` or
+ * `:` after the flag is an assignment separator (Issue #5310 shapes such as
+ * `credentials: --token = <value>`), not a value. Sticky, so it reads only at
+ * the given offset.
+ */
+const CLI_FLAG_WITH_VALUE_AT =
+  /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+(?!-|[=:](?:\s|$))\S/iy;
+
+/**
+ * Whether a credential flag with a value starts at `at` (Issue #5330). Such a
+ * flag is left for the `secret-cli-flag` rule, which keeps its name and masks
+ * its value; masking the name instead hid the flag from that rule and
+ * published the value.
+ */
+function credentialFlagTakesValueAt(text: string, at: number): boolean {
+  const pattern = CLI_FLAG_WITH_VALUE_AT;
+  pattern.lastIndex = at;
+  try {
+    return pattern.test(text);
+  } finally {
+    pattern.lastIndex = 0;
+  }
 }
 
 /**

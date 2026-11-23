@@ -537,6 +537,16 @@ because that is how prose names a key, and a corpus run over the archived PR
 summaries showed it masking the next prose word; and `<TOKEN>=<value>`, a `>`
 straight before `=`, is not matched, because that is the `>=` comparison.
 
+A value that is a credential command-line flag followed by whitespace and a
+value (`the token: --token <value>`, or `Set the token:` then
+`--github-token <value>` on the next line) is left to the `secret-cli-flag`
+rule, which keeps the flag name and masks its value (Issue #5330). Before that
+fix the assignment masked the flag's name, so the `secret-cli-flag` rule no
+longer found the flag and the value was published. A flag with nothing after
+it, another flag after it (`password: --token --verbose`), or a bare `=` or `:`
+after it (`credentials: --token = <value>`, an Issue #5310 shape) is masked as
+the label's value as before.
+
 A quoted value may hold an escaped quote of its own kind, and the whole literal
 is masked: `"abc\"def"`, `'abc\'def'`, the SQL `'abc''def'` and the shell
 `'it'\''s'` are each masked in full. Before Issue #5327 the mask stopped at that
