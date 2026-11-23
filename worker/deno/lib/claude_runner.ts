@@ -1646,19 +1646,25 @@ async function runClaudeWithTimeoutBody(
     // prompt-injected model running unrestricted bash cannot read the PEM.
     const sanitisedEnv = provider.buildChildEnv(options.parentEnv);
     // A provider that enforces denials through a settings file writes it here
-    // (Issue #5341). Enforcement is a safety control, so it fails closed: unlike
-    // the MCP config, which logs and continues, a settings file that cannot be
-    // written refuses the spawn.
+    // (Issue #5341), and gets the run's MCP config path so Gemini can carry the
+    // servers in that file (Issue #5343). Enforcement is a safety control, so it
+    // fails closed: the MCP config is written best-effort (ensureAgentMcpConfig
+    // logs `config not written` and the run goes on without servers, so the
+    // path may be absent), but a settings file that cannot be written, or a
+    // written MCP config the provider cannot read, refuses the spawn.
     if (provider.prepareRunSettings) {
       const prepared = await provider.prepareRunSettings({
         disallowedTools: invocationRequest.disallowedTools ?? [],
         ...(options.env ? { env: options.env } : {}),
+        ...(invocationRequest.mcpConfigPath
+          ? { mcpConfigPath: invocationRequest.mcpConfigPath }
+          : {}),
       });
       if (!prepared.ok) {
         return {
           ok: false,
           error: new Error(
-            `Refused to start the agent: ${provider.displayName} could not apply its tool denials: ${prepared.error.message} (Issue #5341)`,
+            `Refused to start the agent: ${provider.displayName} could not prepare its run settings: ${prepared.error.message}`,
           ),
         };
       }

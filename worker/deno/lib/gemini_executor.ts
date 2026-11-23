@@ -23,7 +23,9 @@
  *   composed into the single prompt by the shared composer rather than
  *   dropped — the sandboxed-environment guidance of Issue #4070 reaches this
  *   provider through that prompt. The tool denials are also enforced through
- *   the per-run settings file (`gemini_settings.ts`, Issue #5341).
+ *   the per-run settings file (`gemini_settings.ts`, Issue #5341). The run's
+ *   MCP servers ride the same file, and `--allowed-mcp-server-names` restricts
+ *   which of them load (Issue #5343).
  * - **There is no reasoning-effort option.** An effort the caller supplies is
  *   therefore not translated into a flag the CLI does not have: inventing one
  *   would fail the run outright. It is not dropped in silence either
@@ -55,6 +57,10 @@ import type { RepoConfig } from "../types.ts";
  *   deliberately absent: containment is the container's job.
  * - `--skip-trust` — the worker chooses the working tree itself, so the
  *   workspace-trust prompt has nobody to answer it.
+ *
+ * `--allowed-mcp-server-names` is not listed here: {@link buildGeminiArgs}
+ * always emits it, because its empty form is what keeps servers off (Issue
+ * #5343).
  */
 const STANDARD_FLAGS: readonly string[] = [
   "--output-format",
@@ -231,6 +237,11 @@ export interface GeminiInvocation extends AgentPromptParts {
   sessionId?: string;
   /** Continue this session (`--resume`). */
   resumeSessionId?: string;
+  /**
+   * The run's MCP server names (Issue #5343): the only servers the CLI loads.
+   * Absent or empty loads none; see {@link buildGeminiArgs}.
+   */
+  mcpServerNames?: readonly string[];
 }
 
 /**
@@ -273,6 +284,20 @@ export function buildGeminiArgs(invocation: GeminiInvocation): string[] {
   } else if (invocation.resumeSessionId) {
     args.push("--resume", invocation.resumeSessionId);
   }
+
+  // Always passed (Issue #5343). Gemini CLI 0.68.0 treats an empty allow-list
+  // as "all servers", but its yargs coercion (`coerceCommaSeparated` in
+  // packages/cli/src/config/config.ts) turns a single "" into [""], which no
+  // server name matches, so "" loads none, including servers from the user's
+  // own settings or extensions. The argv also overrides `mcp.allowed` from
+  // settings, and the CLI ignores file-based `admin.mcp.enabled`, so this flag
+  // is the only control. The filter itself is in
+  // packages/core/src/tools/mcp-client-manager.ts (`isBlockedBySettings`),
+  // which applies only when the list is non-empty.
+  args.push(
+    "--allowed-mcp-server-names",
+    (invocation.mcpServerNames ?? []).join(","),
+  );
 
   args.push("--prompt", composeAgentPrompt(invocation));
   return args;

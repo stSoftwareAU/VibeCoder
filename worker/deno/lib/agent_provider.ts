@@ -140,6 +140,7 @@ import type { RepoConfig, Result } from "../types.ts";
 import type { OrchestrationRefusal } from "./orchestration/types.ts";
 import {
   buildGeminiToolSettings,
+  readGeminiMcpServers,
   writeGeminiRunSettings,
 } from "./gemini_settings.ts";
 
@@ -433,7 +434,9 @@ export interface AgentInvocationRequest {
    * MCP server configuration for this run (Issue #4355) — the Playwright
    * headless browser. Claude takes the path as `--mcp-config`. Codex has
    * no such flag: the descriptor turns the same JSON into `-c mcp_servers.*`
-   * overrides (Issue #1702). Absent → no browser capability.
+   * overrides (Issue #1702). Gemini gets the servers in its per-run settings
+   * file, restricted by `--allowed-mcp-server-names` (Issue #5343). Absent →
+   * no browser capability.
    */
   mcpConfigPath?: string;
   /**
@@ -635,11 +638,13 @@ export interface AgentProviderDescriptor {
    * Writes this run's settings file (Issue #5341). `claude_runner.ts` calls it
    * after `buildChildEnv`, and merges the returned environment into the child.
    * An error refuses the spawn: enforcement is a safety control, so it fails
-   * closed.
+   * closed. `mcpConfigPath`, when the run has one, lets a provider put the
+   * run's MCP servers in that file (Gemini, Issue #5343).
    */
   prepareRunSettings?(request: {
     disallowedTools: readonly string[];
     env?: EnvLookup;
+    mcpConfigPath?: string;
   }): Promise<Result<AgentRunSettings>>;
 }
 
@@ -1141,6 +1146,13 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
 
   buildInvocation(request: AgentInvocationRequest): string[] {
     const routing = resolveInvocationRouting(this, request);
+    let mcpServerNames: string[] = [];
+    if (request.mcpConfigPath) {
+      // The same reader as the settings file's `mcpServers` (Issue #5343).
+      const servers = readGeminiMcpServers(request.mcpConfigPath);
+      if (!servers.ok) throw servers.error;
+      mcpServerNames = Object.keys(servers.value);
+    }
     return buildGeminiArgs({
       prompt: request.prompt,
       systemPrompt: request.systemPrompt,
@@ -1155,6 +1167,9 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
       // `--session-id`. A later phase Gemini reported: `--resume <id>`
       // (Issue #5342).
       ...geminiSessionFlags(request.sessionResumeState),
+      // The servers the run's config names, the only ones the CLI loads
+      // (Issue #5343).
+      mcpServerNames,
     });
   },
 
@@ -1184,6 +1199,7 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
   prepareRunSettings(request: {
     disallowedTools: readonly string[];
     env?: EnvLookup;
+    mcpConfigPath?: string;
   }): Promise<Result<AgentRunSettings>> {
     return writeGeminiRunSettings(request);
   },
