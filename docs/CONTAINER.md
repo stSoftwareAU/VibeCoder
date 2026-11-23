@@ -152,8 +152,8 @@ Ten consequences worth knowing:
   local gate. VibeCoder's gate does (the gitleaks stage, Issue #5121), so a
   fleet run on VibeCoder scans its branch's commits before the PR exists. The
   binary in the image is what lets the agent run that same scan itself, before
-  its PR exists. The amd64 checksum is deliberately the digest the pinned gitleaks
-  CLI uses in both that scan and this repository's own
+  its PR exists. The amd64 checksum is deliberately the digest the pinned
+  gitleaks CLI uses in both that scan and this repository's own
   `.github/workflows/gitleaks.yml`; the local half of that claim is enforced —
   `container_manifest_test.ts` fails the gate when the manifest pin and that
   workflow's `GITLEAKS_VERSION` / `GITLEAKS_SHA256` drift apart.

@@ -250,6 +250,31 @@ async function runGit(cwd: string, args: string[]): Promise<string> {
   return new TextDecoder().decode(out.stdout).trim();
 }
 
+/** Run git in `cwd`, feeding `input` to its stdin. */
+async function runGitWithInput(
+  cwd: string,
+  args: string[],
+  input: string,
+): Promise<void> {
+  const child = new Deno.Command("git", {
+    args: [...NO_HOST_HOOKS_ARGS, ...args],
+    cwd,
+    stdin: "piped",
+    stdout: "piped",
+    stderr: "piped",
+    env: GIT_ENV,
+  }).spawn();
+  const writer = child.stdin.getWriter();
+  await writer.write(new TextEncoder().encode(input));
+  await writer.close();
+  const out = await child.output();
+  if (out.code !== 0) {
+    throw new Error(
+      `git ${args.join(" ")} failed: ${new TextDecoder().decode(out.stderr)}`,
+    );
+  }
+}
+
 interface StepContext {
   baseSha: string;
   headSha: string;
@@ -332,17 +357,24 @@ async function buildFixture(
   await runGit(dir, ["init", "-q", "-b", "main"]);
   await commitFile("base.txt", "base\n", "base");
   await runGit(dir, ["checkout", "-q", "-b", "feature"]);
+  const baseCommit = await runGit(dir, ["rev-parse", "HEAD"]);
+  const encoder = new TextEncoder();
+  const data = (text: string) =>
+    `data ${encoder.encode(text).length}\n${text}\n`;
+  let stream = "";
   for (let n = 1; n <= COMMITS; n++) {
-    if (n === COMMITS && options.leakInLast) {
-      await commitFile(
-        "leak.ts",
-        `const t = "${FAKE_TOKEN}";\n`,
-        `commit ${n}`,
-      );
-    } else {
-      await commitFile(`file${n}.txt`, `file ${n}\n`, `commit ${n}`);
-    }
+    const [name, content] = n === COMMITS && options.leakInLast
+      ? ["leak.ts", `const t = "${FAKE_TOKEN}";\n`]
+      : [`file${n}.txt`, `file ${n}\n`];
+    stream += `commit refs/heads/feature\n` +
+      `committer Test <test@example.com> ${1700000000 + n} +0000\n` +
+      data(`commit ${n}`) +
+      (n === 1 ? `from ${baseCommit}\n` : "") +
+      `M 100644 inline ${name}\n` +
+      data(content) + "\n";
   }
+  await runGitWithInput(dir, ["fast-import", "--quiet"], stream);
+  await runGit(dir, ["reset", "--hard", "-q", "feature"]);
   if (options.mergeLeak) {
     await runGit(dir, ["checkout", "-q", "main"]);
     await commitFile("main-only.txt", "main\n", "main moves on");

@@ -5,13 +5,13 @@ of this repository (Issue,
 part of the
 proving-ground hardening).
 
-`.github/workflows/gitleaks.yml` scans every commit in a pull request's `base..head` range and then the
-merged result. That is
-the right gate for new work and the wrong one for history: a credential that
-leaked into an old commit on a branch nobody merges — or into a tag — never
-appears in a PR diff again, yet it stays live until somebody rotates it. A
-fresh-history clean push does not excuse the private history either; anything
-that ever leaked into it needs rotating regardless of what is published.
+`.github/workflows/gitleaks.yml` scans every commit in a pull request's
+`base..head` range and then the merged result. That is the right gate for new
+work and the wrong one for history: a credential that leaked into an old commit
+on a branch nobody merges — or into a tag — never appears in a PR diff again,
+yet it stays live until somebody rotates it. A fresh-history clean push does not
+excuse the private history either; anything that ever leaked into it needs
+rotating regardless of what is published.
 
 ## The single command
 
