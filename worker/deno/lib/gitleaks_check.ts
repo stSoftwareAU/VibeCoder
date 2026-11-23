@@ -114,6 +114,13 @@ export function gitleaksScanArgs(
   range: string,
   configPath: string | null,
 ): string[] {
+  return gitleaksLogArgs(`--diff-merges=first-parent ${range}`, configPath);
+}
+
+function gitleaksLogArgs(
+  logOptions: string,
+  configPath: string | null,
+): string[] {
   return [
     "git",
     ...(configPath ? ["--config", configPath] : []),
@@ -123,7 +130,7 @@ export function gitleaksScanArgs(
     "1",
     "--verbose",
     "--no-color",
-    `--log-opts=${range}`,
+    `--log-opts=${logOptions}`,
     ".",
   ];
 }
@@ -777,10 +784,10 @@ export async function runGitleaksRangeCheck(
     ((args: string[]) =>
       spawnWithDeadline("gitleaks", args, dir, GITLEAKS_DEADLINE_MS));
   async function scanSubject(
-    logOptions: string,
+    args: string[],
     subject: string,
   ): Promise<GitleaksRangeOutcome> {
-    const run = await scan(gitleaksScanArgs(logOptions, configPath));
+    const run = await scan(args);
 
     if (run.timedOut) {
       return {
@@ -805,7 +812,7 @@ export async function runGitleaksRangeCheck(
   }
 
   const range = await scanSubject(
-    `${base}..${head}`,
+    gitleaksScanArgs(`${base}..${head}`, configPath),
     `commit range ${shortRange}`,
   );
   if (range.kind !== "passed" || options.mergeBaseRef === undefined) {
@@ -855,7 +862,10 @@ export async function runGitleaksRangeCheck(
     };
   }
   return await scanSubject(
-    `--first-parent --diff-merges=first-parent -1 ${merge.stdout.trim()}`,
+    gitleaksLogArgs(
+      `--first-parent --diff-merges=first-parent -1 ${merge.stdout.trim()}`,
+      configPath,
+    ),
     "merged result",
   );
 }

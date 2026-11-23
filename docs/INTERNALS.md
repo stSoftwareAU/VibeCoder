@@ -192,7 +192,7 @@ skipped stage would let the PR through with its commit range never scanned. The
 failure says the history is "not available in the worker environment", so the
 failure classifier reads it as an infrastructure fault (`missing_tools`), not a
 finding. Uncommitted changes are not scanned by this stage, as in CI. It runs the PR job's commit-range invocation,
-`gitleaks git --config .github/gitleaks.toml --redact --no-banner --exit-code 1 --log-opts=<base>..HEAD .`
+`gitleaks git --config .github/gitleaks.toml --redact --no-banner --exit-code 1 --log-opts="--diff-merges=first-parent <base>..HEAD" .`
 (the `--config` only when `.github/gitleaks.toml` exists), plus `--verbose
 --no-color`, so each finding prints its file, line and rule with the secret
 redacted. It uses the `gitleaks` on PATH. `GITLEAKS_VERSION` pins 8.30.1, the

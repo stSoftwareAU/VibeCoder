@@ -6,11 +6,9 @@ name: Gitleaks
 # CLI. The licensed gitleaks-action was dropped because it scanned only the
 # first 30 commits a PR lists (PR #5322 passed with 21 of its 51 commits
 # unscanned) and bundled its own gitleaks 8.24.3. The PR job scans:
-#   1. every commit in base..head, whatever the count; then
+#   1. every commit in base..head, including each merge against its first parent; then
 #   2. the merged result (refs/pull/N/merge) against its first parent, the
-#      diff a squash merge lands. A merge commit shows no patch in step 1,
-#      so a secret that only exists once commits are combined (a merge
-#      resolution, say) is caught here.
+#      diff a squash merge lands.
 #
 # Third-party actions are pinned to 40-character commit SHAs (Issue #1756) so
 # a hijacked tag cannot exfiltrate CI secrets.
@@ -93,7 +91,7 @@ jobs:
           echo "Scanning ${count} commit(s): ${BASE_SHA}..${HEAD_SHA}"
           gitleaks git --config "${GITLEAKS_CONFIG}" \
             --redact --no-banner --exit-code 1 \
-            --log-opts="${BASE_SHA}..${HEAD_SHA}" .
+            --log-opts="--diff-merges=first-parent ${BASE_SHA}..${HEAD_SHA}" .
       - name: Scan the merged result (refs/pull/N/merge)
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

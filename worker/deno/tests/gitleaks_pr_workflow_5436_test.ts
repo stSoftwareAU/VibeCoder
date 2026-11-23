@@ -19,6 +19,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml/parse";
+import { runGitleaksRangeCheck } from "../lib/gitleaks_check.ts";
 import { usesGitleaksAction } from "../lib/gitleaks_drift_scanner.ts";
 import {
   NO_HOST_GIT_CONFIG,
@@ -50,7 +51,8 @@ const FAKE_TOKEN = ["ghp", "_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"].join(
 // Validator
 // ---------------------------------------------------------------------------
 
-const RANGE_LOG_OPTS = '--log-opts="${BASE_SHA}..${HEAD_SHA}"';
+const RANGE_LOG_OPTS =
+  '--log-opts="--diff-merges=first-parent ${BASE_SHA}..${HEAD_SHA}"';
 const MERGE_LOG_OPTS =
   '--log-opts="--first-parent --diff-merges=first-parent -1 ${merge_sha}"';
 
@@ -383,7 +385,7 @@ interface Fixture {
  */
 async function buildFixture(
   dir: string,
-  options: { leakInLast?: boolean; mergeLeak?: boolean },
+  options: { leakInLast?: boolean; mergeLeak?: "retained" | "removed" },
 ): Promise<Fixture> {
   const commitFile = async (name: string, content: string, message: string) => {
     await Deno.writeTextFile(`${dir}/${name}`, content);
@@ -419,6 +421,10 @@ async function buildFixture(
     await Deno.writeTextFile(`${dir}/evil.ts`, `const t = "${FAKE_TOKEN}";\n`);
     await runGit(dir, ["add", "evil.ts"]);
     await runGit(dir, ["commit", "-q", "-m", "merge main"]);
+    if (options.mergeLeak === "removed") {
+      await runGit(dir, ["rm", "evil.ts"]);
+      await runGit(dir, ["commit", "-q", "-m", "remove fixture"]);
+    }
   }
   const headSha = await runGit(dir, ["rev-parse", "HEAD"]);
   const baseSha = await runGit(dir, ["rev-parse", "main"]);
@@ -435,7 +441,7 @@ async function buildFixture(
 }
 
 async function withFixture(
-  options: { leakInLast?: boolean; mergeLeak?: boolean },
+  options: { leakInLast?: boolean; mergeLeak?: "retained" | "removed" },
   body: (dir: string, fixture: Fixture) => Promise<void>,
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "gitleaks-5436-" });
@@ -486,16 +492,37 @@ Deno.test({
 
 Deno.test({
   name:
-    "gitleaks.yml PR job - a secret only in the merge resolution is caught by the merged-result scan",
+    "gitleaks.yml PR job - a secret only in the merge resolution is caught by both scans",
   ignore: !gitleaksAvailable,
   fn: async () => {
-    await withFixture({ mergeLeak: true }, async (dir, ctx) => {
+    await withFixture({ mergeLeak: "retained" }, async (dir, ctx) => {
       const range = await runWorkflowStep(RANGE_STEP, dir, ctx);
-      assertEquals(range.code, 0, range.output);
+      assertEquals(range.code, 1, range.output);
+      assertStringIncludes(range.output, "leaks found: 1");
       const merge = await runWorkflowStep(MERGE_STEP, dir, ctx);
       assert(merge.code !== 0, merge.output);
       assertStringIncludes(merge.output, "leaks found: 1");
       assertStringIncludes(merge.output, "Scanning the merged result:");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "an intermediate merge finding removed before the head blocks CI and the local push",
+  ignore: !gitleaksAvailable,
+  fn: async () => {
+    await withFixture({ mergeLeak: "removed" }, async (dir, ctx) => {
+      const merge = await runWorkflowStep(MERGE_STEP, dir, ctx);
+      assertEquals(merge.code, 0, merge.output);
+      const range = await runWorkflowStep(RANGE_STEP, dir, ctx);
+      assertEquals(range.code, 1, range.output);
+      assertStringIncludes(range.output, "leaks found: 1");
+      const local = await runGitleaksRangeCheck(dir, ctx.baseSha, ctx.headSha, {
+        mergeBaseRef: "main",
+      });
+      assert(local.kind === "blocked", JSON.stringify(local));
+      assertStringIncludes(local.message, "evil.ts");
     });
   },
 });

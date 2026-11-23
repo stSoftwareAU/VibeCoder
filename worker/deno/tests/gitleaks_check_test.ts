@@ -188,7 +188,7 @@ Deno.test("gitleaksScanArgs - scans the range with the CI flags and an optional 
       "1",
       "--verbose",
       "--no-color",
-      "--log-opts=aaa..bbb",
+      "--log-opts=--diff-merges=first-parent aaa..bbb",
       ".",
     ],
   );
@@ -202,7 +202,7 @@ Deno.test("gitleaksScanArgs - scans the range with the CI flags and an optional 
       "1",
       "--verbose",
       "--no-color",
-      "--log-opts=aaa..bbb",
+      "--log-opts=--diff-merges=first-parent aaa..bbb",
       ".",
     ],
   );
@@ -527,7 +527,7 @@ Deno.test("gitleaks.yml - every pinned GITLEAKS_VERSION matches the module, and 
   const ciRange = ciArgs.find((arg) => arg.startsWith("--log-opts="));
   assertEquals(
     ciRange,
-    "--log-opts=${BASE_SHA}..${HEAD_SHA}",
+    "--log-opts=--diff-merges=first-parent ${BASE_SHA}..${HEAD_SHA}",
     "the CI range scan must scan the <base>..<head> commit range",
   );
 
@@ -577,7 +577,9 @@ function ciRangeScanArgs(workflow: string): string[] {
     commands.push(command);
   }
   const matching = commands.filter((command) =>
-    command.includes('--log-opts="${BASE_SHA}..${HEAD_SHA}"')
+    command.includes(
+      '--log-opts="--diff-merges=first-parent ${BASE_SHA}..${HEAD_SHA}"',
+    )
   );
   assertEquals(
     matching.length,
@@ -592,8 +594,8 @@ function ciRangeScanArgs(workflow: string): string[] {
 function normaliseScanArgs(args: string[]): string[] {
   return args.map((arg, i) => {
     if (args[i - 1] === "--config") return "<config>";
-    if (/^--log-opts=[^.\s]+\.\.[^.\s]+$/.test(arg)) {
-      return "--log-opts=<base>..<head>";
+    if (arg.startsWith("--log-opts=")) {
+      return arg.replace(/[^.\s]+\.\.[^.\s]+$/, "<base>..<head>");
     }
     return arg;
   });
@@ -1408,7 +1410,9 @@ Deno.test("runGitleaksRangeCheck - a finding confined to the merged result block
       },
       run: (args) =>
         Promise.resolve(
-          args.includes(`--log-opts=${BASE_SHA}..${RANGE_HEAD}`)
+          args.includes(
+              `--log-opts=--diff-merges=first-parent ${BASE_SHA}..${RANGE_HEAD}`,
+            )
             ? { exitCode: 0, stdout: "", stderr: CLEAN_STDERR }
             : args.includes(
                 `--log-opts=--first-parent --diff-merges=first-parent -1 ${merge}`,

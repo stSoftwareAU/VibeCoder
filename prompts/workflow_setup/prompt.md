@@ -403,7 +403,7 @@ jobs:
           echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum -c -
           tar -xzf "$archive" gitleaks
           ./gitleaks git --redact --no-banner --exit-code 1 \
-            --log-opts="${BASE_SHA}..${HEAD_SHA}" .
+            --log-opts="--diff-merges=first-parent ${BASE_SHA}..${HEAD_SHA}" .
 ```
 
 </example>
