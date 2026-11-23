@@ -5346,6 +5346,58 @@ flowchart TD
   (`gh pr merge --disable-auto`), so a close GitHub refuses leaves a PR that
   can no longer land rather than one that still can.
 
+#### Red default branch: hold sync PRs, repair once (Issue #5437)
+
+When the default branch is red, every `sync/milestone-*` PR inherits the
+failure. The CI-fix scan used to hand each red sync PR to the CI-fix agent
+separately, so the same fix was written onto a sync branch and onto the default
+branch. `findFailedCiChecks` now holds those inherited failures and repairs the
+default branch once, through one repair PR
+([`red_default_branch_repair.ts`](../worker/deno/lib/red_default_branch_repair.ts)).
+
+```mermaid
+flowchart TD
+    S["Red sync PR check"] --> A{"Sync head vs default branch"}
+    A -- "on-default: identical or behind" --> H["Inherited: held"]
+    A -- "off-default: ahead or diverged" --> T{"Same check red on the default tip?"}
+    T -- yes --> H
+    T -- no --> O["Ordinary path: CI-fix agent"]
+    A -- "unknown" --> U["Stand down this scan, retried next scan"]
+    H --> F{"Head behind the tip?"}
+    F -- yes --> FF["Fast-forward to the tip, force=false"]
+    H --> R{"Tip red on a held check?"}
+    R -- yes --> P["One repair PR per repo: fix/red-default-branch-sha12"]
+    P --> C["Its own red CI goes to the CI-fix agent first"]
+    style P fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style U fill:#9d0208,stroke:#6a040f,color:#fff
+```
+
+- **Held, not handed over.** An inherited check is skipped with the reason
+  `inherited-red-default-branch` and is not returned to the CI-fix agent. An
+  on-default head (identical or behind the tip) holds every failing check on it.
+  An off-default head (ahead or diverged) holds only the checks the default
+  tip also has red. Any other sync failure takes the ordinary path, so a real
+  sync-only failure is still fixed.
+- **Unknown stands down.** If the ancestry cannot be read, or the default
+  branch's red checks cannot be read, the sync PR gets no CI-fix target this
+  scan and a warning names it. "Could not tell" never hands the PR over.
+- **Refresh is fast-forward only.** A held sync head behind the tip is moved with
+  `PATCH git/refs/heads/<branch>` and `force=false`, so GitHub refuses anything
+  that is not a fast-forward and no commit is lost. Once a repair lands, the
+  stale sync PRs pick it up on the next scan.
+- **One repair PR.** A repair PR is raised only when the tip itself is red on a
+  held check. It is an empty commit on the tip (GitHub refuses a PR with no
+  commits), on a `fix/red-default-branch-<sha12>` branch, opened against the
+  default branch. A later scan adopts an open repair PR with that prefix (the
+  lowest number) rather than opening another. Its body is replaced by the status
+  only when the `vibe-red-default-branch-hold` marker differs. A human-authored
+  fix PR is never adopted automatically. If that branch already exists without
+  an open PR, the create step fails and is logged each scan until the branch is
+  deleted.
+- **Top priority.** A failure on the repair PR is returned before any other
+  default-branch failure. The `top-priority` label is never applied; it is
+  reserved for workflow use.
+
 #### 🎟️ The conflict attempt ledger a milestone branch spends
 
 A milestone branch that conflicts with the default branch gets the same
