@@ -137,7 +137,7 @@ flowchart LR
   - Linux, real processes: a detached tagged `sleep` is terminated while an
     untagged control keeps running
   - Linux, real runner: a stub agent that leaves `( sleep … & )` behind has it
-    terminated by `runClaudeWithRetry`
+    terminated by `runClaudeWithTimeout`
 - `worker/deno/tests/claude_runner_killed_test.ts`: the drain-cap test (#325)
   disables the reaper, because it deliberately leaves a descendant holding
   stdout and asserts only the drain cap

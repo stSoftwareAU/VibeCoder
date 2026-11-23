@@ -4,8 +4,9 @@
  * The descendant collector (Issue #4382) only sees a process while it is
  * still a descendant of the agent. A detached `( … & )` job is re-parented
  * to PID 1 at once, so no snapshot ever holds it, and on a normal exit the
- * collector is not run at all: a heavy build the agent left behind kept
- * going after the run ended and starved the container guest. Every agent
+ * collector is not run at all: a job the agent left behind can keep running
+ * after the run ended. That leak is one possible cause of the completion
+ * wedge, not an established one. Every agent
  * spawn therefore carries a unique `VIBE_AGENT_SPAWN_TAG` in its environment,
  * and once the agent has exited the runner terminates each process of the
  * same user that still carries that tag. Linux only: the scan reads
