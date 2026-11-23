@@ -6,8 +6,9 @@ servers go under `mcpServers` in the per-run settings file
 the run to exactly the requested names. `bindGraftRun` and
 `prepareCodegraphContext` no longer leave Gemini out. Codex and Gemini share one
 MCP config reader (`worker/deno/lib/mcp_server_entries.ts`), so both skip the
-same unsafe names. One Standards finding (the config is read twice) is still
-open, so this PR is Part of #5343.
+same unsafe names. The argv names and the settings file come from one reader,
+`readGeminiMcpServers`. The full quality gate has not run on the final head, so
+this PR is Part of #5343.
 
 ## Spec
 
@@ -115,10 +116,13 @@ flowchart LR
 - **violation** — the module doc claimed both providers accept the same servers
   — evidence: `worker/deno/lib/mcp_server_entries.ts:8` — reason: fixed in this
   diff. The doc now says Gemini also skips a server with no `command`.
-- **violation** — the MCP config is read twice (argv names and settings file) —
-  evidence: `worker/deno/lib/agent_provider.ts:1153` — reason: still open: the
-  two reads should become one shared read before this closes. If they disagree,
-  the CLI loads fewer servers, never more.
+- **violation** — the MCP config is read twice (argv names and settings file)
+  — evidence: `worker/deno/lib/agent_provider.ts:1153` — reason: fixed in this
+  diff. The argv names and the settings file's `mcpServers` now both come from
+  one reader, `readGeminiMcpServers` in `worker/deno/lib/gemini_settings.ts`. It
+  holds the one refusal contract. The re-dispatched Standards reviewer judged
+  it `fixed` with no new violation. Test:
+  `worker/deno/tests/agent_provider_gemini_test.ts::the argv and the settings file share one reader, so they refuse with the same error`.
 - **clean** — fail loud, published schema kept, docs-drift suites, replaced
   tests (no lost protection), `__proto__` safety, filtering of server and env
   names, Australian English
@@ -150,8 +154,10 @@ flowchart LR
 
 <!-- vibe-quality-gate-skipped reason="run budget: the full gate takes about 10 minutes and under 8 remained after the fixes; targeted tests pass" -->
 
-Not done or not checked: no second full gate run on the final head. The double
-read of the MCP config is still open (see the open Standards finding above).
+Not done or not checked: no second full gate run on the final head. After the
+shared-reader fix, the targeted runs of `agent_provider_gemini_test.ts`,
+`gemini_settings_5341_test.ts` and `mcp_server_entries_test.ts` pass: 49
+passed, 0 failed.
 
 Part of #5343
 
