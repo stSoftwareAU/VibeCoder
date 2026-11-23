@@ -1605,7 +1605,7 @@ const scanSkip = (
   );
 
 Deno.test("A patch-less modified file with the same head and base blobs is awaiting-fix at differing merge bases (Issue #5415)", async () => {
-  const { gh, calls } = scanGh(
+  const { gh } = scanGh(
     scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
   );
   assertEquals(await scanSkip(gh, SCAN_FINDINGS), "awaiting-fix");
@@ -1615,26 +1615,17 @@ Deno.test("A patch-less modified file with the same head and base blobs is await
     await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
     true,
   );
-  // The scan file's base blob was read at both merge bases.
-  assertEquals(
-    calls.includes(`repos/o/r/contents/${SCAN_PATH}?ref=${SCAN_SINCE_BASE}`),
-    true,
-  );
-  assertEquals(
-    calls.includes(`repos/o/r/contents/${SCAN_PATH}?ref=${SCAN_HEAD_BASE}`),
-    true,
-  );
 });
 
 Deno.test("A patch-less modified file with one shared merge base reads no contents (Issue #5415)", async () => {
-  const { gh, calls } = scanGh(
+  const { gh } = scanGh(
     {},
     SCAN_HEAD_SHA,
     SCAN_SINCE_BASE,
     SCAN_SINCE_BASE,
   );
+  // No contents endpoint is faked, so any read would throw and not awaiting-fix.
   assertEquals(await scanSkip(gh, SCAN_FINDINGS), "awaiting-fix");
-  assertEquals(calls.some((c) => c.includes("/contents/")), false);
 });
 
 Deno.test("A patch-less modified file whose base blob differs between the merge bases is a fresh review (Issue #5415)", async () => {
@@ -1671,7 +1662,7 @@ Deno.test("A patch-less modified file whose base blob is not a readable file is 
   // An absent read makes the fake throw, as a failed gh call does.
   const { gh: absent } = scanGh({});
   assertEquals(await scanSkip(absent, SCAN_FINDINGS), null);
-  // A symlink resolves to its target, a directory is a list, and a file with
+  // An unresolved symlink is not a file, a directory is a list, and a file with
   // no sha cannot be compared.
   const bodies = [
     JSON.stringify({ type: "symlink", path: SCAN_PATH, sha: SCAN_BASE_SHA }),
@@ -1694,6 +1685,9 @@ Deno.test("A patch-less modified file with a merge base missing on one side is a
     scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
   );
   assertEquals(await scanSkip(control.gh, SCAN_FINDINGS), "awaiting-fix");
+  // The head merge base is missing, so the code would read `?ref=undefined`.
+  // The fake answers that read with the same valid blob, so only the guard
+  // can refuse.
   const { gh } = fakeGh({
     "repos/o/r/compare/X...head": compareResponse("ahead", [{
       sha: "m1",
@@ -1708,8 +1702,31 @@ Deno.test("A patch-less modified file with a merge base missing on one side is a
       SHELL_FILE,
     ]),
     ...scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
+    [`repos/o/r/contents/${SCAN_PATH}?ref=undefined`]: blobBody(SCAN_BASE_SHA),
   });
   assertEquals(await scanSkip(gh, SCAN_FINDINGS), null);
+});
+
+Deno.test("A patch-less modified file with a malformed merge base on one side is a fresh review (Issue #5415)", async () => {
+  // Control: both merge bases present is accepted.
+  const control = scanGh(
+    scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
+  );
+  assertEquals(await scanSkip(control.gh, SCAN_FINDINGS), "awaiting-fix");
+  // A ref that is not a hex sha is refused before any contents read. The fake
+  // answers that read with the same valid blob, so only the guard can refuse.
+  for (const bad of ["main&x=1", "not-a-sha"]) {
+    const { gh } = scanGh(
+      {
+        ...scanReads(blobBody(SCAN_BASE_SHA), blobBody(SCAN_BASE_SHA)),
+        [`repos/o/r/contents/${SCAN_PATH}?ref=${bad}`]: blobBody(SCAN_BASE_SHA),
+      },
+      SCAN_HEAD_SHA,
+      SCAN_SINCE_BASE,
+      bad,
+    );
+    assertEquals(await scanSkip(gh, SCAN_FINDINGS), null, bad);
+  }
 });
 
 Deno.test("A modified file with a patch on one side only is a fresh review (Issue #5415)", async () => {

@@ -467,8 +467,9 @@ function sameModifiedBlob(fa: CompareFile, fb: CompareFile): boolean {
 }
 
 // The blob sha of a path at a ref, or null unless the contents API answers
-// with a file. A directory, a symlink (resolved to its target) and a submodule
-// all fail closed. A thrown gh error propagates to the caller (Issue #5415).
+// with a file. A symlink to an in-repo file is answered with that file, so its
+// target's sha is used. An unresolved symlink, a directory and a submodule all
+// fail closed. A thrown gh error propagates to the caller (Issue #5415).
 async function baseBlobAt(
   gh: (args: string[]) => Promise<string>,
   repo: string,
@@ -706,12 +707,10 @@ function findingsAreContent(
 // #3772). This exception cannot approve anything: awaiting-fix applies only
 // while the latest review requests changes.
 //
-// SIMPLE-ON-PURPOSE: the three compare calls below, and up to two contents
-// reads per patch-less modified file when the merge bases differ (Issue
-// #5415), are repeated each pass while the PR awaits its fix or the owner (a
-// held PR too, Issue #4643), fine for a handful of such PRs — upgrade when
-// awaiting-fix or held PRs exceed ~50 per pass (cache the verdict per PR, since
-// and head in the state dir).
+// SIMPLE-ON-PURPOSE: three compare calls plus up to two contents reads per patch-less modified file each pass, fine for a handful of awaiting-fix or held PRs — upgrade when they exceed ~50 per pass
+// Repeated each pass while the PR awaits its fix or the owner (a held PR too,
+// Issue #4643). Contents reads happen only when the merge bases differ (Issue
+// #5415). Cache the verdict per PR, since and head in the state dir.
 export async function ownDiffUnchanged(
   gh: (args: string[]) => Promise<string>,
   repo: string,
