@@ -7,8 +7,8 @@ This is the third PR for #5437. #5459 and #5466 already merged into
 sync PRs, repair the default branch once, adopt a human fix that is green or
 still running, refresh the sync PRs, post one status and clean the shift-left
 count. This PR closes the gap #5466 left open. Before it, any open human PR that
-contained the red tip and was green on the held checks was adopted as the fix.
-A check that scans only a PR's own commits (gitleaks scans `base.sha..head.sha`)
+contained the red tip and was green on the held checks was adopted as the fix. A
+check that scans only a PR's own commits (gitleaks scans `base.sha..head.sha`)
 passes on any unrelated PR, so the fleet could wait on such a PR while `main`
 stayed red.
 
@@ -42,8 +42,8 @@ Part of #5437.
 - Matching uses `indexOf` with ASCII-alphanumeric boundary tests. No pattern is
   built from PR text.
 - Fleet and bot PRs are excluded on the green path as well. The worker's own
-  repair PR (`fix/red-default-branch-*`) is the fleet's fix, and a fleet PR green
-  on gitleaks is not one.
+  repair PR (`fix/red-default-branch-*`) is the fleet's fix, and a fleet PR
+  green on gitleaks is not one.
 - Assumption: a human fix names its failure in its title or branch, as #5434's
   title and its branch `fix/gitleaks-allow-5310-fixtures` both do. A human fix
   that names neither is duplicated by the worker's repair PR rather than
@@ -82,8 +82,8 @@ flowchart TD
 ## Reproduction
 
 - **symptom** — an open human PR unrelated to the failure, green on gitleaks
-  because gitleaks scans only the PR's own commits, was adopted as the fix
-  while `main` stayed red, so no repair PR was opened
+  because gitleaks scans only the PR's own commits, was adopted as the fix while
+  `main` stayed red, so no repair PR was opened
 - **status** — `partial` — reason: the end-to-end regression test was observed
   failing with the new naming skip disabled at the head (`88 passed | 2 failed`)
   and passing with it restored. The base production file itself was not checked
@@ -107,8 +107,8 @@ flowchart TD
   `worker/deno/tests/red_default_branch_repair_5437_test.ts::findFailedCiChecks - an unrelated human PR green on gitleaks is not adopted, and the repair PR is opened (Issue #5437)`
   and
   `worker/deno/tests/red_default_branch_repair_5437_test.ts::findFailedCiChecks - a fleet-authored PR whose title names gitleaks and that is green on it is not adopted, and the repair PR is opened (Issue #5437)`
-  — reviewer: partial — reason: the worker's repair PR is handled first, ahead of
-  every other failure, but an adopted human fix PR gets no priority step: the
+  — reviewer: partial — reason: the worker's repair PR is handled first, ahead
+  of every other failure, but an adopted human fix PR gets no priority step: the
   fleet comments on it and waits. Telling a real fix apart is still a heuristic:
   it rests on the PR naming its failure. The reviewer flagged that `gate` in a
   body or fleet PR could pass for the fix. This diff then confined check names
@@ -177,11 +177,11 @@ flowchart TD
     PR titled to name gitleaks) is adopted
   - end-to-end: a fleet-authored PR green on gitleaks and naming it is not
     adopted
-  - six `fixCandidateNamesHeldFailure` cases: a check in the body does not
-    count but a held PR there does; branch and mixed case; embedded words;
-    whole and held PR numbers; names with spaces and a slash, and the empty
-    name; a hostile 100000-character body. The hostile case asserts only the
-    output, with no timing
+  - six `fixCandidateNamesHeldFailure` cases: a check in the body does not count
+    but a held PR there does; branch and mixed case; embedded words; whole and
+    held PR numbers; names with spaces and a slash, and the empty name; a
+    hostile 100000-character body. The hostile case asserts only the output,
+    with no timing
   - five direct `findGreenFixPr` cases: an unnamed running candidate; missing
     `title` and missing `body`, each asserting its specific refusal; an empty
     body accepted; `gate` in a body versus in a title
