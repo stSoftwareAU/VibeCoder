@@ -30,6 +30,7 @@ import {
 import { CODEX_HOME_ENV_VAR } from "./codex_auth.ts";
 import { resolveCodexAuthMode } from "./codex_auth_mode.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { readMcpServerEntries } from "./mcp_server_entries.ts";
 import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 
@@ -444,55 +445,25 @@ function tomlInlineTable(record: Record<string, unknown>): string {
  * a path was given and nothing could be applied.
  */
 export function buildCodexMcpConfigArgs(configJson: string): string[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(configJson);
-  } catch {
-    return [];
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return [];
-  }
-  const servers = (parsed as { mcpServers?: unknown }).mcpServers;
-  if (
-    servers === null || typeof servers !== "object" || Array.isArray(servers)
-  ) {
-    return [];
-  }
   const args: string[] = [];
-  for (
-    const [name, spec] of Object.entries(servers as Record<string, unknown>)
-  ) {
-    if (!/^[A-Za-z0-9_-]+$/.test(name)) continue;
-    if (spec === null || typeof spec !== "object" || Array.isArray(spec)) {
-      continue;
-    }
-    const server = spec as Record<string, unknown>;
-    if (typeof server.command === "string") {
+  for (const server of readMcpServerEntries(configJson)) {
+    const { name } = server;
+    if (server.command !== undefined) {
       args.push(
         "-c",
         `mcp_servers.${name}.command=${tomlString(server.command)}`,
       );
     }
-    if (
-      Array.isArray(server.args) &&
-      server.args.every((a) => typeof a === "string")
-    ) {
+    if (server.args !== undefined) {
       args.push(
         "-c",
         `mcp_servers.${name}.args=${tomlStringArray(server.args)}`,
       );
     }
-    if (
-      server.env !== null &&
-      typeof server.env === "object" &&
-      !Array.isArray(server.env)
-    ) {
+    if (server.env !== undefined) {
       args.push(
         "-c",
-        `mcp_servers.${name}.env=${
-          tomlInlineTable(server.env as Record<string, unknown>)
-        }`,
+        `mcp_servers.${name}.env=${tomlInlineTable(server.env)}`,
       );
     }
   }

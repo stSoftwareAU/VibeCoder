@@ -7,13 +7,18 @@
  * CLI as a setting rather than as prompt text. An unmapped name, or a file that
  * cannot be written, refuses the spawn (see `claude_runner.ts`).
  *
- * The builder is pure; the writer is the only part that touches the disk.
+ * The file also carries the run's MCP servers (Issue #5343), so the CLI can
+ * start them; `--allowed-mcp-server-names` in `gemini_executor.ts` restricts
+ * which of them load.
+ *
+ * The builders are pure; the writer is the only part that touches the disk.
  *
  * Australian English spelling throughout (behaviour, organisation, honour).
  */
 
 import type { AgentRunSettings, ToolDenialSettings } from "./agent_provider.ts";
 import type { EnvLookup } from "./env_lookup.ts";
+import { readMcpServerEntries } from "./mcp_server_entries.ts";
 import type { Result } from "../types.ts";
 
 /** The environment variable the Gemini CLI reads its system settings path from. */
@@ -99,6 +104,49 @@ export function buildGeminiToolSettings(
   return { ok: true, settings };
 }
 
+/** One stdio MCP server as the Gemini CLI's `mcpServers` setting takes it. */
+export interface GeminiMcpServer {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+/** Environment names kept for a server: the same filter Codex applies. */
+const SAFE_ENV_NAME = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Maps the run's MCP config into Gemini's `mcpServers` setting (Issue #5343).
+ *
+ * A server without a `command` is skipped, since Gemini needs one to start a
+ * stdio server. The command and args are those Codex receives. Only string
+ * values under a safe name are kept in `env`; nothing else (such as
+ * `alwaysLoad`) is copied. `Object.fromEntries` keeps a name such as
+ * `__proto__` as an own key rather than setting a prototype.
+ *
+ * @param configJson - The contents of the `--mcp-config` file.
+ * @returns The servers keyed by name; empty when none is usable.
+ */
+export function buildGeminiMcpServers(
+  configJson: string,
+): Record<string, GeminiMcpServer> {
+  const pairs: [string, GeminiMcpServer][] = [];
+  for (const entry of readMcpServerEntries(configJson)) {
+    if (entry.command === undefined) continue;
+    const server: GeminiMcpServer = { command: entry.command };
+    if (entry.args !== undefined) server.args = entry.args;
+    if (entry.env !== undefined) {
+      const env: [string, string][] = [];
+      for (const [key, value] of Object.entries(entry.env)) {
+        if (!SAFE_ENV_NAME.test(key) || typeof value !== "string") continue;
+        env.push([key, value]);
+      }
+      server.env = Object.fromEntries(env);
+    }
+    pairs.push([entry.name, server]);
+  }
+  return Object.fromEntries(pairs);
+}
+
 /** The cause of a thrown value, as a message. */
 function causeOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -127,7 +175,12 @@ async function removeDirectory(dir: string): Promise<string | undefined> {
  * explicitly so the umask cannot widen it. Any failure names the path and the
  * cause, and removes the directory it made.
  *
- * @param request - The denials to enforce and the environment lookup.
+ * With `mcpConfigPath`, the run's MCP servers are written under `mcpServers`
+ * (Issue #5343). A config that cannot be read, or yields no usable server,
+ * refuses the spawn, as Codex's does.
+ *
+ * @param request - The denials to enforce, the environment lookup and the
+ *   run's MCP config path, when it has one.
  * @returns The environment that points the CLI at the file (its path is the
  *   value of `GEMINI_CLI_SYSTEM_SETTINGS_PATH`), and a `cleanup` that removes
  *   the directory (safe to call twice).
@@ -135,9 +188,38 @@ async function removeDirectory(dir: string): Promise<string | undefined> {
 export async function writeGeminiRunSettings(request: {
   disallowedTools: readonly string[];
   env?: EnvLookup;
+  mcpConfigPath?: string;
 }): Promise<Result<AgentRunSettings>> {
   const built = buildGeminiToolSettings(request.disallowedTools);
   if (!built.ok) return { ok: false, error: new Error(built.refusal.message) };
+
+  if (request.mcpConfigPath) {
+    const path = request.mcpConfigPath;
+    let json: string;
+    try {
+      json = await Deno.readTextFile(path);
+    } catch (error) {
+      return {
+        ok: false,
+        error: new Error(
+          `the Gemini MCP config at ${path} could not be read: ${
+            causeOf(error)
+          }; refusing to run without the requested MCP servers (Issue #5343)`,
+        ),
+      };
+    }
+    const servers = buildGeminiMcpServers(json);
+    if (Object.keys(servers).length === 0) {
+      return {
+        ok: false,
+        error: new Error(
+          `the Gemini MCP config at ${path} produced no usable mcpServers ` +
+            "entry; refusing to run without the requested MCP servers (Issue #5343)",
+        ),
+      };
+    }
+    built.settings.mcpServers = servers;
+  }
 
   const configuredRoot = (request.env?.("TMPDIR") ?? "").trim();
   const root = configuredRoot === "" ? undefined : configuredRoot;

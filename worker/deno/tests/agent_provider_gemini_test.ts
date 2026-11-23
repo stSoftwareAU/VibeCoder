@@ -19,6 +19,7 @@ import {
   assertMatch,
   assertNotEquals,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import {
   agentProviderIds,
@@ -39,6 +40,9 @@ import { CODEX_ENV_DENYLIST } from "../lib/codex_env.ts";
 import { DEEPSEEK_ENV_DENYLIST } from "../lib/deepseek_env.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { CONTAINER_IMAGE_INPUTS } from "../lib/container_image_hash.ts";
+import { buildCodexMcpConfigArgs } from "../lib/codex_executor.ts";
+import { GEMINI_SYSTEM_SETTINGS_ENV_VAR } from "../lib/gemini_settings.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 const repoRoot = new URL("../../../", import.meta.url).pathname;
 
@@ -104,6 +108,8 @@ Deno.test("gemini provider - the invocation is a non-interactive single-prompt r
     "--skip-trust",
     "--model",
     "gemini-3-pro",
+    "--allowed-mcp-server-names",
+    "",
     "--prompt",
     "PROMPT",
   ]);
@@ -132,6 +138,8 @@ Deno.test("gemini provider - with no model the CLI keeps its configured default"
     "--approval-mode",
     "yolo",
     "--skip-trust",
+    "--allowed-mcp-server-names",
+    "",
     "--prompt",
     "hello",
   ]);
@@ -278,6 +286,211 @@ Deno.test("gemini provider - a sessionless Quorum judge call carries neither ses
   const args = gemini.buildInvocation({ prompt: "Judge these two plans" });
   assertEquals(args.includes("--session-id"), false);
   assertEquals(args.includes("--resume"), false);
+});
+
+// ---------------------------------------------------------------------------
+// The run's MCP servers reach Gemini through its settings file (Issue #5343)
+// ---------------------------------------------------------------------------
+
+/** A browser run's config: the Playwright server with command, args and env. */
+const BROWSER_CONFIG = JSON.stringify({
+  mcpServers: {
+    playwright: {
+      command: "node",
+      args: ["/opt/pw/cli.js", "--headless"],
+      env: { PLAYWRIGHT_BROWSERS_PATH: "/opt/browsers" },
+    },
+  },
+});
+
+/** Writes `json` to `mcp-config.json` under `root` and returns the path. */
+async function mcpConfigIn(root: string, json: string): Promise<string> {
+  const path = `${root}/mcp-config.json`;
+  await Deno.writeTextFile(path, json);
+  return path;
+}
+
+/** The value that follows `--allowed-mcp-server-names` in an argv. */
+function allowedNamesOf(args: string[]): string {
+  const at = args.indexOf("--allowed-mcp-server-names");
+  assert(at >= 0, `no --allowed-mcp-server-names in ${args.join(" ")}`);
+  return args[at + 1]!;
+}
+
+/**
+ * Writes the run's settings file under `root`, reads back what the CLI would
+ * read, and removes the file again.
+ */
+async function settingsFileFor(
+  root: string,
+  mcpConfigPath?: string,
+): Promise<Record<string, unknown>> {
+  const prepare = gemini.prepareRunSettings;
+  assert(prepare, "the Gemini descriptor writes a per-run settings file");
+  const prepared = await prepare({
+    disallowedTools: [],
+    env: envFrom({ TMPDIR: root }),
+    ...(mcpConfigPath ? { mcpConfigPath } : {}),
+  });
+  assert(prepared.ok, prepared.ok ? "" : prepared.error.message);
+  try {
+    const path = prepared.value.env[GEMINI_SYSTEM_SETTINGS_ENV_VAR]!;
+    return JSON.parse(await Deno.readTextFile(path));
+  } finally {
+    await prepared.value.cleanup();
+  }
+}
+
+Deno.test("gemini MCP servers (Issue #5343) - a browser run names playwright in argv and writes its server to the settings file", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_browser_" });
+  try {
+    const mcpConfigPath = await mcpConfigIn(root, BROWSER_CONFIG);
+    const args = gemini.buildInvocation({ prompt: "P", mcpConfigPath });
+    assertEquals(allowedNamesOf(args), "playwright");
+
+    assertEquals(await settingsFileFor(root, mcpConfigPath), {
+      mcpServers: {
+        playwright: {
+          command: "node",
+          args: ["/opt/pw/cli.js", "--headless"],
+          env: { PLAYWRIGHT_BROWSERS_PATH: "/opt/browsers" },
+        },
+      },
+    });
+
+    // The same JSON, as Codex receives it, carries the same command and args.
+    assertEquals(buildCodexMcpConfigArgs(BROWSER_CONFIG), [
+      "-c",
+      'mcp_servers.playwright.command="node"',
+      "-c",
+      'mcp_servers.playwright.args=["/opt/pw/cli.js", "--headless"]',
+      "-c",
+      'mcp_servers.playwright.env={ PLAYWRIGHT_BROWSERS_PATH = "/opt/browsers" }',
+    ]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gemini MCP servers (Issue #5343) - a graft-only run loads only graft and drops alwaysLoad", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_graft_" });
+  try {
+    const mcpConfigPath = await mcpConfigIn(
+      root,
+      JSON.stringify({
+        mcpServers: {
+          graft: {
+            command: "graft",
+            args: ["serve", "--mcp"],
+            env: { GRAFT_ROOT: "/w/repo" },
+            alwaysLoad: true,
+          },
+        },
+      }),
+    );
+    const args = gemini.buildInvocation({ prompt: "P", mcpConfigPath });
+    assertEquals(allowedNamesOf(args), "graft");
+    assertEquals(await settingsFileFor(root, mcpConfigPath), {
+      mcpServers: {
+        graft: {
+          command: "graft",
+          args: ["serve", "--mcp"],
+          env: { GRAFT_ROOT: "/w/repo" },
+        },
+      },
+    });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gemini MCP servers (Issue #5343) - a run with no servers allows none and its settings file has no mcpServers key", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_none_" });
+  try {
+    const args = gemini.buildInvocation({ prompt: "P" });
+    assertEquals(allowedNamesOf(args), "");
+    assertEquals(await settingsFileFor(root), {});
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gemini MCP servers (Issue #5343) - an unsafe server name is skipped in both the settings file and argv", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_unsafe_" });
+  try {
+    const mcpConfigPath = await mcpConfigIn(
+      root,
+      JSON.stringify({
+        mcpServers: {
+          "bad name": { command: "bad" },
+          ok: { command: "ok-cmd" },
+        },
+      }),
+    );
+    const args = gemini.buildInvocation({ prompt: "P", mcpConfigPath });
+    assertEquals(allowedNamesOf(args), "ok");
+    assertEquals(await settingsFileFor(root, mcpConfigPath), {
+      mcpServers: { ok: { command: "ok-cmd" } },
+    });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gemini MCP servers (Issue #5343) - an unreadable MCP config refuses the spawn, naming the path", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_missing_" });
+  try {
+    const missing = `${root}/absent.json`;
+    const prepare = gemini.prepareRunSettings;
+    assert(prepare, "the Gemini descriptor writes a per-run settings file");
+    const prepared = await prepare({
+      disallowedTools: [],
+      env: envFrom({ TMPDIR: root }),
+      mcpConfigPath: missing,
+    });
+    assertEquals(prepared.ok, false);
+    if (prepared.ok) return;
+    assertStringIncludes(prepared.error.message, missing);
+    assertStringIncludes(prepared.error.message, "No such file or directory");
+
+    assertThrows(
+      () => gemini.buildInvocation({ prompt: "P", mcpConfigPath: missing }),
+      Error,
+      missing,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gemini MCP servers (Issue #5343) - a config with no usable server refuses the spawn, naming the path", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_empty_" });
+  try {
+    // A server with no command cannot be started by Gemini, so nothing is usable.
+    const mcpConfigPath = await mcpConfigIn(
+      root,
+      JSON.stringify({ mcpServers: { graft: { alwaysLoad: true } } }),
+    );
+    const prepare = gemini.prepareRunSettings;
+    assert(prepare, "the Gemini descriptor writes a per-run settings file");
+    const prepared = await prepare({
+      disallowedTools: [],
+      env: envFrom({ TMPDIR: root }),
+      mcpConfigPath,
+    });
+    assertEquals(prepared.ok, false);
+    if (prepared.ok) return;
+    assertStringIncludes(prepared.error.message, mcpConfigPath);
+    assertStringIncludes(prepared.error.message, "no usable mcpServers entry");
+
+    assertThrows(
+      () => gemini.buildInvocation({ prompt: "P", mcpConfigPath }),
+      Error,
+      mcpConfigPath,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
