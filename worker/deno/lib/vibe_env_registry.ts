@@ -559,6 +559,12 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "the MCP configuration directory the launcher stages",
   },
+  VIBE_AGENT_SPAWN_TAG: {
+    role: "launch_plumbing",
+    note:
+      "per-spawn tag the runner sets in each agent child's environment so the " +
+      "leftover reaper can find processes the agent left running (Issue #4815)",
+  },
 
   // ---------------------------------------------------------------------------
   // Test, debug and setup switches, deliberately environment
