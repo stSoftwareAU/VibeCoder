@@ -2,12 +2,13 @@
 
 ## Summary
 
-When a bare `secret-assignment` value starts at the closing quote of a credential
-flag's quoted value, the assignment mask now keeps that quote in front of the
-placeholder. This lets `secret-cli-flag` pair the flag's quotes and mask the
-whole value. Before the fix, `--password 'alpha beta TOKEN='tail` redacted to
-`--password ***REDACTED*** beta TOKEN=***REDACTED***` and published `beta`. It
-now redacts to `--password ***REDACTED******REDACTED***`. Closes #5363.
+When a bare `secret-assignment` value starts at the closing quote of a
+credential flag's quoted value, the assignment mask now keeps that quote in
+front of the placeholder. This lets `secret-cli-flag` pair the flag's quotes and
+mask the whole value. Before the fix, `--password 'alpha beta TOKEN='tail`
+redacted to `--password ***REDACTED*** beta TOKEN=***REDACTED***` and published
+`beta`. It now redacts to `--password ***REDACTED******REDACTED***`. Closes
+#5363.
 
 ## Spec
 
@@ -49,21 +50,21 @@ now redacts to `--password ***REDACTED******REDACTED***`. Closes #5363.
 - The issue's shape only occurs when no later `'` exists in the text. If one
   does, the assignment's quoted branch pairs with it. Repeating the shape on
   several lines takes the other path. That path has its own existing behaviour
-  and is the same on the base branch: a quoted value runs across the next
-  line's `--password '`, takes the flag's name, and the second line's flag
-  value is published. That is a separate defect from this one, and this PR does
-  not change it.
+  and is the same on the base branch: a quoted value runs across the next line's
+  `--password '`, takes the flag's name, and the second line's flag value is
+  published. That is a separate defect from this one, and this PR does not
+  change it.
 
 ## Evidence
 
 Backend-only change, with no UI files. Behaviour was observed by running the
 library directly (`deno run`) before and after the change:
 
-| Input | Base output | After |
-|---|---|---|
-| `--password 'alpha beta TOKEN='tail` | `--password ***REDACTED*** beta TOKEN=***REDACTED***` | `--password ***REDACTED******REDACTED***` |
+| Input                                                              | Base output                                                       | After                                                 |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------- | ----------------------------------------------------- |
+| `--password 'alpha beta TOKEN='tail`                               | `--password ***REDACTED*** beta TOKEN=***REDACTED***`             | `--password ***REDACTED******REDACTED***`             |
 | `deploy --password 'correct horse battery staple TOKEN:'tail more` | `… ***REDACTED*** horse battery staple TOKEN:***REDACTED*** more` | `deploy --password ***REDACTED******REDACTED*** more` |
-| `x TOKEN='tail` (control) | `x TOKEN=***REDACTED***` | unchanged |
+| `x TOKEN='tail` (control)                                          | `x TOKEN=***REDACTED***`                                          | unchanged                                             |
 
 A scratch base-vs-fix comparison was run over 200,000 generated inputs built
 from flag, quote, label and word fragments, then deleted. It found no input
@@ -73,10 +74,10 @@ inputs (`--flag 'alpha beta KEY='…`) that published `beta` on base published
 nothing after the fix. The generator never produced the lead-in form.
 
 Provenance numbers in the diff: #5363 (this issue); #5310 (checked:
-"secret-assignment rule publishes a credential when its label is consumed as
-the value of an earlier credential label", whose round-13 tests are cited);
-#3942 is the linearity rule the module header already cites. It could not be
-re-viewed this run because the GitHub API rate limit was exhausted.
+"secret-assignment rule publishes a credential when its label is consumed as the
+value of an earlier credential label", whose round-13 tests are cited); #3942 is
+the linearity rule the module header already cites. It could not be re-viewed
+this run because the GitHub API rate limit was exhausted.
 
 ## Test Plan
 
@@ -86,8 +87,8 @@ re-viewed this run because the GitHub API rate limit was exhausted.
   idempotence, and that the leaked words are absent.
   - Five issue-shape cases (`=` and `:` separators, `--password`, `--api-key`
     and `--token`, a cross-line label) and a size case (20,000 closed flag
-    values before one instance; output only, no stopwatch). **Red on the
-    unfixed code:** all six failed; the first returned
+    values before one instance; output only, no stopwatch). **Red on the unfixed
+    code:** all six failed; the first returned
     `--password ***REDACTED*** beta TOKEN=***REDACTED***`. They are green after
     the fix.
   - Three controls, green on base and after the fix: an unclosed quote that
@@ -98,15 +99,16 @@ re-viewed this run because the GitHub API rate limit was exhausted.
   `deno test -A tests/secret_redaction*_test.ts tests/secret_transform_redaction_test.ts tests/prompt_context_secret_redaction_1424_test.ts tests/security_scan_secret_redaction_3047_test.ts`
   (from `worker/deno`): 555 passed, 0 failed.
   `tests/cache_secret_redaction_1261_test.ts` passed too.
-- `./quality.sh < /dev/null` on the final code: `Result: PASSED (with skipped
-  checks)`. The skipped checks were `config integration` and `checkov`, which
-  the gate skips here. Deno tests, lint, type check, fmt, markdownlint, semgrep
-  and gitleaks all passed.
+- `./quality.sh < /dev/null` on the final code:
+  `Result: PASSED (with skipped
+  checks)`. The skipped checks were
+  `config integration` and `checkov`, which the gate skips here. Deno tests,
+  lint, type check, fmt, markdownlint, semgrep and gitleaks all passed.
 - Docs: the `secret-assignment` comment in `RULES`, the JSDoc of
   `redactAssignmentsOnce` and the new `flagClosingQuotes`, and a new paragraph
-  in `SECURITY.md` → "An assignment's value is judged, not only its label".
-  The existing `SECURITY.md` sentence on flags whose quote the walk's mask
-  removes (the `--token 'alpha credentials: DEPLOY_TOKEN = 'tail` example)
-  still holds, because that shape is not changed.
+  in `SECURITY.md` → "An assignment's value is judged, not only its label". The
+  existing `SECURITY.md` sentence on flags whose quote the walk's mask removes
+  (the `--token 'alpha credentials: DEPLOY_TOKEN = 'tail` example) still holds,
+  because that shape is not changed.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
