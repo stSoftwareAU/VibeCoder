@@ -5,7 +5,7 @@
  * This runs for every archived file not yet named `*.facts.json`, including
  * files archived by older worker versions after the fields were published, not
  * only issues filed before the fields existed. Issues filed before the "Last step logged", "Silent before capture", "Guest
- * probe", "Guest memory", "Guest pressure", "Host disk" and "Host memory" lines were published carry no
+ * probe", "Guest memory", "Guest pressure", "Last liveness tick", "Host disk" and "Host memory" lines were published carry no
  * such facts. The evidence is still in `~/logs/hard-kill-archive/` on the host
  * that filed them, so an issue run on another host cannot diagnose them. On
  * each hard-kill reporting pass this module posts, once per archived file, ONE
