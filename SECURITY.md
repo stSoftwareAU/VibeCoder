@@ -1900,23 +1900,24 @@ label the worker may apply, and it is narrowed five ways:
   who adds `planning`, or who re-adds `work-on`, gets no trust from the
   exception, so they still cannot trigger planning.
 - **Once per issue.** The hand-off comment carries `<!-- vibe-planning-handoff -->`.
-  If that marker is already present, a second request falls back to
-  `needs-human`. The marker is looked up across the issue's full comment
-  thread — every author — rather than the budgeted prompt comments (20
-  comments / 12,000 characters), which could drop it on a busy issue
-  (Issue #2942); the prompt comments are only a logged-warning fallback if
-  that fetch fails. A forged marker can only make the fallback fire, which is
-  the safe direction. Untrusted issue text reaches the prompt through
-  `issue_content_trust_filter.ts` (delimiter sanitising and nonce-boundary
-  wrapping). Even if an injection did make the run emit
-  `vibe-needs-planning`, the result is only planning an issue that a trusted
-  human already scheduled with `work-on`. The posted hand-off comment passes
-  the run's reason and output through `neutraliseAgentMarkers`, so agent text
-  cannot forge a fleet marker in a worker-authored comment.
-- **`work-on` issues only.** `handle_no_changes_phase.ts` attempts the
-  hand-off only when the issue carries `work-on` (`PLANNING_HANDOFF_ANCHOR`).
-  On any other pickup tier the label would never be trusted, so the run goes
-  to `needs-human` instead of leaving an untrusted `planning` label behind.
+  If that marker is already present, a second request makes no hand-off and
+  the issue is retried as not finished (Issue #4227). The marker is looked up
+  across the issue's full comment thread — every author — rather than the
+  budgeted prompt comments (20 comments / 12,000 characters), which could drop
+  it on a busy issue (Issue #2942); the prompt comments are only a
+  logged-warning fallback if that fetch fails. A forged marker can only make
+  the fallback fire, which is the safe direction. Untrusted issue text
+  reaches the prompt through `issue_content_trust_filter.ts` (delimiter
+  sanitising and nonce-boundary wrapping). Even if an injection did make the
+  run emit `vibe-needs-planning`, the result is only planning an issue that a
+  trusted human already scheduled with `work-on`. The posted hand-off comment
+  passes the run's reason and output through `neutraliseAgentMarkers`, so
+  agent text cannot forge a fleet marker in a worker-authored comment.
+- **`work-on` issues only.** `declared_handoff.ts` (shared by both phases)
+  attempts the hand-off only when the issue carries `work-on`
+  (`PLANNING_HANDOFF_ANCHOR`). On any other pickup tier the label would never
+  be trusted, so no hand-off is made and the issue is retried as not finished
+  (Issue #4227) instead of leaving an untrusted `planning` label behind.
 - **Untrusted-image gate.** The hand-off retires the issue into sub-issues with
   no human step, so, like the already-resolved close, it is withheld when an
   untrusted author's body carried an image. `gatePlanningHandoff`
@@ -1928,7 +1929,7 @@ label the worker may apply, and it is narrowed five ways:
 ```mermaid
 flowchart TD
     R["Run emits vibe-needs-planning"] --> P{"vibe-planning-handoff<br/>already on the issue?"}
-    P -->|yes| H["needs-human"]
+    P -->|yes| H["No hand-off:<br/>retried as not finished"]
     P -->|no| W{"work-on on the issue<br/>and no untrusted image?"}
     W -->|no| H
     W -->|yes| G{"Guard: label is planning?"}
