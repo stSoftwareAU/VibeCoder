@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { cleanBackSync } from "../lib/clean_back_sync.ts";
+import { cleanBackSync } from "../lib/milestone_sync_pr.ts";
 
 Deno.test("only reproducible merges of published milestone and Develop tips qualify", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "back-sync-"));
