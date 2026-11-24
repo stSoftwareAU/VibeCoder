@@ -17,6 +17,7 @@ import {
   FORMATTER_COMMIT_MESSAGE,
   type RepoFormatterDeps,
 } from "../lib/repo_formatters.ts";
+import { runPrePushGate } from "../lib/pre_push_gate.ts";
 import type { Logger } from "../types.ts";
 import {
   NO_HOST_GIT_CONFIG,
@@ -200,6 +201,70 @@ Deno.test("formatBeforeGate leaves an archive file git no longer tracks out of t
     const joined = logger.lines.join("\n");
     assertStringIncludes(joined, "no longer tracked by git");
     assertEquals(joined.includes("git add -u failed"), false, joined);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("the pre-push gate passes after formatBeforeGate leaves a branch path git no longer tracks unformatted on disk (Issue #5410)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5410-gate-" });
+  try {
+    const repo = await initRepo(root);
+    await writeFile(repo, "deno.json", "{}\n");
+    await git(repo, ["add", "."]);
+    await git(repo, ["commit", "-m", "base"]);
+    const baseRef = (await git(repo, ["rev-parse", "HEAD"])).trim();
+    const unformattedGen = "export const  y   =  2\n";
+    await writeFile(repo, "src/bad.ts", "export const x   =  1\n");
+    await writeFile(repo, "src/gen.ts", unformattedGen);
+    await git(repo, ["add", "."]);
+    await git(repo, ["commit", "-m", "add sources"]);
+    await git(repo, ["rm", "--cached", "src/gen.ts"]);
+    await git(repo, ["commit", "-m", "untrack generated file"]);
+
+    const logger = recordingLogger();
+    const formatterDeps: RepoFormatterDeps = {
+      ...createRepoFormatterDeps(),
+      logger,
+    };
+    await formatBeforeGate(
+      {
+        git: {
+          formatBranchChanges: (path, ref) =>
+            formatBranchChanges(path, ref, formatterDeps),
+        },
+        logger,
+        formatterDeps,
+      },
+      repo,
+      baseRef,
+    );
+    assertEquals(
+      (await git(repo, ["log", "-1", "--format=%s"])).trim(),
+      FORMATTER_COMMIT_MESSAGE,
+    );
+    assertEquals(
+      await Deno.readTextFile(`${repo}/src/gen.ts`),
+      unformattedGen,
+    );
+
+    const head = (await git(repo, ["rev-parse", "HEAD"])).trim();
+    const gate = await runPrePushGate({
+      cwd: repo,
+      stdin: `refs/heads/feature ${head} refs/heads/feature ${
+        "0".repeat(40)
+      }\n`,
+      preFlightCommands: [],
+      baseRef,
+      findMarkdownlint: () => Promise.resolve(null),
+      findCspell: () => Promise.resolve(null),
+      findShellcheck: () => Promise.resolve(null),
+      secretScan: "off",
+    });
+    assert(gate.ok, gate.ok ? "" : gate.error.message);
+    const ran = gate.value.checksRun.join("\n");
+    assertStringIncludes(ran, "src/bad.ts");
+    assertEquals(ran.includes("src/gen.ts"), false, ran);
   } finally {
     await Deno.remove(root, { recursive: true });
   }
