@@ -191,21 +191,15 @@ guessing.
    - **A new case re-reads the text it now reaches.** When a change
      sends a new case to text that already exists — a widened
      condition, a new arm or allowed value, a newly called function or
-     component, or a new state on a screen that already exists (an
-     earlier date, a paged or partial load, a fallback, an empty or
-     error case) — list every message the screen
-     already renders — notes, empty-state text, warnings, badges,
-     labels — and say for each whether it is still true in the new
-     state. Reword, hide or mark each one that is not, so the new state
-     never shows a message written for another state, and add a test
-     that renders the new state and asserts each message that differs
-     in that state, or is absent from it. A test that renders only the
-     new rows stays green while an old message is wrong: an empty state
-     reading "Nothing happened in this period." above a new load-older
-     control, or today's live badge beside an earlier date's figures. A
-     pre-existing message left unchanged that is false or misleading in
-     the new state is a blocking self-review finding; list the messages
-     checked in the PR summary's Test Plan (Issue #3259).
+     component, or a new state on a screen that already exists — follow
+     the new case to each place that shows, posts or prints something
+     for it, and read what that place says. Reword, hide or mark any
+     text that is false or misleading for the new case, and add a test
+     that puts the new case through and asserts each text that differs
+     for it, or is absent from it. A test that checks only the new
+     behaviour stays green while an old message is wrong. Pre-existing
+     text left unchanged that is false or misleading for the new case is
+     a blocking self-review finding (Issues #3259, #3877).
 2. Do not remove, skip or weaken existing tests merely to make the gate pass.
    The restriction is against a clean build obtained by deleting useful tests,
    weakening assertions, adding skips or lowering quality thresholds. A
@@ -315,14 +309,17 @@ guessing.
    remaining assertions on supported behaviour (see **An
    edited expectation must still go red without its guard** in the
    guidelines).
-3. Update the documentation in the same change. A change that **adds, changes
-   or removes** behaviour, a field, a UI element or a setting owes a docs
-   change — see **A Code Change Owes a Docs Change** in `CODING-STANDARDS.md`
-   (restated in the `<coding_guidelines>`). Before you commit, grep
-   `README.md`, `docs/` (excluding `docs/archive/`) and every `*/README.md`
-   for each name you removed or changed **and** for the user-visible wording
-   you removed — a label, a status sentence, a setting's description — then
-   fix every hit, so no manual still describes what the code no longer does.
+3. Update the documentation in the same change — see **A Code Change Owes a
+   Docs Change** in `CODING-STANDARDS.md` (restated in the `<coding_guidelines>`).
+   When a change renames or removes something, or changes the behaviour, meaning,
+   default or value of something a doc or comment describes, every other statement
+   of the old version is now false. Before you commit, search for the old version:
+   grep README, `docs/`, prompts and agent instructions, source doc comments and
+   user-visible strings for the old name **and** for the stem of the old wording
+   or value (`replac\w*`, not "replaces"). The old wording includes each doc line
+   your own diff removed or rewrote. Read the sentence around every hit and fix
+   each one the change makes false, including in a file the diff does not otherwise
+   touch. Then re-run the grep on the final head.
    In addition to the term grep, find the **manual section** that documents
    the surface you changed by grepping for the surface's own name — the card
    or page title for a UI component, the route for an endpoint, the report or
@@ -330,19 +327,6 @@ guessing.
    change; read that section through and fix every sentence the change makes
    false. A grep hit is cleared only after reading the sentence it is in,
    never by the file's topic.
-   Grep **source files** too, not only the manuals: for each name you
-   removed or whose behaviour you changed, and for the shared constants,
-   types and helpers the changed code defines or calls. Read every doc
-   comment and module doc a hit lands in — a constant's definition, a
-   reader's safety argument, a helper's list of callers — and fix any
-   sentence the change makes false, including in a file the diff does not
-   otherwise touch.
-   Grep for the **stem** of a behavioural claim, not one inflection
-   (`replac\w* or remov\w*`, not "replaces or removes"). In every file you
-   list as updated, read every passage that mentions the changed surface,
-   not only the section you edited. Then re-run every grep **on the final
-   head, after editing**. Name the section you read and the doc files you
-   updated in the PR summary.
    Before new prompt or doc text states how another component behaves —
    above all an exclusive or negative claim ("the only …", "never …", "the
    worker does not …") — open the code that implements it and cite that file
@@ -1191,40 +1175,32 @@ When creating the PR, include evidence based on the type of change:
   it created itself (`Deno.makeTempDir`, `mktemp -d`), and prove cleanup through
   a temp-root parameter pointed at that directory (see **Never let a unit test
   inherit the host's state** in `CODING-STANDARDS.md`). When the
-  change relies on how git, `gh`, the GitHub API or another external tool
-  behaves in a particular case, run the real tool on that case first and build
-  the fake's fixture from the observed output (see **Observe the real tool
-  before you rely on it** in the guidelines). The PR summary's Evidence gives
-  the command you ran and the part of the output the code depends on, or cites
-  the tool's documentation or source when the case cannot be observed safely. A
-  fake built from the behaviour you expected rather than the behaviour you
-  observed is a blocking self-review finding. When the change adds or changes a
+  change relies on what git, `gh`, the GitHub API or another external tool
+  prints or returns, take the test's input from the tool, not from what you
+  expect it to be: run the tool in the test where the suite has it, in the
+  environment production gives it, or use output copied from a real run; if the
+  case cannot be observed safely, take it from the tool's documentation or
+  source (see **Observe the real tool before you rely on it** in the
+  guidelines). A fake built from the behaviour you expected rather than the
+  behaviour you observed is a blocking self-review finding.
+  When the change adds or changes a
   recorded failure or degradation reason that quotes a tool's output, the reason
   quotes the line that names the cause and its test asserts that cause text, not
   only the prefix (see **A failure reason names the cause, not just the
   failure** and **A failure-reason test asserts the cause** in the guidelines).
-  When the change relies on a property of one of the repository's own ports —
-  a broker, database or store client with a production implementation — and
-  its tests run on an in-repo fake, or when a test fakes a response from the
-  repository's own server or service by hand (an HTTP body, status or header,
-  a queue message, a file the other side writes), read the production
-  implementation first and confirm it has the property the change relies on
-  (a property of that port or response): which rows a read returns, its
-  filter, ordering or paging, the value types a write accepts, or whether a
-  conditional write can lose (see **A fake mirrors the production
-  implementation it stands in for** in the guidelines). The rule applies across
-  processes and languages, not only to in-process traits or interfaces. For a
-  faked response, take the fixture from the producer's real output: a golden
-  the server's tests produce or verify, or a contract test that runs the
-  server's serialiser for that response kind; when the repository has no golden
-  for that response kind yet, the PR adds one. Check a header the client
-  depends on against what the deployed configuration lets the client read (for
-  example a CORS exposed-headers list). The PR summary's Evidence names the
-  production implementation each load-bearing fake stands in for and the
-  property relied on, and, for such a header, where that deployed setting is
-  set. A change whose only proof is a fake more permissive than its
-  production implementation is a blocking self-review finding, and so is one
-  whose only proof is a fixture the producer never emits.
+  When a test hands the changed code something one of the repository's own
+  producers returns or writes, take it from the producer: call the producer in
+  the test, load output that the producer's own tests generate or verify, run
+  one contract test against both the fake and the production adapter, or test
+  the behaviour at the production adapter itself (see **A fake mirrors the
+  production implementation it stands in for** in the guidelines). When the
+  change relies on a property of what the producer returns, read the
+  production implementation first and confirm it has that property; if the
+  fake behaves differently, fix whichever side is wrong. Check a header the
+  client depends on against what the deployed configuration lets the client
+  read (for example a CORS exposed-headers list). A change whose only proof is
+  a fake more permissive than its production implementation, or a fixture the
+  producer never emits, is a blocking self-review finding.
 
 **Path invariant — the Markdown path MUST resolve in the committed tree.**
 Whatever path you write inside `![Description](path)` MUST point at the file
@@ -1466,15 +1442,7 @@ The file MUST contain:
    required behaviour input is explicit in the type rather than silently
    disabled by an omitted parameter or field, and the affected entry points
    are judged by their observable behaviour, not by direct helper coverage
-   alone. Likewise, when a change sends a new case
-   to text that already exists it re-reads the text it now reaches
-   (see **A new case re-reads the text it now reaches** under
-   Instructions): the Test Plan lists every note,
-   empty-state text, warning, badge and label the screen already
-   renders, each marked still true or changed for the new state, with a
-   test asserting each one that differs; a pre-existing message left
-   false or misleading in the new state is a blocking self-review
-   finding. Likewise, review every meaningful outcome of a branch the diff adds
+   alone. Likewise, review every meaningful outcome of a branch the diff adds
    using the guidelines' **Every outcome of a branch you add needs a test that
    reaches it** rule. Use inputs reaching the independent acceptance and refusal
    cases of compound conditions. Existing tests count; an outcome no test
