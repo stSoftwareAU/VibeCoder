@@ -69,7 +69,7 @@ Deno.test("skipReason (#4347): a completed Actions suite that failed at startup 
   assertEquals(await skipReason(searchPr("SUCCESS", []), "nleck"), null);
 });
 
-Deno.test("skipReason (#4347): a suite from another app, or one not yet concluded, does not block review", async () => {
+Deno.test("skipReason (#4347): suites from another app do not block review", async () => {
   // A queued suite from another app has no conclusion yet.
   assertEquals(
     await skipReason(
@@ -88,28 +88,60 @@ Deno.test("skipReason (#4347): a suite from another app, or one not yet conclude
   );
 });
 
-Deno.test("skipReason (#4347): an Actions suite still running is not a failure yet", async () => {
-  assertEquals(
-    await skipReason(
-      searchPr("SUCCESS", [suite(GA, "QUEUED", null)]),
-      "nleck",
-    ),
-    null,
-  );
-  assertEquals(
-    await skipReason(
-      searchPr("SUCCESS", [suite(GA, "IN_PROGRESS", null)]),
-      "nleck",
-    ),
-    null,
-  );
-  // The status decides, not a conclusion left on an unfinished suite.
+Deno.test("skipReason: unfinished Actions suites wait despite a green rollup", async () => {
+  for (
+    const status of [
+      "QUEUED",
+      "IN_PROGRESS",
+      "WAITING",
+      "REQUESTED",
+      "PENDING",
+      null,
+    ]
+  ) {
+    for (const count of [0, 2]) {
+      assertEquals(
+        await skipReason(
+          searchPr("SUCCESS", [suite(GA, status, null, count)]),
+          "nleck",
+        ),
+        "waiting-ci",
+        `${status} runs=${count}`,
+      );
+    }
+  }
+  // A rerun can retain the previous attempt's conclusion while running.
   assertEquals(
     await skipReason(
       searchPr("SUCCESS", [suite(GA, "IN_PROGRESS", "FAILURE")]),
       "nleck",
     ),
-    null,
+    "waiting-ci",
+  );
+  assertEquals(await skipReason(searchPr("SUCCESS", []), "nleck"), null);
+});
+
+Deno.test("skipReason: failures and cancellations precede unfinished Actions suites", async () => {
+  const pending = suite(GA, "QUEUED", null);
+  for (const conclusion of ["FAILURE", "CANCELLED"]) {
+    assertEquals(
+      await skipReason(
+        searchPr("FAILURE", [pending], [{
+          __typename: "CheckRun",
+          name: "build",
+          conclusion,
+        }]),
+        "nleck",
+      ),
+      conclusion === "CANCELLED" ? "ci-cancelled" : "ci-failed",
+    );
+  }
+  assertEquals(
+    await skipReason(
+      searchPr("SUCCESS", [pending, suite(GA, "COMPLETED", "STARTUP_FAILURE")]),
+      "nleck",
+    ),
+    "ci-failed",
   );
 });
 
@@ -247,5 +279,58 @@ Deno.test("pass (#4347): the production search query is accepted by the GraphQL 
     assertEquals(result.skipped, { "ci-failed": 1 });
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("pass: unfinished Actions heads never enter the ready list", async () => {
+  for (const status of ["QUEUED", "IN_PROGRESS", "COMPLETED"]) {
+    const dir = await Deno.makeTempDir();
+    const fake = fakeGithubPrSearch([]);
+    try {
+      const result = await pass(
+        new Set(["o/r"]),
+        new Set(["stservice"]),
+        "nleck",
+        {
+          dir,
+          gh: async (args) => {
+            if (args[1]?.endsWith("/comments") || args[1]?.endsWith("/files")) {
+              return "[]";
+            }
+            if (args[1]?.includes("/contents/")) {
+              throw new Error("HTTP 404: Not Found");
+            }
+            if (args.includes("Accept: application/vnd.github.diff")) return "";
+            await fake.gh(args);
+            return JSON.stringify({
+              data: {
+                search: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [
+                    searchPr("SUCCESS", [
+                      suite(
+                        GA,
+                        status,
+                        status === "COMPLETED" ? "SUCCESS" : null,
+                      ),
+                    ]),
+                  ],
+                },
+              },
+            });
+          },
+        },
+      );
+      assertEquals(
+        result.ready.map((pr) => pr.number),
+        status === "COMPLETED" ? [4347] : [],
+      );
+      assertEquals(
+        result.skipped,
+        status === "COMPLETED" ? {} : { "waiting-ci": 1 },
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 });

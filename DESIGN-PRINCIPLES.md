@@ -1053,9 +1053,9 @@ late: the deploy/publish workflows have already fired. Enforcement is
   `stale`, or a value GitHub adds in future — fails closed instead of falling
   through to `passed`.
 - **Zero checks is not green.** A head commit with no check runs
-  and no commit statuses reports `no_checks`, not `passed`, unless a failed
-  GitHub Actions suite applies (next bullet); the gate blocks and
-  the automated path escalates to a human. Only the explicit
+  and no commit statuses reports `no_checks`, not `passed`, unless a failed or
+  unfinished GitHub Actions suite applies (next bullets); the gate blocks and
+  the automated path requests a branch update and retries. Only the explicit
   `--allow-no-checks` operator override on `merge-if-checks-passed` relaxes it,
   and that command is itself gated on the monitored-repo allowlist and PR
   authorship.
@@ -1065,9 +1065,17 @@ late: the deploy/publish workflows have already fired. Enforcement is
   (typically `startup_failure`, which creates no check run) makes
   `determineCiStatus` return `failed`. This is checked before the `no_checks`
   return, so the `--allow-no-checks` override never relaxes it. Suites from
-  other apps and unfinished suites are ignored. The suites come from GraphQL
+  other apps are ignored. The suites come from GraphQL
   `checkSuites` (REST fallback `commits/{sha}/check-suites`), and the review
   gate skips such a PR as `ci-failed`.
+- **Unfinished Actions suites are pending even beside green checks.** A
+  `github-actions` suite whose status is not `completed` raises an otherwise
+  passing worker verdict to `pending`, including a zero-run workflow waiting
+  to start and a rerun whose earlier checks passed. Failures retain precedence.
+  The review gate uses the same rule and returns `waiting-ci` after checking
+  failures and cancellations. An unfinished suite also prevents `no_checks`,
+  so `--allow-no-checks` cannot bypass active CI. Elapsed time never makes an
+  unfinished Actions suite green.
 - **The merge is pinned to the checked commit.** The gate reports
   the head SHA it read the checks for, and `directMergePr()` merges with
   `gh pr merge --squash --match-head-commit <sha>`, or with `--merge` for a
