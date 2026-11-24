@@ -1131,33 +1131,22 @@ the PR summary with a source link to the callee's code or docs.
 
 **A fake mirrors the production implementation it stands in for.** The stub
 rule above covers another repository's binary; this covers the repository's
-own producers. It applies when a test double replaces one of the repository's
-own ports (a trait or interface with a production implementation), and
-equally when a test fakes a response from the repository's own server or
-service by hand: an HTTP body, status or header, a queue message, or a file
-the other side writes. It applies across processes and languages, not only
-to in-process traits or interfaces. When the change relies on a property of
-that port or response, read the production implementation first and confirm
-it has that property. Examples of such properties: which rows a read returns,
-a filter, ordering or paging, which value types a write accepts, or whether a
-conditional write can lose. If the fake behaves differently, fix whichever side
-is wrong. Then pin the two together with one contract test that runs against
-both, or against the production adapter's parsing of a recorded response,
-or test the behaviour at the production adapter itself. For a faked response,
-take the fixture from the producer's real output: a golden the server's tests
-produce or verify, or a contract test that runs the server's serialiser for
-that response kind. When the repository has no golden for that response kind
-yet, the PR adds one. Check a header the client depends on against what the
+own producers. When a test hands the changed code something one of those
+producers returns or writes, take it from the producer: call the producer in
+the test, load output that the producer's own tests generate or verify, run
+one contract test against both the fake and the production adapter, or test
+the behaviour at the production adapter itself. When the change relies on a
+property of what the producer returns, read the production implementation
+first and confirm it has that property; if the fake behaves differently, fix
+whichever side is wrong. Check a header the client depends on against what the
 deployed configuration lets the client read (for example a CORS exposed-headers
-list), and name in the PR summary where that is set. A fix to the fake is
-still held to **A red run counts only against the base branch**. In the PR
-summary, name the production implementation each load-bearing fake stands in
-for and the property the change relies on. A change whose only proof is a fake
-more permissive than its production implementation is a blocking self-review
-finding, and so is one whose only proof is a fixture the producer never emits.
+list). A fix to the fake is still held to **A red run counts only against the
+base branch**. A change whose only proof is a fake more permissive than its
+production implementation, or a fixture the producer never emits, is a
+blocking self-review finding (Issues #3224, #3900).
 
 **A test of a third-party tool's input uses that tool's semantics.** The
-fake rule above covers the repository's own ports and server responses;
+fake rule above covers the repository's own producers;
 this covers a pattern or config that an external tool reads — Renovate
 `matchStrings` or `managerFilePatterns`, Actions `branches` or `paths`
 filters, linter or scanner configs. When the tool's own validator or engine
