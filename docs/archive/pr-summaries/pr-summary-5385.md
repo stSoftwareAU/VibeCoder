@@ -4,7 +4,8 @@ Test git calls that carry the shared `NO_HOST_GIT_CONFIG` shield now also carry
 `VIBE_AUDIT_DISABLED: "true"`. Before this change, a fixture push through
 `runGitCommand` appended a hash-chained `git-push` row to the host's live
 `${WORK_DIR}/audit` journal whenever a test ran with `WORK_DIR` in its
-environment. Closes #5385.
+environment. A new git-only constant, `GIT_CONFIG_SHIELD`, serves the one
+caller whose env allowlist refuses the audit key. Closes #5385.
 
 ## Spec
 
@@ -31,8 +32,18 @@ environment. Closes #5385.
   (`WORK_DIR`/`VIBE_AUDIT_DIR` plus `VIBE_AUDIT_DISABLED: "0"`) **after** the
   shield. The one test that spread it before the shield (the push-provenance
   test in `worker/deno/tests/git_timeout_test.ts`) was reordered.
-- Production code is unchanged. `NO_HOST_GIT_CONFIG` is test support, and
-  nothing under `worker/deno/lib/` or `worker/deno/commands/` imports it.
+- The production `git-operations` command was not changed. Its `env` argument
+  accepts only the three `GIT_CONFIG_*` keys (`SHIELD_ENV_KEYS` in
+  `worker/deno/commands/git_operations.ts`, Issue #5371). Widening that list
+  would let a caller switch off the tamper-evident audit journal.
+  - The three tests in `worker/deno/tests/milestone_branch_ensure_test.ts` that
+    call that command now pass `GIT_CONFIG_SHIELD`.
+  - Accepted residual: a push that the command itself performs in those tests
+    can still be journalled if the process env carries `WORK_DIR`. It is a
+    production push driven by the code under test, not a fixture helper.
+    `deno task test:unit` strips `WORK_DIR`, so the gate never reaches it.
+- Production code is unchanged. Both constants are test support, and nothing
+  under `worker/deno/lib/` or `worker/deno/commands/` imports them.
 
 ### Undiscoverable Facts
 
@@ -51,6 +62,7 @@ flowchart LR
     R --> G{isAuditJournalEnabled<br/>options.env first}
     G -- "VIBE_AUDIT_DISABLED=true (shield)" --> N[no journal row]
     G -- "audit env spread after shield" --> J["${WORK_DIR}/audit git-push row"]
+    C[git-operations command test] -- "env: GIT_CONFIG_SHIELD<br/>(allowlist refuses the audit key)" --> R
 ```
 
 - Red against the base shield: with the base branch's
@@ -59,13 +71,17 @@ flowchart LR
   `FAILED | 12 passed | 3 failed`. The three tests that expect no journal
   failed, each with `journal written at …/audit/audit-no-host-5385-….jsonl`.
   The control passed.
-- Green at head: the same command passes. Run together with
-  `tests/git_timeout_test.ts` and `tests/git_branch_sync_test.ts`, the result
-  is `ok | 39 passed | 0 failed`.
-- Provenance numbers this diff adds: #5385, "Fixture pushes through
-  `runGitCommand` write `git-push` rows to the live audit journal when a test
-  file is run with `WORK_DIR` set". The other numbers in the touched headers
-  were already there.
+- Green at head: the full `deno task test:unit` passed both passes. The
+  parallel pass reported `ok | 36316 passed (4 steps) | 0 failed | 5 ignored`,
+  and the serial pass also passed.
+- Before the `GIT_CONFIG_SHIELD` split, that same full run caught three
+  failures in `worker/deno/tests/milestone_branch_ensure_test.ts`, each
+  `Refused env key 'VIBE_AUDIT_DISABLED': only GIT_CONFIG_COUNT, GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM may be passed`.
+- Provenance numbers this diff adds:
+  - #5385: "Fixture pushes through `runGitCommand` write `git-push` rows to the
+    live audit journal when a test file is run with `WORK_DIR` set"
+  - #5371: "Tests that push through production code still run `git push`
+    under the host's git hooks and config"
 
 ## Test Plan
 
@@ -85,14 +101,29 @@ flowchart LR
   - Only the spread order changed: `{ ...env, ...NO_HOST_GIT_CONFIG, ...auditEnv }`.
   - No assertion was removed. The test still asserts one journal entry with the
     expected `deliveredCommits`.
-  - It would go red if the shield were spread last, because the journal would
-    then be empty.
-- Shield users run unchanged after the shield edit: `deno task test:unit`
-  over `tests/git_branch_sync_test.ts`, `tests/sync_points_test.ts`,
-  `tests/untrusted_gate_spawn_test.ts` and `tests/fleet_pr_babysitter_test.ts`
-  gave `ok | 182 passed | 0 failed`. That run also listed
-  `tests/shellcheck_publication_test.ts`, but the unit runner skips it as an
-  integration suite, so it is not covered there.
-- `./quality.sh`: this line is rewritten with the gate's real result once it
-  has run on this head.
-  <!-- vibe-quality-gate-skipped reason="two earlier attempts were stopped by the host-disk guard before the gate finished; rerun in progress" -->
+- Edited `worker/deno/tests/milestone_branch_ensure_test.ts`. Three tests change
+  only their `env` argument to the command, from `NO_HOST_GIT_CONFIG` to
+  `GIT_CONFIG_SHIELD`; no assertion was removed. The tests are:
+  - `git operations command - ensure-milestone-branch fails loud instead of falling back`
+  - `git operations command - ensure-milestone-branch recreates a missing branch`
+  - `git operations command - ensure-milestone-branch refuses an env that widens the git shield (Issue #5371)`.
+    This one again reaches the `GIT_SSH_COMMAND` refusal it names. Its input is
+    the git-only shield plus `GIT_SSH_COMMAND`, so no earlier key is refused
+    first. The same shield alone is accepted by the `recreates a missing
+    branch` test.
+- `./quality.sh`: one foreground run was stopped by its 1500 s `timeout`
+  inside the sequential Deno tests stage. Another worker lane was running its
+  own suite on this host at the same time. Results for the stages it did run:
+  - every pre-check passed, including completeness checks and the git spawn
+    chokepoint;
+  - source targets, mermaid, markdownlint, semgrep, gitleaks and the
+    release-tag ruleset passed;
+  - config integration and checkov were skipped by the gate.
+- The remaining gate stages were then run on their own at head:
+  - `deno lint`, `deno fmt --check` and `deno task check` passed;
+  - `deno task test:unit` passed both passes;
+  - on the tree at the head commit, `deno task test:unit` over
+    `tests/milestone_branch_ensure_test.ts`, `tests/no_host_git_config_test.ts`,
+    `tests/git_timeout_test.ts` and `tests/git_operations_command_test.ts`
+    gave `ok | 49 passed | 0 failed`.
+  <!-- vibe-quality-gate-skipped reason="a single ./quality.sh run hit its 1500s timeout in the Deno tests stage under host contention; its stages were run individually and all passed" -->
