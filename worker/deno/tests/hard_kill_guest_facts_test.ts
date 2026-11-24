@@ -16,7 +16,7 @@
  * Uses Australian English spelling throughout (behaviour, colour, etc.).
  */
 
-import { assertEquals, assertFalse } from "@std/assert";
+import { assert, assertEquals, assertFalse } from "@std/assert";
 import {
   captureHardKillEvidence,
   DEFAULT_EXEC_TIMEOUT_MS,
@@ -40,7 +40,10 @@ import {
 import {
   collapseProcPressureText,
   formatLivenessPressureFields,
+  type LivenessTickPressure,
+  withRunPressureTicks,
 } from "../lib/liveness_guard.ts";
+import { createLogger } from "../lib/logger.ts";
 
 const CONTAINER = "vibe-coder-5062";
 const NOW = Date.parse("2026-11-11T17:42:07.603Z");
@@ -749,4 +752,111 @@ Deno.test("the tick line the liveness guard writes is read back (Issue #4815)", 
     hardKillLastLivenessTick(ev),
     "MemAvailable 512 MiB, memory some avg10=12.50, memory full avg10=4.25, cpu some avg10=0.75 (logged 2026-11-04 21:16:02Z)",
   );
+});
+
+// ---------------------------------------------------------------------------
+// The pressure line an in-flight run logs (Issue #4815)
+// ---------------------------------------------------------------------------
+
+/** A reading whose memory is `mib` and whose memory pressure is `avg10`. */
+function readingOf(mib: number, avg10: string): LivenessTickPressure {
+  return {
+    memAvailableMib: mib,
+    pressureMemory: collapseProcPressureText(
+      `some avg10=${avg10} avg60=1.00 avg300=0.00 total=1\n`,
+    ),
+    pressureCpu: collapseProcPressureText(
+      "some avg10=0.50 avg60=0.10 avg300=0.00 total=1\n",
+    ),
+  };
+}
+
+Deno.test("a reading taken during the run is what the fact reports (Issue #4815)", async () => {
+  const lines: string[] = [];
+  const logger = createLogger({ write: (m) => lines.push(m), host: "GRQ-3" });
+  // The end-of-cycle tick, logged before the claim with a healthy reading.
+  logger.info(
+    `[liveness] ${TICK_HEAD} hook_state=ok ${
+      formatLivenessPressureFields(readingOf(4000, "0.00"))
+    }`,
+  );
+  logger.info("Claimed o/r#4815");
+  const readings = [readingOf(900, "10.00"), readingOf(120, "85.25")];
+  let reads = 0;
+  await withRunPressureTicks(
+    async () => {
+      // The run is in flight until both in-run readings have been logged.
+      while (reads < readings.length) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      logger.info("[pre-PR verifier] starting");
+    },
+    {
+      log: (message) => logger.info(message),
+      read: () => {
+        const reading = readings[Math.min(reads, readings.length - 1)];
+        reads += 1;
+        return Promise.resolve(reading as LivenessTickPressure);
+      },
+      intervalMs: 10,
+    },
+  );
+  const fact = hardKillLastLivenessTick(tailRecord(lines));
+  assert(
+    fact.startsWith(
+      "MemAvailable 120 MiB, memory some avg10=85.25, cpu some avg10=0.50 (logged ",
+    ),
+    fact,
+  );
+  const claimAt = lines.findIndex((l) => l.includes("Claimed o/r#4815"));
+  const runLines = lines.filter((l) => l.includes("[liveness] run-pressure"));
+  assert(runLines.length >= 2, lines.join("\n"));
+  assert(lines.indexOf(runLines[0] ?? "") > claimAt);
+});
+
+Deno.test("the run pressure line is logged at the start and stops when the run settles (Issue #4815)", async () => {
+  const logged: string[] = [];
+  let resolveLate: (r: LivenessTickPressure) => void = () => {};
+  let reads = 0;
+  const result = await withRunPressureTicks(
+    () =>
+      new Promise<string>((resolve) => setTimeout(() => resolve("done"), 30)),
+    {
+      log: (m) => logged.push(m),
+      read: () => {
+        reads += 1;
+        if (reads === 1) return Promise.resolve(readingOf(512, "1.00"));
+        // The second reading never settles while the run is in flight, so the
+        // beats after it are skipped rather than stacking readers.
+        return new Promise((resolve) => {
+          resolveLate = resolve;
+        });
+      },
+      intervalMs: 5,
+    },
+  );
+  assertEquals(result, "done");
+  assertEquals(reads, 2);
+  resolveLate(readingOf(1, "99.00"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assertEquals(logged, [
+    `[liveness] run-pressure ${
+      formatLivenessPressureFields(readingOf(512, "1.00"))
+    }`,
+  ]);
+});
+
+Deno.test("a failed run pressure reading does not fail the run (Issue #4815)", async () => {
+  const logged: string[] = [];
+  const result = await withRunPressureTicks(
+    () => Promise.resolve(7),
+    {
+      log: (m) => logged.push(m),
+      read: () => Promise.reject(new Error("cat hung")),
+      intervalMs: 5,
+    },
+  );
+  assertEquals(result, 7);
+  assertEquals(logged, []);
 });

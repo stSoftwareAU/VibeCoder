@@ -8,9 +8,10 @@
  * read from the evidence record. Five are about the guest: how long the log
  * had been silent before the capture, whether the guest answered the exec
  * probe, its memory and its pressure stall figures, and its last-known memory
- * and pressure from the last liveness tick in the worker log tail (Issue
- * #4815). That last figure is there even when the guest probe did not answer,
- * provided a tick is inside the tail. Two come from the host
+ * and pressure from the newest pressure line in the worker log tail (Issue
+ * #4815), which an issue run logs every minute while it is in flight. That
+ * last figure is there even when the guest probe did not answer, provided
+ * such a line is inside the tail. Two come from the host
  * itself, not the guest: its free disk and its memory pressure. They say
  * whether the host was short even when the guest never answered. Each figure
  * is either a fixed word or a number that a strict pattern captured. No ps,
@@ -30,6 +31,7 @@ import {
   UNAVAILABLE_PREFIX,
 } from "./hard_kill_evidence.ts";
 import { GIB } from "./host_disk.ts";
+import { LIVENESS_TICK_MARKER, RUN_PRESSURE_MARKER } from "./liveness_guard.ts";
 
 /** Cap on each evidence string scanned (cost and ReDoS guard). */
 const SCAN_CHARS = 4000;
@@ -62,8 +64,12 @@ const HOST_MEMORY_RE =
 
 /** Cap on the liveness tick line scanned (cost and ReDoS guard). */
 const TICK_LINE_CHARS = 2000;
-/** The marker of a liveness tick line in the worker log. */
-const TICK_MARKER = "[liveness] tick=";
+/**
+ * The markers of a pressure reading in the worker log, shared with the
+ * writers: the end-of-cycle tick and the line an in-flight run logs every
+ * minute (Issue #4815).
+ */
+const TICK_MARKERS = [LIVENESS_TICK_MARKER, RUN_PRESSURE_MARKER] as const;
 /** The tick's available memory, a bounded number or `unavailable`. */
 const TICK_MEM_RE = / mem_available_mib=(\d{1,9}|unavailable)(?: |$)/;
 /** The tick's memory pressure token, bounded. */
@@ -215,8 +221,10 @@ export function hardKillGuestPressure(evidence: HardKillEvidence): string {
 
 /**
  * The guest's last-known memory and pressure, read from the newest
- * `[liveness] tick=` line in the worker log tail (Issue #4815). It survives a
- * guest that no longer answers the exec probe.
+ * `[liveness] run-pressure` or `[liveness] tick=` line in the worker log tail
+ * (Issue #4815). An issue run logs the first every minute while it is in
+ * flight; the second is the end-of-cycle tick. The reading survives a guest
+ * that no longer answers the exec probe.
  *
  * @param evidence - The evidence record
  * @returns For example `MemAvailable 120 MiB, memory some avg10=45.00 (logged
@@ -228,7 +236,7 @@ export function hardKillLastLivenessTick(evidence: HardKillEvidence): string {
   let tick: string | undefined;
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i] ?? "";
-    if (line.includes(TICK_MARKER)) {
+    if (TICK_MARKERS.some((marker) => line.includes(marker))) {
       tick = line.slice(0, TICK_LINE_CHARS);
       break;
     }

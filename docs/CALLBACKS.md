@@ -461,10 +461,12 @@ flowchart TD
   logged, the trigger, the fixed reason for that trigger, the capture and
   last-log times, the silence before capture, the guest-probe state, the guest
   memory and pressure figures, the last liveness tick (the guest's last-known
-  memory and pressure from the worker log tail, which reads
-  `not in the log tail` when no tick is in the tail; Issue #4815), and the host
-  disk and host memory figures (Issue #5250). The host figures are read on the
-  host at reap time, so they are present even when the guest did not answer.
+  memory and pressure from the newest `[liveness] run-pressure` or
+  `[liveness] tick=` line in the worker log tail; an issue run logs the first
+  when it starts and every minute while it is in flight, and the figure reads
+  `not in the log tail` when neither line is in the tail; Issue #4815), and the
+  host disk and host memory figures (Issue #5250). The host figures are read on
+  the host at reap time, so they are present even when the guest did not answer.
   Each reads `not available` when it could not be read, and for an evidence file
   written before host facts were captured. A repeat's follow-up line carries the
   same two host figures. The last step logged is the last one the log reported,
