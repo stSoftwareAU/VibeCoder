@@ -41,6 +41,10 @@
 #    `API_KEY=`, `ADMIN_TOKEN=`, `token=` and similar values on the line
 #    after a label-as-value assignment, asserting `redactSecrets()` masks
 #    both values.
+#  - gh_body_redaction_input_escaping_5416_test.ts (Issue #5416): fake
+#    40-character credential values (`password:`, `DEPLOY_TOKEN =`,
+#    `API_TOKEN:` on the next line, and a JSON-quoted `"password": "…"`)
+#    fed through `redactGhBodyArgs()` `--input` bodies.
 #
 # None of these are real credentials. An inline `gitleaks:allow` comment
 # could not clear the findings because gitleaks scans every commit in a
@@ -64,7 +68,7 @@ useDefault = true
 # the key format for any issue number rather than one fixture value, so it does
 # not have to be revisited each time a new dedup key is asserted.
 [allowlist]
-description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115, #1217, #1387, #1695, #1727, #5310)"
+description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115, #1217, #1387, #1695, #1727, #5310, #5416)"
 regexTarget = "line"
 regexes = [
   # Issue #4767: exact synthetic test fixture in the PR commit history.
@@ -191,4 +195,10 @@ paths = [
   # it are both masked (Issue #5310). The merge commit carries them literally,
   # and range scans cover it, so only a path allowlist clears it.
   '''worker/deno/tests/secret_redaction_label_as_value_5310_test\.ts''',
+  # Fake 40-character credential values (`password:`, `DEPLOY_TOKEN =`,
+  # `API_TOKEN:` on the next line, and a JSON-quoted `"password": "…"`) fed
+  # through `redactGhBodyArgs()` `--input` bodies (Issue #5416). The pushed
+  # commit carries the literal in one piece and range scans cover it, so only
+  # a path allowlist clears it.
+  '''worker/deno/tests/gh_body_redaction_input_escaping_5416_test\.ts''',
 ]
