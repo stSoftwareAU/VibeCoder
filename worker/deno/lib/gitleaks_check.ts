@@ -4,10 +4,11 @@
  *
  * Three fleet PRs (#5014, #5091, #5119) failed the blocking `gitleaks / gitleaks`
  * CI check, and nothing had scanned them locally, so each was met as a red PR
- * after the push. This stage runs the same scan the licence-less CI fallback in
- * `.github/workflows/gitleaks.yml` runs: the same pinned CLI version, the same
- * repository config and the same flags, over the same commit set CI scans
- * (`base..HEAD`). A local pass therefore predicts a CI pass.
+ * after the push. This stage runs the same scan as the PR job's commit-range
+ * step in `.github/workflows/gitleaks.yml`: the same pinned CLI version, the
+ * same repository config and the same flags, over the same commit set CI scans
+ * (`base..HEAD`). CI also scans the merged result (Issue #5436), which this
+ * stage does not, so a local pass predicts the CI range scan's pass.
  *
  * Pipeline:
  *   1. Not a git repository → SKIPPED (there is no commit range to scan).
@@ -36,6 +37,16 @@
  * uncommitted files, with a finding `blocked` and a scanner or history fault
  * `infrastructure`.
  *
+ * The pre-push gate (`pre_push_gate.ts` `runPrePushGate`, Issue #5430) runs
+ * {@link runGitleaksRangeCheck} over each pushed branch's range `<fork>..<head>`,
+ * where `<fork>` is the merge-base with the PR's base. That is the commit set
+ * CI's `gitleaks.yml` scans (`<base tip>..<head>`), not only the commits one
+ * push adds, so a secret an earlier, already-pushed commit of the PR added is
+ * still met before the next push. For the CI merged-result scan (#5436), the
+ * pre-push gate also scans a temporary merge commit against the PR base tip.
+ * The babysitter tree gate turns that stage off,
+ * because {@link runGitleaksTreeCheck} runs its own scan.
+ *
  * Australian English spelling used throughout (behaviour, licence, etc.).
  */
 
@@ -56,7 +67,10 @@ import { redactedLineTail } from "./redacted_text.ts";
 /** The gitleaks version `.github/workflows/gitleaks.yml` downloads. */
 export const GITLEAKS_VERSION = "8.30.1";
 
-/** The repository config both the licensed action and the CLI fallback read. */
+/**
+ * The repository config every gitleaks scan in `.github/workflows/gitleaks.yml`
+ * reads.
+ */
 export const GITLEAKS_CONFIG_PATH = ".github/gitleaks.toml";
 
 /**
@@ -92,12 +106,19 @@ export interface GitleaksCheckResult {
 
 /**
  * Arguments for the gitleaks scan of a commit range. The first four flags after
- * `git` mirror the CI fallback in `gitleaks.yml`. `--verbose` and `--no-color`
- * are local additions, so the finding's file, line and rule are printed (the
- * secret stays redacted). They do not change the verdict.
+ * `git` mirror the commit-range scan in `gitleaks.yml`. `--verbose` and
+ * `--no-color` are local additions, so the finding's file, line and rule are
+ * printed (the secret stays redacted). They do not change the verdict.
  */
 export function gitleaksScanArgs(
   range: string,
+  configPath: string | null,
+): string[] {
+  return gitleaksLogArgs(`--diff-merges=first-parent ${range}`, configPath);
+}
+
+function gitleaksLogArgs(
+  logOptions: string,
   configPath: string | null,
 ): string[] {
   return [
@@ -109,7 +130,7 @@ export function gitleaksScanArgs(
     "1",
     "--verbose",
     "--no-color",
-    `--log-opts=${range}`,
+    `--log-opts=${logOptions}`,
     ".",
   ];
 }
@@ -666,4 +687,185 @@ async function judgeFileFindings(
       FINDINGS_MAX_LINES + 4,
     ),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Pre-push gate: a pushed commit range (Issue #5430)
+// ---------------------------------------------------------------------------
+
+/**
+ * What the pre-push gate's scan of a pushed commit range found: the tree
+ * check's outcomes, plus `skipped` for a host without gitleaks, where the gate
+ * warns and goes on as the quality gate's SKIPPED stage does.
+ */
+export type GitleaksRangeOutcome =
+  | GitleaksTreeOutcome
+  | { kind: "skipped"; message: string };
+
+/** Injection points for {@link runGitleaksRangeCheck} (used by the tests). */
+export interface GitleaksRangeCheckOptions {
+  /** CI merged-result scan, against this PR base ref (Issue #5436). */
+  mergeBaseRef?: string;
+  git?: GitRunner;
+  /** Inject a version probe. Returns null when gitleaks cannot run. */
+  probeVersion?: () => Promise<string | null>;
+  /** Inject the scan. Defaults to the deadline-bound spawn of `gitleaks`. */
+  run?: (args: string[]) => Promise<SemgrepRunResult>;
+  /**
+   * Environment lookup used to decide whether this run is inside the fleet
+   * container image; defaults to the process environment.
+   */
+  env?: EnvLookup;
+}
+
+/** A full commit sha: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits. */
+const FULL_SHA = /^[0-9a-f]{40,64}$/;
+
+/**
+ * Scan the commit range `base..head` of one pushed branch with the CI flags
+ * (Issue #5430). The pre-push gate passes `base` as the fork point it computes
+ * from the PR base, so the range holds every commit the PR has ahead of its
+ * base, as CI's `<base tip>..<head>` scan does, not only the commits this push
+ * adds. The repository config is read from `dir`.
+ *
+ * `base` and `head` are interpolated into `--log-opts`, so anything that is not
+ * a full lowercase sha is refused as `blocked` before gitleaks runs. A missing
+ * gitleaks is an infrastructure fault inside the fleet image, which bakes it in,
+ * and SKIPPED on a host, as {@link runGitleaksCheck} reports it. A scan that
+ * exceeds its deadline is `infrastructure`, because a scan that did not finish
+ * is not clean.
+ */
+export async function runGitleaksRangeCheck(
+  dir: string,
+  base: string,
+  head: string,
+  options: GitleaksRangeCheckOptions = {},
+): Promise<GitleaksRangeOutcome> {
+  if (!FULL_SHA.test(base) || !FULL_SHA.test(head)) {
+    return {
+      kind: "blocked",
+      message:
+        "gitleaks: refused to scan the commit range: its base and head " +
+        "must be full lowercase commit shas, which are the only values " +
+        "interpolated into the scan's --log-opts",
+    };
+  }
+  const shortRange = `${base.slice(0, 12)}..${head.slice(0, 12)}`;
+
+  const version = await (options.probeVersion ?? defaultProbeVersion)();
+  if (version === null) {
+    if (runningInContainerImage(options.env ?? processEnvLookup)) {
+      return {
+        kind: "infrastructure",
+        message: "gitleaks: gitleaks is not installed or not in PATH inside " +
+          "the fleet container image, which bakes it in, so the commit range " +
+          `${shortRange} was never scanned — an infrastructure fault, not a ` +
+          "finding (rebuild the image per docs/CONTAINER-IMAGE.md)",
+      };
+    }
+    return {
+      kind: "skipped",
+      message: skipped(
+        `gitleaks is not installed — install gitleaks ${GITLEAKS_VERSION} ` +
+          "(the CI pin in `.github/workflows/gitleaks.yml`) so the scan runs " +
+          "before the push",
+      ).output,
+    };
+  }
+  const reported = version === "" ? "(unknown version)" : version;
+  const drift = version === GITLEAKS_VERSION
+    ? ""
+    : ` — differs from the CI pin ${GITLEAKS_VERSION}, so a local pass is` +
+      " not a guarantee";
+  const description = `gitleaks ${reported}${drift}`;
+
+  const configPath = await gitleaksConfigPath(dir);
+  const scan = options.run ??
+    ((args: string[]) =>
+      spawnWithDeadline("gitleaks", args, dir, GITLEAKS_DEADLINE_MS));
+  async function scanSubject(
+    args: string[],
+    subject: string,
+  ): Promise<GitleaksRangeOutcome> {
+    const run = await scan(args);
+
+    if (run.timedOut) {
+      return {
+        kind: "infrastructure",
+        message: `gitleaks: scan of ${subject} exceeded the ` +
+          `${
+            GITLEAKS_DEADLINE_MS / 1000
+          }s local deadline, ${description} — a ` +
+          "scan that did not finish is not clean, an infrastructure fault, not " +
+          "a finding",
+      };
+    }
+
+    const judged = judgeRun(run, subject, description);
+    if (judged.verdict === "clean") {
+      return { kind: "passed", summary: judged.output };
+    }
+    if (judged.verdict === "leaks") {
+      return { kind: "blocked", message: judged.output };
+    }
+    return { kind: "infrastructure", message: judged.output };
+  }
+
+  const range = await scanSubject(
+    gitleaksScanArgs(`${base}..${head}`, configPath),
+    `commit range ${shortRange}`,
+  );
+  if (range.kind !== "passed" || options.mergeBaseRef === undefined) {
+    return range;
+  }
+  // Build the same two-parent tree as CI without touching the index, refs or
+  // worktree. Resolve the base once so both git operations use the same tip.
+  const git = options.git ?? makeGitRunner(dir);
+  const tip = await git([
+    "rev-parse",
+    "--verify",
+    "--end-of-options",
+    `${options.mergeBaseRef}^{commit}`,
+  ]);
+  const baseTip = tip.stdout.trim();
+  if (tip.exitCode !== 0 || !FULL_SHA.test(baseTip)) {
+    return {
+      kind: "infrastructure",
+      message: "gitleaks: cannot resolve the PR base tip",
+    };
+  }
+  const tree = await git(["merge-tree", "--write-tree", baseTip, head]);
+  if (tree.exitCode !== 0 || !FULL_SHA.test(tree.stdout.trim())) {
+    return {
+      kind: "infrastructure",
+      message: "gitleaks: cannot construct a clean PR merge tree",
+    };
+  }
+  const merge = await git([
+    "-c",
+    "user.name=VibeCoder",
+    "-c",
+    "user.email=vibecoder@localhost",
+    "commit-tree",
+    tree.stdout.trim(),
+    "-p",
+    baseTip,
+    "-p",
+    head,
+    "-m",
+    "Local gitleaks merged-result scan",
+  ]);
+  if (merge.exitCode !== 0 || !FULL_SHA.test(merge.stdout.trim())) {
+    return {
+      kind: "infrastructure",
+      message: "gitleaks: cannot construct the PR merge commit",
+    };
+  }
+  return await scanSubject(
+    gitleaksLogArgs(
+      `--first-parent --diff-merges=first-parent -1 ${merge.stdout.trim()}`,
+      configPath,
+    ),
+    "merged result",
+  );
 }
