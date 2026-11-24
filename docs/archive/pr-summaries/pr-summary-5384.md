@@ -16,15 +16,15 @@ Check Git's exit status and include stderr on failure. Closes #5384.
 - Use a direct `Deno.Command` for this checkout read, retaining NUL-delimited
   parsing and the existing policy assertions.
 - Keep the fixture Git helper and `NO_HOST_GIT_CONFIG` unchanged.
-- Target `milestone/test-git-isolation`; skip dependency bumps for this milestone
-  child.
+- Target `milestone/test-git-isolation`; skip dependency bumps for this
+  milestone child.
 
 ### Undiscoverable Facts
 
 - Reproduction used child-only `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`,
-  `GIT_CONFIG_COUNT=0`, `GIT_CONFIG_NOSYSTEM=1`, and `GIT_CONFIG_GLOBAL` pointing
-  to a temporary file containing `safe.directory` for this checkout. Neither
-  host configuration nor checkout ownership was changed.
+  `GIT_CONFIG_COUNT=0`, `GIT_CONFIG_NOSYSTEM=1`, and `GIT_CONFIG_GLOBAL`
+  pointing to a temporary file containing `safe.directory` for this checkout.
+  Neither host configuration nor checkout ownership was changed.
 - Plain Git under that configuration listed 6,252 tracked paths. The existing
   workflow test failed on the unfixed milestone base and passed after the fix.
 
@@ -35,7 +35,8 @@ Check Git's exit status and include stderr on failure. Closes #5384.
 - `worker/deno/tests/pre_push_gate_test.ts` test
   `repoShellcheckPolicy: repository workflows distinguish execution from logging and script data`
   was run with `deno test --filter` under the reproduction environment above:
-  before the fix, `fatal: detected dubious ownership`; after the fix, one passed.
+  before the fix, `fatal: detected dubious ownership`; after the fix, one
+  passed.
 - Removing the temporary trust entry made real Git exit 128 and the fixed test
   fail with that exit code and Git's ownership error in its assertion message.
 - Test-only change; no visual surface changed.
@@ -52,16 +53,16 @@ Check Git's exit status and include stderr on failure. Closes #5384.
 - Targeted `deno fmt --check`, `deno lint` and frozen `deno check` on
   `worker/deno/tests/pre_push_gate_test.ts`: passed.
 - `timeout 900 ./quality.sh < /dev/null`: passed with skipped checks. Both unit
-  passes, lint, type checking, formatting and the executed security checks passed.
-  The initial 600-second invocation timed out during unit tests; it produced no
-  final verdict.
+  passes, lint, type checking, formatting and the executed security checks
+  passed. The initial 600-second invocation timed out during unit tests; it
+  produced no final verdict.
 - `deno task pr-summary-check` with the milestone base, issue body and labels:
   passed, zero blocked and zero not checked.
-- Reviewed `CONTRIBUTING.md`'s local quality gate, `docs/CONTAINER.md`'s checkout
-  trust explanation and `docs/CONTAINMENT.md`'s trust and inventory passages.
-  Searches for the changed test, helper and trust setting found no stale manual
-  contract. Documentation is the inline explanation and this summary. No twinned
-  policy rule changed.
+- Reviewed `CONTRIBUTING.md`'s local quality gate, `docs/CONTAINER.md`'s
+  checkout trust explanation and `docs/CONTAINMENT.md`'s trust and inventory
+  passages. Searches for the changed test, helper and trust setting found no
+  stale manual contract. Documentation is the inline explanation and this
+  summary. No twinned policy rule changed.
 
 ## Merge verification
 
@@ -71,5 +72,5 @@ Check Git's exit status and include stderr on failure. Closes #5384.
 
 - Ownership was simulated using Git's test override; no actual foreign-UID
   checkout or macOS run was used.
-- The gate skipped config integration (`deno or .config.json not available`)
-  and Checkov (no pinned execution route available).
+- The gate skipped config integration (`deno or .config.json not available`) and
+  Checkov (no pinned execution route available).
