@@ -291,6 +291,7 @@ import {
 import {
   type CooldownConfig,
   type CooldownFailureKind,
+  isHeldByAnyCooldown,
   isWorkflowScopeRefused,
   loadState as loadCooldownState,
   recordIssueCooldown as cooldownRecordFn,
@@ -777,6 +778,21 @@ export interface ProductionDepsOptions {
    * prefetch, not factory-wide.
    */
   fleetPrefetchGhCommandFn?: (args: string[]) => Promise<string>;
+
+  /**
+   * `gh` runner for the built-in label routes' scan and issue read
+   * (Issue #5376). Production leaves it unset and gets {@link runGhCommand}.
+   * A wiring test injects a stub so `findAndProcessPlanning` and
+   * `findAndProcessQuestion` can be driven end to end, which is the only way
+   * to pin that those routes opt into the failure cooldown.
+   */
+  labelRouteGhCommandFn?: (args: string[]) => Promise<string>;
+  /**
+   * GitHub client the built-in label routes hand their processors
+   * (Issue #5376). Production leaves it unset and gets
+   * {@link createGitHubClient}.
+   */
+  labelRouteGitHubClient?: GitHubClient;
 
   /**
    * Overrides the `gh` runner used by the auto-merge sweep (list, live read,
@@ -1849,14 +1865,20 @@ export async function createProductionRunCoreDeps(
       cooldownConfig.workDir,
       cooldownConfig.issueRetryCooldown,
     );
-    const cooldownSet = new Set(
-      cooldownState.entries.map((e) => `${e.repo}|${e.issueNumber}`),
-    );
+    // Issue #5376: the entry's own window, not "any entry exists" — a kinded
+    // entry is kept for the 48 h escalation history.
+    const inCooldown = (repo: string, issueNumber: number): boolean =>
+      isHeldByAnyCooldown(
+        cooldownState,
+        cooldownConfig.issueRetryCooldown,
+        repo,
+        issueNumber,
+      );
     // Issue #2689: this install's workflow-scope refusals hold too, so the
     // census and idle detection model the same skip the scan makes.
     const refused = workflowScopeRefusalsIn(cooldownState);
     return (repo, issueNumber) =>
-      cooldownSet.has(`${repo}|${issueNumber}`) ||
+      inCooldown(repo, issueNumber) ||
       processedIssues.has(repo, issueNumber) ||
       refused(repo, issueNumber);
   };
@@ -2116,9 +2138,10 @@ export async function createProductionRunCoreDeps(
       })
       : undefined;
 
+    const labelRouteGh = options.labelRouteGhCommandFn ?? runGhCommand;
     const result = await findIssuesByLabel(config, label, {
       githubUser,
-      ghCommandFn: runGhCommand,
+      ghCommandFn: labelRouteGh,
       cache: issueCache,
       timelineCache,
       timelineBatchRegistry,
@@ -2155,8 +2178,13 @@ export async function createProductionRunCoreDeps(
 
     logger.info(`Processing ${label} issue: ${repo}#${issueNumber}`);
 
-    const issueData: IssueData = await fetchIssueData(repo, issueNumber);
-    const ghClient = createGitHubClient(logger);
+    const issueData: IssueData = await fetchIssueData(
+      repo,
+      issueNumber,
+      labelRouteGh,
+    );
+    const ghClient = options.labelRouteGitHubClient ??
+      createGitHubClient(logger);
     const processorDeps = {
       ghClient,
       logger,

@@ -11,6 +11,7 @@ import {
   COOLDOWN_DEFAULTS,
   type CooldownConfig,
   escalatingCooldownSeconds,
+  isHeldByAnyCooldown,
   isHeldByCooldown,
   isIssueInCooldown,
   loadState,
@@ -615,6 +616,53 @@ Deno.test("isHeldByCooldown - another issue's entry never holds this issue", () 
       7,
       { now: HELD_NOW },
     ),
+    false,
+  );
+});
+
+Deno.test("isHeldByAnyCooldown - a failure older than its 2 h window no longer holds the claim scan (Issue #5376)", () => {
+  // Kept for the 48 h escalation history, but past its own ladder window.
+  const state = { entries: [kinded(3 * HOUR)] };
+  assertEquals(
+    isHeldByAnyCooldown(state, 600, "org/repo", 7, { now: HELD_NOW }),
+    false,
+  );
+  assertEquals(
+    isHeldByAnyCooldown({ entries: [kinded(HOUR)] }, 600, "org/repo", 7, {
+      now: HELD_NOW,
+    }),
+    true,
+  );
+});
+
+Deno.test("isHeldByAnyCooldown - a later flat entry does not shorten a failure's ladder window", () => {
+  const state = {
+    entries: [
+      kinded(HOUR),
+      { repo: "org/repo", issueNumber: 7, timestamp: HELD_NOW - 900 },
+    ],
+  };
+  // The flat entry alone is past its 600 s window; the failure still holds.
+  assertEquals(
+    isHeldByCooldown(state, 600, "org/repo", 7, { now: HELD_NOW }),
+    false,
+  );
+  assertEquals(
+    isHeldByAnyCooldown(state, 600, "org/repo", 7, { now: HELD_NOW }),
+    true,
+  );
+});
+
+Deno.test("isHeldByAnyCooldown - a fresh flat entry holds for the base cooldown", () => {
+  const state = {
+    entries: [{ repo: "org/repo", issueNumber: 7, timestamp: HELD_NOW - 60 }],
+  };
+  assertEquals(
+    isHeldByAnyCooldown(state, 600, "org/repo", 7, { now: HELD_NOW }),
+    true,
+  );
+  assertEquals(
+    isHeldByAnyCooldown(state, 600, "org/repo", 7, { now: HELD_NOW + 600 }),
     false,
   );
 });

@@ -365,6 +365,35 @@ export function isHeldByCooldown(
 }
 
 /**
+ * The claim scan's cooldown hold (Issue #5376): the latest entry's window, or
+ * the ladder window of the latest recorded failure when a flat entry landed
+ * after it.
+ *
+ * Holding an issue for as long as any entry of it exists held a failed issue
+ * for the 48 h escalation history instead of the 2 h → 6 h → 24 h its failure
+ * comment states. `now` is in Unix seconds.
+ */
+export function isHeldByAnyCooldown(
+  state: CooldownState,
+  issueRetryCooldown: number,
+  repo: string,
+  issueNumber: number,
+  options: { now?: number } = {},
+): boolean {
+  return isHeldByCooldown(
+    state,
+    issueRetryCooldown,
+    repo,
+    issueNumber,
+    options,
+  ) ||
+    isHeldByCooldown(state, issueRetryCooldown, repo, issueNumber, {
+      ...options,
+      escalatingOnly: true,
+    });
+}
+
+/**
  * Check if an issue is currently in cooldown.
  *
  * Returns true if the issue should be skipped.
