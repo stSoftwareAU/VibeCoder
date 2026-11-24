@@ -111,19 +111,11 @@ flowchart LR
     the git-only shield plus `GIT_SSH_COMMAND`, so no earlier key is refused
     first. The same shield alone is accepted by the `recreates a missing
     branch` test.
-- `./quality.sh`: one foreground run was stopped by its 1500 s `timeout`
-  inside the sequential Deno tests stage. Another worker lane was running its
-  own suite on this host at the same time. Results for the stages it did run:
-  - every pre-check passed, including completeness checks and the git spawn
-    chokepoint;
-  - source targets, mermaid, markdownlint, semgrep, gitleaks and the
-    release-tag ruleset passed;
-  - config integration and checkov were skipped by the gate.
-- The remaining gate stages were then run on their own at head:
-  - `deno lint`, `deno fmt --check` and `deno task check` passed;
-  - `deno task test:unit` passed both passes;
-  - on the tree at the head commit, `deno task test:unit` over
-    `tests/milestone_branch_ensure_test.ts`, `tests/no_host_git_config_test.ts`,
-    `tests/git_timeout_test.ts` and `tests/git_operations_command_test.ts`
-    gave `ok | 49 passed | 0 failed`.
-  <!-- vibe-quality-gate-skipped reason="a single ./quality.sh run hit its 1500s timeout in the Deno tests stage under host contention; its stages were run individually and all passed" -->
+- `./quality.sh < /dev/null` was run once in the foreground at head and
+  reported `Result: PASSED (with skipped checks)`: every stage passed, including
+  `deno tests`, `deno lint`, `deno type check`, `deno fmt`, semgrep and
+  gitleaks; config integration and checkov were skipped by the gate itself.
+- `deno task test:unit` over `tests/milestone_branch_ensure_test.ts`,
+  `tests/no_host_git_config_test.ts`, `tests/git_timeout_test.ts`,
+  `tests/git_operations_command_test.ts` and `tests/git_branch_sync_test.ts`
+  at head gave `ok | 57 passed | 0 failed`.
