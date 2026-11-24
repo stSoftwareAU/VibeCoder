@@ -764,7 +764,7 @@ Deno.test("pre-push gate retry - real git: the fix is committed locally and neve
         runClaudeWithRetry: () => cleanTurn(),
       },
       git: {
-        // Production git gets the shield (Issue #5371): the host's hooks stay out.
+        // Production git gets the shield (Issue #5371).
         reconcileHeadToBranch: (branch, options) =>
           reconcileHeadToBranch(branch, {
             ...options,
