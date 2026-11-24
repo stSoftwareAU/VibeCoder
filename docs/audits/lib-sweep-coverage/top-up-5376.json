@@ -1,0 +1,12 @@
+{
+  "issue": 5376,
+  "chunk": "top-up-5376",
+  "title": "top-up: label-route failure cooldown",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5376",
+  "definition": "modules added for the escalating failure cooldown on the planning and question label routes: label_route_failure_cooldown.ts (#5376)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/label_route_failure_cooldown.ts"
+  ],
+  "sweptAt": "f1c511de87c5f368f6c737b1ecb9275727244d68"
+}
