@@ -4,10 +4,13 @@
  *
  * The auto-filed hard-kill issue is public, and the killed run may have been
  * working a private repository. A later recurrence still has to tell a frozen
- * guest VM from an agent hung in a live VM, so the issue carries six figures
- * read from the evidence record. Four are about the guest: how long the log
+ * guest VM from an agent hung in a live VM, so the issue carries seven figures
+ * read from the evidence record. Five are about the guest: how long the log
  * had been silent before the capture, whether the guest answered the exec
- * probe, its memory and its pressure stall figures. Two come from the host
+ * probe, its memory and its pressure stall figures, and its last-known memory
+ * and pressure from the last liveness tick in the worker log tail (Issue
+ * #4815). That last figure is there even when the guest probe did not answer,
+ * provided a tick is inside the tail. Two come from the host
  * itself, not the guest: its free disk and its memory pressure. They say
  * whether the host was short even when the guest never answered. Each figure
  * is either a fixed word or a number that a strict pattern captured. No ps,
@@ -56,6 +59,23 @@ const HOST_DISK_RE = /^available=(\d{1,16}) total=(\d{1,16})$/;
 /** The host memory field: a level, then optionally the byte figures. */
 const HOST_MEMORY_RE =
   /^level=(ok|high|unknown)(?: available=(\d{1,16}) total=(\d{1,16}))?$/;
+
+/** Cap on the liveness tick line scanned (cost and ReDoS guard). */
+const TICK_LINE_CHARS = 2000;
+/** The marker of a liveness tick line in the worker log. */
+const TICK_MARKER = "[liveness] tick=";
+/** The tick's available memory, a bounded number or `unavailable`. */
+const TICK_MEM_RE = / mem_available_mib=(\d{1,9}|unavailable)(?: |$)/;
+/** The tick's memory pressure token, bounded. */
+const TICK_PRESSURE_MEMORY_RE = / pressure_memory=([^ ]{1,400})/;
+/** The tick's CPU pressure token, bounded. */
+const TICK_PRESSURE_CPU_RE = / pressure_cpu=([^ ]{1,400})/;
+/** A `some` average within a collapsed pressure token. */
+const TICK_SOME_RE = /^some,avg10=(\d{1,3}(?:\.\d{1,2})?),/;
+/** A `full` average within a collapsed pressure token. */
+const TICK_FULL_RE = /,full,avg10=(\d{1,3}(?:\.\d{1,2})?),/;
+/** The worker log line's UTC timestamp prefix. */
+const LOG_TIME_RE = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z\]/;
 
 /** Evidence text, cut to the scan cap. */
 function scanned(text: string): string {
@@ -191,6 +211,53 @@ export function hardKillGuestPressure(evidence: HardKillEvidence): string {
     ...pressureSegments("io", guest.pressureIo),
   ];
   return segments.length > 0 ? segments.join("; ") : "not available";
+}
+
+/**
+ * The guest's last-known memory and pressure, read from the newest
+ * `[liveness] tick=` line in the worker log tail (Issue #4815). It survives a
+ * guest that no longer answers the exec probe.
+ *
+ * @param evidence - The evidence record
+ * @returns For example `MemAvailable 120 MiB, memory some avg10=45.00 (logged
+ *   2026-11-04 21:17:02Z)`, `no readable figures` when the tick parses to
+ *   nothing, or `not in the log tail` when no tick is in the tail
+ */
+export function hardKillLastLivenessTick(evidence: HardKillEvidence): string {
+  const lines = evidence.evidence.workerLogTail.split("\n");
+  let tick: string | undefined;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i] ?? "";
+    if (line.includes(TICK_MARKER)) {
+      tick = line.slice(0, TICK_LINE_CHARS);
+      break;
+    }
+  }
+  if (tick === undefined) return "not in the log tail";
+  const figures: string[] = [];
+  const mem = TICK_MEM_RE.exec(tick)?.[1];
+  if (mem !== undefined) {
+    figures.push(
+      mem === "unavailable"
+        ? "MemAvailable unavailable"
+        : `MemAvailable ${mem} MiB`,
+    );
+  }
+  const memory = TICK_PRESSURE_MEMORY_RE.exec(tick)?.[1];
+  if (memory !== undefined) {
+    const some = TICK_SOME_RE.exec(memory)?.[1];
+    if (some !== undefined) figures.push(`memory some avg10=${some}`);
+    const full = TICK_FULL_RE.exec(memory)?.[1];
+    if (full !== undefined) figures.push(`memory full avg10=${full}`);
+  }
+  const cpu = TICK_PRESSURE_CPU_RE.exec(tick)?.[1];
+  if (cpu !== undefined) {
+    const some = TICK_SOME_RE.exec(cpu)?.[1];
+    if (some !== undefined) figures.push(`cpu some avg10=${some}`);
+  }
+  const body = figures.length > 0 ? figures.join(", ") : "no readable figures";
+  const logged = LOG_TIME_RE.exec(tick)?.[1];
+  return logged === undefined ? body : `${body} (logged ${logged}Z)`;
 }
 
 /**

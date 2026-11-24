@@ -34,6 +34,7 @@ import {
   hardKillGuestProbe,
   hardKillHostDisk,
   hardKillHostMemory,
+  hardKillLastLivenessTick,
   hardKillSilentFor,
 } from "../lib/hard_kill_guest_facts.ts";
 
@@ -645,4 +646,86 @@ Deno.test("hardKillHostMemory gives not available for unknown, inconsistent or h
       memory.slice(0, 40),
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// The last liveness tick in the worker log tail (Issue #4815)
+// ---------------------------------------------------------------------------
+
+const TICK_PREFIX = "[2026-11-04 21:16:02Z] INFO: [GRQ-3 o/r#4972] [liveness]";
+const TICK_HEAD =
+  "tick=7 alerted=false live_epoch=1 last_idle_claimed=0 last_productive=5";
+
+/** A record whose worker log tail is `lines`. */
+function tailRecord(lines: string[] | string): HardKillEvidence {
+  const ev = recordWith();
+  ev.evidence.workerLogTail = Array.isArray(lines) ? lines.join("\n") : lines;
+  return ev;
+}
+
+Deno.test("the newest liveness tick in the tail wins (Issue #4815)", () => {
+  const ev = tailRecord([
+    `${TICK_PREFIX} ${TICK_HEAD} mem_available_mib=3000`,
+    `[2026-11-04 21:17:02Z] INFO: [GRQ-3 o/r#4972] [liveness] ${TICK_HEAD} mem_available_mib=120 pressure_memory=some,avg10=45.00,avg60=40.00,avg300=10.00,total=123,full,avg10=30.12,avg60=1.00,avg300=0.50,total=99 pressure_cpu=some,avg10=2.00,avg60=1.00,avg300=0.00,total=5`,
+    "[2026-11-04 21:17:03Z] INFO: something else",
+    "no timestamp here",
+  ]);
+  assertEquals(
+    hardKillLastLivenessTick(ev),
+    "MemAvailable 120 MiB, memory some avg10=45.00, memory full avg10=30.12, cpu some avg10=2.00 (logged 2026-11-04 21:17:02Z)",
+  );
+});
+
+Deno.test("no tick in the tail reads not in the log tail (Issue #4815)", () => {
+  assertEquals(
+    hardKillLastLivenessTick(tailRecord("[2026-11-04 21:16:02Z] INFO: x")),
+    "not in the log tail",
+  );
+  assertEquals(
+    hardKillLastLivenessTick(tailRecord("unavailable: log file missing")),
+    "not in the log tail",
+  );
+});
+
+Deno.test("unavailable figures are fixed words (Issue #4815)", () => {
+  assertEquals(
+    hardKillLastLivenessTick(tailRecord(
+      `${TICK_PREFIX} ${TICK_HEAD} mem_available_mib=unavailable pressure_memory=unavailable pressure_cpu=empty`,
+    )),
+    "MemAvailable unavailable (logged 2026-11-04 21:16:02Z)",
+  );
+});
+
+Deno.test("tick text never leaks and malformed numbers are dropped (Issue #4815)", () => {
+  const out = hardKillLastLivenessTick(tailRecord(
+    `${TICK_PREFIX} ${TICK_HEAD} hook=/home/u/secret-repo ghp_abc123 mem_available_mib=77 pressure_memory=some,avg10=1234.5,avg60=1.00,avg300=1.00,total=1,full,avg10=9.999,avg60=1.00,avg300=1.00,total=1`,
+  ));
+  assertEquals(out, "MemAvailable 77 MiB (logged 2026-11-04 21:16:02Z)");
+  assertFalse(out.includes("secret-repo"));
+  assertFalse(out.includes("ghp_"));
+  assertFalse(out.includes("1234"));
+});
+
+Deno.test("a tick with only garbage has no readable figures (Issue #4815)", () => {
+  assertEquals(
+    hardKillLastLivenessTick(tailRecord(`${TICK_PREFIX} tick=!!garbage`)),
+    "no readable figures (logged 2026-11-04 21:16:02Z)",
+  );
+});
+
+Deno.test("hostile tick lines return promptly with a fixed result (Issue #4815)", () => {
+  assertEquals(
+    hardKillLastLivenessTick(tailRecord(
+      `${TICK_PREFIX} ${TICK_HEAD} ${"a".repeat(200_000)}`,
+    )),
+    "no readable figures (logged 2026-11-04 21:16:02Z)",
+  );
+  assertEquals(
+    hardKillLastLivenessTick(tailRecord(
+      `${TICK_PREFIX} ${TICK_HEAD} mem_available_mib=5 pressure_memory=${
+        ",".repeat(200_000)
+      }`,
+    )),
+    "MemAvailable 5 MiB (logged 2026-11-04 21:16:02Z)",
+  );
 });
