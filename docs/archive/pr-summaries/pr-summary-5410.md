@@ -10,30 +10,33 @@ whose unmatched literal pathspec failed the whole add, so the
 were formatted correctly stayed uncommitted. Both `runRepoFormatters` and the
 archive step `formatWorkerOwnedArchive` now filter their path lists against the
 `git ls-files -z` result they already read, and log the paths they left out.
+
 Closes #5410.
 
 ## Spec
 
 ### Intent and Rationale
 
-- Filtering against the tracked list both functions already read is the
-  smallest fix, and it matches what the push carries: an untracked file is not
-  in the pushed commit, so formatting it would only change the working tree.
+- Filtering against the tracked list both functions already read is the smallest
+  fix, and it matches what the push carries: an untracked file is not in the
+  pushed commit, so formatting it would only change the working tree.
 
 ### Essential Design Decisions
 
-- An untracked path is neither formatted nor staged; its on-disk content is
-  left exactly as it was, and an info line names it (`no longer tracked by
-  git`) so the skip is never silent.
+- An untracked path is neither formatted nor staged; its on-disk content is left
+  exactly as it was, and an info line names it (`no longer tracked by
+  git`) so
+  the skip is never silent.
 - The filter runs before `withoutUncommittedArchive` and before
   `planFormatterFixes`, so a planner never sees the untracked path.
 
 ### Undiscoverable Facts
 
 - Observed on this host's git: `git add -u -- ':(literal)src/gen.ts'` for an
-  index-removed file exits 128 with `error: pathspec ':(literal)src/gen.ts' did
-  not match any file(s) known to git`; the new real-git test reproduces it on
-  the base code.
+  index-removed file exits 128 with
+  `error: pathspec ':(literal)src/gen.ts' did
+  not match any file(s) known to git`;
+  the new real-git test reproduces it on the base code.
 
 ## Evidence
 
@@ -62,16 +65,17 @@ flowchart LR
 ## Test Plan
 
 - Red on base: with `worker/deno/lib/repo_formatters.ts` restored from
-  `origin/milestone/repo-formatters-and-summary-recovery`, the three new
-  Issue #5410 tests failed (`AssertionError: Values are not equal`) and the
-  other 19 tests in those two files passed.
-- Green on head: `deno test -A tests/repo_formatters_5410_test.ts
-  tests/repo_formatters_test.ts tests/repo_formatters_4129_test.ts` from
-  `worker/deno` — 52 passed, 0 failed.
+  `origin/milestone/repo-formatters-and-summary-recovery`, the three new Issue
+  #5410 tests failed (`AssertionError: Values are not equal`) and the other 19
+  tests in those two files passed.
+- Green on head:
+  `deno test -A tests/repo_formatters_5410_test.ts
+  tests/repo_formatters_test.ts tests/repo_formatters_4129_test.ts`
+  from `worker/deno` — 52 passed, 0 failed.
 - Edited existing tests (`worker/deno/tests/repo_formatters_test.ts`,
   `worker/deno/tests/repo_formatters_4129_test.ts`): fixture-only changes. Their
-  fake `git ls-files` output listed only config files, so the changed paths
-  each test formats are now added to that list; with the new filter they would
+  fake `git ls-files` output listed only config files, so the changed paths each
+  test formats are now added to that list; with the new filter they would
   otherwise be dropped before reaching the formatter the test asserts on. No
   assertion was removed or changed, and each edited test still passes on the
   base code, so it still guards the behaviour it did before.
