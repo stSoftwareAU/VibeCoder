@@ -235,9 +235,17 @@ Deno.test("gemini carries the reviewer roles through its per-run settings file, 
   );
   assertEquals(manager?.kind, "unsupported_capability");
   assertStringIncludes(manager?.message ?? "", "cannot compact its stream");
+  // A `:*` command prefix rides in Gemini's policy file (PR #5524 review), so
+  // it is admitted; the glob form has no Gemini setting and is refused.
+  assertEquals(
+    assertRoleSupported({ provider: "gemini" }, "executor", [
+      "Bash(git push:*)",
+    ]),
+    undefined,
+  );
   const unmapped = assertRoleSupported({ provider: "gemini" }, "executor", [
-    "Bash(git push:*)",
+    "Bash(git push *)",
   ]);
   assertEquals(unmapped?.kind, "missing_tool_support");
-  assertStringIncludes(unmapped?.message ?? "", "Bash(git push:*)");
+  assertStringIncludes(unmapped?.message ?? "", "Bash(git push *)");
 });

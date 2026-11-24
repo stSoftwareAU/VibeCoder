@@ -489,9 +489,12 @@ export type PromptTransport = "stdin" | "argv";
 /**
  * What a provider's settings builder makes of a list of denied tools (Issue
  * #5341). `ok: false` names the denial the provider's settings cannot enforce.
+ * `policy`, when present, is a rules file the provider's CLI loads from a
+ * directory the writer names in its settings (Gemini's command-prefix denials,
+ * PR #5524 review); a provider with no such rules omits it.
  */
 export type ToolDenialSettings =
-  | { ok: true; settings: Record<string, unknown> }
+  | { ok: true; settings: Record<string, unknown>; policy?: string }
   | { ok: false; refusal: OrchestrationRefusal };
 
 /**
