@@ -123,8 +123,11 @@ flowchart TD
   `worker/deno/tests/merge_conflict_prompt_v2_test.ts`,
   `worker/deno/tests/merge_conflict_prompt_fence_1377_test.ts` and
   `worker/deno/tests/merge_conflict_agent_test.ts`.
-- Targeted Deno formatting, lint and type checks passed. `deno task
-  check:manifests` passed: 876 tests passed, one existing test ignored.
+- Targeted Deno formatting, lint and type checks passed. The final quality
+  gate's completeness stage passed across 56 test files.
+- `timeout 900 ./quality.sh < /dev/null` passed, including both unit passes,
+  formatting, lint, type checking, Markdown, Mermaid, semgrep and gitleaks.
+  Config integration and Checkov were reported as skipped, not passed.
 - Existing clean-delivery guards remain: ref validation, clone/history checks,
   pre-merge SHA and sibling-sync checks, staging safety, rollback and the
   ruleset-aware push. Textual conflict triage is inapplicable when Git reports
@@ -141,4 +144,6 @@ CI and routine code review remain pending.
 ## Remaining limitations
 
 Original private-run diagnostics, tips and repairs remain unverified. No live
-private-repository sync was performed.
+private-repository sync or non-gate integration suite was run. The gate skipped
+config integration as unavailable in this checkout and Checkov because neither
+the pinned binary nor a container runtime holding its image was available.
