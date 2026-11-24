@@ -637,7 +637,7 @@ Deno.test("agent provider - the default configuration selects Claude", () => {
 // Issue #4385 — the prompt travels on stdin, never as one argv element
 // ---------------------------------------------------------------------------
 
-Deno.test("agent provider - Claude and Codex declare the stdin prompt transport; Gemini keeps argv (Issue #4385, #1702)", () => {
+Deno.test("agent provider - Claude, Codex and Gemini declare the stdin prompt transport (Issue #4385, #1702, PR #5524 review)", () => {
   assertEquals(
     resolveAgentProvider(CLAUDE_PROVIDER_ID).promptTransport,
     "stdin",
@@ -648,7 +648,7 @@ Deno.test("agent provider - Claude and Codex declare the stdin prompt transport;
   );
   assertEquals(
     resolveAgentProvider(GEMINI_PROVIDER_ID).promptTransport,
-    "argv",
+    "stdin",
   );
 });
 

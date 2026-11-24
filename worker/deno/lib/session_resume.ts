@@ -24,7 +24,9 @@ export interface SessionResumeState {
   /**
    * CLI session id for this issue invocation.
    *
-   * Claude (and DeepSeek) require a UUID (Issue #204). Codex names its own
+   * Claude (and DeepSeek) require a UUID (Issue #204). Gemini takes the
+   * worker-generated UUID with `--session-id` on its first phase and resumes
+   * the id its CLI reports back (Issue #5342). Codex names its own
    * thread; the worker captures it from the CLI after the first run
    * (Issue #1699) and must never invent one or pass Claude's UUID into
    * `codex exec resume`.
@@ -185,7 +187,52 @@ export function codexResumeSessionId(
   return state.sessionId || undefined;
 }
 
-/** A session id the store may persist for this provider. */
+/** The session flags one Gemini invocation carries (Issue #5342). */
+export interface GeminiSessionFlags {
+  /** `--session-id <id>`: start a new Gemini session under this id. */
+  sessionId?: string;
+  /** `--resume <id>`: continue this issue's previous Gemini session. */
+  resumeSessionId?: string;
+}
+
+/**
+ * The session flags Gemini carries for one invocation (Issue #5342).
+ *
+ * - No state (the Quorum judge, any sessionless call): neither flag.
+ * - A later phase whose state Gemini itself reported (`providerId` is
+ *   `gemini`): resume that id with `--resume`. `adoptProviderSession` sets the
+ *   providerId from the Gemini output adapter's decoded session id, so only an
+ *   id Gemini reported is ever resumed.
+ * - Otherwise (phase 0, or a later phase recorded by another provider or by
+ *   none): start a session with `--session-id`. A UUID is used as is; a foreign
+ *   id that is not a UUID (for example a Codex thread name) is replaced by a
+ *   fresh UUID rather than handed to Gemini.
+ *
+ * Never returns both fields, and never `latest`: that would resume whichever
+ * session ran last, possibly another issue's.
+ */
+export function geminiSessionFlags(
+  state: SessionResumeState | undefined,
+): GeminiSessionFlags {
+  if (!state) return {};
+  if (
+    state.phaseCount > 0 && state.providerId === "gemini" && state.sessionId
+  ) {
+    return { resumeSessionId: state.sessionId };
+  }
+  return {
+    sessionId: isValidSessionId(state.sessionId)
+      ? state.sessionId
+      : generateSessionId(),
+  };
+}
+
+/**
+ * A session id the store may persist for this provider. A Gemini id is
+ * persistable when it is a UUID — the form Gemini is handed with
+ * `--session-id` and reports back — so it falls through to
+ * {@link isValidSessionId}.
+ */
 export function isPersistableSessionId(
   sessionId: string,
   providerId: string | undefined,
