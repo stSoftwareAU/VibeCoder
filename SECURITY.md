@@ -556,16 +556,21 @@ quote and the rest of the credential was published. Two limits: the
 escape-aware read covers at most 4,096 characters or escapes, and a value whose
 escape never closes (`"C:\dir\"`) falls back to ending at the first quote.
 
-A bare value that starts at the closing quote of a credential flag's quoted
-value keeps that quote in front of the placeholder (Issue #5363). In
-`--password 'alpha beta TOKEN='tail` the `TOKEN=` value opens at that quote;
-masking the quote with the value left the `secret-cli-flag` rule no closing
-quote, so it masked only `'alpha` and published `beta`. The quote is kept only
-when the flag's opening quote lies outside every assignment mask, so the flag
-rule really pairs the two. One form is not covered: when the quote sits inside
-an outer label's value that is masked whole, as in
-`--token 'alpha beta credentials: TOKEN='tail`, the base behaviour applies and
-`beta credentials:` is still published.
+A bare value that starts at, or contains, the closing quote of a credential
+flag's quoted value keeps that quote in front of the placeholder (Issues #5363
+and #5456). In `--password 'alpha beta TOKEN='tail` the `TOKEN=` value opens at
+that quote; masking the quote with the value left the `secret-cli-flag` rule no
+closing quote, so it masked only `'alpha` and published `beta`. The quote is
+kept only when the flag's opening quote lies outside every assignment mask, so
+the flag rule really pairs the two. The same holds when the quote sits inside an
+outer label's value that is masked whole, provided no quote of that kind
+survives in the output after the mask: in
+`--token 'alpha beta credentials: TOKEN='tail` the outer value keeps its whole
+mask, the quote is kept in front of it, and the result is
+`--token ***REDACTED******REDACTED***` rather than publishing
+`beta credentials:`. When a later quote of that kind survives, the quote is
+masked with the value and the flag rule pairs with that later quote and masks
+through it (the Issue #5310 round 13 cases pin that outcome).
 
 The label side stays deliberately blunt — it catches real secrets — apart from
 the prose-heading check below. The value is judged before the mask is applied,

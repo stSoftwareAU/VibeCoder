@@ -790,15 +790,21 @@ const RULES: readonly RedactionRule[] = [
   // past a Windows path's trailing backslash up to the next quote, which errs
   // towards masking.
   //
-  // A bare value that starts at the closing quote of a credential flag's quoted
-  // value keeps that quote in front of the placeholder (Issue #5363). In
-  // `--password 'alpha beta TOKEN='tail` the `TOKEN=` value opens at that quote;
-  // masking the quote with the value left `secret-cli-flag` no closing quote,
-  // so it masked only `'alpha` and published `beta`. The quote is kept only when
-  // the flag's opening quote lies outside every mask of the walk. One form is
-  // not covered: the quote sits inside an outer label's value that the walk
-  // masks whole, as in `--token 'alpha beta credentials: TOKEN='tail` (main's
-  // result, see `flagQuoteReaches`). That keeps the base behaviour.
+  // A bare value that starts at, or contains, the closing quote of a credential
+  // flag's quoted value keeps that quote in front of the placeholder (Issues
+  // #5363 and #5456). In `--password 'alpha beta TOKEN='tail` the `TOKEN=` value
+  // opens at that quote; masking the quote with the value left `secret-cli-flag`
+  // no closing quote, so it masked only `'alpha` and published `beta`. A bare
+  // value that contains that quote, as in
+  // `--token 'alpha beta credentials: TOKEN='tail`, keeps it only when no quote
+  // of that kind survives in the output after the mask. The walk keeps the outer
+  // label's whole-value mask, and the quote goes in front of the placeholder, so
+  // `credentials: TOKEN='tail` becomes `credentials: '***REDACTED***` and the
+  // flag rule pairs the quotes. When a later quote of that kind survives, the
+  // quote is masked with the value and the flag rule pairs with that later quote
+  // and masks through it (the Issue #5310 round 13 cases pin that outcome). The
+  // quote is kept only when the flag's opening quote lies outside every mask of
+  // the walk.
   //
   // JSON structure survives the mask (Issue #4169's transcript tee is the
   // sink that showed it). Every stream-json line the agent emits carries a
@@ -2205,44 +2211,87 @@ const MAX_ASSIGNMENT_PASSES = 4;
 
 /**
  * One walk of {@link walkAssignments}, masking what it judges masked. A bare
- * value that starts at a credential flag's closing quote keeps that quote in
- * front of the placeholder (Issue #5363). Masking the quote with the value left
- * the `secret-cli-flag` rule no closing quote to pair, so it masked only the
- * flag's opening word and published the rest. The quote is kept only where
- * {@link flagClosingQuotes} finds it.
+ * value that starts at, or contains, a credential flag's closing quote may keep
+ * that quote in front of the placeholder; {@link maskLeads} says when (Issues
+ * #5363 and #5456). Masking the quote with the value left the `secret-cli-flag`
+ * rule no closing quote to pair, so it masked only the flag's opening word and
+ * published the rest.
  */
 function redactAssignmentsOnce(text: string): string {
   const masked = walkAssignments(text).filter((a) => a.masked);
-  const closes = flagClosingQuotes(text, masked);
+  const leads = maskLeads(text, masked, flagClosingQuotes(text, masked));
   let out = "";
   let last = 0;
-  for (const a of masked) {
-    const quoted = QUOTED_VALUE.test(a.value);
-    const quote = quoted ? a.value.charAt(0) : "";
-    const start = a.end - a.value.length;
-    const lead = !quoted && closes.has(start) ? text.charAt(start) : quote;
+  masked.forEach((a, i) => {
+    const quote = QUOTED_VALUE.test(a.value) ? a.value.charAt(0) : "";
     out += text.slice(last, a.index) +
-      `${a.key}${a.sep}${lead}${REDACTION_PLACEHOLDER}${quote}`;
+      `${a.key}${a.sep}${leads[i]}${REDACTION_PLACEHOLDER}${quote}`;
     last = a.end;
-  }
+  });
   return out + text.slice(last);
 }
 
 /**
+ * The text written in front of each mask's placeholder, in the order of
+ * `masked`. For a quoted value that is the value's own opening quote. A bare
+ * value that starts at a credential flag's closing quote keeps that quote
+ * (Issue #5363). A bare value that contains one keeps it only when no quote of
+ * that kind survives in the output after the mask (Issue #5456). When one
+ * survives, the flag rule pairs with it and masks through it, which is the base
+ * behaviour the Issue #5310 round 13 tests pin.
+ */
+function maskLeads(
+  text: string,
+  masked: readonly AssignmentVerdict[],
+  closes: readonly number[],
+): string[] {
+  const leads: string[] = new Array(masked.length);
+  const later = { "'": false, '"': false };
+  const note = (s: string) => {
+    if (s.includes("'")) later["'"] = true;
+    if (s.includes('"')) later['"'] = true;
+  };
+  // The masks are walked from last to first, so each stretch of output is read
+  // once and the work stays linear (Issue #3942).
+  let from = text.length;
+  let c = closes.length - 1;
+  for (let i = masked.length - 1; i >= 0; i--) {
+    const a = masked[i] as AssignmentVerdict;
+    note(text.slice(a.end, from));
+    const quoted = QUOTED_VALUE.test(a.value);
+    const quote = quoted ? a.value.charAt(0) : "";
+    const start = a.end - a.value.length;
+    while (c >= 0 && (closes[c] ?? 0) >= a.end) c--;
+    const close = c >= 0 ? closes[c] ?? -1 : -1;
+    let lead = quote;
+    if (!quoted && close >= start) {
+      const q = text.charAt(close) as "'" | '"';
+      if (close === start || !later[q]) lead = q;
+    }
+    leads[i] = lead;
+    note(`${a.key}${a.sep}${lead}${quote}`);
+    from = a.index;
+  }
+  return leads;
+}
+
+/**
  * The positions of the closing quotes of credential flag values that a masked
- * bare value starts at (Issue #5363). Each is the index of the quote that ends
- * a `secret-cli-flag` quoted value, kept only when the flag's opening quote lies
- * outside every mask in `masked`. Those masks are in text order and do not
- * overlap, so one pointer walks them. The flag rule's pattern is read once per
- * walk, which keeps the scan linear (Issue #3942). An opener inside a mask is
- * not returned: the walk already reads that flag's extent, and the Issue #5310
- * round 13 tests depend on it, so widening the condition would break them.
+ * bare value starts at or contains (Issues #5363 and #5456). Each is the index
+ * of the quote that ends a `secret-cli-flag` quoted value, kept only when the
+ * flag's opening quote lies outside every mask in `masked`. The array is in
+ * ascending text order, since the matches come in text order. Those masks are
+ * in text order and do not overlap, so one pointer walks them. The flag rule's
+ * pattern is read once per walk, which keeps the scan linear (Issue #3942). An
+ * opener inside a mask is not returned: the walk already reads that flag's
+ * extent, and the Issue #5310 round 13 tests depend on it, so widening the
+ * condition would break them.
  */
 function flagClosingQuotes(
   text: string,
   masked: readonly AssignmentVerdict[],
-): Set<number> {
-  const closes = new Set<number>();
+): number[] {
+  const closes: number[] = [];
   let i = 0;
   for (const m of text.matchAll(CLI_FLAG_RULE_G)) {
     const open = m.index + (m[1]?.length ?? 0);
@@ -2255,7 +2304,7 @@ function flagClosingQuotes(
     while (i < masked.length && (masked[i]?.end ?? 0) <= open) i++;
     const mask = masked[i];
     if (mask !== undefined && mask.end - mask.value.length <= open) continue;
-    closes.add(m.index + m[0].length - 1);
+    closes.push(m.index + m[0].length - 1);
   }
   return closes;
 }
