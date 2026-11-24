@@ -205,3 +205,47 @@ Deno.test("a cleanup that finds the temporary file missing is silent and rethrow
     assertEquals(warnings, []);
   });
 });
+
+Deno.test("gemini carries the reviewer roles through its per-run settings file, but not a manager (Issue #5341)", () => {
+  const reviewerTools = [
+    "Edit",
+    "MultiEdit",
+    "Write",
+    "NotebookEdit",
+    "Bash",
+    "Task",
+    "Agent",
+  ];
+  assertEquals(
+    assertRoleSupported({ provider: "gemini" }, "executor", ["Task", "Agent"]),
+    undefined,
+  );
+  for (
+    const role of ["spec_reviewer", "standards_reviewer", "explorer"] as const
+  ) {
+    assertEquals(
+      assertRoleSupported({ provider: "gemini" }, role, reviewerTools),
+      undefined,
+    );
+  }
+  const manager = assertRoleSupported(
+    { provider: "gemini" },
+    "manager",
+    reviewerTools,
+  );
+  assertEquals(manager?.kind, "unsupported_capability");
+  assertStringIncludes(manager?.message ?? "", "cannot compact its stream");
+  // A `:*` command prefix rides in Gemini's policy file (PR #5524 review), so
+  // it is admitted; the glob form has no Gemini setting and is refused.
+  assertEquals(
+    assertRoleSupported({ provider: "gemini" }, "executor", [
+      "Bash(git push:*)",
+    ]),
+    undefined,
+  );
+  const unmapped = assertRoleSupported({ provider: "gemini" }, "executor", [
+    "Bash(git push *)",
+  ]);
+  assertEquals(unmapped?.kind, "missing_tool_support");
+  assertStringIncludes(unmapped?.message ?? "", "Bash(git push *)");
+});

@@ -107,7 +107,6 @@ import {
 } from "./git_timeout.ts";
 import { runWithTimeout, type SubprocessResult } from "./subprocess_timeout.ts";
 import { appendNoFollow, readTextFileNoFollow } from "./file_utils.ts";
-import { GEMINI_PROVIDER_ID } from "./agent_provider.ts";
 
 /** Milliseconds the index step is given before it is killed (300 s). */
 export const CODEGRAPH_INDEX_TIMEOUT_MS = 300_000;
@@ -217,8 +216,10 @@ export interface CodegraphContextLogger {
 /** What one run's CodeGraph step produced. */
 export interface CodegraphContextResult {
   /**
-   * `off` when the host switch is off, `unsupported` on a Gemini-routed run,
-   * `ok` on an index with readable figures, else `failed`.
+   * `off` when the host switch is off, `ok` on an index with readable
+   * figures, else `failed`. No provider produces `unsupported` today (Issue
+   * #5343); it stays in {@link CodegraphStatus} so callback consumers' schema
+   * is unchanged.
    */
   status: CodegraphStatus;
   /** Whether the host switch was on for this run. */
@@ -242,7 +243,7 @@ export interface PrepareCodegraphContextOptions {
   repoDir: string;
   /** The host switch — `false` short-circuits before anything is spawned. */
   enabled: boolean;
-  /** Provider this run was routed to; Gemini has no MCP transport. */
+  /** Provider this run was routed to (Issue #5343: no provider skips the index). */
   providerId: string;
   /** Sink for the single `[CODEGRAPH_UNAVAILABLE]` line. */
   logger: CodegraphContextLogger;
@@ -276,7 +277,6 @@ export async function prepareCodegraphContext(
   const {
     repoDir,
     enabled,
-    providerId,
     logger,
     run = runWithTimeout,
     git = runGitCommand,
@@ -284,13 +284,6 @@ export async function prepareCodegraphContext(
   } = options;
 
   if (!enabled) return { status: "off", enabled: false };
-
-  // Gemini has no MCP transport, so an index the agent cannot reach is 300 s
-  // spent for nothing. Reported rather than skipped silently: `unsupported`
-  // is what excludes the run from the trial figures.
-  if (providerId === GEMINI_PROVIDER_ID) {
-    return { status: "unsupported", enabled: true };
-  }
 
   const fail = (
     reason: string,

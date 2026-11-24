@@ -484,7 +484,7 @@ Unattended operation is a hard requirement: **no runtime step may reach an inter
 ├── gh/hosts.yml                  0600  the worker's GH_CONFIG_DIR host material
 ├── claude/provider.env           0600  the Claude Code credential
 ├── codex/provider.env            0600  the Codex CLI credential (when enabled)
-└── gemini/provider.env           0600  the Gemini CLI credential (when enabled)
+└── gemini/provider.env           0600  the Gemini CLI credential or `GEMINI_CLI_HOME` login selector (when enabled)
 ```
 
 Nothing else belongs in that directory — it holds exactly the worker's GitHub credential and one credential per enabled agent vendor, and nothing more. Each vendor's credential lives in its own sub-directory, and only the providers enabled for a run are mounted into the container, so no vendor can read another's secret.
@@ -505,7 +505,7 @@ Set only the variables for the vendors you use: an unset provisioning variable l
 | `VIBE_LAUNCHAGENT_GH_TOKEN` / `GH_TOKEN` | GitHub token written to `gh/hosts.yml` |
 | `VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` | Claude credential written to `claude/provider.env` |
 | `VIBE_LAUNCHAGENT_OPENAI_API_KEY` / `OPENAI_API_KEY` / `CODEX_API_KEY` | Codex credential written to `codex/provider.env` |
-| `VIBE_LAUNCHAGENT_GEMINI_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini credential written to `gemini/provider.env` |
+| `VIBE_LAUNCHAGENT_GEMINI_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini credential written to `gemini/provider.env` (a Google-account login is selected by `GEMINI_CLI_HOME=<path>` in that file instead; see [Provider parity](PROVIDER-PARITY.md#subscription-only-billing-policy)) |
 | `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY` / `DEEPSEEK_API_KEY` | DeepSeek credential written to `deepseek/provider.env`. DeepSeek has no interactive login, so this variable is the only way to provision it; the agent binary is Anthropic's, but the key is DeepSeek's |
 
 When these variables are set, `setup.sh` writes the files with owner-only permissions, points `gh_config_dir` at `<credential dir>/gh`, and never offers the interactive `gh auth login` prompt for that directory. The prompt remains available only for an operator-chosen gh config directory at a terminal — never on the runtime path.
