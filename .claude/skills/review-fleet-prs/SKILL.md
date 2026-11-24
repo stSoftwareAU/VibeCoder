@@ -166,6 +166,13 @@ escalation.
    sent-back patch, in the same order, with identical added and removed lines.
    A hunk present only at the new head, or a remaining hunk whose changed lines
    differ, gets a fresh review.
+   A file with no patch at either head (GitHub omits the patch of a binary
+   file, and of a text file whose diff is too large) still counts as unchanged
+   when it is `added` at both heads with the same blob sha, or `modified` at
+   both heads with the same rename source, the same non-empty head blob sha and
+   the same base-side blob at both merge bases. This holds whatever the
+   findings, and on the held path too. Any other patch-less file gets a fresh
+   review, and so does a patch-less modified file in a Dependabot re-cut.
    The version hunk may sit beside other hunks that are unchanged between the
    two own diffs. The skill runs on more than one host
    (a laptop as the `gh` user, an always-on host as the reviewer App), so a
