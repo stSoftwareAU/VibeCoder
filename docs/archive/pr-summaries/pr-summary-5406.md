@@ -45,11 +45,18 @@ None.
 - Targeted `deno fmt --check`, `deno lint` and frozen `deno check` passed for the
   two source files and the test file.
 - `deno task check:manifests` passed: 876 passed, 0 failed, 1 ignored.
+- `timeout 900 ./quality.sh < /dev/null` passed with skipped checks. Both unit
+  passes, lint, type checks, formatting, Markdown lint and security scans passed.
+  The initial 180-second bound expired during unit tests; the bounded rerun
+  completed successfully.
+- `deno task pr-summary-check` passed: 0 blocked, 0 not checked.
 - Searched active documentation, prompts and source comments for the stale
   handoff/census claim. Corrected its three matching declarations; no runtime
   gate copy changed. Unrelated pickup rules remain unchanged.
 
 ## Merge verification
 
-- Required CI and code review: pending.
 - Remaining implementation risks: none identified.
+- Not checked: config integration (the gate reports `deno or .config.json not
+  available`), Checkov (no pinned scanner or container runtime), and required CI
+  and code review (pending).
