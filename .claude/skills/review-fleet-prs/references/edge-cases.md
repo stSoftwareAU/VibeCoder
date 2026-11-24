@@ -122,6 +122,21 @@ fresh review; the version exception still needs the same hunk count. A file an
 earlier finding names, and any file when the findings are missing or empty, gets
 no such allowance: its whole patch must match as before.
 
+A file with no patch at either head (GitHub omits the patch of a binary file,
+and of a text file whose diff is too large) counts as unchanged when it is
+`added` at both heads with the same blob sha, or when it is `modified` at both
+heads with the same rename source, the same non-empty head blob sha, and the
+same base-side blob at both merge bases. The merge bases come from the
+`merge_base_commit` of the two `compare/{base}...` responses. When they are the
+same commit nothing more is read; otherwise the file's blob at each is read
+through the contents API (`repos/{repo}/contents/{path}?ref={mergeBase}`), which
+must return a `type: "file"` entry with a `sha`. This holds whatever the
+findings, including a file an earlier finding names, unknown or empty findings,
+and the held (`awaiting-owner`) strict path. A patch on only one side, a missing
+or differing head sha, a differing status, a missing merge base, a differing
+base blob, or a failed or non-file contents read gets a fresh review. So does a
+patch-less modified file in a Dependabot re-cut, which keeps its strict path.
+
 A Dependabot re-cut is the one force-push that can keep a sent-back PR
 `awaiting-fix` (`ownDiffUnchanged` in `scripts/gate.ts`). Dependabot never
 merges the base into its PRs; it force-pushes a fresh commit with the same

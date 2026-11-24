@@ -10,8 +10,10 @@
  * "may read as not evaluated" where every row read "Not considered".
  * CODING-STANDARDS.md and the issue prompt must both carry the "a new case
  * re-reads the text it now reaches" rule: a change sends a new case to text
- * that already exists. The issue prompt's Test Plan step must require
- * listing the messages checked.
+ * that already exists. Issue #5411 retired the screen inventory ("list every
+ * message the screen already renders") and the Test Plan list of messages
+ * checked: the rule now follows the new case to each place that shows, posts
+ * or prints something for it.
  *
  * The old heading must not sit beside the new one. These four live copies
  * are checked for its absence; the historical PR summary
@@ -55,6 +57,17 @@ const TRIGGER_EXAMPLES = [
   "a newly called function or component",
 ];
 
+/** Phrases every live copy of the rule must carry. */
+const RULE_PHRASES = [
+  TRIGGER,
+  ...TRIGGER_EXAMPLES,
+  "a new state on a screen that already exists",
+  "follow the new case to each place that shows, posts or prints something for it",
+  "hide or mark any text that is false or misleading for the new case",
+  "a test that puts the new case through and asserts each text that differs for it",
+  "Pre-existing text left unchanged that is false or misleading for the new case is a blocking self-review finding",
+];
+
 function existingScreenTextParagraph(
   sectionText: DocSection,
   what: string,
@@ -80,16 +93,7 @@ Deno.test("CODING-STANDARDS carries the existing-screen-text rule (Issue #3259)"
     "CODING-STANDARDS.md",
   );
 
-  const keyPhrases = [
-    TRIGGER,
-    ...TRIGGER_EXAMPLES,
-    "list every message the screen already renders",
-    "say whether it is still true in the new state",
-    "reword it, hide it or mark it",
-    "Add a test that renders the new state",
-    "A pre-existing message left unchanged that is false or misleading in the new state is a blocking self-review finding",
-    "List the messages checked in the PR summary's Test Plan",
-  ];
+  const keyPhrases = RULE_PHRASES;
   for (const phrase of keyPhrases) {
     assert(
       paragraph.includes(phrase),
@@ -109,18 +113,7 @@ Deno.test("the injected coding_guidelines twin carries the existing-screen-text 
     guidelines,
     "coding_guidelines",
   );
-  for (
-    const phrase of [
-      TRIGGER,
-      ...TRIGGER_EXAMPLES,
-      "list every message the screen already renders",
-      "say whether it is still true in the new state",
-      "reword it, hide it or mark it",
-      "Add a test that renders the new state",
-      "A pre-existing message left unchanged that is false or misleading in the new state is a blocking self-review finding",
-      "List the messages checked in the PR summary's Test Plan",
-    ]
-  ) {
+  for (const phrase of RULE_PHRASES) {
     assert(
       paragraph.includes(phrase),
       `coding_guidelines is missing "${phrase}" from the existing-screen-text rule: ${paragraph}`,
@@ -135,11 +128,7 @@ Deno.test("issue prompt Instructions carry the existing-screen-text rule (Issue 
 
   const keyPhrases = [
     "A new case re-reads the text it now reaches.",
-    TRIGGER,
-    ...TRIGGER_EXAMPLES,
-    "list every message the screen already renders",
-    "add a test that renders the new state",
-    "A pre-existing message left unchanged that is false or misleading in the new state is a blocking self-review finding",
+    ...RULE_PHRASES,
   ];
   for (const phrase of keyPhrases) {
     assert(
@@ -149,29 +138,6 @@ Deno.test("issue prompt Instructions carry the existing-screen-text rule (Issue 
   }
 });
 
-Deno.test("issue prompt Test Plan step lists the messages checked (Issue #3259)", async () => {
-  const text = flat(
-    section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
-  );
-
-  assert(
-    text.includes("re-reads the text it now reaches"),
-    `PR Summary File section is missing the reached-text requirement: ${text}`,
-  );
-  assert(
-    text.includes(TRIGGER),
-    `PR Summary File section is missing the new-case trigger: ${text}`,
-  );
-  assert(
-    text.includes("each marked still true or changed for the new state"),
-    `PR Summary File section is missing the per-message marking requirement: ${text}`,
-  );
-  assertFalse(
-    text.includes("re-reads that screen's existing text"),
-    `PR Summary File section still carries the old heading phrase: ${text}`,
-  );
-});
-
 Deno.test("the old existing-screen heading is absent from the live copies (Issue #4198)", async () => {
   for (const path of LIVE_COPIES) {
     const text = flatWholeFile(await readRepoDoc(path));
@@ -179,5 +145,25 @@ Deno.test("the old existing-screen heading is absent from the live copies (Issue
       text.includes(OLD_HEADING),
       `${path} still carries the old heading "${OLD_HEADING}"`,
     );
+  }
+});
+
+/** Phrases of the screen inventory and Test Plan list retired by Issue #5411. */
+const RETIRED_PHRASES = [
+  "the screen already renders",
+  "messages checked in the PR summary's Test Plan",
+  "rendered-screen counterpart",
+  "each marked still true or changed for the new state",
+];
+
+Deno.test("the retired screen inventory and Test Plan list are absent from the live copies (Issue #5411)", async () => {
+  for (const path of LIVE_COPIES) {
+    const text = flatWholeFile(await readRepoDoc(path));
+    for (const phrase of RETIRED_PHRASES) {
+      assertFalse(
+        text.includes(phrase),
+        `${path} still carries the retired phrase "${phrase}"`,
+      );
+    }
   }
 });

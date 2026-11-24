@@ -446,14 +446,44 @@ interface CompareFiles {
   total_commits?: number;
   commits?: { author?: { login?: string } | null }[];
   files?: CompareFile[];
+  merge_base_commit?: { sha?: string } | null;
 }
 
-// GitHub omits `patch` for a binary. An added file is the same blob when
-// both sides list it as added with the same sha. A modified binary, a
-// missing sha, or a patch on only one side cannot be confirmed unchanged.
+// GitHub omits `patch` for a binary and also for a text file whose diff is too
+// large (Issue #5415). An added file is the same blob when both sides list it
+// as added with the same sha. A modified file also needs the base side, see
+// sameModifiedBlob and baseBlobAt. A missing sha, or a patch on only one side,
+// cannot be confirmed unchanged.
 function sameAddedBlob(fa: CompareFile, fb: CompareFile): boolean {
   return fa.status === "added" && fb.status === "added" &&
     typeof fa.sha === "string" && fa.sha.length > 0 && fa.sha === fb.sha;
+}
+
+// A modified file with no patch is the same head blob when both sides list the
+// same non-empty sha (Issue #5415). The base side is checked by baseBlobAt.
+function sameModifiedBlob(fa: CompareFile, fb: CompareFile): boolean {
+  return fa.status === "modified" && fb.status === "modified" &&
+    typeof fa.sha === "string" && fa.sha.length > 0 && fa.sha === fb.sha;
+}
+
+// The blob sha of a path at a ref, or null unless the contents API answers
+// with a file. A symlink to an in-repo file is answered with that file, so its
+// target's sha is used. An unresolved symlink, a directory and a submodule all
+// fail closed. A thrown gh error propagates to the caller (Issue #5415).
+async function baseBlobAt(
+  gh: (args: string[]) => Promise<string>,
+  repo: string,
+  path: string,
+  ref: string,
+): Promise<string | null> {
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  const body = JSON.parse(
+    await gh(["api", `repos/${repo}/contents/${encoded}?ref=${ref}`]),
+  ) as { type?: unknown; sha?: unknown } | null;
+  return body !== null && typeof body === "object" && body.type === "file" &&
+      typeof body.sha === "string" && body.sha.length > 0
+    ? body.sha
+    : null;
 }
 
 // A hunk header carries line numbers that shift when the base changes
@@ -656,6 +686,13 @@ function findingsAreContent(
 // GitHub's 300-file cap, since a truncated one could hide a drop. A repeated
 // filename in either listing is not confirmed.
 //
+// GitHub sends no patch for a binary or for a text file whose diff is too
+// large (Issue #5415). Such a file is confirmed by its blob: an added file by
+// the same sha on both sides, a modified file by the same head sha and the same
+// base-side sha at both merge bases. The base-side sha is read from the contents
+// API only when the merge bases differ. A Dependabot re-cut gets no blob route
+// for a modified file, and anything else gets a fresh review.
+//
 // A Dependabot re-cut (Issue #4723): Dependabot force-pushes a rebased or
 // re-created PR, so `since` is no longer an ancestor of `head` and the compare
 // is `diverged`. For a Dependabot PR, that diverged compare is accepted when
@@ -670,11 +707,10 @@ function findingsAreContent(
 // #3772). This exception cannot approve anything: awaiting-fix applies only
 // while the latest review requests changes.
 //
-// SIMPLE-ON-PURPOSE: the three compare calls below are repeated each pass
-// while the PR awaits its fix or the owner (a held PR too, Issue #4643), fine
-// for a handful of such PRs — upgrade when awaiting-fix or held PRs exceed ~50
-// per pass (cache the verdict per PR, since
-// and head in the state dir).
+// SIMPLE-ON-PURPOSE: three compare calls plus up to two contents reads per patch-less modified file each pass, fine for a handful of awaiting-fix or held PRs — upgrade when they exceed ~50 per pass
+// Repeated each pass while the PR awaits its fix or the owner (a held PR too,
+// Issue #4643). Contents reads happen only when the merge bases differ (Issue
+// #5415). Cache the verdict per PR, since and head in the state dir.
 export async function ownDiffUnchanged(
   gh: (args: string[]) => Promise<string>,
   repo: string,
@@ -729,6 +765,9 @@ export async function ownDiffUnchanged(
       }
       if (!findingsAreContent(findings, a.map((f) => f.filename))) return false;
     }
+    // Patch-less modified files whose head blobs matched; their base side is
+    // checked after the loop (Issue #5415).
+    const patchlessModified: string[] = [];
     for (const fa of a) {
       const fb = headByName.get(fa.filename);
       if (fb === undefined) {
@@ -747,8 +786,14 @@ export async function ownDiffUnchanged(
       const aPatch = typeof fa.patch === "string";
       const bPatch = typeof fb.patch === "string";
       if (!aPatch || !bPatch) {
-        if (aPatch || bPatch || !sameAddedBlob(fa, fb)) return false;
-        continue;
+        if (aPatch || bPatch) return false;
+        if (sameAddedBlob(fa, fb)) continue;
+        // A re-cut gets no blob route for a modified file (Issue #4723).
+        if (!recut && sameModifiedBlob(fa, fb)) {
+          patchlessModified.push(fa.filename);
+          continue;
+        }
+        return false;
       }
       if (fa.status !== fb.status) return false;
       // A re-cut treats every file as named: the whole patch must match, with
@@ -769,6 +814,27 @@ export async function ownDiffUnchanged(
         !onlyVersionHunkDiffers(fa.patch!, fb.patch!)
       ) {
         return false;
+      }
+    }
+    if (patchlessModified.length > 0) {
+      // A missing or malformed merge base gets a fresh review.
+      const sinceBase = baseToSince.merge_base_commit?.sha;
+      const headBase = baseToHead.merge_base_commit?.sha;
+      if (
+        typeof sinceBase !== "string" || !/^[0-9a-f]+$/i.test(sinceBase) ||
+        typeof headBase !== "string" || !/^[0-9a-f]+$/i.test(headBase)
+      ) {
+        return false;
+      }
+      // Equal head blobs and equal base-side blobs mean a byte-identical own
+      // diff, at least as strict as a matching patch, whatever the findings
+      // (Issue #5415). The reads happen only once every other file matched.
+      if (sinceBase !== headBase) {
+        for (const path of patchlessModified) {
+          const atSince = await baseBlobAt(gh, repo, path, sinceBase);
+          const atHead = await baseBlobAt(gh, repo, path, headBase);
+          if (atSince === null || atSince !== atHead) return false;
+        }
       }
     }
     return true;
