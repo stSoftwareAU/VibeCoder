@@ -50,7 +50,7 @@ sequenceDiagram
 - Red against base: in a scratch worktree I restored `worker/deno/lib/egress_sidecar.ts` from `origin/main` and made the reaper honour `createdProxy` as the base loop did. The record, own-cleanup, pre-fix-journal and runtime-error tests failed (4 failed, 3 passed). At the head, all 7 pass.
 - `deno test --allow-all tests/apple_egress_proxy_leak_5488_test.ts tests/apple_egress_controls_test.ts tests/egress_sidecar_test.ts` passed: 26 passed, 0 failed. No existing test was edited.
 - `deno fmt --check`, `deno lint` and `deno check` on the changed files: clean.
-- `./quality.sh`: see the gate result recorded in the commit that follows this summary.
+- `./quality.sh` on the final head: `Result: PASSED (with skipped checks)`. The skipped checks were config integration and checkov. Deno tests, lint, type check, fmt, semgrep and gitleaks all passed.
 
 ## Not done / risks
 
