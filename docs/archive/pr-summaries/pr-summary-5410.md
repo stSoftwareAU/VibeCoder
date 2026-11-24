@@ -75,4 +75,11 @@ flowchart LR
   otherwise be dropped before reaching the formatter the test asserts on. No
   assertion was removed or changed, and each edited test still passes on the
   base code, so it still guards the behaviour it did before.
-- `./quality.sh < /dev/null` — result recorded below after the final run.
+- `deno fmt --check`, `deno lint` and `deno check` on the four touched files
+  from `worker/deno` — passed.
+- `./quality.sh < /dev/null` was started on the head under a 900s bound: the
+  first 15 checks passed (chokepoints, completeness, mermaid, markdownlint,
+  semgrep, gitleaks, release-tag ruleset), then the bound expired in the next
+  sequential stage before it reported, so the full gate did not complete here.
+
+<!-- vibe-quality-gate-skipped reason="./quality.sh exceeded the 900s bound this run allowed in sequential container mode after 15 checks passed; the worker re-runs the gate before the PR is raised" -->
