@@ -47,7 +47,7 @@ Issue numbers cited as provenance: #5372: Shorten the #3900 fake-mirrors rule af
   - Still pinned, matching the issue's "What stays" list: read production first, fix whichever side is wrong, the contract test or adapter test, the CORS exposed-headers check, the red-run rule and both blocking findings.
   - Unchanged: the identical-on-both-surfaces check and the ordering check between the stub-contract and observe-real-tool paragraphs.
   - New: `the retired fake-mirrors obligations stay out of the agent-facing surfaces (Issue #5372)`.
-- Red on base: the new phrases are absent from the base text (`take it from the producer` occurs 0 times in `HEAD~1:CODING-STANDARDS.md`) and `load-bearing fake` is present in the base issue prompt, so the updated pins and the absence test fail there.
+- Red on base: the new phrases are absent from the base text (`take it from the producer` occurs 0 times in the base branch's `CODING-STANDARDS.md`) and `load-bearing fake` is present in the base issue prompt, so the updated pins and the absence test fail there.
 - `worker/deno/tests/third_party_tool_semantics_3235_test.ts`: unchanged. It passes with the reworded back-reference.
 - `deno test -A tests/fake_mirrors_production_3224_test.ts tests/third_party_tool_semantics_3235_test.ts`: 10 passed, 0 failed.
 - `./quality.sh < /dev/null`: PASSED. Config integration and checkov were skipped by the gate itself.
