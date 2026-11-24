@@ -220,8 +220,12 @@ progress and stopped on conflicts. Its contract is absolute:
   it with `gh pr edit <n> --body-file <file>` and name that in
   `.pr_response_message` (Issue #4515).
 - **The agent runs no quality gate.** The full gate is the worker's, not the
-  agent's. On a milestone branch the worker's type-check gate, with its repair
-  round, is the check before the push.
+  agent's. A milestone sync checks a clean merge with the repository's type
+  check. A failed check on a new merge commit can use the existing two repair
+  rounds even when Git reported no textual conflict; an edited tree must pass
+  the fuller resolution verification before delivery. Initial infrastructure
+  refusals and failed fast-forwards buy no repair (Issue #5530). See
+  [milestone verification](milestones.md#-handling-sync-conflicts).
 - **The worker checks a PR's merge before it is pushed (Issue #4616).** Once the
   agent has staged its resolution, the worker runs the repository's fast local
   checks on the packages the merge touched, before anything is pushed: the

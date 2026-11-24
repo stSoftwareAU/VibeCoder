@@ -26,7 +26,14 @@ import { cloneGitFixture, seedGitRemote } from "./support/git_fixture.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import type { LogContext, Logger } from "../types.ts";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
-import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
+import {
+  checkMergedTree,
+  isMergeGateFailure,
+  type MergeGateCause,
+  mergeGateFailureCause,
+  type MergeGateFn,
+} from "../lib/milestone_merge_gate.ts";
+import { judgeSyncFailure } from "../lib/milestone_branch_sync.ts";
 import type {
   MilestoneConflictAgentFn,
   MilestoneConflictAgentRequest,
@@ -105,6 +112,69 @@ impl Broker for StopEngagingSession {
     }
 }
 `;
+
+const IMPLEMENTATION = `import type { Service } from "./service.ts";
+export class Worker implements Service {
+  run(): string { return "milestone"; }
+}
+`;
+const IMPLEMENTATION_REPAIRED = IMPLEMENTATION.replace(
+  '  run(): string { return "milestone"; }',
+  '  run(): string { return "milestone"; }\n  stop(): void {}',
+);
+
+/** A clean textual merge whose new interface breaks a milestone implementor. */
+async function setupCleanMerge(fastForward = false): Promise<Fixture> {
+  const root = await Deno.makeTempDir({ prefix: "clean-gate-repair-" });
+  const remote = await seedGitRemote(root, "main", [
+    {
+      branch: "milestone/1965",
+      subject: "Seed service",
+      files: {
+        "deno.json": JSON.stringify({
+          tasks: { check: "deno check --no-lock *.ts" },
+        }),
+        "service.ts": "export interface Service { run(): string; }\n",
+      },
+    },
+    ...(fastForward ? [] : [{
+      branch: "milestone/1965",
+      parent: 1,
+      subject: "Implement service on the milestone",
+      files: { "worker.ts": IMPLEMENTATION },
+    }]),
+    {
+      branch: "main",
+      parent: 1,
+      subject: "Require services to stop",
+      files: {
+        "service.ts":
+          "export interface Service { run(): string; stop(): void; }\n",
+        ...(fastForward ? { "worker.ts": IMPLEMENTATION } : {}),
+      },
+    },
+  ]);
+  const clone = `${root}/clone`;
+  await cloneGitFixture(remote, clone, { checkout: "milestone/1965" });
+  return { clone, cleanup: () => Deno.remove(root, { recursive: true }) };
+}
+
+/** Run the fixture's actual Deno check without depending on a host gate account. */
+const denoGate: MergeGateFn = (repoDir) =>
+  checkMergedTree(repoDir, async (project) => {
+    const result = await new Deno.Command(Deno.execPath(), {
+      args: project.args,
+      cwd: project.dir,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    const decoder = new TextDecoder();
+    return {
+      code: result.code,
+      output: decoder.decode(result.stdout) + decoder.decode(result.stderr),
+    };
+  }, () => Promise.resolve(false));
 
 /** Prose both sides reworded — the one conflict git actually reports. */
 const DOCS_SEED = "The workspace has 12 crates.\n";
@@ -245,6 +315,407 @@ function rung(
     return { ok: true, value: { terminated: false } };
   };
 }
+
+Deno.test("syncMilestoneBranchWithDefault - a clean merge's compiler failure is repaired before delivery", async () => {
+  const fx = await setupCleanMerge();
+  try {
+    const preMergeSha = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+    const defaultSha = (await gitOk(["rev-parse", "main"], fx.clone)).trim();
+    // Both input trees compile; only their combination needs a repair.
+    assertEquals((await denoGate(fx.clone)).status, "passed");
+    await gitOk(["checkout", "main"], fx.clone);
+    assertEquals((await denoGate(fx.clone)).status, "passed");
+    await gitOk(["checkout", "milestone/1965"], fx.clone);
+    const calls: Calls = [];
+    const result = await syncMilestoneBranchWithDefault(
+      "milestone/1965",
+      "main",
+      { cwd: fx.clone },
+      undefined,
+      denoGate,
+      undefined,
+      async (request) => {
+        calls.push(request);
+        assertStringIncludes(request.repair?.output ?? "", "TS2420");
+        assertStringIncludes(request.repair?.output ?? "", "stop");
+        assertStringIncludes(
+          request.repair?.failingCommand ?? "",
+          "deno task check",
+        );
+        assertEquals(request.repair?.mergedCommitSubjects, [
+          "Require services to stop",
+        ]);
+        assertEquals(request.conflictedFiles, []);
+        await Deno.writeTextFile(
+          `${request.workDir}/worker.ts`,
+          IMPLEMENTATION_REPAIRED,
+        );
+        return { ok: true, value: { terminated: false } };
+      },
+    );
+    assert(result.ok, !result.ok ? result.error.message : "");
+    assertEquals(calls.length, 1);
+    assertEquals((await denoGate(fx.clone)).status, "passed");
+    const head = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+    assertEquals(
+      (await gitOk(["rev-parse", "origin/milestone/1965"], fx.clone)).trim(),
+      head,
+    );
+    assertEquals(
+      (await gitOk(["rev-list", "--parents", "-n", "1", "HEAD"], fx.clone))
+        .trim().split(/\s+/).slice(1),
+      [preMergeSha, defaultSha],
+    );
+    assertStringIncludes(
+      await gitOk(["log", "-1", "--format=%B"], fx.clone),
+      "worker.ts",
+    );
+    assertStringIncludes(result.value.message, "repaired it in 1 round(s)");
+    assertEquals(
+      await Deno.readTextFile(`${fx.clone}/worker.ts`),
+      IMPLEMENTATION_REPAIRED,
+    );
+    assertEquals((await gitOk(["status", "--porcelain"], fx.clone)).trim(), "");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("syncMilestoneBranchWithDefault - persistent clean-merge failure stops after two repairs without delivery", async () => {
+  const fx = await setupCleanMerge();
+  try {
+    const original = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+    const calls: Calls = [];
+    const records: { message: string; context?: LogContext }[] = [];
+    let clock = 0;
+    const result = await syncMilestoneBranchWithDefault(
+      "milestone/1965",
+      "main",
+      { cwd: fx.clone },
+      undefined,
+      denoGate,
+      undefined,
+      async (request) => {
+        calls.push(request);
+        clock += 10_000;
+        await Deno.writeTextFile(
+          `${request.workDir}/worker.ts`,
+          `${IMPLEMENTATION}\n// repair attempt ${request.repair?.round}\n`,
+        );
+        return { ok: true, value: { terminated: false } };
+      },
+      makeTimingsLogger(records),
+      () => clock,
+    );
+    assert(!result.ok);
+    assert(isMergeGateFailure(result.error));
+    assertEquals(mergeGateFailureCause(result.error), "tree-check-failed");
+    assertEquals(calls.map((c) => c.repair?.round), [1, 2]);
+    assertStringIncludes(result.error.message, "TS2420");
+    assertStringIncludes(result.error.message, "stop");
+    assertStringIncludes(result.error.message, "2 repair round(s) ran");
+    assertEquals(judgeSyncFailure(result.error, true), {
+      outcome: "failed",
+      reason:
+        "the merge gate refused the merged tree (the repository's check failed)",
+    });
+    assertEquals(
+      (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+      original,
+    );
+    assertEquals(
+      (await gitOk(["rev-parse", "origin/milestone/1965"], fx.clone)).trim(),
+      original,
+    );
+    assertEquals(
+      await Deno.readTextFile(`${fx.clone}/worker.ts`),
+      IMPLEMENTATION,
+    );
+    assertEquals(
+      records.filter((r) => r.message === "Milestone sync stage timings").map((
+        r,
+      ) => r.context?.timings),
+      [[
+        { stage: "deepen", seconds: 0 },
+        { stage: "gate", seconds: 0 },
+        { stage: "agent", seconds: 20 },
+        { stage: "push", seconds: 0 },
+      ]],
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("syncMilestoneBranchWithDefault - a clean merge repair must pass the fuller resolution gate", async () => {
+  const fx = await setupCleanMerge();
+  try {
+    const original = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+    let suiteChecks = 0;
+    const result = await syncMilestoneBranchWithDefault(
+      "milestone/1965",
+      "main",
+      { cwd: fx.clone },
+      undefined,
+      denoGate,
+      async (dir) => {
+        assertEquals((await denoGate(dir)).status, "passed");
+        suiteChecks++;
+        return {
+          status: "failed",
+          cause: "tree-check-failed",
+          detail: "deno task test:unit failed (exit 1)",
+          output: "Expected service to release its resources",
+        };
+      },
+      async (request) => {
+        await Deno.writeTextFile(
+          `${request.workDir}/worker.ts`,
+          `${IMPLEMENTATION_REPAIRED}\n// round ${request.repair?.round}\n`,
+        );
+        return { ok: true, value: { terminated: false } };
+      },
+    );
+    assert(!result.ok);
+    assertEquals(suiteChecks, 2);
+    assertStringIncludes(
+      result.error.message,
+      "Expected service to release its resources",
+    );
+    assertEquals(
+      (await gitOk(["rev-parse", "origin/milestone/1965"], fx.clone)).trim(),
+      original,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+for (
+  const cause of [
+    "check-timed-out",
+    "check-could-not-run",
+    "tree-unreadable",
+    "rust-toolchain-too-old",
+  ] as const satisfies readonly MergeGateCause[]
+) {
+  Deno.test(`syncMilestoneBranchWithDefault - a clean merge with ${cause} is uncharged and buys no repair`, async () => {
+    const fx = await setupCleanMerge();
+    try {
+      const original = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+      let repairs = 0;
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1965",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        async () => ({
+          status: "failed",
+          cause,
+          detail: `check unavailable: ${cause}`,
+          output: "",
+        }),
+        undefined,
+        async () => {
+          repairs++;
+          return { ok: true, value: { terminated: false } };
+        },
+      );
+      assert(!result.ok);
+      assertEquals(repairs, 0);
+      assertEquals(mergeGateFailureCause(result.error), cause);
+      assertEquals(judgeSyncFailure(result.error, true).outcome, "not-charged");
+      assertEquals(
+        (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+        original,
+      );
+      assertEquals(
+        (await gitOk(["rev-parse", "origin/milestone/1965"], fx.clone)).trim(),
+        original,
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  });
+}
+
+Deno.test("syncMilestoneBranchWithDefault - a clean merge with no repair grant stays refused", async () => {
+  const fx = await setupCleanMerge();
+  try {
+    const original = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+    const result = await syncMilestoneBranchWithDefault(
+      "milestone/1965",
+      "main",
+      { cwd: fx.clone },
+      undefined,
+      denoGate,
+      undefined,
+      async () => ({
+        ok: false,
+        error: gateRepairBudgetExhausted("30s left; repair needs 120s"),
+      }),
+    );
+    assert(!result.ok);
+    assertStringIncludes(
+      result.error.message,
+      "not attempted for want of budget",
+    );
+    assertStringIncludes(result.error.message, "30s left; repair needs 120s");
+    assertStringIncludes(result.error.message, "TS2420");
+    assertEquals(
+      (await gitOk(["rev-parse", "origin/milestone/1965"], fx.clone)).trim(),
+      original,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("syncMilestoneBranchWithDefault - a fast-forward failure never amends a default-branch commit", async () => {
+  const fx = await setupCleanMerge(true);
+  try {
+    const original = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+    const defaultSha = (await gitOk(["rev-parse", "main"], fx.clone)).trim();
+    let repairs = 0;
+    const result = await syncMilestoneBranchWithDefault(
+      "milestone/1965",
+      "main",
+      { cwd: fx.clone },
+      undefined,
+      denoGate,
+      undefined,
+      async () => {
+        repairs++;
+        return { ok: true, value: { terminated: false } };
+      },
+    );
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "TS2420");
+    assertEquals(repairs, 0);
+    assertEquals(
+      (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+      original,
+    );
+    assertEquals(
+      (await gitOk(["rev-parse", "origin/milestone/1965"], fx.clone)).trim(),
+      original,
+    );
+    assertEquals(
+      (await gitOk(["rev-parse", "main"], fx.clone)).trim(),
+      defaultSha,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("syncMilestoneBranchWithDefault - an unavailable agent cannot deliver a clean merge's broken tree", async () => {
+  const fx = await setupCleanMerge();
+  try {
+    const original = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+    const result = await syncMilestoneBranchWithDefault(
+      "milestone/1965",
+      "main",
+      { cwd: fx.clone },
+      undefined,
+      denoGate,
+    );
+    assert(!result.ok);
+    assertStringIncludes(
+      result.error.message,
+      "no resolution agent was available",
+    );
+    assertStringIncludes(result.error.message, "TS2420");
+    assertEquals(
+      (await gitOk(["rev-parse", "origin/milestone/1965"], fx.clone)).trim(),
+      original,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("syncMilestoneBranchWithDefault - skipped verification after a clean merge repair refuses delivery", async () => {
+  const fx = await setupCleanMerge();
+  try {
+    const original = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+    let repairs = 0;
+    const result = await syncMilestoneBranchWithDefault(
+      "milestone/1965",
+      "main",
+      { cwd: fx.clone },
+      undefined,
+      denoGate,
+      async () => ({
+        status: "skipped",
+        landUnverified: true,
+        detail: "unit suite could not run",
+        output: "",
+      }),
+      async (request) => {
+        repairs++;
+        await Deno.writeTextFile(
+          `${request.workDir}/worker.ts`,
+          IMPLEMENTATION_REPAIRED,
+        );
+        return { ok: true, value: { terminated: false } };
+      },
+    );
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "unit suite could not run");
+    assertStringIncludes(
+      result.error.message,
+      "no further repair can answer a verification that does not run",
+    );
+    assertEquals(repairs, 1);
+    assertEquals(
+      (await gitOk(["rev-parse", "origin/milestone/1965"], fx.clone)).trim(),
+      original,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("syncMilestoneBranchWithDefault - an unrecordable clean merge repair is reset without delivery", async () => {
+  const fx = await setupCleanMerge();
+  try {
+    const original = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+    const result = await syncMilestoneBranchWithDefault(
+      "milestone/1965",
+      "main",
+      { cwd: fx.clone },
+      undefined,
+      denoGate,
+      undefined,
+      async (request) => {
+        await Deno.writeTextFile(
+          `${request.workDir}/worker.ts`,
+          IMPLEMENTATION_REPAIRED,
+        );
+        // A real commit refusal after the repaired tree has compiled.
+        await gitOk(["config", "user.name", ""], fx.clone);
+        return { ok: true, value: { terminated: false } };
+      },
+    );
+    assert(!result.ok);
+    assertStringIncludes(
+      result.error.message,
+      "repaired resolution could not be committed",
+    );
+    assertStringIncludes(result.error.message, "empty ident name");
+    assertEquals(
+      (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+      original,
+    );
+    assertEquals(
+      (await gitOk(["rev-parse", "origin/milestone/1965"], fx.clone)).trim(),
+      original,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
 
 Deno.test(
   "syncMilestoneBranchWithDefault - a gate failure in a file git never conflicted is repaired by the agent rung and pushed (Issue #1965)",
