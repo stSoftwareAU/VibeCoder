@@ -435,6 +435,61 @@ Deno.test({
 
 Deno.test({
   name:
+    "completion - in a repository with no Deno config an uncommitted archive summary edit is still set aside (Issue #5393)",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const summary = "docs/archive/pr-summaries/pr-summary-10.md";
+    const committed = "# Summary\n\nDelivered.\n";
+    // Skips a heading level (MD001), so markdownlint blocks the working tree.
+    const interrupted = `${committed}\n### Skipped a level\n\nRewritten.\n`;
+    const { tmp, repo } = await makeRepo({
+      ".markdownlint.json": "{}\n",
+      [summary]: committed,
+    });
+    try {
+      // makeRepo seeds a Deno config; the branch drops it so none is tracked.
+      await git(["rm", "-q", "worker/deno/deno.json"], repo);
+      await git(["commit", "-q", "-m", "Drop the Deno config"], repo);
+      const headBefore = (await git(["rev-parse", "HEAD"], repo)).trim();
+      await Deno.writeTextFile(`${repo}/${summary}`, interrupted);
+      // Positive control: the gate judges the working tree, so the edit blocks it.
+      const bare = await gateUnpushedCommits(
+        BRANCH,
+        { cwd: repo, env: NO_HOST_GIT_CONFIG },
+        { commands: [] },
+        false,
+        "origin/main",
+      );
+      assert(!bare.ok, "the markdownlint violation must fail the bare gate");
+      assertStringIncludes(
+        bare.ok ? "" : bare.error.message,
+        "pr-summary-10.md",
+      );
+
+      const o = await runCompletion(repo, real);
+      assertEquals(o.pushes, 1, `gate should pass: ${o.reason ?? ""}`);
+      assert(!(o.reason ?? "").includes(PRE_PUSH_GATE_MARKER));
+
+      assertEquals((await git(["rev-parse", "HEAD"], repo)).trim(), headBefore);
+      assertEquals(await git(["show", `HEAD:${summary}`], repo), committed);
+      assertEquals(await Deno.readTextFile(`${repo}/${summary}`), committed);
+      assertEquals(
+        (await git(["status", "--porcelain", "--", summary], repo)).trim(),
+        "",
+      );
+      assertStringIncludes(await git(["stash", "list"], repo), "Issue #5328");
+      assertEquals(
+        await git(["show", `stash@{0}:${summary}`], repo),
+        interrupted,
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
     "completion - Markdown inside the deno root is never formatted; the gate still reports it",
   permissions: { read: true, write: true, run: true, env: true },
   async fn() {

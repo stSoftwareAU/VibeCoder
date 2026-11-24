@@ -358,6 +358,8 @@ async function uncommittedArchivePaths(
  * The completion phase's pre-push gate runs `deno fmt --check` on the working
  * tree copy of every branch-changed archive file, so an unformatted edit that
  * is not in the push would block it, and the recovery turn would commit it.
+ * Its markdownlint and cspell checks also read the working-tree copy, including
+ * in a repository with no Deno config (Issue #5393).
  * Stashing keeps the edit recoverable (`git stash list`) while the gate and
  * the PR body both see the committed copy. A failed stash is logged and
  * returns false; the gate then reports whatever it finds. Returns true when
@@ -399,8 +401,10 @@ async function stashUncommittedArchive(
  * Format the worker's own archive Markdown and JSON, then commit.
  *
  * Runs after the repository formatters. Only the two worker-owned
- * directories are touched, and only when the repository tracks a Deno
- * config — that is the formatter the pre-push gate will check them with.
+ * directories are touched, and they are formatted only when the repository
+ * tracks a Deno config — that is the formatter the pre-push gate will check
+ * them with. The `setAsideUncommitted` stash below happens regardless of a Deno
+ * config (Issue #5393).
  * Before `deno fmt` runs, each Markdown file has its linkage-only lines
  * isolated (see {@link isolateLinkageLines}) and each JSON file is rewritten
  * with sorted keys; a file is written back only when it changed. Files over
@@ -458,11 +462,11 @@ export async function formatWorkerOwnedArchive(
     const trackedPaths = tracked.value.stdout.split("\0").filter((p) =>
       p.length > 0
     );
-    if (!trackedPaths.some(isDenoConfig)) {
-      deps.logger.info(
-        "repo formatters: no Deno formatter in this repository; " +
-          "worker-owned archive Markdown and JSON left for the gate",
-      );
+    const hasDenoFormatter = trackedPaths.some(isDenoConfig);
+    const noFormatterMessage = "repo formatters: no Deno formatter in this " +
+      "repository; worker-owned archive Markdown and JSON left for the gate";
+    if (!hasDenoFormatter && !options.setAsideUncommitted) {
+      deps.logger.info(noFormatterMessage);
       return;
     }
 
@@ -489,6 +493,12 @@ export async function formatWorkerOwnedArchive(
         // like any clean file; the gate must not meet an unformatted copy.
         stashed = await stashUncommittedArchive(repoPath, deps, leftOut);
       }
+    }
+    // The set-aside runs without a Deno formatter too: the gate's markdownlint
+    // and cspell also judge the working-tree copy (Issue #5393).
+    if (!hasDenoFormatter) {
+      deps.logger.info(noFormatterMessage);
+      return;
     }
     const cleanFiles = archiveFiles.filter((path) =>
       stashed || !dirtyPaths.has(path)
@@ -824,8 +834,9 @@ export async function formatBranchChanges(
  * the worker's own archive Markdown and JSON are formatted the same way
  * (Issue #4129). `options.setAsideUncommittedArchive` is for a caller whose
  * gate judges the working tree but whose push carries commits only: an archive
- * file with uncommitted edits is then stashed rather than left in place, and
- * its committed copy is formatted and committed like any other archive file.
+ * file with uncommitted edits is then stashed rather than left in place, with
+ * or without a Deno config, and its committed copy is formatted and committed
+ * like any other archive file (when a Deno config exists).
  */
 export async function formatBeforeGate(
   deps: {
