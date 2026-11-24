@@ -819,7 +819,8 @@ export function detectModelUnavailable(
 // ---------------------------------------------------------------------------
 
 /**
- * The Claude CLI's refusal of the session flags it was given.
+ * The agent CLI's refusal of the session flags it was given (Claude, or
+ * Gemini since Issue #5342).
  *
  * Two shapes, both start-up failures — the process exits ~0.2 s after spawn,
  * before it ever reaches a model call:
@@ -838,12 +839,22 @@ export function detectModelUnavailable(
  *   None of the arms above matched it, so the recorded refusal was reaching
  *   the ordinary failure path instead of dropping the flags.
  *
+ * Gemini's two start-up refusals (Gemini CLI 0.68.0, Issue #5342):
+ *
+ * - `Error starting session: Session ID "<id>" already exists. Use --resume
+ *   to resume it, or provide a different ID.` — `--session-id` naming a
+ *   session that already exists, such as a retried first phase;
+ * - `Error resuming session: Invalid session identifier "<id>".` — `--resume`
+ *   naming a session missing from the Gemini home, such as a re-claim on a
+ *   new container. The existing `invalid session id` arm catches it, being a
+ *   prefix of "identifier".
+ *
  * Anchored to session-id phrasing so an unrelated "invalid" (a bad model
  * alias, a git reference) cannot match: dropping the session flags would
  * silently discard continuity if it fired on the wrong failure.
  */
 const INVALID_SESSION_ID_RE =
-  /invalid session id|session id[^\n]{0,40}must be[^\n]{0,20}uuid|--session-id can only be used with|--resume requires a valid session|no conversation found with session id/i;
+  /invalid session id|session id[^\n]{0,40}must be[^\n]{0,20}uuid|--session-id can only be used with|--resume requires a valid session|no conversation found with session id|session id "[^"\n]{0,80}" already exists/i;
 
 /**
  * The CLI aborting because its autocompaction cannot keep the context under

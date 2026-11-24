@@ -525,3 +525,58 @@ Deno.test("one exhausted subscription beside a billing-unknown one still allows 
     assertEquals(result.overflow, true);
   });
 });
+
+Deno.test("a Gemini API key keeps absent-mode config pinned, a Gemini login makes it auto (Issue #5344)", async () => {
+  const config = { agent_providers: ["claude", "gemini"] };
+  const geminiEnv = (values: Record<string, string>) =>
+    envFrom({
+      [IMAGE_AGENT_PROVIDERS_ENV]: "claude,gemini",
+      CONFIG_PATH: "/mounted/.config.json",
+      ...values,
+    });
+  const choose = (env: EnvLookup) => {
+    const fixture = baseDeps({
+      config,
+      env,
+      statuses: {
+        claude: status("claude", 10),
+        gemini: status("gemini", 90),
+      },
+    });
+    fixture.deps.enabledProviderIds = ["claude", "gemini"];
+    return chooseBabysitterProvider(fixture.deps).then((result) => ({
+      result,
+      fixture,
+    }));
+  };
+
+  await withProviderState(async () => {
+    // API key only: Gemini is metered, so the host stays pinned on Claude and
+    // the higher-quota Gemini status plays no part.
+    const keyed = await choose(geminiEnv({ GEMINI_API_KEY: "metered-key" }));
+    assertEquals(keyed.result.providerId, "claude");
+    assertEquals(keyed.result.overflow, false);
+    assert(
+      !keyed.fixture.logs.some((line) =>
+        line.startsWith("[quota] automatic provider selected=")
+      ),
+    );
+  });
+
+  const home = await Deno.makeTempDir({ prefix: "babysitter-gemini-" });
+  try {
+    await Deno.mkdir(`${home}/.gemini`, { recursive: true });
+    await Deno.writeTextFile(
+      `${home}/.gemini/oauth_creds.json`,
+      JSON.stringify({ refresh_token: "fixture-refresh" }),
+    );
+    await withProviderState(async () => {
+      // A Gemini login: default mode is auto and the status resolver decides.
+      const login = await choose(geminiEnv({ GEMINI_CLI_HOME: home }));
+      assertEquals(login.result.providerId, "gemini");
+      assertEquals(login.result.overflow, false);
+    });
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
