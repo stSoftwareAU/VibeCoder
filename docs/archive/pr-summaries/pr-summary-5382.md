@@ -114,7 +114,18 @@ All new tests are at the end of
   emitted `["test)", "aws-emulator-run", …]`, and the step/script and `if !`
   cases gave `missing`. Then I put back only the old `failureExits` words. The
   `if !` assertion went red, so the `hereWords` change is needed.
-- The full test file passed: 285 passed, 0 failed. No existing test was edited.
+- Corpus run: `reachableCommands` on the base branch and at head, over the
+  repository's 58 tracked shell scripts, workflow `run:` bodies and
+  `container/` files (3130 commands at head). 30 bodies changed. In every one
+  the only difference is a removed `case` pattern: a lone pattern such as `*)`
+  or `-h` before `|` is no longer emitted, and `x86_64) manifest_arch=…` now
+  starts at `manifest_arch=…`. False positives (a real first command taken
+  for a pattern): 0. False negatives (a one-line arm still led by its
+  pattern): 0. Markdown and test-file corpora were not run, because the
+  matcher reads shell code, not prose.
+- `deno task test:unit tests/aws_emulator_in_ci_check_test.ts
+  tests/issue_5110_aws_emulator_workflow_test.ts` on the head: 570 passed,
+  0 failed. No existing test was edited.
 - `./quality.sh < /dev/null` on the head: `Result: PASSED (with skipped checks)`.
   The skipped checks were config integration and checkov. Deno tests, lint,
   type check, fmt, semgrep and markdownlint all passed.
