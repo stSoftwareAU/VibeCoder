@@ -21,6 +21,7 @@ import {
   CODEX_SAFETY_REFUSAL_HEADLINE,
 } from "../lib/codex_output_adapter.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { CONTAINER_IMAGE_STAMP_ENV } from "../lib/container_stamp.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { runOrchestratedIssueRun } from "../lib/orchestration/issue_run_gate.ts";
@@ -74,9 +75,6 @@ async function gitCheckout(dir: string): Promise<string> {
 }
 
 Deno.test("codex safety refusal - the orchestrated execute-phase reason is an agent-outcome, not a worker-crash (Issue #5506)", async () => {
-  // A fleet image stamps the providers it carries; this test needs Codex.
-  const stamped = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
-  Deno.env.delete("VIBE_IMAGE_AGENT_PROVIDERS");
   setAutomaticProviderRoutingActive(true);
   const dir = await Deno.makeTempDir();
   try {
@@ -114,6 +112,10 @@ Deno.test("codex safety refusal - the orchestrated execute-phase reason is an ag
     let providerCalls = 0;
     const deps = createMockDeps({
       claude: {
+        // A fleet image stamps the providers it carries; this test needs
+        // Codex, so the injected lookup reads no stamp (Issue #880 seam).
+        env: (name) =>
+          name === CONTAINER_IMAGE_STAMP_ENV ? undefined : Deno.env.get(name),
         runClaudeWithRetry: () => {
           throw new Error("automatic Codex must use the external orchestrator");
         },
@@ -171,9 +173,6 @@ Deno.test("codex safety refusal - the orchestrated execute-phase reason is an ag
     assertEquals(classification.fixability, "not_code_fixable");
   } finally {
     resetAutomaticProviderState();
-    if (stamped !== undefined) {
-      Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", stamped);
-    }
     await Deno.remove(dir, { recursive: true });
   }
 });
