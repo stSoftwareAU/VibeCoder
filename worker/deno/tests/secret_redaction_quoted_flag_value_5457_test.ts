@@ -118,3 +118,27 @@ Deno.test("#5457 hostile: repeated flag values return", () => {
   assert(!output.includes("b c'"));
   assertEquals(containsSecret(output), false);
 });
+
+keep(
+  "JSON string value ending in a flag and a space",
+  '{"api_token":"run --password ","next":"v"}',
+  `{"api_token":"${R}","next":"v"}`,
+);
+keep(
+  "JSON string value ending in a flag and a tab",
+  '{"api_token":"abc123 --password\t","next":"v"}',
+  `{"api_token":"${R}","next":"v"}`,
+);
+
+Deno.test("#5457 control: JSON output still parses", () => {
+  for (const close of [",", "}", "]", ":", " "]) {
+    const input = `{"api_token":"run --password "${close}`;
+    const output = redactSecrets(input);
+    assert(
+      output.startsWith(`{"api_token":"${R}"`),
+      `quotes dropped before ${JSON.stringify(close)}: ${output}`,
+    );
+  }
+  const output = redactSecrets('{"api_token":"run --password ","next":"v"}');
+  assertEquals(JSON.parse(output), { api_token: R, next: "v" });
+});

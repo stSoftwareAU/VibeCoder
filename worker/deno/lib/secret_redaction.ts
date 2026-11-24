@@ -2116,10 +2116,20 @@ function flagValueStartsAt(text: string, at: number): boolean {
 const CLI_FLAG_VALUE_AT = /"[^"]+"|'[^']+'|\S+/y;
 
 /**
+ * A character that can follow a quote opening a flag's value. Whitespace or
+ * JSON member structure after the closing quote means the quote really closes
+ * the value, as in `{"api_token":"run --password ","next":"v"}`: the flag
+ * rule's raw reading of `","` as a quoted value is not a flag value (Issue
+ * #4169's JSON-structure contract).
+ */
+const OPENS_FLAG_VALUE_AT = /^[^\s,:\]}]$/;
+
+/**
  * Issue #5457: where a credential flag's value ends when `verdict` is a closed
  * quoted value whose closing quote is where the `secret-cli-flag` rule opens
- * that flag's value, else -1. The walk masks the value through the flag's
- * value, so the flag's name is not hidden from the rule. The read is bounded
+ * that flag's value and the flag's value is glued to that quote, else -1. The
+ * walk masks the value through the flag's value, so the flag's name is not
+ * hidden from the rule. The read is bounded
  * by the flag rule's own value match, so the walk stays linear (the linearity
  * rule in the module header).
  */
@@ -2131,7 +2141,9 @@ function flagValueThroughQuote(
   const quote = value[0];
   if (
     (quote !== "'" && quote !== '"') || value.length < 2 ||
-    !value.endsWith(quote) || !flagValueStartsAt(text, verdict.end - 1)
+    !value.endsWith(quote) ||
+    !OPENS_FLAG_VALUE_AT.test(text[verdict.end] ?? "") ||
+    !flagValueStartsAt(text, verdict.end - 1)
   ) return -1;
   try {
     CLI_FLAG_VALUE_AT.lastIndex = verdict.end - 1;

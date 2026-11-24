@@ -30,6 +30,13 @@ double-quoted shapes from the issue comment. Closes #5457.
   reads that flag's value with the flag rule's own value alternatives
   (`CLI_FLAG_VALUE_AT`). Only credential flags extend the mask; a non-credential
   flag such as `--name` keeps the base behaviour
+- The flag's value must be glued to the closing quote: whitespace, `,`, `:`, `]`
+  or `}` after it (`OPENS_FLAG_VALUE_AT`) means the quote really closes the
+  value. Without this, a JSON string ending in a credential flag and a space,
+  `{"api_token":"run --password ","next":"v"}`, lost its quotes and the next
+  member's `","`, because the flag rule's raw reading takes `","` as a quoted
+  value. That broke the JSON-structure contract (Issue #4169). In every leak
+  shape the flag's value is glued to the quote
 - The extended mask is pushed into the walk's mask list and the walk resumes
   after it, so nothing inside the flag's value is judged again. The mask holds
   no quotes around the placeholder because the extended value is not a single
@@ -60,11 +67,12 @@ flowchart LR
   and the `secret-assignment` comment block in `RULES` gains the matching note
 - Issue numbers this diff cites: #5457: An unclosed single-quoted
   secret-assignment value runs into the next line's credential flag and
-  publishes that flag's quoted value
+  publishes that flag's quoted value; #4169: the JSON-structure contract the
+  glued-value check keeps
 
 ## Test Plan
 
-- New `worker/deno/tests/secret_redaction_quoted_flag_value_5457_test.ts`, 13
+- New `worker/deno/tests/secret_redaction_quoted_flag_value_5457_test.ts`, 16
   tests:
   - Eight leak fixtures, each asserting the exact `redactSecrets` output,
     `containsSecret` true on the input and false on the output, idempotence, and
@@ -78,22 +86,26 @@ flowchart LR
     - the Windows-path escape;
     - the quoted message ending in `token:`;
     - a nested `DEPLOY_TOKEN: 'deploy --token '…'` label
-  - Three controls keep the base output:
+  - Six controls keep the base output:
     - a closing quote on its own line, then the flag;
     - a closing quote that opens a non-flag string;
-    - a non-credential `--name` flag
+    - a non-credential `--name` flag;
+    - a JSON string value ending in `--password` and a space, and one ending in
+      a tab, each giving `{"api_token":"***REDACTED***","next":"v"}`;
+    - the same value closed by each of `,`, `}`, `]`, `:` and a space keeps its
+      quotes, and the redacted JSON still parses
   - Two hostile inputs, an unclosed 200,000-character flag value and 20,000
     repeats of the shape, assert their output masks the value
-- Red on base: before the fix the file gave 3 passed and 10 failed (the eight
-  leaks and both hostile tests; the controls pass). At the head: 13 passed, 0
-  failed
+- Red on base: before the fix the file's first 13 tests gave 3 passed and 10
+  failed (the eight leaks and both hostile tests; the controls pass). The three
+  JSON controls pass on the base and failed on the previous head (the pre-PR
+  verifier's finding). At the head: 16 passed, 0 failed
 - Regression: every `worker/deno/tests/secret_redaction*_test.ts` and
-  `secret_transform*_test.ts` file: 589 passed, 0 failed;
+  `secret_transform*_test.ts` file: 592 passed, 0 failed;
   `worker/deno/tests/prompt_delimiter_test.ts`: 44 passed, 0 failed. No existing
   test was edited
 - `./quality.sh`: passed, with config integration (no `.config.json`) and
-  checkov (not installed) skipped. A first run was cut off by my own 600 s
-  bound; the second run completed. It ran before a rewording of one doc comment
-  in `flagValueThroughQuote`; after it, `deno fmt --check` on the file is clean
-  and the new test file gives 13 passed, 0 failed
+  checkov (not installed) skipped. It ran before the glued-value check; after
+  that check, `deno fmt`, `deno lint` and `deno check` on the changed files are
+  clean and the suites above were re-run. The worker re-runs the gate
 - Not done or not checked: none beyond the two skipped gate stages
