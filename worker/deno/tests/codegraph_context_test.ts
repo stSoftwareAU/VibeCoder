@@ -220,18 +220,38 @@ Deno.test("prepareCodegraphContext - the switch off returns off without spawning
   assertEquals(logger.lines, []);
 });
 
-Deno.test("prepareCodegraphContext - a Gemini run is unsupported and spawns nothing", async () => {
-  const logger = fakeLogger();
-  const result = await prepareCodegraphContext({
-    repoDir: "/nonexistent",
-    enabled: true,
-    providerId: GEMINI_PROVIDER_ID,
-    logger,
-    ...forbiddenSeams(),
-  });
+Deno.test("prepareCodegraphContext - a Gemini run is not unsupported and reaches the index step (Issue #5343)", async () => {
+  await withTempDir(async (dir) => {
+    // Identical seams for both providers, so the only variable is the route.
+    const seams = () =>
+      fakeRun({
+        status: { ok: true, value: ok({ stdout: statusJson(10, 4) }) },
+      });
+    const claudeRun = seams();
+    const geminiRun = seams();
+    const claude = await prepareCodegraphContext({
+      repoDir: dir,
+      enabled: true,
+      providerId: "claude",
+      logger: fakeLogger(),
+      run: claudeRun.run,
+      git: fakeGit().git,
+    });
+    const gemini = await prepareCodegraphContext({
+      repoDir: dir,
+      enabled: true,
+      providerId: GEMINI_PROVIDER_ID,
+      logger: fakeLogger(),
+      run: geminiRun.run,
+      git: fakeGit().git,
+    });
 
-  assertEquals(result, { status: "unsupported", enabled: true });
-  assertEquals(logger.lines, []);
+    assert(gemini.status !== "unsupported", `got ${gemini.status}`);
+    assertEquals(gemini.status, claude.status);
+    assertEquals(gemini.status, "ok");
+    assertEquals(gemini.nodeCount, claude.nodeCount);
+    assertEquals(gemini.relationshipCount, claude.relationshipCount);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -64,10 +64,12 @@ import {
   DEEPSEEK_OUTPUT_ADAPTER,
 } from "./claude_output_adapter.ts";
 import { CODEX_OUTPUT_ADAPTER } from "./codex_output_adapter.ts";
+import { GEMINI_OUTPUT_ADAPTER } from "./gemini_output_adapter.ts";
 import {
   buildSessionResumeArgs,
   buildSessionResumeFlags,
   codexResumeSessionId,
+  geminiSessionFlags,
   sessionResumeForProvider,
   type SessionResumeState,
 } from "./session_resume.ts";
@@ -99,18 +101,22 @@ import {
 } from "./codex_auth_mode.ts";
 import {
   buildGeminiArgs,
+  composeGeminiPrompt,
   resolveGeminiEffort,
   resolveGeminiModel,
 } from "./gemini_executor.ts";
 import {
-  buildGeminiChildEnv,
+  buildIsolatedGeminiChildEnv,
   GEMINI_ENV_DENYLIST,
   GEMINI_ENV_SECRET_ALLOWLIST,
 } from "./gemini_env.ts";
 import {
+  GEMINI_CLI_HOME_ENV_VAR,
   GEMINI_CREDENTIAL_ENV_VARS,
   geminiAuthActionableMessage,
+  initialiseGeminiHome,
   isGeminiAuthError,
+  resolveGeminiAuthMode,
 } from "./gemini_auth.ts";
 import {
   applyDeepSeekModelAdaptation,
@@ -131,7 +137,13 @@ import {
   deepSeekAuthActionableMessage,
   isDeepSeekAuthError,
 } from "./deepseek_auth.ts";
-import type { RepoConfig } from "../types.ts";
+import type { RepoConfig, Result } from "../types.ts";
+import type { OrchestrationRefusal } from "./orchestration/types.ts";
+import {
+  buildGeminiToolSettings,
+  readGeminiMcpServers,
+  writeGeminiRunSettings,
+} from "./gemini_settings.ts";
 
 /** Directory, relative to `container/`, holding the per-provider fragments. */
 export const PROVIDER_FRAGMENT_DIR = "providers";
@@ -281,7 +293,8 @@ export interface AgentProviderBilling {
   readonly meteredEnvVars: readonly string[];
   /**
    * Billing state this provider keeps **outside** the environment — Codex's
-   * persistent ChatGPT login under `CODEX_HOME`. Consulted before the
+   * persistent ChatGPT login under `CODEX_HOME`, Gemini's Google-account login
+   * under `GEMINI_CLI_HOME`. Consulted before the
    * declared metered variables, so a provider whose CLI gives an API key
    * precedence can say so. Absent means the declared variables are the only
    * proof; `undefined` means this probe proved nothing. The probe must read
@@ -385,10 +398,11 @@ export interface AgentInvocationRequest {
   effort?: string;
   /**
    * Tool names requested as unavailable. Claude's CLI enforces these through
-   * `--disallowed-tools`; Codex and Gemini receive them as prompt text only.
-   * A caller relying on enforcement must check this adapter and every
-   * permitted fallback. This list does not provide process, filesystem or
-   * network isolation.
+   * `--disallowed-tools`; Gemini enforces them through the run's settings file
+   * (Issue #5341), where an unmapped name or an unwritable file refuses the
+   * spawn; Codex still receives them as prompt text only. A caller relying on
+   * enforcement must check this adapter and every permitted fallback. This
+   * list does not provide process, filesystem or network isolation.
    */
   disallowedTools?: readonly string[];
   /**
@@ -421,7 +435,9 @@ export interface AgentInvocationRequest {
    * MCP server configuration for this run (Issue #4355) — the Playwright
    * headless browser. Claude takes the path as `--mcp-config`. Codex has
    * no such flag: the descriptor turns the same JSON into `-c mcp_servers.*`
-   * overrides (Issue #1702). Absent → no browser capability.
+   * overrides (Issue #1702). Gemini gets the servers in its per-run settings
+   * file, restricted by `--allowed-mcp-server-names` (Issue #5343). Absent →
+   * no browser capability.
    */
   mcpConfigPath?: string;
   /**
@@ -470,6 +486,28 @@ export interface AgentInvocationRequest {
  * gets, with that limit still in force.
  */
 export type PromptTransport = "stdin" | "argv";
+
+/**
+ * What a provider's settings builder makes of a list of denied tools (Issue
+ * #5341). `ok: false` names the denial the provider's settings cannot enforce.
+ * `policy`, when present, is a rules file the provider's CLI loads from a
+ * directory the writer names in its settings (Gemini's command-prefix denials,
+ * PR #5524 review); a provider with no such rules omits it.
+ */
+export type ToolDenialSettings =
+  | { ok: true; settings: Record<string, unknown>; policy?: string }
+  | { ok: false; refusal: OrchestrationRefusal };
+
+/**
+ * The per-run settings a provider's CLI reads, written before the spawn and
+ * removed after it (Issue #5341).
+ */
+export interface AgentRunSettings {
+  /** Environment variables that point the child at its settings. */
+  env: Readonly<Record<string, string>>;
+  /** Removes what was written. Safe to call more than once. */
+  cleanup(): Promise<void>;
+}
 
 /** Everything the worker needs to know about one coding-agent provider. */
 export interface AgentProviderDescriptor {
@@ -594,6 +632,24 @@ export interface AgentProviderDescriptor {
   isAuthError(output: string): boolean;
   /** Operator-facing message for an authentication failure. */
   authActionableMessage(): string;
+  /**
+   * Maps the denied tools into this provider's per-run settings (Issue #5341).
+   * Pure. Absent means the provider has no settings-file enforcement; its
+   * denials then ride the argv, or the role is refused by `capabilities.ts`.
+   */
+  toolDenialSettings?(disallowedTools: readonly string[]): ToolDenialSettings;
+  /**
+   * Writes this run's settings file (Issue #5341). `claude_runner.ts` calls it
+   * after `buildChildEnv`, and merges the returned environment into the child.
+   * An error refuses the spawn: enforcement is a safety control, so it fails
+   * closed. `mcpConfigPath`, when the run has one, lets a provider put the
+   * run's MCP servers in that file (Gemini, Issue #5343).
+   */
+  prepareRunSettings?(request: {
+    disallowedTools: readonly string[];
+    env?: EnvLookup;
+    mcpConfigPath?: string;
+  }): Promise<Result<AgentRunSettings>>;
 }
 
 /** The model and effort one invocation runs with. */
@@ -1017,11 +1073,9 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
  * delegates to the Gemini-owned modules (`gemini_executor.ts`,
  * `gemini_env.ts`, `gemini_auth.ts`), so no Gemini CLI knowledge lives here.
  *
- * It carries **no** `output` adapter (Issue #1695): its event shapes were not
- * confirmable against the pinned CLI here, and decoding them with Claude's
- * parser is exactly the guesswork this seam exists to end. The runner keeps
- * the shared text extraction for it and reports no normalised result — an
- * absent decode, never a fabricated one.
+ * Its `output` adapter is `gemini_output_adapter.ts` (Issue #5340), which
+ * decodes the CLI's `stream-json` events into the answer, the session, the
+ * usage and a typed failure.
  */
 const GEMINI_PROVIDER: AgentProviderDescriptor = {
   id: GEMINI_PROVIDER_ID,
@@ -1031,21 +1085,59 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
     subdir: "gemini",
     file: "provider.env",
     envVars: GEMINI_CREDENTIAL_ENV_VARS,
+    stateEnvVars: [GEMINI_CLI_HOME_ENV_VAR],
+    initialiseState: initialiseGeminiHome,
     provisionEnvVar: "VIBE_LAUNCHAGENT_GEMINI_API_KEY",
   },
-  // Gemini bills per token against an API key (Issue #1923): there is no
-  // fixed-price subscription VibeCoder can run unattended, so it is never an
-  // automatic-routing candidate.
+  // Fixed-price subscription vs metered spend (Issues #1923, #5339). A Google
+  // account login under an explicit GEMINI_CLI_HOME proves a fixed-price
+  // subscription (so isSubscriptionCapable is true); an API key alone is
+  // metered. No variable carries the login, so the proof is a probe. It reads
+  // only an EXPLICIT GEMINI_CLI_HOME: that is the one home
+  // `buildIsolatedGeminiChildEnv` gives the child. Automatic selection reads
+  // this classification: `resolveAutomaticProviderStatus` in
+  // `provider_auto_runtime.ts` reports a login as an auto candidate with
+  // passive quota (no probe, no windows; Issue #5344).
   billing: {
     subscriptionEnvVars: [],
     meteredEnvVars: GEMINI_CREDENTIAL_ENV_VARS,
+    resolveStoredBilling(context) {
+      const explicitHome = (context.env(GEMINI_CLI_HOME_ENV_VAR) ?? "").trim();
+      if (!explicitHome) return undefined;
+      // An explicit home withholds the API keys from the child, so the
+      // environment is not consulted: the login is what the run spends.
+      const { mode, detail } = resolveGeminiAuthMode(explicitHome);
+      if (mode === "login") {
+        return { mode: "fixed-subscription", reason: "gemini-google-login" };
+      }
+      if (mode === "api-key") {
+        return { mode: "metered", reason: "gemini-settings-api-key" };
+      }
+      if (mode === "read-error") {
+        // A login that cannot be used is a fault, not an absent login.
+        return {
+          mode: "unknown",
+          reason: `gemini-login-unreadable (${detail ?? "no detail"})`,
+        };
+      }
+      return undefined;
+    },
   },
   environment: {
     secretAllowlist: GEMINI_ENV_SECRET_ALLOWLIST,
     denylist: GEMINI_ENV_DENYLIST,
   },
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/gemini.sh` },
-  promptTransport: "argv",
+  // Stdin, as for Claude and Codex (Issue #4385): the composed system prompt
+  // and prompt of a real PR-feedback or issue run exceed Linux's 128 KiB
+  // single-argument cap (PR #5524 review). A caller that does not set
+  // `promptViaStdin` still gets `--prompt <text>`.
+  promptTransport: "stdin",
+  // The stream-json decoder and failure classifier (Issue #5340), deferred
+  // for the same import cycle as Claude's above.
+  get output(): AgentOutputAdapter {
+    return GEMINI_OUTPUT_ADAPTER;
+  },
 
   // Gemini routes `phase` to a model through its own table (Issue #364), the
   // way Claude and Codex do; the chain lives in `gemini_executor.ts` and is
@@ -1062,6 +1154,13 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
 
   buildInvocation(request: AgentInvocationRequest): string[] {
     const routing = resolveInvocationRouting(this, request);
+    let mcpServerNames: string[] = [];
+    if (request.mcpConfigPath) {
+      // The same reader as the settings file's `mcpServers` (Issue #5343).
+      const servers = readGeminiMcpServers(request.mcpConfigPath);
+      if (!servers.ok) throw servers.error;
+      mcpServerNames = Object.keys(servers.value);
+    }
     return buildGeminiArgs({
       prompt: request.prompt,
       systemPrompt: request.systemPrompt,
@@ -1072,14 +1171,34 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
       // silently (Issue #364, fail-loud standard #3234).
       effort: routing.effort,
       phase: request.phase,
-      // Gemini resumes its own most recent session; the first phase of an
-      // issue starts one instead (`phaseCount === 0`).
-      resumeSession: buildSessionResumeFlags(request.sessionResumeState).resume,
+      // No state: neither flag. First phase or another provider's state:
+      // `--session-id`. A later phase Gemini reported: `--resume <id>`
+      // (Issue #5342).
+      ...geminiSessionFlags(request.sessionResumeState),
+      // The servers the run's config names, the only ones the CLI loads
+      // (Issue #5343).
+      mcpServerNames,
+      promptViaStdin: request.promptViaStdin,
+    });
+  },
+
+  // The whole composed prompt: Gemini has no separate system-prompt or
+  // denied-tools flag, so both fold into the one prompt (`agent_prompt.ts`).
+  stdinBody(request: AgentInvocationRequest): string {
+    return composeGeminiPrompt({
+      prompt: request.prompt,
+      systemPrompt: request.systemPrompt,
+      disallowedTools: request.disallowedTools,
     });
   },
 
   buildChildEnv(parentEnv?: Record<string, string>): Record<string, string> {
-    return parentEnv ? buildGeminiChildEnv(parentEnv) : buildGeminiChildEnv();
+    const source = parentEnv ?? Deno.env.toObject();
+    return buildIsolatedGeminiChildEnv(source, {
+      geminiApiKey: source.GEMINI_API_KEY,
+      googleApiKey: source.GOOGLE_API_KEY,
+      geminiCliHome: source.GEMINI_CLI_HOME,
+    });
   },
 
   isAuthError(output: string): boolean {
@@ -1088,6 +1207,20 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
 
   authActionableMessage(): string {
     return geminiAuthActionableMessage();
+  },
+
+  // Denials reach Gemini through the per-run settings file (Issue #5341), not
+  // the argv: the CLI reads `GEMINI_CLI_SYSTEM_SETTINGS_PATH` at start-up.
+  toolDenialSettings(disallowedTools: readonly string[]): ToolDenialSettings {
+    return buildGeminiToolSettings(disallowedTools);
+  },
+
+  prepareRunSettings(request: {
+    disallowedTools: readonly string[];
+    env?: EnvLookup;
+    mcpConfigPath?: string;
+  }): Promise<Result<AgentRunSettings>> {
+    return writeGeminiRunSettings(request);
   },
 };
 
@@ -1126,8 +1259,8 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
     envVars: DEEPSEEK_CREDENTIAL_ENV_VARS,
     provisionEnvVar: "VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY",
   },
-  // DeepSeek bills per token against an API key (Issue #1923), the same as
-  // Gemini: metered, and never an automatic-routing candidate.
+  // DeepSeek bills per token against an API key (Issue #1923), as a Gemini
+  // API key does: metered, and never an automatic-routing candidate.
   billing: {
     subscriptionEnvVars: [],
     meteredEnvVars: DEEPSEEK_CREDENTIAL_ENV_VARS,

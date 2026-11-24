@@ -992,6 +992,14 @@ but the credential is DeepSeek's — an `ANTHROPIC_API_KEY` in
 `deepseek/provider.env` is not accepted, and Anthropic's credentials are
 withheld from the DeepSeek subprocess.
 
+`gemini/provider.env` may instead hold `GEMINI_CLI_HOME=<path>`, a path (not a
+credential) selecting a Google-account login persisted under
+`<path>/.gemini/oauth_creds.json`, seeded once from `gemini/oauth_creds.json` in
+the credential directory. Once it is set the Gemini child receives no
+`GEMINI_API_KEY` or `GOOGLE_API_KEY`, so a key beside it is not used by the CLI.
+`setup.sh` still provisions only `VIBE_LAUNCHAGENT_GEMINI_API_KEY`. See
+[Provider parity](PROVIDER-PARITY.md#subscription-only-billing-policy).
+
 Any of the listed names works; the first is the one `setup.sh` writes. This
 table mirrors `vibe_provider_credential_table` in `setup.sh` and the
 descriptors in `worker/deno/lib/agent_provider.ts`, which remain the source of

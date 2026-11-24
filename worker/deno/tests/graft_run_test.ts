@@ -12,6 +12,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  GRAFT_MCP_SERVER_NAME,
   GRAFT_MCP_TOOLS,
   GRAFT_PROMPT_LINE,
   type GraftContextResult,
@@ -185,7 +186,7 @@ Deno.test("bindGraftRun - an ok collection with no graph directory withholds the
   );
 });
 
-Deno.test("bindGraftRun - a Gemini-routed run keeps the bundle and gets no tools", () => {
+Deno.test("bindGraftRun - a Gemini-routed run is wired like Claude (Issue #5343)", () => {
   const logger = recordingLogger();
   const run = bindGraftRun({
     result: okCollection(),
@@ -194,22 +195,34 @@ Deno.test("bindGraftRun - a Gemini-routed run keeps the bundle and gets no tools
     env: () => undefined,
     logger,
   });
-  assertEquals(run.wired, false);
-  assertEquals(run.result.status, "ok", "the push side is untouched");
-  assertEquals(run.applyPrompt("p"), "p");
-  assertEquals(run.mcpConfig(false), false);
+  assertEquals(run.wired, true);
+  assertEquals(GRAFT_MCP_SERVER_NAME, "graft");
+
+  const mcp = run.mcpConfig(undefined);
+  assert(typeof mcp === "object", "the graft server must be requested");
+  assertEquals(mcp.playwright, false, "no request means no browser grant");
+  assert(
+    mcp.servers !== undefined &&
+      GRAFT_MCP_SERVER_NAME in mcp.servers,
+    "the graft server entry is handed to Gemini",
+  );
+
+  assert(
+    !logger.lines.some((l) => l.message.includes("has no MCP transport")),
+    `no withheld-tools line, got: ${
+      logger.lines.map((l) => l.message).join(" | ")
+    }`,
+  );
   assert(
     logger.lines.some((l) =>
-      l.level === "info" && l.message.includes("no MCP transport")
+      l.level === "info" &&
+      l.message.includes("handed to the agent as MCP server")
     ),
-    "the withheld tools are said plainly",
+    "the hand-over is said plainly",
   );
-  run.record({ toolCallCounts: { Bash: 4 } });
-  assertEquals(
-    run.result.queries,
-    undefined,
-    "no tally: could not ask must never read as never asked",
-  );
+
+  run.record({ toolCallCounts: { mcp__graft__graft_find_code: 3, Bash: 4 } });
+  assertEquals(run.result.queries, 3, "the Graft calls are tallied");
 });
 
 Deno.test("bindGraftRun - a run that names no checkout withholds the tools loudly", () => {

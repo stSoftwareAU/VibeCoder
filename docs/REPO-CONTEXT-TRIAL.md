@@ -182,10 +182,10 @@ flowchart LR
 
 A run is excluded from **either** window's figures when:
 
-- **Its repo-context status is `unsupported`.** The switch was on but the run
-  was routed to Gemini, which has no MCP transport: no index step, no MCP entry,
-  no prompt line. The run cost what a plain run costs and says nothing about the
-  candidate.
+- **Its repo-context status is `unsupported`.** No provider produces this
+  status since Issue #5343, but if a run reports it the run carried no index
+  step, no MCP entry and no prompt line. It cost what a plain run costs and says
+  nothing about the candidate.
 - **Both switches were on.** Running both tools on one host is allowed and both
   record their figures, but such a run belongs to neither window and is excluded
   from both.
@@ -226,7 +226,7 @@ figures the step reached:
 ```text
 - **CodeGraph:** ok — index 1.8 s, 4,120 nodes, 9,870 relationships, 14 queries
 - **CodeGraph:** failed — index 300 s
-- **CodeGraph:** unsupported (gemini)
+- **CodeGraph:** unsupported
 - **CodeGraph:** off
 ```
 
