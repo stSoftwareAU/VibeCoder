@@ -30,6 +30,7 @@
  */
 
 import { assertNever } from "./assert_never.ts";
+import { CODEX_SAFETY_REFUSAL_HEADLINE } from "./codex_output_adapter.ts";
 import { isHostDiskProtectiveStopText } from "./host_disk_protective_stop.ts";
 import {
   type FailureCategory,
@@ -547,6 +548,22 @@ export function classifyRunFailure(
       splitAgentNarration(failureMessage ?? "").worker,
     )
   ) return PROVIDER_UNAVAILABLE;
+  // A Codex content refusal is the agent declining the task, not a worker
+  // defect (Issue #5506). Anchored to the worker's opening words, so the same
+  // headline quoted in agent output cannot trigger it.
+  if (
+    category === "internal_error" &&
+    splitAgentNarration(failureMessage ?? "").worker.startsWith(
+      `Claude execution failed: ${CODEX_SAFETY_REFUSAL_HEADLINE}`,
+    )
+  ) {
+    return {
+      fixability: "not_code_fixable",
+      failureClass: "agent-outcome",
+      rationale:
+        "The agent CLI refused the task content as a safety risk — a content refusal, not a worker defect.",
+    };
+  }
 
   // 2. A squash-lineage refusal is the base having moved on (Issue #534),
   //    stated in the worker's own words — and its text quotes a branch name

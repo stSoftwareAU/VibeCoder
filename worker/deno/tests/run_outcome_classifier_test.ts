@@ -1196,3 +1196,40 @@ Deno.test("provider-unavailable - a hostile long message completes without backt
     "worker-crash",
   );
 });
+
+/** The worker's message for a Codex safety refusal, quoting the provider text (Issue #5506). */
+const CODEX_SAFETY_REFUSAL_MESSAGE =
+  "Claude execution failed: Codex refused the content as a safety risk — evidence: error This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request. If you’re doing authorized security work that requires more cyber permissive safeguards, apply for Daybreak access via https://platform.openai.com/settings/organization/status-and-access before retrying.";
+
+Deno.test("codex safety refusal - an internal_error opening with the safety headline is an agent-outcome (Issue #5506)", () => {
+  const classification = classifyRunFailure(
+    "internal_error",
+    CODEX_SAFETY_REFUSAL_MESSAGE,
+    true,
+  );
+
+  assertEquals(classification.failureClass, "agent-outcome");
+  assertEquals(classification.fixability, "not_code_fixable");
+});
+
+Deno.test("codex safety refusal - a credential refusal is still a worker-crash (Issue #5506)", () => {
+  assertEquals(
+    classifyRunFailure(
+      "internal_error",
+      "Claude execution failed: Codex refused the credential — evidence: error unauthorized",
+      true,
+    ).failureClass,
+    "worker-crash",
+  );
+});
+
+Deno.test("codex safety refusal - the headline only later in a message does not trigger the rule (Issue #5506)", () => {
+  assertEquals(
+    classifyRunFailure(
+      "internal_error",
+      "Claude execution failed: boom — evidence: Codex refused the content as a safety risk",
+      true,
+    ).failureClass,
+    "worker-crash",
+  );
+});
