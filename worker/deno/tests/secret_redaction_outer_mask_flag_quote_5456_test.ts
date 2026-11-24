@@ -14,13 +14,14 @@
  * masks through it (the outcome the Issue #5310 round 13 tests pin). The base
  * code leaks `beta` on the simple later-quote shape too, so it is a regression
  * case, not a control.
- * A bare value that starts at the quote is always kept, as in Issue #5363.
+ * The quote is also kept at the start of a bare value, as in Issue #5363.
  *
  * These tests assert the exact output `redactSecrets` produces, that
  * `containsSecret` is false on that output, that a second pass changes nothing,
  * and that the leaked words are gone. The controls pass on the unfixed code
- * too: they pin that only a flag's closing quote is kept. The size case asserts
- * output only, with no stopwatch, as in `secret_redaction_redos_test.ts`.
+ * too: they pin that only a flag's closing quote is kept. The size cases assert
+ * output only, with no stopwatch, as in
+ * `worker/deno/tests/secret_redaction_redos_test.ts`.
  */
 
 import { assertEquals } from "@std/assert";
