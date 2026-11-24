@@ -10,8 +10,9 @@
  *
  * `ClaudeExecutionResult.output` is the agent's FINAL message for every
  * provider: each provider's output adapter (lib/claude_output_adapter.ts for
- * Claude and DeepSeek, lib/codex_output_adapter.ts for Codex) sets the text
- * from the final result. Success requires exitCode 0 and no timeout, so partial
+ * Claude and DeepSeek, lib/codex_output_adapter.ts for Codex,
+ * lib/gemini_output_adapter.ts for Gemini) sets the text from the final
+ * result. Success requires exitCode 0 and no timeout, so partial
  * text is never written to the response file.
  *
  * A response that reports READY is first checked by the pre-push gate over the
