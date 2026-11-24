@@ -975,6 +975,9 @@ for (
     ["X=$(cat v aws-emulator-run -- ./test.sh)", false],
     // Never closed: nothing after it is a command.
     ["X=$(cat v aws-emulator-run -- ./test.sh", false],
+    // A `(` inside `${…}` opens no substitution: a later `)` does not make
+    // the word after it the command.
+    ["X=${Y:-(} echo ${Z:-)} aws-emulator-run -- ./test.sh", false],
     // These pin the documented limit: shellCommands splits a substitution at
     // a `|` (or `;`, `&`, line break), so the runner is not seen after it.
     ["X=$(cat v | tr -d x) aws-emulator-run -- ./test.sh", false],
@@ -1004,6 +1007,9 @@ Deno.test("commandIndex - skips an assignment whose substitution holds blanks (I
       ['X=$(echo "a )" b) cmd', 3],
       ["env X=$(cat v) cmd", 3],
       ["X=1 cmd", 1],
+      ["X=${Y:-(} echo ${Z:-)} cmd", 4],
+      ["X=(a b) cmd", 2],
+      ["X=<(cat v) cmd", 2],
     ] as const
   ) {
     assertEquals(
@@ -4881,4 +4887,104 @@ Deno.test("checkAwsEmulatorInCI - an exec inside X=$(...) does not exec the runn
     "missing",
     "exec inside the substitution",
   );
+});
+
+// Issue #5378 (pre-PR verifier): every caller of commandIndex /
+// keptCommands reads the command after an `X=$(cat v)` assignment, each
+// paired with an `echo` control that leaves the real command an argument.
+Deno.test("checkAwsEmulatorInCI - each commandIndex caller reads the command after X=$(cat v); an echo control does not (Issue #5378)", async () => {
+  const wiring = async (files: Record<string, string>) =>
+    (await checkRepoWith(files)).wiring;
+  const step = (body: string) => ({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+  });
+  const cases: Array<[string, Record<string, string>, string]> = [
+    // segmentScriptPath: the step's script path follows the assignment.
+    ["step script path", {
+      ...step("X=$(cat v) ./ci/t.sh"),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${RUNNER_STEP}\n`,
+    }, "official-server"],
+    ["step script path, echo control", {
+      ...step("X=$(cat v) echo ./ci/t.sh"),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${RUNNER_STEP}\n`,
+    }, "missing"],
+    // keptCommands on the runner COMMAND script.
+    ["runner COMMAND script", {
+      ...step("aws-emulator-run -- ./ci/run.sh"),
+      "ci/run.sh": "#!/usr/bin/env bash\nX=$(cat v) npm test\n",
+    }, "official-server"],
+    ["runner COMMAND script, echo control", {
+      ...step("aws-emulator-run -- ./ci/run.sh"),
+      "ci/run.sh": "#!/usr/bin/env bash\nX=$(cat v) echo npm test\n",
+    }, "missing"],
+    // looksLikeTestCommand on the runner COMMAND itself.
+    ["runner COMMAND after env X=$(cat v)", {
+      ...step("aws-emulator-run -- env X=$(cat v) npm test"),
+    }, "official-server"],
+    ["runner COMMAND after env X=$(cat v), echo control", {
+      ...step("aws-emulator-run -- env X=$(cat v) echo npm test"),
+    }, "missing"],
+    // commandIsSelfReference: the self re-exec behind env X=$(cat v).
+    ["self re-exec", {
+      ...step("./ci/aws-test.sh"),
+      "ci/aws-test.sh":
+        '#!/usr/bin/env bash\nset -euo pipefail\nexec aws-emulator-run -- env X=$(cat v) "$0"\n',
+    }, "official-server"],
+    ["self re-exec, echo control", {
+      ...step("./ci/aws-test.sh"),
+      "ci/aws-test.sh":
+        '#!/usr/bin/env bash\nset -euo pipefail\nexec aws-emulator-run -- env X=$(cat v) echo "$0"\n',
+    }, "missing"],
+    // handlerExitsZero: the trap handler's exit follows the assignment.
+    [
+      "trap handler exit 0",
+      step(`trap 'X=$(cat v) exit 0' EXIT\n${RUNNER_STEP}`),
+      "missing",
+    ],
+    [
+      "trap handler, echo control",
+      step(`trap 'X=$(cat v) echo exit 0' EXIT\n${RUNNER_STEP}`),
+      "official-server",
+    ],
+    // The errexit and trap scan: `set +e` and `trap` behind the assignment.
+    ["set +e", step(`X=$(cat v) set +e\n${RUNNER_STEP}\necho done`), "missing"],
+    [
+      "set +e, echo control",
+      step(`X=$(cat v) echo set +e\n${RUNNER_STEP}\necho done`),
+      "official-server",
+    ],
+    [
+      "trap exit 0",
+      step(`X=$(cat v) trap 'exit 0' EXIT\n${RUNNER_STEP}`),
+      "missing",
+    ],
+    [
+      "trap exit 0, echo control",
+      step(`X=$(cat v) echo trap 'exit 0' EXIT\n${RUNNER_STEP}`),
+      "official-server",
+    ],
+    // The body's exit before the runner.
+    [
+      "exit 0 before the runner",
+      step(`X=$(cat v) exit 0\n${RUNNER_STEP}`),
+      "missing",
+    ],
+    [
+      "exit 0, echo control",
+      step(`X=$(cat v) echo exit 0\n${RUNNER_STEP}`),
+      "official-server",
+    ],
+    // keptCommands on a Floci job's test step.
+    ["Floci test step", {
+      ".github/workflows/ci.yml": GAP_RECORD +
+        prWorkflow(stepYaml("X=$(cat v) npm test"), FLOCI_SERVICE),
+    }, "floci-gap"],
+    ["Floci test step, echo control", {
+      ".github/workflows/ci.yml": GAP_RECORD +
+        prWorkflow(stepYaml("X=$(cat v) echo npm test"), FLOCI_SERVICE),
+    }, "floci-only"],
+  ];
+  for (const [label, files, expected] of cases) {
+    assertEquals(await wiring(files), expected, label);
+  }
 });

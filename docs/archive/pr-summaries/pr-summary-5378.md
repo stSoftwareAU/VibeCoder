@@ -32,7 +32,12 @@ that was wired correctly. Closes #5378.
   in `reachableCommands` still slices every word up to `commandIndex`, because
   it needs the closing word to balance.
 - An assignment whose substitution never closes leaves no command word
-  (`words.length`). This fails closed.
+  (`words.length`). This fails closed. The skip follows the words only when the
+  unbalanced `(` opens a real substitution (`$(`, `$((`, `<(`, `>(`, or an array
+  `(` right after `=`). Any other unquoted `(` in the assignment word, such as
+  the one in `X=${Y:-(}`, also leaves no command word, so
+  `X=${Y:-(} echo ${Z:-)} aws-emulator-run …` earns no credit (pre-PR verifier
+  finding).
 - Known limit, documented in the `commandIndex` doc comment and in
   `docs/BEST-PRACTICES-SCAN.md`: a substitution holding `;`, `|`, `&` or a line
   break is still split into separate commands by `shellCommands`, so
@@ -132,17 +137,33 @@ flowchart LR
     with an `echo $(cat v)` control.
   - Tests through other callers: the `cargo test` embedded route, the
     `staticStatus` prefix and the `failureExits` prefix.
+  - One `checkAwsEmulatorInCI` test through each remaining caller, each with an
+    `echo` control: the step script path (`X=$(cat v) ./ci/t.sh`), a runner
+    COMMAND script and a runner COMMAND holding `X=$(cat v) npm test`, the self
+    re-exec behind `env X=$(cat v)`, a trap handler's `exit 0`, `set +e` and
+    `trap` behind the assignment, `exit 0` before the runner, and a Floci job
+    test step.
+  - A `workflowRunsAwsEmulator` false row for
+    `X=${Y:-(} echo ${Z:-)} aws-emulator-run -- ./test.sh`, and `commandIndex`
+    rows for it, an array value and `<( … )`.
   - A test that an `exec` inside `X=$( … )` does not count as `exec`-ing the
     runner, with the plain `exec` and no-`exec` controls.
 - Added a test to `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`:
   the toolchain step is still recognised after `X=$(cat v)`, and the control
-  `X=$(cat v) echo …` is refused with `[pinned-install]`.
+  `X=$(cat v) echo …` is refused with `[pinned-install]`. Two more tests there
+  cover the runner install (`[runner-install]`) and the image's `docker build`
+  (`[container-agent-run]`) behind `X=$(cat v)`, each with an `echo` control.
+- Red check for the caller tests: with `skipAssignment` forced back to the base
+  behaviour (skip only the assignment word), all 9 non-control rows of the new
+  `checkAwsEmulatorInCI` caller test and both new workflow tests fail; the head
+  passes them.
 - At head, the four test files
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts`,
   `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`,
   `worker/deno/tests/aws_emulator_run_5109_test.ts` and
   `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` passed with
-  `deno task test:unit … < /dev/null`: 563 passed, 0 failed.
+  `deno task test:unit … < /dev/null`: 586 passed, 0 failed. Every test file
+  importing `shell_command_words` or an AWS Emulator module: 740 passed.
 - `./quality.sh < /dev/null` at head: passed. `config integration` and `checkov`
   were skipped by the gate itself.
 - Docs: I read the "AWS emulator in CI" command-word paragraph in

@@ -2227,3 +2227,31 @@ Deno.test("(gate-script) refuses a gate line whose # comment ends in a backslash
     "no gate step runs",
   );
 });
+
+// Issue #5378 (pre-PR verifier): the runner install and the image build are
+// read after an `X=$(cat v)` assignment; an `echo` control leaves each an
+// argument.
+Deno.test("(b) accepts the runner install after X=$(cat v); echo control refused (Issue #5378)", () => {
+  expectFindings(
+    mutate([RUNNER_INSTALL_ANCHOR, `X=$(cat v) ${RUNNER_INSTALL_ANCHOR}`]),
+    [],
+  );
+  expectFindings(
+    mutate([RUNNER_INSTALL_ANCHOR, `X=$(cat v) echo ${RUNNER_INSTALL_ANCHOR}`]),
+    ["[runner-install] no step installs"],
+  );
+});
+
+Deno.test("(container-agent-run) accepts docker build after X=$(cat v); echo control refused (Issue #5378)", () => {
+  const problemsWith = (prefix: string) =>
+    checkContainerBuildRunsAwsEmulator(parseYaml(
+      mutateText(CONTAINER_BUILD, [
+        "          " + BUILD_TAG,
+        "          " + prefix + BUILD_TAG,
+      ]),
+    ));
+  assertEquals(problemsWith("X=$(cat v) "), []);
+  const control = problemsWith("X=$(cat v) echo ");
+  assertEquals(control.length, 1, JSON.stringify(control));
+  assert(control[0]?.startsWith("[container-agent-run]"), control[0]);
+});

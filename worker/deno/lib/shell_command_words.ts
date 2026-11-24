@@ -216,7 +216,8 @@ const TIMEOUT_VALUE_OPTIONS = new Set([
  * `env` operand) whose value opens a `$( … )`, `$(( … ))` or backtick
  * substitution split at blanks is skipped together with the words up to the
  * one that closes it (quote-aware), so `X=$(cat v) cmd` finds `cmd`; one never
- * closed in the command's words leaves no command word (`words.length`). A
+ * closed in the command's words leaves no command word (`words.length`), and
+ * so does an unclosed `(` that opens no substitution (`X=${Y:-(} cmd`). A
  * substitution holding a `;`, `|`, `&`, `&&`, `||` or newline is still split
  * into separate commands by {@link shellCommands}, so `X=$(a; b) cmd` finds
  * `b)`. The scan stops at an option word (`-i`, `--split-string=echo`):
@@ -250,6 +251,9 @@ function skipAssignment(
 ): number {
   const first = words[start] ?? "";
   let open = parenBalance(first).delta;
+  // A `(` that opens no substitution (`${Y:-(}`) is not a span the shell
+  // closes later, so nothing after it is read as the command (Issue #5378).
+  if (open > 0 && hasPlainOpenParen(first)) return words.length;
   let ticks = backtickCount(first);
   let i = start + 1;
   while ((open > 0 || ticks % 2 === 1) && i < words.length) {
@@ -817,6 +821,46 @@ function parenBalance(word: string): { delta: number; endsClose: boolean } {
     }
   }
   return { delta, endsClose: quote === "" && endsClose };
+}
+
+/**
+ * Whether an assignment word holds an unquoted, unescaped `(` that opens no
+ * substitution: not `$(`, `$((`, `<(`, `>(` or the `(` of an array value
+ * right after the first `=` (`X=(a b)`).
+ */
+function hasPlainOpenParen(word: string): boolean {
+  let quote = "";
+  let prev = "";
+  let prev2 = "";
+  let valueStart = -1;
+  for (let i = 0; i < word.length; i++) {
+    const ch = word[i] ?? "";
+    if (quote !== "") {
+      if (ch === "\\" && quote === '"') i++;
+      else if (ch === quote) quote = "";
+      prev2 = prev;
+      prev = "";
+      continue;
+    }
+    if (ch === "\\") {
+      i++;
+      prev2 = prev;
+      prev = "";
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === "=" && valueStart < 0) {
+      valueStart = i + 1;
+    } else if (ch === "(") {
+      const opens = prev === "$" || prev === "<" || prev === ">" ||
+        i === valueStart || (prev === "(" && prev2 === "$");
+      if (!opens) return true;
+    }
+    prev2 = prev;
+    prev = ch;
+  }
+  return false;
 }
 
 /** The backticks of a word outside single quotes and not backslash-escaped. */
