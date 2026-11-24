@@ -11,6 +11,7 @@ import {
   COOLDOWN_DEFAULTS,
   type CooldownConfig,
   escalatingCooldownSeconds,
+  isHeldByCooldown,
   isIssueInCooldown,
   loadState,
   recordIssueCooldown,
@@ -528,4 +529,92 @@ Deno.test("cooldown - concurrent recordIssueCooldown from two slots both persist
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
+});
+
+// ============================================================================
+// isHeldByCooldown (Issue #5376)
+// ============================================================================
+
+const HELD_NOW = 1_800_000_000;
+const HOUR = 3600;
+
+function kinded(ageSeconds: number, issueNumber = 7) {
+  return {
+    repo: "org/repo",
+    issueNumber,
+    timestamp: HELD_NOW - ageSeconds,
+    kind: "non_transient" as const,
+  };
+}
+
+Deno.test("isHeldByCooldown - one failure holds for 2 h, not beyond", () => {
+  const opts = { escalatingOnly: true, now: HELD_NOW };
+  assertEquals(
+    isHeldByCooldown({ entries: [kinded(HOUR)] }, 600, "org/repo", 7, opts),
+    true,
+  );
+  assertEquals(
+    isHeldByCooldown(
+      { entries: [kinded(2 * HOUR + 1)] },
+      600,
+      "org/repo",
+      7,
+      opts,
+    ),
+    false,
+  );
+});
+
+Deno.test("isHeldByCooldown - a second failure steps to the 6 h window", () => {
+  const opts = { escalatingOnly: true, now: HELD_NOW };
+  assertEquals(
+    isHeldByCooldown(
+      { entries: [kinded(10 * HOUR), kinded(3 * HOUR)] },
+      600,
+      "org/repo",
+      7,
+      opts,
+    ),
+    true,
+  );
+  assertEquals(
+    isHeldByCooldown(
+      { entries: [kinded(10 * HOUR), kinded(6 * HOUR + 1)] },
+      600,
+      "org/repo",
+      7,
+      opts,
+    ),
+    false,
+  );
+});
+
+Deno.test("isHeldByCooldown - a flat entry holds by default, not when escalatingOnly", () => {
+  const state = {
+    entries: [{ repo: "org/repo", issueNumber: 7, timestamp: HELD_NOW - 60 }],
+  };
+  assertEquals(
+    isHeldByCooldown(state, 600, "org/repo", 7, { now: HELD_NOW }),
+    true,
+  );
+  assertEquals(
+    isHeldByCooldown(state, 600, "org/repo", 7, {
+      escalatingOnly: true,
+      now: HELD_NOW,
+    }),
+    false,
+  );
+});
+
+Deno.test("isHeldByCooldown - another issue's entry never holds this issue", () => {
+  assertEquals(
+    isHeldByCooldown(
+      { entries: [kinded(60, 8)] },
+      600,
+      "org/repo",
+      7,
+      { now: HELD_NOW },
+    ),
+    false,
+  );
 });

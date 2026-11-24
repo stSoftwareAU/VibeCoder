@@ -326,6 +326,45 @@ export async function recordIssueCooldown(
 }
 
 /**
+ * The cooldown decision over an already-loaded state (Issue #5376).
+ *
+ * `escalatingOnly` ignores flat (unkinded) entries, so only a recorded failure
+ * holds the issue. `now` is in Unix seconds.
+ */
+export function isHeldByCooldown(
+  state: CooldownState,
+  issueRetryCooldown: number,
+  repo: string,
+  issueNumber: number,
+  options: { escalatingOnly?: boolean; now?: number } = {},
+): boolean {
+  const now = options.now ?? nowSeconds();
+
+  // Find the most recent entry for this repo/issue
+  const matching = state.entries
+    .filter((e) =>
+      e.repo === repo && e.issueNumber === issueNumber &&
+      (!options.escalatingOnly || isCooldownFailureKind(e.kind))
+    )
+    .sort((a, b) => b.timestamp - a.timestamp);
+
+  if (matching.length === 0) return false;
+
+  const latest = matching[0]!;
+  // Escalating window for ladder-class failures (Issue #4304, #1949): the
+  // more consecutive failures, the longer the issue stays off the menu.
+  const duration = isCooldownFailureKind(latest.kind)
+    ? Math.max(
+      issueRetryCooldown,
+      escalatingCooldownSeconds(
+        countRecentEscalatingFailures(state, repo, issueNumber, now),
+      ),
+    )
+    : issueRetryCooldown;
+  return (now - latest.timestamp) < duration;
+}
+
+/**
  * Check if an issue is currently in cooldown.
  *
  * Returns true if the issue should be skipped.
@@ -336,27 +375,7 @@ export async function isIssueInCooldown(
   issueNumber: number,
 ): Promise<boolean> {
   const state = await loadState(config.workDir, config.issueRetryCooldown);
-  const now = nowSeconds();
-
-  // Find the most recent entry for this repo/issue
-  const matching = state.entries
-    .filter((e) => e.repo === repo && e.issueNumber === issueNumber)
-    .sort((a, b) => b.timestamp - a.timestamp);
-
-  if (matching.length === 0) return false;
-
-  const latest = matching[0]!;
-  // Escalating window for ladder-class failures (Issue #4304, #1949): the
-  // more consecutive failures, the longer the issue stays off the menu.
-  const duration = isCooldownFailureKind(latest.kind)
-    ? Math.max(
-      config.issueRetryCooldown,
-      escalatingCooldownSeconds(
-        countRecentEscalatingFailures(state, repo, issueNumber, now),
-      ),
-    )
-    : config.issueRetryCooldown;
-  return (now - latest.timestamp) < duration;
+  return isHeldByCooldown(state, config.issueRetryCooldown, repo, issueNumber);
 }
 
 /**

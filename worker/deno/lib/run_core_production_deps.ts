@@ -296,6 +296,7 @@ import {
   recordIssueCooldown as cooldownRecordFn,
   recordWorkflowScopeRefusal,
 } from "./cooldown_state.ts";
+import { prepareLabelRouteFailureCooldown } from "./label_route_failure_cooldown.ts";
 import {
   enforceTokenScopeFleetBound,
   isParkedForMissingWorkflowScope,
@@ -2086,18 +2087,34 @@ export async function createProductionRunCoreDeps(
     /**
      * Apply the `work-on` new-work eligibility gates (Issue #937).
      *
-     * The built-in label routes answer an issue and remove their own label,
-     * so re-dispatch stops itself. A custom label route raises a PR and
-     * leaves its label in place, so without these gates the next cycle
-     * re-ran the whole implementation pipeline against the still-open PR.
+     * The built-in label routes answer an issue and remove their own label
+     * on success, so re-dispatch stops itself; a failed planning or question
+     * run keeps its label and is paced by `failureCooldown` instead. A custom
+     * label route raises a PR and leaves its label in place, so without these
+     * gates the next cycle re-ran the whole implementation pipeline against
+     * the still-open PR.
      */
     gateNewWork = false,
+    /**
+     * Hold and record the escalating failure cooldown for a route whose
+     * processor records a failure through `handleIssueFailure` (Issue #5376)
+     * — planning and question. A failed run keeps its label, so without it
+     * the next cycle re-runs the agent.
+     */
+    failureCooldown = false,
   ): Promise<PriorityHandlerResult> {
     // The retry cooldown this run holds over an issue, plus the issues this
     // process has already worked — the same set the claim scan filters on
     // (Issue #655). Loaded only for a gated scan; the label-removing routes
     // never took it and must keep their behaviour.
     const runLocalHold = gateNewWork ? await loadRunLocalHolds() : undefined;
+    const routeFailureCooldown = failureCooldown
+      ? await prepareLabelRouteFailureCooldown({
+        cooldownConfig,
+        workerDeps,
+        logger,
+      })
+      : undefined;
 
     const result = await findIssuesByLabel(config, label, {
       githubUser,
@@ -2105,6 +2122,10 @@ export async function createProductionRunCoreDeps(
       cache: issueCache,
       timelineCache,
       timelineBatchRegistry,
+      ...(routeFailureCooldown
+        ? { isIssueInCooldown: routeFailureCooldown.isHeld }
+        : {}),
+      // The gated hold is a superset, so it wins when both are set.
       ...(gateNewWork
         ? {
           gateNewWork: true,
@@ -2136,7 +2157,11 @@ export async function createProductionRunCoreDeps(
 
     const issueData: IssueData = await fetchIssueData(repo, issueNumber);
     const ghClient = createGitHubClient(logger);
-    const processorDeps = { ghClient, logger, deps: workerDeps };
+    const processorDeps = {
+      ghClient,
+      logger,
+      deps: routeFailureCooldown?.workerDeps ?? workerDeps,
+    };
 
     const ctx: IssueContext = {
       repo,
@@ -4385,6 +4410,8 @@ export async function createProductionRunCoreDeps(
         config.planningLabel,
         processIssuePlanning,
         opts?.deadlineEpochMs,
+        false,
+        true,
       );
       return { ok: true, value: result };
     },
@@ -4443,6 +4470,9 @@ export async function createProductionRunCoreDeps(
       const result = await findAndProcessByLabel(
         config.questionLabel,
         processIssueQuestion,
+        undefined,
+        false,
+        true,
       );
       return { ok: true, value: result };
     },
