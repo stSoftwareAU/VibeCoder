@@ -191,21 +191,15 @@ guessing.
    - **A new case re-reads the text it now reaches.** When a change
      sends a new case to text that already exists — a widened
      condition, a new arm or allowed value, a newly called function or
-     component, or a new state on a screen that already exists (an
-     earlier date, a paged or partial load, a fallback, an empty or
-     error case) — list every message the screen
-     already renders — notes, empty-state text, warnings, badges,
-     labels — and say for each whether it is still true in the new
-     state. Reword, hide or mark each one that is not, so the new state
-     never shows a message written for another state, and add a test
-     that renders the new state and asserts each message that differs
-     in that state, or is absent from it. A test that renders only the
-     new rows stays green while an old message is wrong: an empty state
-     reading "Nothing happened in this period." above a new load-older
-     control, or today's live badge beside an earlier date's figures. A
-     pre-existing message left unchanged that is false or misleading in
-     the new state is a blocking self-review finding; list the messages
-     checked in the PR summary's Test Plan (Issue #3259).
+     component, or a new state on a screen that already exists — follow
+     the new case to each place that shows, posts or prints something
+     for it, and read what that place says. Reword, hide or mark any
+     text that is false or misleading for the new case, and add a test
+     that puts the new case through and asserts each text that differs
+     for it, or is absent from it. A test that checks only the new
+     behaviour stays green while an old message is wrong. Pre-existing
+     text left unchanged that is false or misleading for the new case is
+     a blocking self-review finding (Issues #3259, #3877).
 2. Do not remove, skip or weaken existing tests merely to make the gate pass.
    The restriction is against a clean build obtained by deleting useful tests,
    weakening assertions, adding skips or lowering quality thresholds. A
@@ -1458,15 +1452,7 @@ The file MUST contain:
    required behaviour input is explicit in the type rather than silently
    disabled by an omitted parameter or field, and the affected entry points
    are judged by their observable behaviour, not by direct helper coverage
-   alone. Likewise, when a change sends a new case
-   to text that already exists it re-reads the text it now reaches
-   (see **A new case re-reads the text it now reaches** under
-   Instructions): the Test Plan lists every note,
-   empty-state text, warning, badge and label the screen already
-   renders, each marked still true or changed for the new state, with a
-   test asserting each one that differs; a pre-existing message left
-   false or misleading in the new state is a blocking self-review
-   finding. Likewise, review every meaningful outcome of a branch the diff adds
+   alone. Likewise, review every meaningful outcome of a branch the diff adds
    using the guidelines' **Every outcome of a branch you add needs a test that
    reaches it** rule. Use inputs reaching the independent acceptance and refusal
    cases of compound conditions. Existing tests count; an outcome no test

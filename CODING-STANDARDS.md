@@ -996,20 +996,13 @@ does not establish production wiring (Issues #3253, #5205).
 **A new case re-reads the text it now reaches.** When a change sends a new
 case to text that already exists — a widened condition, a new arm or allowed
 value, a newly called function or component, or a new state on a screen that
-already exists (an earlier date, a paged or partial load, a fallback, an empty
-or error case) — list every message the screen already renders: notes,
-empty-state text, warnings, badges and labels. For each one, say whether it
-is still true in the new state. If it is not, reword it, hide it or mark it,
-so the new state never shows a message written for another state. Add a test that
-renders the new state and asserts each message that differs in that state,
-or is absent from it. A test that renders only the new rows stays green
-while an old message is wrong, so include existing messages whose meaning
-the new state changes. A pre-existing message left unchanged that is false
-or misleading in the new state is a blocking self-review finding. This is
-the rendered-screen counterpart of the bullet under **A Code Change Owes
-a Docs Change** below on a change that alters what an existing state
-means. List the messages checked in the PR summary's Test Plan
-(Issue #3259).
+already exists — follow the new case to each place that shows, posts or prints
+something for it, and read what that place says. Reword, hide or mark any text
+that is false or misleading for the new case. Add a test that puts the new case
+through and asserts each text that differs for it, or is absent from it. A test
+that checks only the new behaviour stays green while an old message is wrong.
+Pre-existing text left unchanged that is false or misleading for the new case
+is a blocking self-review finding (Issues #3259, #3877).
 
 **Changing what a shared helper returns, refuses or finds changes every
 caller.** Before a helper that other code already calls starts returning,
