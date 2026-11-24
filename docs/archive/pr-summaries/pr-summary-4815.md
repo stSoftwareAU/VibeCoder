@@ -2,180 +2,205 @@
 
 ## Summary
 
-Partial mitigation for #4815. An agent run now terminates the tagged processes
-it leaves running once the agent has exited, within a bounded number of KILL
-rounds; survivors and skipped pids are reported, not signalled. This stops a
-verified leak: a detached `( … & )` job is re-parented to PID 1 at once, so it
-never appears in the descendant snapshot (Issue #4382), and on a normal exit the
-collector is not run at all. Nothing in the worker bounded such a job before.
+The public hard-kill facts now carry a `**Last liveness tick:**` line. It holds
+the guest's last-known `MemAvailable` and its memory and CPU pressure averages,
+read from the newest `[liveness] run-pressure` or `[liveness] tick=` line in the
+worker log tail that the evidence record already holds. Every kill posted on
+this issue has `Guest probe: did not answer`, so `Guest memory` and
+`Guest pressure` read `not available`. The leading explanation for a frozen
+guest, memory starvation during the `quality gate` or the `pre-PR verifier`,
+could therefore never be confirmed or ruled out from the posted facts.
 
-It is not shown that this leak caused the completion wedge. The three archived
-facts posted on the issue establish an unresponsive guest and the last logged
-step, with guest memory and pressure unavailable. They do not establish that the
-agent had exited, that anything was left running, or that the guest was starved.
-The leftover build is a cause that fits those facts, no more. The diagnosis and
-repair of the completion wedge stay outstanding, which is why this summary says
-`Part of #4815` and does not close it.
+The end-of-cycle `[liveness] tick=` line runs only once every 20 loop cycles
+(about every forty minutes) and never while an issue run is in flight, so on its
+own it would show a reading from before the wedged run was claimed. This PR
+therefore also wraps the production `processIssue` in `withRunPressureTicks`:
+each issue run logs `[liveness] run-pressure` followed by the same
+`mem_available_mib=… pressure_memory=… pressure_cpu=…` fields when it starts and
+every minute until it settles. The worker log lives on the host log dir, so the
+last line written before the freeze survives a guest that stops answering.
 
-Every agent spawn now carries a unique `VIBE_AGENT_SPAWN_TAG` in its
-environment. After the agent exits, by any path, `reapAgentLeftovers` in
-`worker/deno/lib/agent_leftover_reaper.ts` finds each same-user process whose
-`/proc/<pid>/environ` still holds that tag, sends TERM, then KILL after the
-runner's kill-after bound. `runClaudeWithTimeoutBody` in
-`worker/deno/lib/claude_runner.ts` calls it after the descendant tracker settles
-on the normal path, and again in the catch path, so a throw cannot abandon a
-live agent or its leftovers.
-
-Review round 4 closed two gaps in the first version: a pid reused by an untagged
-process before the identity was captured could be signalled, and a tagged child
-started during the pass was never considered.
+This adds evidence; it does not repair the wedge. The cause is still not
+established, so this PR does not close the issue. Part of #4815.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The hard-kill facts posted on this issue name the completion phase, the
-  `pre-PR verifier` or `agent turn` as the last step logged, an hour of silence
-  before capture, and a guest probe that did not answer. They do not say whether
-  the agent had exited or whether anything was left running
-- PR #5312 showed the guest VM itself stopped answering and that the launcher's
-  early silent-guest reap (#5161) only shortens such a hang. Guest memory read
-  `not available`, so the cause was left open. A heavy build or watcher the
-  agent left behind is one cause that fits the posted kills, and nothing in the
-  worker bounded it. This PR removes that one leak and does not claim it was the
-  cause; #5161 still bounds any other hang. On a recurrence, the
-  `AGENT_LEFTOVERS_COLLECTED` and `AGENT_LEFTOVERS_UNCHECKED` events say whether
-  a leftover was found, which is the evidence that would connect the leak to a
-  wedge
-- A detached job is the case nothing collected before: it leaves the agent's
-  process tree at once. The environment is the one thing it keeps, so the tag is
-  the only reliable way to find it again
-- The tag is set on the child environment only (`baseEnv`), before the gh guard
-  shim and the pre-push hook copy it. The worker's own later subprocesses, such
-  as the completion phase's git and gh calls, never carry it and are never
-  reaped
+- The issue asks to "make the necessary redacted cause/last-step evidence
+  available to the automated diagnostic path". The last step is already posted
+  (PR #4819). The missing piece is the guest's state during the run, up to a
+  minute before it froze, and the probe taken at capture time can never supply
+  it from a frozen guest
+- Reading the tick from the existing `workerLogTail` field needs no change to
+  the persisted evidence file, so evidence files written by older workers are
+  read unchanged. A file whose tail has no tick reads `not in the log tail`
 
 ### Essential Design Decisions
 
-- Linux only. The scan runs a small `sh` script that reads `/proc/<pid>/environ`
-  through `grep -z -x -F`, because Deno refuses that file under `--allow-read`
-  alone. The tag is passed as an argument, never interpolated, and only the UUID
-  shape `newAgentSpawnTag` produces is accepted
-- Each pid is fingerprinted (`captureProcessIdentity`), and then its tag is read
-  again for that same pid (`hasTag`), so a pid reused between the scan and the
-  fingerprint holds an untagged process and is skipped instead of being
-  fingerprinted as ours. The fingerprint is re-checked (`isSameProcess`)
-  immediately before every TERM and KILL. A pid with no fingerprint, no tag or a
-  changed fingerprint is never signalled and is reported as skipped
-- The pass rescans for tagged processes while it runs: every second of the TERM
-  wait, then in KILL rounds until a rescan finds nothing new and nothing is left
-  to KILL, at most four rounds. A child a leftover starts while it handles TERM
-  is therefore terminated, each new pid going through the same fingerprint, tag
-  and re-check steps. If new ones are still appearing at the bound, the newest
-  are reported as survivors and the warning says cleanup is incomplete
-- The worker's own pid is never signalled. Signals go to single pids, never
-  groups
-- The reaper never throws. A failed scan logs its cause and emits
-  `AGENT_LEFTOVERS_UNCHECKED`. A signal, identity or probe that throws stops the
-  pass and lists every pid not proven gone, a failed rescan included. A
-  successful pass emits `AGENT_LEFTOVERS_COLLECTED`
-- `VIBE_AGENT_SPAWN_TAG` is registered in `vibe_env_registry.ts` as launch
-  plumbing
+- The in-run line is logged by `withRunPressureTicks` in
+  `worker/deno/lib/liveness_guard.ts`, around the production `processIssue` in
+  `worker/deno/lib/run_core_production_deps.ts`, so every lane's run is covered
+  without touching `run_core.ts`. It logs once at the start, then every
+  `RUN_PRESSURE_INTERVAL_MS` (60 s). A reading still pending when the timer
+  fires skips that beat, so a stuck `cat` cannot pile up readers. The timer is
+  cleared when the run settles, and a failed reading never fails the run
+- The writers and the parser share the marker constants `LIVENESS_TICK_MARKER`
+  and `RUN_PRESSURE_MARKER`, both exported from `liveness_guard.ts`
+
+- Only digits and fixed words leave the tick line, the same rule as the sibling
+  figures in `worker/deno/lib/hard_kill_guest_facts.ts`. Each figure is captured
+  by a bounded pattern behind a fixed literal (`mem_available_mib=`,
+  `pressure_memory=`, `pressure_cpu=`), and the line is cut to 2000 characters
+  first. Hook fields and any other text on the line are never copied
+- The newest line with either marker in the tail wins, and its own log time is
+  appended as `(logged <time>Z)`, so a reader can see how stale the figures are
+  next to the `Last log time` line
+- The new line sits directly after `**Guest pressure:**` in `hardKillFactLines`,
+  so the issue body and the facts backfill both carry it. The shorter recurrence
+  follow-up line is unchanged, because the backfill posts the full facts for
+  each recurrence
 
 ### Undiscoverable Facts
 
-None. The raw evidence stays on the host in `~/logs/hard-kill-archive/`; this
-fix rests only on the redacted facts already posted on the issue.
+- The fact reads the 200-line worker log tail. If more than 200 lines are logged
+  after the last `[liveness] run-pressure` line and before the freeze, the fact
+  falls back to an older tick or reads `not in the log tail`
+
+- The raw evidence for all four posted kills is in `~/logs/hard-kill-archive/`
+  on GRQ-3 and was not readable from this host. The backfill has already posted
+  facts for those archived files, so this line appears from the next recurrence
+  on
 
 ## Evidence
 
-Backend-only change; verified by tests, including two that drive real processes
-on Linux.
+Backend only; no UI files. Verified by unit tests.
 
 ```mermaid
 flowchart LR
-    S[runner spawns agent] -->|env VIBE_AGENT_SPAWN_TAG| A[agent]
-    A -->|"( build & )"| D[detached job, re-parented to PID 1]
-    A --> X[agent exits or the runner throws]
-    X --> R[reapAgentLeftovers]
-    R -->|scan /proc environ for the tag| D
-    R -->|fingerprint, tag re-read, TERM, rescan, KILL| K[leftover terminated]
-    K --> C[completion phase runs on a responsive guest]
+    R["issue run in flight: [liveness] run-pressure mem_available_mib=… pressure_*=… at start and every minute"] --> L[worker log on the host log dir]
+    T["end of every 20th cycle: [liveness] tick=… with the same fields"] --> L
+    G[guest freezes] --> W[launcher watchdog reaps]
+    W --> E["evidence: workerLogTail (200 lines)"]
+    L --> E
+    E --> F["hardKillLastLivenessTick: digits and fixed words only"]
+    F --> I["issue facts: Last liveness tick"]
 ```
 
-- Docs: `docs/INTERNALS.md` describes the spawn tag, the reaper, its identity
-  checks and both events, next to the orphan collector it complements
-- Coverage ledger: `docs/audits/lib-sweep-coverage/top-up-4815.json` lists the
-  new module
-- Issue numbers this diff cites: #4815 (this issue), #4382 (the descendant
-  collector it complements), #5312 and #5161 (the earlier diagnosis and the
-  silent-guest reap)
+- Producer read: `formatLivenessPressureFields` in
+  `worker/deno/lib/liveness_guard.ts` writes the fields for both lines. The
+  end-of-cycle tick is logged in `worker/deno/lib/run_core_production_deps.ts`
+  under `livenessTick % LIVENESS_CHECK_CADENCE === 1`
+  (`LIVENESS_CHECK_CADENCE = 20`, `worker/deno/lib/run_core.ts`), and the in-run
+  line is logged by `withRunPressureTicks`. The tests drive the real writer
+  (`withRunPressureTicks` through the real `createLogger`, and the production
+  `processIssue`), not a hand-placed line
+- Docs: the **Filing.** bullet in `docs/CALLBACKS.md` names the new figure, the
+  two lines it reads (and that a run logs the first every minute), and its
+  `not in the log tail` value. `docs/TROUBLESHOOTING.md` and
+  `docs/workflows/resilience-and-concurrency.md` describe that field for operators. The module comments of
+  `worker/deno/lib/hard_kill_guest_facts.ts` and
+  `worker/deno/lib/hard_kill_report.ts` now count seven figures, and the list of
+  fact lines in `worker/deno/lib/hard_kill_facts_backfill.ts` names the new line
+- Issue numbers this diff cites: #4815 (this issue)
 
-## Test Plan
+## Reproduction
 
-- New `worker/deno/tests/agent_leftover_reaper_4815_test.ts`, 19 tests (run
-  count at the head, below):
-  - terminates tagged processes, spares its own pid, names them in the warning
-  - KILLs a pid that ignores TERM after the wait, and names a survivor that
-    outlives KILL
-  - a scan failure logs its cause and signals nothing; nothing tagged means no
-    signal and no warning; an unsupported platform never scans; a malformed tag
-    is refused before any scan
-  - a signal that throws stops the pass and names what was done
-  - a pid replaced between TERM and KILL is never KILLed; a pid with no identity
-    is never signalled
-  - a tagged pid replaced by an untagged process before the identity is captured
-    is never signalled and stays alive, beside a genuine leftover that is
-    terminated; when every found pid was replaced, nothing is signalled and no
-    leftover is claimed
-  - a tagged child started while the parent handles TERM is terminated, an
-    unrelated process survives; a child born during KILL is found by the next
-    round; a tree that keeps spawning is bounded and reported as incomplete; a
-    failed rescan stops the pass and lists what is unproven
-  - Linux, real processes: the default tag read is true for a tagged process and
-    false for another tag, an untagged process and a missing pid
-  - Linux, real processes: a detached tagged `sleep` is terminated while an
-    untagged control keeps running
-  - Linux, real runner: a stub agent that leaves `( sleep … & )` behind has it
-    terminated by `runClaudeWithTimeout`
-- `worker/deno/tests/claude_runner_killed_test.ts`: the drain-cap test (#325)
-  disables the reaper, because it deliberately leaves a descendant holding
-  stdout and asserts only the drain cap
-- Branch outcomes: every arm the review round added is reached by a test above:
-  tag read false (skipped, nothing signalled), tag read true (signalled); a
-  rescan finding a new pid during the TERM wait or a KILL round; a clean rescan
-  ending the pass; a rescan that fails; the KILL-round bound exhausted
-- Red on the previous head: with `worker/deno/lib/agent_leftover_reaper.ts`
-  restored from commit `6ebe94d2a` (before this round) and the new tests run
-  without type checking, the six new fake-driven tests fail (the replacement is
-  sent TERM; the child born during TERM, the child born during KILL and the
-  respawning tree are never reaped; the rescan failure is not reported) and the
-  other twelve pass. The default tag read test needs the new `hasTag` and is not
-  part of that run
-- At the head: `deno test` on `tests/agent_leftover_reaper_4815_test.ts`,
-  `tests/claude_runner_killed_test.ts` and `tests/vibe_env_registry_test.ts`: 39
-  passed, 0 failed; the reaper test file alone: 19 passed, 0 failed. `deno lint`
-  and `deno check` on the changed files: clean. `deno fmt --check` on the
-  changed TypeScript files: clean
-- Not done or not checked: the full `./quality.sh` (not run, for run budget; CI
-  runs it on this PR); a live fleet host, so no connection between the leak and
-  the incident is shown. A recurrence on a fleet host would be that evidence
+- **symptom** — every kill posted here shows `Guest memory: not available` and
+  `Guest pressure: not available`, so the facts cannot tell a starved guest from
+  any other freeze
+- **status** — `partial` — reason: the wedge itself was not reproduced (its
+  evidence is on GRQ-3). The new tests went red before the fact existed: the
+  test file failed type-check with
+  `TS2305 … has no exported member
+  'hardKillLastLivenessTick'`. After the
+  change they pass
+- **regression test** —
+  `worker/deno/tests/hard_kill_guest_facts_test.ts::a reading taken during the run is what the fact reports (Issue #4815)`
+  and
+  `worker/deno/tests/run_pressure_wiring_4815_test.ts::production processIssue logs the run pressure line while the run is in flight (Issue #4815)`.
+  Red-checked: with the parser limited to the `[liveness] tick=` marker, the
+  first fails with `MemAvailable 4000 MiB …` (the pre-claim tick). With the
+  `withRunPressureTicks` wrap removed from `processIssue`, the second fails
 
 ## Acceptance Criteria
 
-The issue's remaining scope names no criteria heading, so each requirement is
-quoted from its words.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **partial** — "Complete the issue through an implemented fix and automated
-  regression/recovery evidence" — reason: the detached-process leak is fixed and
-  covered by automated tests, but no test or log connects it to the completion
-  wedge, so it is a mitigation of a verified leak, not a shown fix of the
-  incident
+- **met** — "preserve the existing private diagnostic boundary" — evidence:
+  `worker/deno/tests/hard_kill_guest_facts_test.ts::tick text never leaks and malformed numbers are dropped (Issue #4815)`
+  — reviewer: met
+- **partial** — "make the necessary redacted cause/last-step evidence available
+  to the automated diagnostic path" — evidence:
+  `worker/deno/tests/hard_kill_guest_facts_test.ts::a reading taken during the run is what the fact reports (Issue #4815)`
+  — reviewer: partial — reason: this adds the guest's in-run memory and
+  pressure, not the cause, and only recurrences after this change carry it
 - **missing** — "use a bounded replay or the next applicable recurrence to
-  diagnose and repair the completion failure" — reason: the cause of the guest
-  that stopped answering is still undiagnosed; the new events would show a
-  leftover on a recurrence, and no live fleet host has been checked for one
+  diagnose and repair the completion failure" — reviewer: missing — reason: the
+  wedge's raw evidence is on GRQ-3 and no recurrence yet carries an in-run
+  reading, so the cause is not diagnosed and a repair now would be speculative;
+  this PR adds the reading the next recurrence needs
+- **met** — "Do not publish raw private repository logs here." — evidence:
+  `worker/deno/tests/hard_kill_guest_facts_test.ts::hostile tick lines return promptly with a fixed result (Issue #4815)`
+  — reviewer: met
+- **missing** — "A missing evidence file on the claiming host, repeated
+  deferral, or exhausted retry counter alone must not turn this implementation
+  issue into `needs-human`. Keep automatic recheck/resumption and independent
+  eligible work moving." — reviewer: missing — reason: a constraint on how the
+  issue is handled; the diff does not touch deferral, retry or label logic, and
+  does not break it
+- **partial** — "Complete the issue through an implemented fix and automated
+  regression/recovery evidence; no supervised test or manual acceptance step is
+  required." — evidence:
+  `worker/deno/tests/run_pressure_wiring_4815_test.ts::production processIssue logs the run pressure line while the run is in flight (Issue #4815)`
+  — reviewer: partial — reason: the new evidence path is tested automatically,
+  but there is no fix for the wedge, so no regression evidence for it
+- **met** — "Do not repeat the instrumentation work or close the incident merely
+  because that PR merged." — evidence: this summary says `Part of #4815`; the
+  new fact is separate from the last-step label of #4819 — reviewer: met
 
-Part of #4815.
+## Test Plan
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+- New, in `worker/deno/tests/hard_kill_guest_facts_test.ts`, the section "The
+  last liveness tick in the worker log tail (Issue #4815)":
+  - the newest tick wins over an older one, and the literal figures and log time
+    are read back
+  - a tail with no tick, and an `unavailable: …` tail, read
+    `not in the log tail`
+  - `mem_available_mib=unavailable` with unreadable pressure gives
+    `MemAvailable unavailable`
+  - a tick carrying a path and a `ghp_` token in other fields, plus the
+    malformed `avg10=1234.5` and `avg10=9.999`, gives only `MemAvailable 77 MiB`
+    and none of that text. The memory figure is the allowed control
+  - a tick that is only garbage gives `no readable figures`
+  - hostile lines (200,000 `a` characters, and 200,000 commas after
+    `pressure_memory=`) return the exact expected value
+  - the tick line built with the liveness guard's own
+    `formatLivenessPressureFields` and `collapseProcPressureText` is read back
+  - "a reading taken during the run is what the fact reports": a pre-claim
+    `[liveness] tick=` line with a healthy reading, then a claim line, then
+    `withRunPressureTicks` logging through the real `createLogger`. The fact
+    reports the last in-run reading (`MemAvailable 120 MiB`, memory
+    `avg10=85.25`), and every run line comes after the claim
+  - the run line is logged at the start, a pending reading skips later beats,
+    and a reading that settles after the run is not logged
+  - a failed reading does not fail the run and logs nothing
+- New, `worker/deno/tests/run_pressure_wiring_4815_test.ts`: the production
+  `createProductionRunCoreDeps(...).deps.processIssue` logs a
+  `[liveness] run-pressure` line while the run is held inside its first `gh`
+  call
+- Edited, `worker/deno/tests/hard_kill_report_test.ts`, "the body carries the
+  guest and host figures under the last log time". The expected fact list gains
+  `**Last liveness tick:** not in the log tail` (that fixture has no tick), and
+  the blank-line check moves down by one. Every earlier expected line is kept
+- New, same file: "a liveness tick in the log tail shows in the body (Issue
+  #4815)" drives `formatHardKillBody` and asserts the new line's value
+- Results on the head: from `worker/deno`,
+  `deno test --allow-all tests/hard_kill_guest_facts_test.ts
+  tests/hard_kill_report_test.ts tests/hard_kill_facts_backfill_4815_test.ts
+  tests/run_pressure_wiring_4815_test.ts tests/liveness_guard_test.ts
+  tests/liveness_pressure_4225_test.ts tests/run_core_liveness_test.ts
+  tests/custom_label_dispatch_test.ts`
+  passed 168 of 168, with stdin from `/dev/null`. `deno fmt` and `deno lint` are
+  clean on the changed files. The worker re-runs `./quality.sh` over this tree
+  before the PR is raised

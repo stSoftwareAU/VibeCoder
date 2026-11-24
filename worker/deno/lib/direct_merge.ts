@@ -279,8 +279,8 @@ export interface CheckSuite {
   conclusion: string | null;
   /**
    * Check runs this suite created (`latest_check_runs_count` on REST,
-   * `checkRuns.totalCount` on GraphQL). A suite with runs is already judged
-   * through the latest-run filter, so only a count of zero is a suite signal
+   * `checkRuns.totalCount` on GraphQL). A completed suite with runs is judged
+   * through the latest-run filter, so only a count of zero is a suite failure
    * (Issue #4347).
    */
   check_run_count: number;
@@ -590,9 +590,10 @@ export const PASSING_CONCLUSIONS = new Set(["success", "skipped", "neutral"]);
  * the Actions policy rejects, is recorded that way. A suite that did create
  * runs is already judged through the check-run rollup, which keeps only the
  * latest run of each name, so an earlier failed or cancelled run of the same
- * workflow must not fail the commit again. Suites from other apps, and suites
- * that have not finished, do not count. Status and conclusion are compared
- * case-folded so this agrees with the review gate's copy.
+ * workflow must not fail the commit again. Unfinished suites do not count as
+ * failures; determineCiStatus checks them for pending CI separately. Suites
+ * from other apps do not count. Status and conclusion are compared case-folded
+ * so this agrees with the review gate's copy.
  */
 export function isFailedActionsSuite(suite: CheckSuite): boolean {
   const conclusion = suite.conclusion?.toLowerCase() ?? null;
@@ -638,13 +639,16 @@ function rollupStateToCiStatus(
  * Logic:
  * - If a completed GitHub Actions check suite created no check run and has a
  *   conclusion off the passing allowlist → failed (Issue #4347).
- * - If no checks exist at all → no_checks (unverified, not green — #3705).
+ * - If no check runs, commit statuses or unfinished Actions suites exist →
+ *   no_checks (unverified).
  * - If any check run's conclusion is not on the passing allowlist → failed.
  * - If the combined status state is not `success`/`pending` → failed.
  * - If any check run is not completed → pending.
  * - If combined status state is pending and has statuses → pending.
  * - If GitHub's own rollup state is supplied, the worse of the two verdicts
  *   wins (Issue #3945).
+ * - An unfinished GitHub Actions suite raises an otherwise passed verdict to
+ *   pending, regardless of its check-run count.
  * - Otherwise → passed.
  *
  * @param checkRuns - Check runs for the head commit
@@ -668,11 +672,15 @@ export function determineCiStatus(
 
   // No checks at all — nothing verified this commit, so it is not "passed"
   // (Issue #3705). The caller decides whether an operator override applies.
-  if (!hasCheckRuns && !hasCommitStatuses) {
+  const hasPendingActionsSuite = (checkRuns.check_suites ?? []).some((suite) =>
+    suite.app_slug === ACTIONS_APP_SLUG &&
+    suite.status.toLowerCase() !== "completed"
+  );
+  if (!hasCheckRuns && !hasCommitStatuses && !hasPendingActionsSuite) {
     return "no_checks";
   }
 
-  const detail = determineDetailStatus(
+  let detail = determineDetailStatus(
     checkRuns,
     combinedStatus,
     hasCommitStatuses,
@@ -683,9 +691,11 @@ export function determineCiStatus(
   // that individually look green (Issue #3945).
   if (rollupState !== null && rollupState !== "") {
     const fromRollup = rollupStateToCiStatus(rollupState);
-    return SEVERITY[fromRollup] > SEVERITY[detail] ? fromRollup : detail;
+    if (SEVERITY[fromRollup] > SEVERITY[detail]) detail = fromRollup;
   }
-  return detail;
+  // Suite status covers workflows before their first job and reruns whose
+  // earlier check runs still make the rollup green. Failures retain priority.
+  return detail === "passed" && hasPendingActionsSuite ? "pending" : detail;
 }
 
 /** Per-check verdict, before GitHub's aggregate rollup state is folded in. */

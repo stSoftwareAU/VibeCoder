@@ -1365,15 +1365,16 @@ Deno.test("the body carries the guest and host figures under the last log time (
   const lines = formatHardKillBody(ev, hardKillSignature(ev)).split("\n");
   const at = lines.indexOf("**Last log time:** 2026-11-11 16:53:16Z");
   assert(at >= 0, "the last log time line is present");
-  assertEquals(lines.slice(at + 1, at + 7), [
+  assertEquals(lines.slice(at + 1, at + 8), [
     "**Silent before capture:** 48m 51s",
     "**Guest probe:** `did not answer`",
     "**Guest memory:** not available",
     "**Guest pressure:** not available",
+    "**Last liveness tick:** not in the log tail",
     "**Host disk:** 3.2 GiB free of 460.0 GiB (0% free)",
     "**Host memory:** pressure high, 0.8 GiB available of 16.0 GiB",
   ]);
-  assertEquals(lines[at + 7], "", "a blank line follows the six figures");
+  assertEquals(lines[at + 8], "", "a blank line follows the seven figures");
 });
 
 Deno.test("an answered guest shows its numbers in the body (Issue #5062)", () => {
@@ -1397,6 +1398,18 @@ Deno.test("an answered guest shows its numbers in the body (Issue #5062)", () =>
   ) {
     assertStringIncludes(body, needle);
   }
+});
+
+Deno.test("a liveness tick in the log tail shows in the body (Issue #4815)", () => {
+  const ev = makeEvidence({}, {
+    workerLogTail:
+      "[2026-10-25 01:26:18Z] INFO: [s1 o/r#1] [liveness] tick=3 alerted=false mem_available_mib=120 pressure_cpu=some,avg10=2.00,avg60=1.00,avg300=0.00,total=5",
+  });
+  const body = formatHardKillBody(ev, hardKillSignature(ev));
+  assertStringIncludes(
+    body,
+    "**Last liveness tick:** MemAvailable 120 MiB, cpu some avg10=2.00 (logged 2026-10-25 01:26:18Z)",
+  );
 });
 
 Deno.test("guest free text never reaches the body (Issue #5062)", () => {
