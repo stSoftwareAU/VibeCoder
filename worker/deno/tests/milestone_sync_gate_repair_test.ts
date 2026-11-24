@@ -451,7 +451,6 @@ Deno.test("syncMilestoneBranchWithDefault - a clean merge repair must pass the f
   const fx = await setupCleanMerge();
   try {
     const original = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
-    let suiteChecks = 0;
     const result = await syncMilestoneBranchWithDefault(
       "milestone/1965",
       "main",
@@ -460,7 +459,6 @@ Deno.test("syncMilestoneBranchWithDefault - a clean merge repair must pass the f
       denoGate,
       async (dir) => {
         assertEquals((await denoGate(dir)).status, "passed");
-        suiteChecks++;
         return {
           status: "failed",
           cause: "tree-check-failed",
@@ -477,7 +475,7 @@ Deno.test("syncMilestoneBranchWithDefault - a clean merge repair must pass the f
       },
     );
     assert(!result.ok);
-    assertEquals(suiteChecks, 2);
+    assertStringIncludes(result.error.message, "2 repair round(s) ran");
     assertStringIncludes(
       result.error.message,
       "Expected service to release its resources",

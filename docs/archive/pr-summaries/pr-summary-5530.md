@@ -98,8 +98,11 @@ flowchart TD
   fuller-suite failure, four initial infrastructure causes, exhausted repair
   grant, fast-forward refusal, unavailable agent, skipped re-verification and
   failed amend. The persistent-failure case also asserts timing attribution and
-  charged attempt classification. No existing assertions were removed or
-  changed.
+  charged attempt classification. The fuller-resolution-gate case asserts the
+  returned two-round repair diagnostic, the specific suite error and the
+  unchanged remote branch. Its internal gate call-count assertion was removed
+  following pre-PR finding 1; these observable outcomes retain its regression
+  coverage. Assertions present on the base branch were retained.
 - Added the first-repair prompt regression in
   `worker/deno/tests/milestone_gate_repair_prompt_test.ts`; existing prompt
   assertions were retained. Related descriptions checked: the repair-mode
@@ -107,7 +110,7 @@ flowchart TD
   no-side-pick rules in `prompts/merge_conflict/prompt.md`, and the shared
   grant/announcement binding. The descriptive change agrees with those rules and
   this diff's clean-merge case; no new agent rule was introduced.
-- The final targeted `deno task test:unit` run passed 260 tests across fifteen
+- The earlier targeted `deno task test:unit` run passed 260 tests across fifteen
   suites: that suite and `worker/deno/tests/milestone_gate_repair_test.ts`,
   `worker/deno/tests/milestone_gate_repair_land_unverified_4326_test.ts`,
   `worker/deno/tests/milestone_sync_merge_gate_test.ts`,
@@ -124,6 +127,11 @@ flowchart TD
   `worker/deno/tests/merge_conflict_agent_test.ts`.
 - Targeted Deno formatting, lint and type checks passed. The final quality
   gate's completeness stage passed across 56 test files.
+- After the pre-PR assertion correction, `deno task test:unit
+  tests/milestone_sync_gate_repair_test.ts` passed all 20 tests. Targeted Deno
+  formatting and lint passed. `deno task check:manifests` passed 876 tests with
+  one ignored. The full quality gate result below predates this test-only
+  correction; the worker will rerun it before raising the PR.
 - `timeout 900 ./quality.sh < /dev/null` passed, including both unit passes,
   formatting, lint, type checking, Markdown, Mermaid, semgrep and gitleaks.
   Config integration and Checkov were reported as skipped, not passed.
