@@ -41,6 +41,8 @@
 #    `API_KEY=`, `ADMIN_TOKEN=`, `token=` and similar values on the line
 #    after a label-as-value assignment, asserting `redactSecrets()` masks
 #    both values.
+#    DEPLOY_TOKEN / API_KEY / ADMIN_TOKEN values asserting a label consumed
+#    as the value of an earlier credential cannot publish that value.
 #    `*_TOKEN = value` / `API_KEY=value` strings fed to `redactSecrets()`
 #    asserting a credential label consumed as an earlier label's value
 #    never publishes the real value.
@@ -125,6 +127,13 @@ regexes = [
   # the commit that merged it. Match only a backtick-quoted mention of that
   # exact value.
   '''`[^`]*(API_KEY|ADMIN_TOKEN)=abcdefgh1234`''',
+  # Issue #5310: SECURITY.md and the PR summary quote the synthetic follow-on
+  # assignments (`API_KEY=...`, `ADMIN_TOKEN=...`) of the label-as-value
+  # fixtures. Match each quoted mention by its surrounding prose only.
+  '''then `API_KEY=[A-Za-z0-9]+`, or then''',
+  '''`ADMIN_TOKEN=[A-Za-z0-9]+` still publish''',
+  '''\\nAPI_KEY=[A-Za-z0-9]+` from the unmasked text''',
+  '''then `ADMIN_TOKEN=[A-Za-z0-9]+`\), the wrapped run''',
   # SECURITY.md and the PR summary quote the same synthetic `LABEL=abcdefgh1234`
   # example values in prose; match only a backtick-quoted mention of that value.
   '''`?(API_KEY|ADMIN_TOKEN)=abcdefgh1234`''',
@@ -196,6 +205,11 @@ paths = [
   # `redactSecrets()` to prove a label-as-value assignment and the line after
   # it are both masked (Issue #5310). The merge commit carries them literally,
   # and range scans cover it, so only a path allowlist clears it.
+  # Fake DEPLOY_TOKEN / API_KEY / ADMIN_TOKEN values (interpolated from
+  # fixtures at run time) fed to `redactSecrets()` to prove a label consumed
+  # as the value of an earlier credential cannot publish that value
+  # (Issue #5310). The commit that introduced them is scanned as one range, so
+  # only a path allowlist clears it.
   # Fake `*_TOKEN = value` / `API_KEY=value` strings (Issue #5310) fed to
   # `redactSecrets()` to prove a credential label consumed as the value of an
   # earlier label never publishes the real value. The commit that introduced

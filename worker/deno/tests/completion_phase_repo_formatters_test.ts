@@ -21,6 +21,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { PRE_PUSH_GATE_MARKER } from "../lib/failure_diagnosis.ts";
 import { gateUnpushedCommits } from "../lib/git_push.ts";
+import { findMarkdownlintBinary } from "../lib/pre_push_gate.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
@@ -424,6 +425,75 @@ Deno.test({
         "",
       );
       // The edit is recoverable, not destroyed.
+      assertStringIncludes(await git(["stash", "list"], repo), "Issue #5328");
+      assertEquals(
+        await git(["show", `stash@{0}:${summary}`], repo),
+        interrupted,
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "completion - in a repository with no Deno config an uncommitted archive summary edit is still set aside (Issue #5393)",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    // The gate blocks, rather than waves through, a configured markdownlint
+    // with no binary; the validate-scripts runner has none installed.
+    if (
+      await findMarkdownlintBinary(
+        "/nonexistent",
+        Deno.env.get("PATH") ?? "",
+      ) ===
+        null
+    ) {
+      console.warn(
+        "skipping markdownlint archive-summary test: markdownlint-cli2 not installed",
+      );
+      return;
+    }
+    const summary = "docs/archive/pr-summaries/pr-summary-10.md";
+    const committed = "# Summary\n\nDelivered.\n";
+    // Skips a heading level (MD001), so markdownlint blocks the working tree.
+    const interrupted = `${committed}\n### Skipped a level\n\nRewritten.\n`;
+    const { tmp, repo } = await makeRepo({
+      ".markdownlint.json": "{}\n",
+      [summary]: committed,
+    });
+    try {
+      // makeRepo seeds a Deno config; the branch drops it so none is tracked.
+      await git(["rm", "-q", "worker/deno/deno.json"], repo);
+      await git(["commit", "-q", "-m", "Drop the Deno config"], repo);
+      const headBefore = (await git(["rev-parse", "HEAD"], repo)).trim();
+      await Deno.writeTextFile(`${repo}/${summary}`, interrupted);
+      // Positive control: the gate judges the working tree, so the edit blocks it.
+      const bare = await gateUnpushedCommits(
+        BRANCH,
+        { cwd: repo, env: NO_HOST_GIT_CONFIG },
+        { commands: [] },
+        false,
+        "origin/main",
+      );
+      assert(!bare.ok, "the markdownlint violation must fail the bare gate");
+      assertStringIncludes(
+        bare.ok ? "" : bare.error.message,
+        "pr-summary-10.md",
+      );
+
+      const o = await runCompletion(repo, real);
+      assertEquals(o.pushes, 1, `gate should pass: ${o.reason ?? ""}`);
+      assert(!(o.reason ?? "").includes(PRE_PUSH_GATE_MARKER));
+
+      assertEquals((await git(["rev-parse", "HEAD"], repo)).trim(), headBefore);
+      assertEquals(await git(["show", `HEAD:${summary}`], repo), committed);
+      assertEquals(await Deno.readTextFile(`${repo}/${summary}`), committed);
+      assertEquals(
+        (await git(["status", "--porcelain", "--", summary], repo)).trim(),
+        "",
+      );
       assertStringIncludes(await git(["stash", "list"], repo), "Issue #5328");
       assertEquals(
         await git(["show", `stash@{0}:${summary}`], repo),
