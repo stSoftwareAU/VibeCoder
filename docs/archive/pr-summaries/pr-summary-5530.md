@@ -127,11 +127,12 @@ flowchart TD
   `worker/deno/tests/merge_conflict_agent_test.ts`.
 - Targeted Deno formatting, lint and type checks passed. The final quality
   gate's completeness stage passed across 56 test files.
-- After the pre-PR assertion correction, `deno task test:unit
-  tests/milestone_sync_gate_repair_test.ts` passed all 20 tests. Targeted Deno
-  formatting and lint passed. `deno task check:manifests` passed 876 tests with
-  one ignored. The full quality gate result below predates this test-only
-  correction; the worker will rerun it before raising the PR.
+- After the pre-PR assertion correction,
+  `deno task test:unit
+  tests/milestone_sync_gate_repair_test.ts` passed all 20
+  tests. Targeted Deno formatting and lint passed. `deno task check:manifests`
+  passed 876 tests with one ignored. The full quality gate result below predates
+  this test-only correction; the worker will rerun it before raising the PR.
 - `timeout 900 ./quality.sh < /dev/null` passed, including both unit passes,
   formatting, lint, type checking, Markdown, Mermaid, semgrep and gitleaks.
   Config integration and Checkov were reported as skipped, not passed.
