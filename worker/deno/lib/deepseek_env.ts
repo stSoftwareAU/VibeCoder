@@ -74,6 +74,9 @@ const DEEPSEEK_CONFIG_DIR_NAME = ".claude-config-deepseek";
  * token the model legitimately uses via `gh`, constrained by the `gh` PATH shim
  * (`gh_guard_shim.ts`, Issue #3643).
  *
+ * `GEMINI_CLI_HOME`, the Gemini Google-account login home, is denied by name
+ * as `CODEX_HOME` is: only the Gemini child may select that login.
+ *
  * The Anthropic names come from {@link CLAUDE_CREDENTIAL_ENV_VARS} rather than
  * a second copy of them, so a name Anthropic adds later is denied here the day
  * it is accepted there. A pooled host holds several Anthropic tokens
@@ -88,6 +91,7 @@ export const DEEPSEEK_ENV_DENYLIST: readonly string[] = [
   "CODEX_API_KEY",
   "CODEX_HOME",
   "GEMINI_API_KEY",
+  "GEMINI_CLI_HOME",
   "GOOGLE_API_KEY",
 ];
 

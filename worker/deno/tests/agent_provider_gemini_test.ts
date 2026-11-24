@@ -13,11 +13,19 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertMatch,
+  assertNotEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   agentProviderIds,
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
+  DEEPSEEK_PROVIDER_ID,
   GEMINI_PROVIDER_ID,
   PROVIDER_FRAGMENT_DIR,
   resolveAgentProvider,
@@ -27,8 +35,14 @@ import {
   classifyCredentialFailure,
   type CredentialFailure,
 } from "../lib/credential_preflight.ts";
+import { CLAUDE_ENV_DENYLIST } from "../lib/claude_env.ts";
+import { CODEX_ENV_DENYLIST } from "../lib/codex_env.ts";
+import { DEEPSEEK_ENV_DENYLIST } from "../lib/deepseek_env.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { CONTAINER_IMAGE_INPUTS } from "../lib/container_image_hash.ts";
+import { buildCodexMcpConfigArgs } from "../lib/codex_executor.ts";
+import { GEMINI_SYSTEM_SETTINGS_ENV_VAR } from "../lib/gemini_settings.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 const repoRoot = new URL("../../../", import.meta.url).pathname;
 
@@ -94,6 +108,8 @@ Deno.test("gemini provider - the invocation is a non-interactive single-prompt r
     "--skip-trust",
     "--model",
     "gemini-3-pro",
+    "--allowed-mcp-server-names",
+    "",
     "--prompt",
     "PROMPT",
   ]);
@@ -122,6 +138,8 @@ Deno.test("gemini provider - with no model the CLI keeps its configured default"
     "--approval-mode",
     "yolo",
     "--skip-trust",
+    "--allowed-mcp-server-names",
+    "",
     "--prompt",
     "hello",
   ]);
@@ -169,27 +187,358 @@ Deno.test("gemini provider - a disallowed-tools list is carried into the prompt,
   assertStringIncludes(prompt, "ExitPlanMode");
 });
 
-Deno.test("gemini provider - a later phase resumes the previous session", () => {
-  const first = gemini.buildInvocation({
-    prompt: "phase one",
-    sessionResumeState: { sessionId: "owner-repo-42-7", phaseCount: 0 },
-  });
-  assertEquals(
-    first.includes("--resume"),
-    false,
-    "the first phase starts a session rather than resuming one",
-  );
+const SESSION_UUID = "3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b";
 
-  const later = gemini.buildInvocation({
-    prompt: "phase two",
-    sessionResumeState: { sessionId: "owner-repo-42-7", phaseCount: 1 },
+Deno.test("gemini provider - promptViaStdin keeps the prompt off argv and stdinBody carries the whole composed prompt (PR #5524 review)", () => {
+  const prompt = "x".repeat(200_000);
+  const systemPrompt = "You run unattended inside a sandboxed container.";
+  const request = {
+    prompt,
+    systemPrompt,
+    disallowedTools: ["Bash(git push:*)"],
+  };
+  const viaStdin = gemini.buildInvocation({ ...request, promptViaStdin: true });
+  assertEquals(viaStdin.includes("--prompt"), false);
+  assertEquals(viaStdin.some((a) => a.includes("x".repeat(100))), false);
+  assert(
+    viaStdin.every((a) => a.length < 131_072),
+    "no argv element may reach MAX_ARG_STRLEN",
+  );
+  const body = gemini.stdinBody!(request);
+  assertStringIncludes(body, systemPrompt);
+  assertStringIncludes(body, "Bash(git push:*)");
+  assertStringIncludes(body, prompt);
+  // A caller that does not ask for stdin still gets the prompt in argv.
+  const viaArgv = gemini.buildInvocation(request);
+  assertEquals(viaArgv.at(-2), "--prompt");
+  assertEquals(viaArgv.at(-1), body);
+});
+
+Deno.test("gemini provider - the first phase starts a session under the worker-generated id", () => {
+  const args = gemini.buildInvocation({
+    prompt: "phase one",
+    sessionResumeState: { sessionId: SESSION_UUID, phaseCount: 0 },
   });
-  assertEquals(later.slice(-4), [
-    "--resume",
-    "latest",
-    "--prompt",
-    "phase two",
-  ]);
+  assertEquals(args[args.indexOf("--session-id") + 1], SESSION_UUID);
+  assertEquals(args.includes("--resume"), false);
+  assertEquals(args.slice(-2), ["--prompt", "phase one"]);
+});
+
+Deno.test("gemini provider - a later phase resumes the session Gemini reported", () => {
+  const args = gemini.buildInvocation({
+    prompt: "phase three",
+    sessionResumeState: {
+      sessionId: SESSION_UUID,
+      phaseCount: 2,
+      providerId: "gemini",
+    },
+  });
+  assertEquals(args[args.indexOf("--resume") + 1], SESSION_UUID);
+  assertEquals(args.includes("--session-id"), false);
+  assertEquals(args.slice(-2), ["--prompt", "phase three"]);
+});
+
+Deno.test("gemini provider - a later phase recorded by another provider starts a session", () => {
+  const claude = gemini.buildInvocation({
+    prompt: "p",
+    sessionResumeState: {
+      sessionId: SESSION_UUID,
+      phaseCount: 2,
+      providerId: "claude",
+    },
+  });
+  assertEquals(claude.includes("--resume"), false);
+  assertEquals(claude[claude.indexOf("--session-id") + 1], SESSION_UUID);
+
+  const codex = gemini.buildInvocation({
+    prompt: "p",
+    sessionResumeState: {
+      sessionId: "thread-abc",
+      phaseCount: 2,
+      providerId: "codex",
+    },
+  });
+  assertEquals(codex.includes("--resume"), false);
+  const codexId = codex[codex.indexOf("--session-id") + 1];
+  assertMatch(
+    codexId!,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+  assertNotEquals(codexId, "thread-abc");
+
+  const legacy = gemini.buildInvocation({
+    prompt: "p",
+    sessionResumeState: { sessionId: SESSION_UUID, phaseCount: 3 },
+  });
+  assertEquals(legacy.includes("--resume"), false);
+  assertEquals(legacy[legacy.indexOf("--session-id") + 1], SESSION_UUID);
+});
+
+Deno.test("gemini provider - every state carries exactly one session flag and never resumes latest", () => {
+  for (const phaseCount of [0, 1, 5]) {
+    for (
+      const providerId of [
+        undefined,
+        "claude",
+        "codex",
+        "deepseek",
+        "gemini",
+      ]
+    ) {
+      for (const sessionId of [SESSION_UUID, "thread-abc"]) {
+        const args = gemini.buildInvocation({
+          prompt: "p",
+          sessionResumeState: { sessionId, phaseCount, providerId },
+        });
+        const label = `${phaseCount}/${providerId}/${sessionId}`;
+        const resumes = args.includes("--resume");
+        const starts = args.includes("--session-id");
+        assertEquals(resumes !== starts, true, label);
+        if (resumes) {
+          assertNotEquals(args[args.indexOf("--resume") + 1], "latest", label);
+        }
+        assertEquals(
+          resumes,
+          phaseCount > 0 && providerId === "gemini",
+          label,
+        );
+      }
+    }
+  }
+});
+
+Deno.test("gemini provider - a sessionless Quorum judge call carries neither session flag", () => {
+  const args = gemini.buildInvocation({ prompt: "Judge these two plans" });
+  assertEquals(args.includes("--session-id"), false);
+  assertEquals(args.includes("--resume"), false);
+});
+
+// ---------------------------------------------------------------------------
+// The run's MCP servers reach Gemini through its settings file (Issue #5343)
+// ---------------------------------------------------------------------------
+
+/** A browser run's config: the Playwright server with command, args and env. */
+const BROWSER_CONFIG = JSON.stringify({
+  mcpServers: {
+    playwright: {
+      command: "node",
+      args: ["/opt/pw/cli.js", "--headless"],
+      env: { PLAYWRIGHT_BROWSERS_PATH: "/opt/browsers" },
+    },
+  },
+});
+
+/** Writes `json` to `mcp-config.json` under `root` and returns the path. */
+async function mcpConfigIn(root: string, json: string): Promise<string> {
+  const path = `${root}/mcp-config.json`;
+  await Deno.writeTextFile(path, json);
+  return path;
+}
+
+/** The value that follows `--allowed-mcp-server-names` in an argv. */
+function allowedNamesOf(args: string[]): string {
+  const at = args.indexOf("--allowed-mcp-server-names");
+  assert(at >= 0, `no --allowed-mcp-server-names in ${args.join(" ")}`);
+  return args[at + 1]!;
+}
+
+/**
+ * Writes the run's settings file under `root`, reads back what the CLI would
+ * read, and removes the file again.
+ */
+async function settingsFileFor(
+  root: string,
+  mcpConfigPath?: string,
+): Promise<Record<string, unknown>> {
+  const prepare = gemini.prepareRunSettings;
+  assert(prepare, "the Gemini descriptor writes a per-run settings file");
+  const prepared = await prepare({
+    disallowedTools: [],
+    env: envFrom({ TMPDIR: root }),
+    ...(mcpConfigPath ? { mcpConfigPath } : {}),
+  });
+  assert(prepared.ok, prepared.ok ? "" : prepared.error.message);
+  try {
+    const path = prepared.value.env[GEMINI_SYSTEM_SETTINGS_ENV_VAR]!;
+    return JSON.parse(await Deno.readTextFile(path));
+  } finally {
+    await prepared.value.cleanup();
+  }
+}
+
+Deno.test("gemini MCP servers (Issue #5343) - a browser run names playwright in argv and writes its server to the settings file", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_browser_" });
+  try {
+    const mcpConfigPath = await mcpConfigIn(root, BROWSER_CONFIG);
+    const args = gemini.buildInvocation({ prompt: "P", mcpConfigPath });
+    assertEquals(allowedNamesOf(args), "playwright");
+
+    assertEquals(await settingsFileFor(root, mcpConfigPath), {
+      mcpServers: {
+        playwright: {
+          command: "node",
+          args: ["/opt/pw/cli.js", "--headless"],
+          env: { PLAYWRIGHT_BROWSERS_PATH: "/opt/browsers" },
+        },
+      },
+    });
+
+    // The same JSON, as Codex receives it, carries the same command and args.
+    assertEquals(buildCodexMcpConfigArgs(BROWSER_CONFIG), [
+      "-c",
+      'mcp_servers.playwright.command="node"',
+      "-c",
+      'mcp_servers.playwright.args=["/opt/pw/cli.js", "--headless"]',
+      "-c",
+      'mcp_servers.playwright.env={ PLAYWRIGHT_BROWSERS_PATH = "/opt/browsers" }',
+    ]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gemini MCP servers (Issue #5343) - a graft-only run loads only graft and drops alwaysLoad", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_graft_" });
+  try {
+    const mcpConfigPath = await mcpConfigIn(
+      root,
+      JSON.stringify({
+        mcpServers: {
+          graft: {
+            command: "graft",
+            args: ["serve", "--mcp"],
+            env: { GRAFT_ROOT: "/w/repo" },
+            alwaysLoad: true,
+          },
+        },
+      }),
+    );
+    const args = gemini.buildInvocation({ prompt: "P", mcpConfigPath });
+    assertEquals(allowedNamesOf(args), "graft");
+    assertEquals(await settingsFileFor(root, mcpConfigPath), {
+      mcpServers: {
+        graft: {
+          command: "graft",
+          args: ["serve", "--mcp"],
+          env: { GRAFT_ROOT: "/w/repo" },
+        },
+      },
+    });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gemini MCP servers (Issue #5343) - a run with no servers allows none and its settings file has no mcpServers key", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_none_" });
+  try {
+    const args = gemini.buildInvocation({ prompt: "P" });
+    assertEquals(allowedNamesOf(args), "");
+    assertEquals(await settingsFileFor(root), {});
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gemini MCP servers (Issue #5343) - an unsafe server name is skipped in both the settings file and argv", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_unsafe_" });
+  try {
+    const mcpConfigPath = await mcpConfigIn(
+      root,
+      JSON.stringify({
+        mcpServers: {
+          "bad name": { command: "bad" },
+          ok: { command: "ok-cmd" },
+        },
+      }),
+    );
+    const args = gemini.buildInvocation({ prompt: "P", mcpConfigPath });
+    assertEquals(allowedNamesOf(args), "ok");
+    assertEquals(await settingsFileFor(root, mcpConfigPath), {
+      mcpServers: { ok: { command: "ok-cmd" } },
+    });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gemini MCP servers (Issue #5343) - an unreadable MCP config refuses the spawn, naming the path", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_missing_" });
+  try {
+    const missing = `${root}/absent.json`;
+    const prepare = gemini.prepareRunSettings;
+    assert(prepare, "the Gemini descriptor writes a per-run settings file");
+    const prepared = await prepare({
+      disallowedTools: [],
+      env: envFrom({ TMPDIR: root }),
+      mcpConfigPath: missing,
+    });
+    assertEquals(prepared.ok, false);
+    if (prepared.ok) return;
+    assertStringIncludes(prepared.error.message, missing);
+    assertStringIncludes(prepared.error.message, "No such file or directory");
+
+    assertThrows(
+      () => gemini.buildInvocation({ prompt: "P", mcpConfigPath: missing }),
+      Error,
+      missing,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gemini MCP servers (Issue #5343) - a config with no usable server refuses the spawn, naming the path", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_empty_" });
+  try {
+    // A server with no command cannot be started by Gemini, so nothing is usable.
+    const mcpConfigPath = await mcpConfigIn(
+      root,
+      JSON.stringify({ mcpServers: { graft: { alwaysLoad: true } } }),
+    );
+    const prepare = gemini.prepareRunSettings;
+    assert(prepare, "the Gemini descriptor writes a per-run settings file");
+    const prepared = await prepare({
+      disallowedTools: [],
+      env: envFrom({ TMPDIR: root }),
+      mcpConfigPath,
+    });
+    assertEquals(prepared.ok, false);
+    if (prepared.ok) return;
+    assertStringIncludes(prepared.error.message, mcpConfigPath);
+    assertStringIncludes(prepared.error.message, "no usable mcpServers entry");
+
+    assertThrows(
+      () => gemini.buildInvocation({ prompt: "P", mcpConfigPath }),
+      Error,
+      mcpConfigPath,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gemini MCP servers (Issue #5343) - the argv and the settings file share one reader, so they refuse with the same error", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gemini_mcp_5343_shared_" });
+  try {
+    const mcpConfigPath = await mcpConfigIn(root, "not json");
+    const prepare = gemini.prepareRunSettings;
+    assert(prepare, "the Gemini descriptor writes a per-run settings file");
+    const prepared = await prepare({
+      disallowedTools: [],
+      env: envFrom({ TMPDIR: root }),
+      mcpConfigPath,
+    });
+    assertEquals(prepared.ok, false);
+    if (prepared.ok) return;
+    const thrown = assertThrows(
+      () => gemini.buildInvocation({ prompt: "P", mcpConfigPath }),
+      Error,
+    );
+    assertEquals(thrown.message, prepared.error.message);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -261,6 +610,35 @@ Deno.test("gemini provider - and neither the Claude nor the Codex child gets a G
         provider.environment.denylist.includes(name),
         `${name} must be denied by name from the ${id} child`,
       );
+    }
+  }
+});
+
+Deno.test("gemini provider - the Gemini login home is denied by name to the Claude, Codex and DeepSeek children", () => {
+  for (
+    const list of [
+      CLAUDE_ENV_DENYLIST,
+      CODEX_ENV_DENYLIST,
+      DEEPSEEK_ENV_DENYLIST,
+    ]
+  ) {
+    assert(list.includes("GEMINI_CLI_HOME"));
+  }
+  const parents: Record<string, string>[] = [
+    { PATH: "/usr/bin", GEMINI_CLI_HOME: "/state/gemini" },
+    {
+      PATH: "/usr/bin",
+      GEMINI_CLI_HOME: "/state/gemini",
+      CODEX_HOME: "/state/codex",
+    },
+  ];
+  for (
+    const id of [CLAUDE_PROVIDER_ID, CODEX_PROVIDER_ID, DEEPSEEK_PROVIDER_ID]
+  ) {
+    for (const parent of parents) {
+      const env = resolveAgentProvider(id).buildChildEnv(parent);
+      assertEquals(env.GEMINI_CLI_HOME, undefined, `${id} child`);
+      assertEquals(env.PATH, "/usr/bin", `${id} child keeps PATH`);
     }
   }
 });

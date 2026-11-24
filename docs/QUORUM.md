@@ -234,7 +234,7 @@ Each vendor authenticates with its own credential, provisioned once by
 ~/.vibe-coder/credentials/
 ├── claude/provider.env    0600   from VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY
 ├── codex/provider.env     0600   from VIBE_LAUNCHAGENT_OPENAI_API_KEY
-├── gemini/provider.env    0600   from VIBE_LAUNCHAGENT_GEMINI_API_KEY
+├── gemini/provider.env    0600   from VIBE_LAUNCHAGENT_GEMINI_API_KEY (or GEMINI_CLI_HOME)
 └── deepseek/provider.env  0600   from VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY
 ```
 

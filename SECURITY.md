@@ -48,8 +48,9 @@ IPv6/DNS probes remain unknown. It is never labelled fully enforced. C12 and C13
 not control general egress.
 
 Provider tool restrictions are separate from execution containment. Claude's
-CLI enforces `--disallowed-tools`; Codex and Gemini receive the list as prompt
-text. Selecting a provider does not disable model-refusal fallback or create
+CLI enforces `--disallowed-tools`; Gemini enforces its denials through a per-run
+settings file (Issue #5341); Codex receives the list as prompt text. Selecting a
+provider does not disable model-refusal fallback or create
 filesystem/network isolation. External orchestration role calls are pinned:
 the gate passes `enableProviderFallback: false`, so a role call never moves to
 `agent_provider_fallback` after a model refusal (Issue #4986). Codex's
@@ -496,9 +497,10 @@ what redact-before-truncate forbids.
 ### New credential shapes are new redaction rules
 
 `redactSecrets()` masks *known* shapes (GitHub tokens, Anthropic `sk-ant-`
-keys, OpenAI/Codex `sk-` keys, Google/Gemini `AIzaSy` keys, AWS access-key ids,
-PEM private-key blocks, `Bearer`/`Basic` auth headers, URL-embedded
-credentials, `*_TOKEN=`/`*_SECRET=` assignments, and a bare 32-hex credential —
+keys, OpenAI/Codex `sk-` keys, Google/Gemini `AIzaSy` keys, Google OAuth `ya29.`
+access and `1//0` refresh tokens, AWS access-key ids, PEM private-key blocks,
+`Bearer`/`Basic` auth headers, URL-embedded credentials, `*_TOKEN=`/`*_SECRET=`
+assignments, and a bare 32-hex credential —
 the ImgBB API key shape, which carries no provider prefix and so is recognised
 by its exact length, lowercase-hex charset and non-alphanumeric neighbours, a
 test a 40-hex git SHA and a 64-hex digest both fail). A credential
@@ -759,6 +761,7 @@ only a decoded *credential shape* is masked.
 | PEM private-key masking rule | `worker/deno/lib/secret_redaction.ts` | |
 | HTTP `Basic` auth redaction rule | `worker/deno/lib/secret_redaction.ts` | |
 | Bare OpenAI (`sk-`) and Google/Gemini (`AIzaSy`) key rules | `worker/deno/lib/secret_redaction.ts` | [#36](https://github.com/stSoftwareAU/VibeCoder/issues/36) |
+| Bare Google OAuth access (`ya29.`) and refresh (`1//0`) token rules | `worker/deno/lib/secret_redaction.ts` | [#5339](https://github.com/stSoftwareAU/VibeCoder/issues/5339) |
 | `gh` comment / PR body arguments (worker chokepoint) | `worker/deno/lib/gh_body_redaction.ts` | |
 | Worker `gh` bodies from `--body-file` / `--input` files and stdin | `worker/deno/lib/gh_spawn.ts` | [#1254](https://github.com/stSoftwareAU/VibeCoder/issues/1254) |
 | `gh` title, label and milestone published fields (`--title`, `-f title=`, `-f description=`, `-f name=`) | `worker/deno/lib/gh_body_redaction.ts` | [#1283](https://github.com/stSoftwareAU/VibeCoder/issues/1283) |
