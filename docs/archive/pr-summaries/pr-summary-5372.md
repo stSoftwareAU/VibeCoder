@@ -93,17 +93,16 @@ nothing (VibeCoder#4607, #4709, #4999 and private fleet PRs).
 - `worker/deno/tests/third_party_tool_semantics_3235_test.ts`: unchanged. It
   passes with the reworded back-reference.
 - `worker/deno/tests/dummy_test_scan_growth_5236_test.ts`, an unrelated test
-  edited in the same PR to harden its growth guards against CI timing noise:
-  the four `assertLinearGrowth` guards change `repeats: 1` to
-  `repeats: 3`. A CI run read a single 58 ms reading against the 50 ms grace;
-  `fastestInterleaved` in `worker/deno/tests/support/growth.ts` keeps the
-  fastest of the interleaved readings per size, so three readings make one
-  busy-runner spell unable to fail the guard. Thresholds are unchanged: slack,
-  grace and size factor keep their values. Protection that remains: a quadratic
-  scan still fails, because the fastest of three readings of a scan that costs
-  `sizeFactor` squared stays far over the allowance (`pr-summary-5236.md`
-  records the unfixed scan at 210 ms to 3139 ms, about 15x, against the 1732 ms
-  a linear rule allows, about 8x).
+  edited in the same PR to harden its growth guards against CI timing noise: the
+  four `assertLinearGrowth` guards change `repeats: 1` to `repeats: 3`. A CI run
+  read a single 58 ms reading against the 50 ms grace; `fastestInterleaved` in
+  `worker/deno/tests/support/growth.ts` keeps the fastest of the interleaved
+  readings per size, so three readings make one busy-runner spell unable to fail
+  the guard. Thresholds are unchanged: slack, grace and size factor keep their
+  values. Protection that remains: a quadratic scan still fails, because the
+  fastest of three readings of a scan that costs `sizeFactor` squared stays far
+  over the allowance (`pr-summary-5236.md` records the unfixed scan at 210 ms to
+  3139 ms, about 15x, against the 1732 ms a linear rule allows, about 8x).
 - `deno test -A tests/fake_mirrors_production_3224_test.ts tests/third_party_tool_semantics_3235_test.ts`:
   10 passed, 0 failed.
 - `./quality.sh < /dev/null`: PASSED. Config integration and checkov were
