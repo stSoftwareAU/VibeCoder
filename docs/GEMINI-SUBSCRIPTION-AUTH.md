@@ -79,12 +79,12 @@ Place the login file beside it as `gemini/oauth_creds.json`, owner-only
 (`0600`), with the directory `0700`. At startup the credential preflight
 (`worker/deno/lib/credential_preflight.ts` calls `initialiseGeminiHome` in
 `worker/deno/lib/gemini_auth.ts`) seeds
-`<GEMINI_CLI_HOME>/.gemini/oauth_creds.json` once when it is missing. The seed
-must hold a non-blank `refresh_token` and be owner-only, else startup fails with
-an error naming both the target and the seed path. An existing (refreshed) login
-is never overwritten, including by a concurrent initialiser. The new `.gemini`
-directory is created `0700` and the file `0600`. No interactive login or API-key
-fallback is attempted.
+`<GEMINI_CLI_HOME>/.gemini/oauth_creds.json` once when it is missing. A seed
+with no non-blank `refresh_token` fails startup with an error naming both the
+target and the seed path; a seed that is not owner-only fails naming the seed.
+An existing (refreshed) login is never overwritten, including by a concurrent
+initialiser. The new `.gemini` directory is created `0700` and the file `0600`.
+No interactive login or API-key fallback is attempted.
 
 ## Billing policy
 
@@ -100,8 +100,10 @@ the opt-in `agent_provider_fallback`). A corrupt or unreadable login is
 
 In `auto` a login is a candidate with passive quota: no probe, no windows, so it
 ranks after providers with fresh known quota. A run-reported quota exhaustion
-makes it `exhausted` until its retry time
-(`worker/deno/lib/provider_auto_runtime.ts`, `geminiStatus`). See
+makes it `exhausted`, and an authentication failure makes it unavailable, until
+the outage record expires (`resolveAutomaticProviderStatus` in
+`worker/deno/lib/provider_auto_runtime.ts`; the passive login status is
+`geminiStatus`). See
 [Provider parity](PROVIDER-PARITY.md#subscription-only-billing-policy).
 
 ## Containment

@@ -164,7 +164,7 @@ every path in the Code column is under `worker/deno/lib/`.
 | MCP servers | The run's MCP config is written under `mcpServers` in the same settings file, and `--allowed-mcp-server-names` always names exactly those servers; its empty form loads none, including servers from the user's own settings or extensions (Issue #5343) | `gemini_settings.ts:233-237`; `gemini_executor.ts:288-300`; `agent_provider.ts:1149-1155` |
 | Approvals and sandbox | `--approval-mode yolo` and `--skip-trust`; the CLI's own `--sandbox` is deliberately absent, the container is the boundary | `gemini_executor.ts:65-71` |
 | Sub-agents (`--agents`) and advisor edit guard (`--settings`) | Not carried; an issue run that wants sub-agents is rerouted to Claude or stripped before spawn | `agent_provider.ts:1147-1174` (`buildInvocation`); `issue_run_provider_agents.ts` |
-| Orchestration roles | The executor and reviewer roles (not the manager, which needs stream compaction Gemini lacks) can run on Gemini, with denials through the settings file (Issue #5341) | `orchestration/capabilities.ts:205-222` (`assertRoleSupported`); `claude_runner.ts:536-540` |
+| Orchestration roles | The executor, both reviewer and the explorer roles (not the manager, which needs stream compaction Gemini lacks) can run on Gemini, with denials through the settings file (Issue #5341) | `orchestration/capabilities.ts:58-66` (`ROLE_REQUIRED_CAPABILITIES`), `:205-222` (`assertRoleSupported`); `claude_runner.ts:536-540` |
 
 ## Routing and fallback
 
