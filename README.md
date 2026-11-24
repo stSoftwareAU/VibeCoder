@@ -91,8 +91,11 @@ API-key and unknown-billing accounts are never selected:
 
 Auto mode is the default whenever two or more subscription-capable providers
 (Claude, Codex, Gemini) are enabled (Issue #5089), except that a provider
-proved metered (an API key alone) does not count, so Claude plus a Gemini on
-only an API key stays pinned; set
+other than the preferred `agent_provider` (default `claude`) whose current
+credentials are proved metered (an API key alone) does not count, so Claude
+plus a Gemini on only an API key stays pinned. The preferred provider always
+counts, because pinning it on a metered key would spend per token while auto
+routes away from it. Set
 `agent_provider_mode: "pinned"` to keep one provider. The provider with the
 most remaining quota wins; an exact tie is not broken, and `agent_provider`
 plays no part in the choice. An explicit

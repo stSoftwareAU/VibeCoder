@@ -154,7 +154,7 @@ flowchart TD
 | --- | ------- | ------- |
 | `agent_provider` | `claude` | Preferred provider |
 | `repo_config.<repo>.agent_provider` | unset | Per-repo provider pin (Issue #2048); binds when no per-invocation selection names one, and beats both the global `agent_provider` and `auto` ranking for that repo |
-| `agent_provider_mode` | `auto` with two or more subscription-capable providers (Claude, Codex, Gemini) enabled, else `pinned`; a provider proved metered (an API key alone) does not count | `pinned` preserves the existing provider choice; `auto` ranks eligible fixed-price subscriptions (default since #5089) |
+| `agent_provider_mode` | `auto` with two or more subscription-capable providers (Claude, Codex, Gemini) enabled, else `pinned`; a provider other than the preferred `agent_provider` proved metered (an API key alone) does not count | `pinned` preserves the existing provider choice; `auto` ranks eligible fixed-price subscriptions (default since #5089) |
 | `agent_providers` | preferred alone | Enabled set (credentials mounted) |
 | `agent_provider_fallback` | `[]` | Ordered alternatives; empty **pins** the preferred provider |
 
@@ -163,7 +163,7 @@ work item it ranks enabled Claude OAuth and Codex ChatGPT subscriptions using
 the lowest remaining percentage across each provider's current known windows.
 A Gemini Google-account login (under an explicit `GEMINI_CLI_HOME`) is also a
 candidate, but its quota is passive: no network probe and no windows, so it
-ranks after every provider with a known window. A Gemini API key alone is
+ranks after every provider with fresh known quota. A Gemini API key alone is
 metered and never selected.
 The provider with more remaining capacity wins in either direction. Status
 freshness still controls eligibility; an exact tie is not broken (the input
@@ -236,7 +236,9 @@ subscriptions — see [Subscription-only billing
 policy](#subscription-only-billing-policy) for what it logs when the
 alternative is metered. Quota-aware auto selection is the default on a host
 with two or more subscription-capable providers (Claude, Codex, Gemini)
-enabled (#5089); a host with fewer stays pinned.
+enabled (#5089); a host with fewer stays pinned. A provider other than the
+preferred `agent_provider` whose credentials are proved metered (an API key
+alone) does not count; the preferred provider always counts.
 
 ## Staged rollout
 
@@ -281,14 +283,15 @@ WIP branches are untouched.
   Google-account logins. A Gemini login (fixed-price under an explicit
   `GEMINI_CLI_HOME`) has passive quota: `geminiStatus` does no probe and
   reports no windows, so it ranks in the `fresh-unknown-quota` band after every
-  provider with a known window. A run-reported quota exhaustion makes it
+  provider with fresh known quota. A run-reported quota exhaustion makes it
   `exhausted` until its retry time (the stated reset, or a five-minute
   cooldown), and an authentication failure makes it unavailable. A Gemini API
-  key alone is `metered` (`api-key-account`) and never selected; neither
-  credential is `unknown` and excluded. DeepSeek and every unknown or metered
+  key alone is `metered` (`api-key-account`) and never selected; with
+  neither credential, billing is `unknown` and Gemini is excluded. DeepSeek and every unknown or metered
   billing mode are ineligible. The default is `auto` when two or more
-  subscription-capable providers are enabled (#5089), where a provider proved
-  metered does not count.
+  subscription-capable providers are enabled (#5089), where a provider other
+  than the preferred `agent_provider` proved metered does not count and the
+  preferred provider always counts.
 - Quota *probing* is still per provider (`provider_auto_runtime.ts`), even
   though billing classification is now descriptor-declared. Adding a
   subscription provider means writing its status adapter as well as its

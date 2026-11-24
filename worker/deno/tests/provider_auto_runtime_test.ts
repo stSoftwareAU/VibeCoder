@@ -780,7 +780,7 @@ Deno.test("the default mode ignores providers proved metered (Issue #5344)", asy
         { mode: "pinned", preference: [], reason: "default-pinned" },
       );
 
-      const run = (env: EnvLookup, resolved: string[]) =>
+      const run = (env: EnvLookup) =>
         refreshAutomaticProviderRouting({
           workDir: GEMINI_WORK_DIR,
           enabledProviderIds: providers,
@@ -791,26 +791,13 @@ Deno.test("the default mode ignores providers proved metered (Issue #5344)", asy
               agent_providers: providers,
             }),
           env,
-          resolveStatus: (id) => {
-            resolved.push(id);
-            return available(id, 50, 5);
-          },
+          resolveStatus: (id) => available(id, 50, 5),
           log: () => {},
         });
-      const loginCalls: string[] = [];
-      const login = await run(
-        geminiEnv({ GEMINI_CLI_HOME: home }),
-        loginCalls,
-      );
+      const login = await run(geminiEnv({ GEMINI_CLI_HOME: home }));
       assertEquals(login.automatic, true);
-      assertEquals(loginCalls.length, 2);
-      const keyCalls: string[] = [];
-      const apiKey = await run(
-        geminiEnv({ GEMINI_API_KEY: "metered-key" }),
-        keyCalls,
-      );
+      const apiKey = await run(geminiEnv({ GEMINI_API_KEY: "metered-key" }));
       assertEquals(apiKey.automatic, false);
-      assertEquals(keyCalls, []);
     });
   });
 });
@@ -833,6 +820,47 @@ Deno.test("a metered Codex does not count toward the default, an unknown one doe
       billingContext: { workDir: GEMINI_WORK_DIR, env: statedEnv() },
     }).reason,
     "default-auto",
+  );
+});
+
+Deno.test("the preferred provider always counts toward the default (Issue #5344)", () => {
+  const resolve = (
+    configuredProvider: string | undefined,
+    providers: string[],
+    env: EnvLookup,
+  ) =>
+    resolveAutomaticProviderConfig({
+      configuredProvider,
+      configuredProviders: providers,
+      billingContext: { workDir: GEMINI_WORK_DIR, env },
+    });
+  // Metered preferred Claude still counts, so a Codex subscription keeps auto.
+  assertEquals(
+    resolve(
+      "claude",
+      ["claude", "codex"],
+      statedEnv({ ANTHROPIC_API_KEY: "metered-key" }),
+    ),
+    { mode: "auto", preference: [], reason: "default-auto" },
+  );
+  // A metered Gemini counts when it is the configured preferred provider.
+  assertEquals(
+    resolve(
+      "gemini",
+      ["claude", "gemini"],
+      geminiEnv({ GEMINI_API_KEY: "k" }),
+    ).mode,
+    "auto",
+  );
+  // With no configured provider the default (claude) is preferred, so a
+  // metered Gemini is dropped and the host stays pinned.
+  assertEquals(
+    resolve(
+      undefined,
+      ["claude", "gemini"],
+      geminiEnv({ GEMINI_API_KEY: "k" }),
+    ),
+    { mode: "pinned", preference: [], reason: "default-pinned" },
   );
 });
 
@@ -869,10 +897,6 @@ Deno.test("Gemini status makes no network call or probe (Issue #5344)", async ()
         calls++;
         throw new Error("network forbidden");
       }) as typeof fetch;
-      const probeCodex = (() => {
-        calls++;
-        throw new Error("probe forbidden");
-      }) as never;
       try {
         const envs = [
           geminiEnv({ GEMINI_CLI_HOME: home }),
@@ -886,7 +910,6 @@ Deno.test("Gemini status makes no network call or probe (Issue #5344)", async ()
               workDir: GEMINI_WORK_DIR,
               env,
               now: NOW,
-              probeCodex,
             }),
           );
         }

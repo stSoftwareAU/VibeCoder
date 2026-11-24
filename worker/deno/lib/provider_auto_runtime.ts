@@ -20,11 +20,12 @@
  * by ChatGPT auth in its persistent `CODEX_HOME`. Gemini is proved by a Google
  * account login under an explicit `GEMINI_CLI_HOME` and joins auto with
  * passive quota (Issue #5344): no network probe and no windows, so it ranks
- * after every provider with a known window. A run-reported quota exhaustion or
+ * after every provider with fresh known quota (stale known windows rank after
+ * it, `bandRank`). A run-reported quota exhaustion or
  * authentication failure (the outage record) makes it exhausted/unavailable.
  * API keys and every provider without a fixed-subscription adapter are
- * excluded rather than guessed. A provider proved metered does not count
- * toward the two-subscription default.
+ * excluded rather than guessed. A non-preferred provider proved metered
+ * does not count toward the two-subscription default.
  *
  * Australian English spelling throughout (behaviour, authorised).
  */
@@ -32,6 +33,7 @@
 import {
   activeAgentProvider,
   AGENT_PROVIDER_ENV,
+  DEFAULT_AGENT_PROVIDER_ID,
   isSubscriptionCapable,
   setConfiguredAgentProviderId,
 } from "./agent_provider.ts";
@@ -85,15 +87,21 @@ export interface AutomaticProviderConfig {
   readonly reason: string;
 }
 
-/** Inputs accepted by the pure configuration resolver. */
+/**
+ * Inputs accepted by the configuration resolver. It is pure unless a
+ * `billingContext` is given, which reads stored login state.
+ */
 export interface AutomaticProviderConfigInput {
   readonly configuredMode?: unknown;
   readonly configuredProvider?: unknown;
   readonly configuredProviders?: unknown;
   readonly environmentProvider?: string;
   /**
-   * When given, a subscription-capable provider whose credential is proved
-   * metered does not count toward the default (Issue #5344).
+   * When given, a provider other than the preferred one (`configuredProvider`,
+   * else the default provider) that is proved metered does not count toward
+   * the default (Issue #5344). The preferred provider always counts: pinning
+   * on a metered preferred provider would spend, while a metered non-preferred
+   * provider can never be an auto candidate.
    */
   readonly billingContext?: ProviderBillingContext;
 }
@@ -107,13 +115,16 @@ function stringArray(value: unknown): string[] {
 }
 
 /**
- * Resolve automatic routing without reading files or process state.
+ * Resolve automatic routing. Without a `billingContext` this reads no files or
+ * process state; with one, it reads each provider's stored login state through
+ * `classifyProviderBilling`.
  *
  * An environment provider is an explicit emergency/operator pin and wins over
  * automatic mode. An absent mode resolves to auto when two or more distinct
  * subscription-capable providers are enabled (Issue #5089), else pinned. With
- * a `billingContext`, a provider proved metered (an API key and no login) does
- * not count; one whose billing is unknown still does (Issue #5344).
+ * a `billingContext`, a non-preferred provider proved metered (an API key and
+ * no login) does not count; the preferred provider (`configuredProvider`, else
+ * the default) and any whose billing is unknown still do (Issue #5344).
  */
 export function resolveAutomaticProviderConfig(
   input: AutomaticProviderConfigInput,
@@ -145,10 +156,14 @@ export function resolveAutomaticProviderConfig(
         : "configured-pinned",
     };
   }
+  const configuredPreferred = typeof input.configuredProvider === "string"
+    ? input.configuredProvider.trim()
+    : "";
+  const preferred = configuredPreferred || DEFAULT_AGENT_PROVIDER_ID;
   const subscriptions = new Set(
     stringArray(input.configuredProviders).filter((id) =>
       isSubscriptionCapable(id) &&
-      (input.billingContext === undefined ||
+      (input.billingContext === undefined || id === preferred ||
         classifyProviderBilling(id, input.billingContext).billingMode !==
           "metered")
     ),
