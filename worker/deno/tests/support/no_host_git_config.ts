@@ -12,6 +12,8 @@
  * asserts on the journal must name its own `WORK_DIR`/`VIBE_AUDIT_DIR` and
  * spread `VIBE_AUDIT_DISABLED: "0"` AFTER the shield. Because `runFixtureGit`
  * and `runShieldedGit` spread the shield last, they never journal.
+ * `GIT_CONFIG_SHIELD` is the git-only variant, for an env allowlist that refuses
+ * the audit key.
  *
  * Production functions a test calls (`pushUnpushedCommits`,
  * `commitAndPushPending`, `syncMilestoneBranchWithDefault`, `updatePrBranch`,
@@ -36,6 +38,19 @@ import {
 } from "../../lib/git_timeout.ts";
 
 /**
+ * The git-config keys alone, for a caller that accepts only those keys, such as
+ * the `git-operations` command's `env` argument (Issue #5371), which refuses
+ * `VIBE_AUDIT_DISABLED` by design. A push that such a caller drives can still be
+ * journalled when the process env sets `WORK_DIR` or `VIBE_AUDIT_DIR`.
+ */
+export const GIT_CONFIG_SHIELD: Readonly<Record<string, string>> = Object
+  .freeze({
+    GIT_CONFIG_COUNT: "0",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+  });
+
+/**
  * Pass as a git child's `env`. Deno overlays it on the inherited environment,
  * so it cancels the host's injected `GIT_CONFIG_COUNT` entries, shuts out the
  * global and system config files, and switches off the audit journal
@@ -43,9 +58,7 @@ import {
  */
 export const NO_HOST_GIT_CONFIG: Readonly<Record<string, string>> = Object
   .freeze({
-    GIT_CONFIG_COUNT: "0",
-    GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_CONFIG_NOSYSTEM: "1",
+    ...GIT_CONFIG_SHIELD,
     VIBE_AUDIT_DISABLED: "true",
   });
 

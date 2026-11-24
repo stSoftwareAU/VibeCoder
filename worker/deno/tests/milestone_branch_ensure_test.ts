@@ -16,7 +16,10 @@ import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
 import { gitOperationsCommand } from "../commands/git_operations.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { gitOk, setupGitRepoFixture } from "./support/git_repo_fixture.ts";
-import { NO_HOST_GIT_CONFIG } from "./support/no_host_git_config.ts";
+import {
+  GIT_CONFIG_SHIELD,
+  NO_HOST_GIT_CONFIG,
+} from "./support/no_host_git_config.ts";
 
 const config = buildDefaultWorkerConfig();
 
@@ -145,7 +148,7 @@ Deno.test(
           "milestone-branch": "milestone/unbuildable",
           "default-branch": "no-such-default",
           cwd: fx.clone,
-          env: NO_HOST_GIT_CONFIG,
+          env: GIT_CONFIG_SHIELD,
         },
         config,
       );
@@ -170,7 +173,7 @@ Deno.test(
           "milestone-branch": "milestone/recreated",
           "default-branch": "main",
           cwd: fx.clone,
-          env: NO_HOST_GIT_CONFIG,
+          env: GIT_CONFIG_SHIELD,
         },
         config,
       );
@@ -197,7 +200,7 @@ Deno.test(
           "milestone-branch": "milestone/refused-env",
           "default-branch": "main",
           cwd: fx.clone,
-          env: { ...NO_HOST_GIT_CONFIG, GIT_SSH_COMMAND: "echo pwned" },
+          env: { ...GIT_CONFIG_SHIELD, GIT_SSH_COMMAND: "echo pwned" },
         },
         config,
       );
