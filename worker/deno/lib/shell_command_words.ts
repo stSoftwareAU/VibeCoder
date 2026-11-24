@@ -7,7 +7,9 @@
  * finds a command's word, and `reachableCommands` drops commands that cannot
  * run (after an unconditional `exit` or `set -n`, behind `false &&`, in a branch or loop
  * whose condition is statically false, in any function body, or inside
- * a here-document). It also reports each reachable command's separators and
+ * a here-document), and strips a `case` arm's pattern (with its optional `(`
+ * and `|` alternatives) so the command word is the arm's first command (Issue
+ * #5382). It also reports each reachable command's separators and
  * whether it is an `if`/`elif`/`while`/`until` condition. A construct it cannot judge counts
  * as reachable only when a runtime value decides it, so an unknown condition
  * keeps its commands.
@@ -224,7 +226,9 @@ const TIMEOUT_VALUE_OPTIONS = new Set([
  * `env -S`/`--split-string` makes its value the command, so the option stays
  * the command word and fails closed. `command -v`/`-V` only looks a command
  * up, so it stops the scan at `command` itself. Returns `words.length` when
- * none is found.
+ * none is found. It does not skip a `case` arm's pattern (`test) cmd`):
+ * {@link reachableCommands} removes the pattern before callers read the
+ * command word, because only the walk knows a `case` is open (Issue #5382).
  */
 export function commandIndex(words: string[]): number {
   return commandScan(words).index;
@@ -515,6 +519,11 @@ interface Frame {
   subst: boolean;
   /** A `case` statement, whose patterns end in `)`. */
   kase: boolean;
+  /**
+   * A `case` whose next command starts with an arm's pattern (its header ended
+   * in `in`, or an earlier pattern alternative was followed by `|`).
+   */
+  casePatternNext: boolean;
   /** Identity of this compound, for {@link ReachableCommand.groupSwallowed}. */
   id: number;
   /** A `for`, `select`, `while` or `until` loop. */
@@ -694,11 +703,16 @@ function isFailingExit(words: string[], bare: boolean): boolean {
  *   or a newline, with nothing chained after it).
  *
  * Any other form is false, so the caller falls back to its own rules.
+ *
+ * `hereWords` replaces the listed command's own words when the walk removed a
+ * `case` arm's pattern from them (`test) ! cmd || exit 1`), so the idioms are
+ * judged on the command and not on `test)` (Issue #5382).
  */
 function failureExits(
   listed: ShellCommand[],
   index: number,
   closePending: number | null,
+  hereWords?: string[],
 ): boolean {
   const listedHere = listed[index];
   const listedAfter = listed[index + 1];
@@ -710,7 +724,10 @@ function failureExits(
   // (`closePending` is the line's open-parenthesis count then, null when the
   // innermost frame is not such a subshell), so an exit that ends a nested
   // subshell or substitution is never read as the idiom (round 11).
-  const here = { ...listedHere, words: withoutSubshellOpen(listedHere.words) };
+  const here = {
+    ...listedHere,
+    words: withoutSubshellOpen(hereWords ?? listedHere.words),
+  };
   const after = {
     ...listedAfter,
     words: closePending === null
@@ -945,6 +962,37 @@ const UNTRACKED_HEAD_KEYWORDS = new Set([
 const UNTRACKED_HEADER_KEYWORDS = new Set(["for", "case", "select"]);
 
 /**
+ * Removes a `case` arm's pattern from the start of a command's words: an
+ * optional `(`, then the pattern word ending in `)` (`test)`) or followed by a
+ * lone `)` (`test )`). A pattern alternative followed by `|` (`nextSep`) has
+ * its `)` in the next listed command, so `more` is true and no words remain.
+ * `esac` and anything else that is not a pattern comes back unchanged (the same
+ * array) with `more` false (Issue #5382).
+ */
+function afterCasePattern(
+  words: string[],
+  nextSep: string,
+): { words: string[]; more: boolean } {
+  if (/^esac\)*$/.test(words[0] ?? "")) return { words, more: false };
+  let rest = words;
+  const lead = rest[0] ?? "";
+  if (lead === "(") rest = rest.slice(1);
+  else if (lead.length > 1 && lead.startsWith("(") && !lead.startsWith("((")) {
+    rest = [lead.slice(1), ...rest.slice(1)];
+  }
+  const first = rest[0] ?? "";
+  const balance = parenBalance(first);
+  if (first !== "" && balance.endsClose && balance.delta < 0) {
+    return { words: rest.slice(1), more: false };
+  }
+  if (first !== "" && rest[1] === ")") {
+    return { words: rest.slice(2), more: false };
+  }
+  if (rest.length === 1 && nextSep === "|") return { words: [], more: true };
+  return { words, more: false };
+}
+
+/**
  * The commands of a `run:` body that can run: it drops commands after an
  * unconditional `exit` or `set -n` / `set -o noexec`, behind `false &&` or `true ||`, in an `if`/`elif`/
  * `else` branch or a `while`/`until` body whose condition is statically false
@@ -957,7 +1005,10 @@ const UNTRACKED_HEADER_KEYWORDS = new Set(["for", "case", "select"]);
  * one a static chain always reaches (`true && exit 0`, `false || exit 0`)
  * does.
  * Returns each reachable command with its words (keywords such as `then`
- * stripped), the separators around it and whether it is a condition. The
+ * stripped, and a `case` arm's pattern with its optional `(` and `|`
+ * alternatives; a fall-through arm after `;&` or `;;&` keeps its pattern,
+ * because that separator cannot be told from a backgrounded command, so it
+ * stays uncredited: Issue #5382), the separators around it and whether it is a condition. The
  * separators and `condition` come from the same `shellCommands` list the
  * reachability walk reads, so a caller can tell `cmd || true` from `cmd`.
  */
@@ -998,6 +1049,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
       sub: false,
       subst: false,
       kase: false,
+      casePatternNext: false,
       iterates: false,
       ...partial,
       id: nextFrameId++,
@@ -1044,9 +1096,31 @@ export function reachableCommands(script: string): ReachableCommand[] {
   // pattern (the header ended at `in`).
   let untrackedCases = 0;
   let patternNext = false;
-  for (const [index, { words: all, sep }] of listed.entries()) {
+  for (const [index, { words: all, sep: listedSep }] of listed.entries()) {
     let words = all;
+    let sep = listedSep;
     const pendingBefore = linePending;
+    const untrackedHere = pendingBefore > 0 || lineTicks % 2 === 1;
+    // The words the failure-exit idioms read, once a `case` pattern is removed.
+    let hereWords: string[] | undefined;
+    // The command after a `case` arm's `;;` (or the first after `in`) starts
+    // with that arm's pattern. Only `;;` marks an arm: `;&` and `;;&` read as
+    // `&`, which cannot be told from a backgrounded command, so those arms
+    // stay uncredited (fails closed).
+    const caseFrame = stack.at(-1);
+    if (
+      !untrackedHere && caseFrame?.kase &&
+      (caseFrame.casePatternNext || sep === ";;")
+    ) {
+      const result = afterCasePattern(words, listed[index + 1]?.sep ?? "");
+      caseFrame.casePatternNext = result.more;
+      if (result.words !== words) {
+        words = result.words;
+        hereWords = words;
+        // An alternative's command (`b) cmd` after `a|`) starts the arm.
+        if (sep === "|") sep = ";;";
+      }
+    }
     // Close the innermost compound, noting whether what follows its closing
     // word (`} || true`, `fi | tee`) can swallow its status.
     const pop = (): Frame | undefined => {
@@ -1086,7 +1160,6 @@ export function reachableCommands(script: string): ReachableCommand[] {
     // substitution. Its openers and branch words are dropped with no effect on
     // the frame stack; a closer, `(` or `)` stays a plain word for the
     // parenthesis balance (round 14).
-    const untrackedHere = pendingBefore > 0 || lineTicks % 2 === 1;
     let droppedParens = 0;
     let droppedTicks = 0;
     // The first word of a `case` arm inside an untracked `$( … )` is a pattern
@@ -1196,10 +1269,31 @@ export function reachableCommands(script: string): ReachableCommand[] {
           top.earlierUnknown = top.earlierUnknown || top.truth === null;
           top.branch = "else";
         }
-      } else if (w === "for" || w === "case" || w === "select") {
-        push({ iterates: w !== "case", kase: w === "case" });
+      } else if (w === "for" || w === "select") {
+        push({ iterates: true });
         words = [];
         break;
+      } else if (w === "case") {
+        push({ kase: true });
+        const frame = stack.at(-1);
+        if (words[2] !== "in") {
+          words = [];
+          break;
+        }
+        if (words.length === 3) {
+          if (frame) frame.casePatternNext = true;
+          words = [];
+          break;
+        }
+        // The first arm shares the line (`case $1 in a) cmd ;; esac`).
+        const result = afterCasePattern(
+          words.slice(3),
+          listed[index + 1]?.sep ?? "",
+        );
+        if (frame) frame.casePatternNext = result.more;
+        words = result.words;
+        hereWords = words;
+        continue;
       } else if (w === "{") {
         if (top?.awaitBrace) top.awaitBrace = false;
         else push({ truth: true, brace: true });
@@ -1334,6 +1428,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
           listed,
           index,
           stack.at(-1)?.sub && !stack.at(-1)?.subst ? linePending : null,
+          hereWords,
         ),
         groupSwallowed: false,
         errexitIgnored: false,
