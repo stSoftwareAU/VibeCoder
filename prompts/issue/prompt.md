@@ -309,14 +309,17 @@ guessing.
    remaining assertions on supported behaviour (see **An
    edited expectation must still go red without its guard** in the
    guidelines).
-3. Update the documentation in the same change. A change that **adds, changes
-   or removes** behaviour, a field, a UI element or a setting owes a docs
-   change — see **A Code Change Owes a Docs Change** in `CODING-STANDARDS.md`
-   (restated in the `<coding_guidelines>`). Before you commit, grep
-   `README.md`, `docs/` (excluding `docs/archive/`) and every `*/README.md`
-   for each name you removed or changed **and** for the user-visible wording
-   you removed — a label, a status sentence, a setting's description — then
-   fix every hit, so no manual still describes what the code no longer does.
+3. Update the documentation in the same change — see **A Code Change Owes a
+   Docs Change** in `CODING-STANDARDS.md` (restated in the `<coding_guidelines>`).
+   When a change renames or removes something, or changes the behaviour, meaning,
+   default or value of something a doc or comment describes, every other statement
+   of the old version is now false. Before you commit, search for the old version:
+   grep README, `docs/`, prompts and agent instructions, source doc comments and
+   user-visible strings for the old name **and** for the stem of the old wording
+   or value (`replac\w*`, not "replaces"). The old wording includes each doc line
+   your own diff removed or rewrote. Read the sentence around every hit and fix
+   each one the change makes false, including in a file the diff does not otherwise
+   touch. Then re-run the grep on the final head.
    In addition to the term grep, find the **manual section** that documents
    the surface you changed by grepping for the surface's own name — the card
    or page title for a UI component, the route for an endpoint, the report or
@@ -324,19 +327,6 @@ guessing.
    change; read that section through and fix every sentence the change makes
    false. A grep hit is cleared only after reading the sentence it is in,
    never by the file's topic.
-   Grep **source files** too, not only the manuals: for each name you
-   removed or whose behaviour you changed, and for the shared constants,
-   types and helpers the changed code defines or calls. Read every doc
-   comment and module doc a hit lands in — a constant's definition, a
-   reader's safety argument, a helper's list of callers — and fix any
-   sentence the change makes false, including in a file the diff does not
-   otherwise touch.
-   Grep for the **stem** of a behavioural claim, not one inflection
-   (`replac\w* or remov\w*`, not "replaces or removes"). In every file you
-   list as updated, read every passage that mentions the changed surface,
-   not only the section you edited. Then re-run every grep **on the final
-   head, after editing**. Name the section you read and the doc files you
-   updated in the PR summary.
    Before new prompt or doc text states how another component behaves —
    above all an exclusive or negative claim ("the only …", "never …", "the
    worker does not …") — open the code that implements it and cite that file
