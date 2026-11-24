@@ -67,7 +67,7 @@ export function bindMilestoneConflictAgent(
   const grantSeconds = grant.agentTimeoutSeconds;
   let grantStartedAtMs: number | undefined;
   // Issue #2309: the caller is told once, when the rung is genuinely entered.
-  // A gate repair is the same attempt continuing, so it announces nothing.
+  // Later repair rounds continue that attempt and announce nothing again.
   let announced = false;
   return async (request: MilestoneConflictAgentRequest) => {
     let claudeTimeout = config.claudeTimeout;
