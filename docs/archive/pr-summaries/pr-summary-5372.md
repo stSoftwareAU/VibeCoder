@@ -57,9 +57,10 @@ Related existing rules I checked:
 - **Observe the real tool before you rely on it**: still says to build the
   fake's fixture from observed output, which agrees with the new rule.
 
-I applied the shortened rule to this PR's own diff. The only test is a
-documentation-drift test, and it reads the real documents rather than a
-hand-built stand-in, so the rule flags nothing.
+I applied the shortened rule to this PR's own diff. The only test this change
+adds or rewrites for the rule is a documentation-drift test, and it reads the
+real documents rather than a hand-built stand-in, so the rule flags nothing. The
+diff also edits one unrelated test, the #5236 growth guards (see the Test Plan).
 
 Issue numbers cited as provenance: #5372: Shorten the #3900 fake-mirrors rule
 after recurrence: its lists read as its scope and its PR-summary lines check
@@ -91,6 +92,18 @@ nothing (VibeCoder#4607, #4709, #4999 and private fleet PRs).
   prompt, so the updated pins and the absence test fail there.
 - `worker/deno/tests/third_party_tool_semantics_3235_test.ts`: unchanged. It
   passes with the reworded back-reference.
+- `worker/deno/tests/dummy_test_scan_growth_5236_test.ts`, an unrelated test
+  edited in the same PR (commit "Harden dummy-test scan growth guards against CI
+  timing noise"): the four `assertLinearGrowth` guards change `repeats: 1` to
+  `repeats: 3`. A CI run read a single 58 ms reading against the 50 ms grace;
+  `fastestInterleaved` in `worker/deno/tests/support/growth.ts` keeps the
+  fastest of the interleaved readings per size, so three readings make one
+  busy-runner spell unable to fail the guard. Thresholds are unchanged: slack,
+  grace and size factor keep their values. Protection that remains: a quadratic
+  scan still fails, because the fastest of three readings of a scan that costs
+  `sizeFactor` squared stays far over the allowance (`pr-summary-5236.md`
+  records the unfixed scan at 210 ms to 3139 ms, about 15x, against the 1732 ms
+  a linear rule allows, about 8x).
 - `deno test -A tests/fake_mirrors_production_3224_test.ts tests/third_party_tool_semantics_3235_test.ts`:
   10 passed, 0 failed.
 - `./quality.sh < /dev/null`: PASSED. Config integration and checkov were
