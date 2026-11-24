@@ -193,7 +193,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/v1-0",
         "main",
-        { cwd: clonePath },
+        { cwd: clonePath, env: NO_HOST_GIT_CONFIG },
         undefined,
         fakePassingGate,
         fakePassingGate,
@@ -280,7 +280,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/v1-0",
         "main",
-        { cwd: clonePath },
+        { cwd: clonePath, env: NO_HOST_GIT_CONFIG },
         undefined,
         fakePassingGate,
         fakePassingGate,
@@ -369,6 +369,7 @@ Deno.test(
 
       const result = await mergeWithUnshallowRetry("main", {
         cwd: clonePath,
+        env: NO_HOST_GIT_CONFIG,
       });
 
       assertEquals(
@@ -438,6 +439,7 @@ Deno.test(
 
       const result = await mergeWithUnshallowRetry("main", {
         cwd: localPath,
+        env: NO_HOST_GIT_CONFIG,
       });
 
       assertEquals(
