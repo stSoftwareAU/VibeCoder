@@ -131,9 +131,11 @@ unstaged: that one is left out of the rewrite and the commit, by the repository
 formatters (even a `.json` file a Deno config covers) as well as the archive
 step, so its uncommitted edit stays uncommitted (Issue #5328). The completion phase's call
 instead stashes it, because its pre-push gate judges the working tree and its
-push carries commits only; the file then holds its committed copy and is
-formatted and committed like any other archive file; the other callers only leave it out of the rewrite and the
-commit. If that check fails, the
+push carries commits only, even in a repository that tracks no Deno config
+(Issue #5393); the file then holds its committed copy, which is formatted and
+committed like any other archive file where a Deno config exists. The other
+callers only leave it out of the rewrite and the commit, and with no Deno
+config leave the archive alone. If that check fails, the
 archive step is skipped with a warning. Before `deno fmt`, each linkage-only
 line in archive Markdown is put in a paragraph of its own (Issue #4802). An
 archive file over 1 MiB (`MAX_ARCHIVE_REWRITE_BYTES`) is skipped with a warning
