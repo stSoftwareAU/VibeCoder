@@ -13,6 +13,10 @@
  * and OpenAI credentials must not reach the Gemini child by convention or by
  * luck of the shape pattern, but because they are named here.
  *
+ * A Google-account login (Issue #5339) is selected through `GEMINI_CLI_HOME`,
+ * which is deliberately not denied: {@link buildIsolatedGeminiChildEnv} owns
+ * it and withholds every API key when it is set.
+ *
  * Australian English spelling throughout (behaviour, organisation).
  */
 
@@ -22,6 +26,10 @@ import {
   WORKER_ONLY_SECRET_ENV_VARS,
 } from "./agent_env.ts";
 import { CLAUDE_CREDENTIAL_ENV_VARS } from "./claude_env.ts";
+import {
+  GEMINI_CLI_HOME_ENV_VAR,
+  GEMINI_LOGIN_SELECTOR_ENV_VAR,
+} from "./gemini_auth.ts";
 
 /**
  * Environment variables the `gemini` child must never inherit.
@@ -97,4 +105,58 @@ export function buildGeminiChildEnv(
     denylist,
     secretAllowlist: GEMINI_ENV_SECRET_ALLOWLIST,
   });
+}
+
+/**
+ * Build the `gemini` child environment with the billing guard applied
+ * (Issue #5339).
+ *
+ * When a `GEMINI_CLI_HOME` is selected, the Google-account login under it owns
+ * authentication: the home and `GOOGLE_GENAI_USE_GCA=true` are set and no API
+ * key reaches the child as a backup. A stale or revoked login must fail
+ * authentication rather than silently turn an unattended run into metered API
+ * spend. With no non-blank home the API keys and the parent's own
+ * `GOOGLE_GENAI_USE_GCA` pass through as {@link buildGeminiChildEnv} passes
+ * them; a blank `GEMINI_CLI_HOME` is dropped rather than handed to the CLI.
+ *
+ * Does not mutate the parent object.
+ *
+ * @param parentEnv - The environment to inherit from.
+ * @param selected - The credential values selected for this child.
+ * @returns A new object safe to pass as the child's `env`.
+ */
+export function buildIsolatedGeminiChildEnv(
+  parentEnv: Record<string, string>,
+  selected: {
+    readonly geminiApiKey?: string;
+    readonly googleApiKey?: string;
+    readonly geminiCliHome?: string;
+  },
+): Record<string, string> {
+  const stripped = { ...parentEnv };
+  delete stripped.GEMINI_API_KEY;
+  delete stripped.GOOGLE_API_KEY;
+  delete stripped[GEMINI_CLI_HOME_ENV_VAR];
+  delete stripped[GEMINI_LOGIN_SELECTOR_ENV_VAR];
+  const child = buildGeminiChildEnv(stripped);
+
+  const home = selected.geminiCliHome?.trim();
+  if (home) {
+    // Fail closed: the login owns authentication, no key as a backup.
+    child[GEMINI_CLI_HOME_ENV_VAR] = home;
+    child[GEMINI_LOGIN_SELECTOR_ENV_VAR] = "true";
+    return child;
+  }
+
+  if (selected.geminiApiKey !== undefined) {
+    child.GEMINI_API_KEY = selected.geminiApiKey;
+  }
+  if (selected.googleApiKey !== undefined) {
+    child.GOOGLE_API_KEY = selected.googleApiKey;
+  }
+  const parentSelector = parentEnv[GEMINI_LOGIN_SELECTOR_ENV_VAR];
+  if (parentSelector !== undefined) {
+    child[GEMINI_LOGIN_SELECTOR_ENV_VAR] = parentSelector;
+  }
+  return child;
 }

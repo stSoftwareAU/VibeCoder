@@ -8,7 +8,10 @@
  *
  * The shape is `gemini --prompt <PROMPT>`: the CLI is interactive by default
  * and `-p/--prompt` is what makes one run headless, which is the only mode an
- * unattended worker can use.
+ * unattended worker can use. The worker's runs send the prompt on stdin
+ * instead (`promptViaStdin`, see {@link GeminiInvocation}): a piped stdin makes
+ * the CLI headless and it reads the prompt from there, which keeps a prompt
+ * past Linux's 128 KiB single-argument cap out of argv.
  *
  * In Quorum mode Gemini is the judge, so its verdict has to be read rather
  * than guessed at. Three CLI facts drive the translation from
@@ -22,7 +25,10 @@
  * - **There is no `--system-prompt` and no per-tool disable flag.** Both are
  *   composed into the single prompt by the shared composer rather than
  *   dropped — the sandboxed-environment guidance of Issue #4070 reaches this
- *   provider through that prompt.
+ *   provider through that prompt. The tool denials are also enforced through
+ *   the per-run settings file (`gemini_settings.ts`, Issue #5341). The run's
+ *   MCP servers ride the same file, and `--allowed-mcp-server-names` restricts
+ *   which of them load (Issue #5343).
  * - **There is no reasoning-effort option.** An effort the caller supplies is
  *   therefore not translated into a flag the CLI does not have: inventing one
  *   would fail the run outright. It is not dropped in silence either
@@ -54,6 +60,10 @@ import type { RepoConfig } from "../types.ts";
  *   deliberately absent: containment is the container's job.
  * - `--skip-trust` — the worker chooses the working tree itself, so the
  *   workspace-trust prompt has nobody to answer it.
+ *
+ * `--allowed-mcp-server-names` is not listed here: {@link buildGeminiArgs}
+ * always emits it, because its empty form is what keeps servers off (Issue
+ * #5343).
  */
 const STANDARD_FLAGS: readonly string[] = [
   "--output-format",
@@ -62,9 +72,6 @@ const STANDARD_FLAGS: readonly string[] = [
   "yolo",
   "--skip-trust",
 ];
-
-/** Resume the most recent recorded session (`--resume latest`). */
-const RESUME_LATEST: readonly string[] = ["--resume", "latest"];
 
 // ---------------------------------------------------------------------------
 // Per-phase model routing (Issue #364, parent #357)
@@ -229,24 +236,52 @@ export interface GeminiInvocation extends AgentPromptParts {
   effort?: string;
   /** The phase the effort was requested for, named in that warning. */
   phase?: string;
-  /** Continue the previous run of this issue rather than starting fresh. */
-  resumeSession?: boolean;
+  /** Start a new session under this id (`--session-id`). */
+  sessionId?: string;
+  /** Continue this session (`--resume`). */
+  resumeSessionId?: string;
+  /**
+   * The run's MCP server names (Issue #5343): the only servers the CLI loads.
+   * Absent or empty loads none; see {@link buildGeminiArgs}.
+   */
+  mcpServerNames?: readonly string[];
+  /**
+   * The prompt travels on the child's stdin, so no `--prompt` is emitted and
+   * the composed prompt stays out of argv. Linux caps one argv element at
+   * 128 KiB and a real PR-feedback or issue prompt exceeds it ("Argument list
+   * too long" at spawn). Gemini CLI 0.68.0 is headless whenever stdin is not a
+   * TTY and takes the piped text as the prompt (`packages/cli/src/gemini.tsx`,
+   * `packages/core/src/utils/headless.ts`; 8 MB cap in `utils/readStdin.ts`).
+   * The caller writes {@link composeGeminiPrompt}'s result to stdin.
+   */
+  promptViaStdin?: boolean;
+}
+
+/**
+ * The single prompt a Gemini run takes: system guidance, the tool restriction
+ * and the run's own prompt, composed by the shared composer. It is the stdin
+ * body when {@link GeminiInvocation.promptViaStdin} is set and the `--prompt`
+ * value otherwise.
+ */
+export function composeGeminiPrompt(parts: AgentPromptParts): string {
+  return composeAgentPrompt(parts);
 }
 
 /**
  * Build the Gemini CLI argument list for one non-interactive run.
  *
- * Session continuity uses `--resume latest`: Gemini names sessions with its
- * own identifiers, so the worker resumes the most recent recorded session —
- * which, within a run, is the previous phase of the same issue — rather than
- * inventing an id Gemini would reject.
+ * Session continuity uses explicit ids (Issue #5342): Gemini CLI 0.68.0
+ * accepts `--session-id <id>` and `--resume <id>` and rejects the two together.
+ * The worker-generated UUID opens the session, and later phases resume it by
+ * id, so concurrent slots never resume each other's session.
  *
  * A requested reasoning effort adds no argument — the CLI has no such option —
  * but it does emit one warning naming the phase and the effort (Issue #364), so
  * a configured lever that does nothing is visible rather than silent.
  *
  * @param invocation - Prompt, model/effort selection and resume state.
- * @returns The argument list, prompt last.
+ * @returns The argument list, `--prompt <text>` last, or no prompt at all when
+ *   `promptViaStdin` is set.
  */
 export function buildGeminiArgs(invocation: GeminiInvocation): string[] {
   const args: string[] = [...STANDARD_FLAGS];
@@ -255,8 +290,41 @@ export function buildGeminiArgs(invocation: GeminiInvocation): string[] {
     warnEffortUnsupported(invocation.effort, invocation.phase);
   }
   if (invocation.model) args.push("--model", invocation.model);
-  if (invocation.resumeSession) args.push(...RESUME_LATEST);
+  if (invocation.sessionId && invocation.resumeSessionId) {
+    throw new Error(
+      `Gemini invocation sets both sessionId (${invocation.sessionId}) and ` +
+        `resumeSessionId (${invocation.resumeSessionId}): the Gemini CLI ` +
+        "rejects --session-id together with --resume",
+    );
+  }
+  if (invocation.resumeSessionId === "latest") {
+    throw new Error(
+      "Gemini --resume latest is refused: it would resume whichever session " +
+        "ran last, possibly another issue's",
+    );
+  }
+  if (invocation.sessionId) {
+    args.push("--session-id", invocation.sessionId);
+  } else if (invocation.resumeSessionId) {
+    args.push("--resume", invocation.resumeSessionId);
+  }
 
-  args.push("--prompt", composeAgentPrompt(invocation));
+  // Always passed (Issue #5343). Gemini CLI 0.68.0 treats an empty allow-list
+  // as "all servers", but its yargs coercion (`coerceCommaSeparated` in
+  // packages/cli/src/config/config.ts) turns a single "" into [""], which no
+  // server name matches, so "" loads none, including servers from the user's
+  // own settings or extensions. The argv also overrides `mcp.allowed` from
+  // settings, and the CLI ignores file-based `admin.mcp.enabled`, so this flag
+  // is the only control. The filter itself is in
+  // packages/core/src/tools/mcp-client-manager.ts (`isBlockedBySettings`),
+  // which applies only when the list is non-empty.
+  args.push(
+    "--allowed-mcp-server-names",
+    (invocation.mcpServerNames ?? []).join(","),
+  );
+
+  if (!invocation.promptViaStdin) {
+    args.push("--prompt", composeGeminiPrompt(invocation));
+  }
   return args;
 }
