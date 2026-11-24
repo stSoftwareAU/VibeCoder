@@ -72,7 +72,7 @@ flowchart TD
 - [x] Reproduce against unfixed base code.
 - [x] Fix both readers, review-pass exclusion and worker override handling.
 - [x] Update skill, design principles and merge manual.
-- [ ] Complete full quality and summary gates, then commit and push this record.
+- [x] Complete the full quality gate and summary gate.
 
 - Red: the final regression fixtures against `origin/main` production yielded
   99 passed and 9 failed in the three gate/worker/parity files. The review pass
@@ -89,20 +89,41 @@ flowchart TD
   `worker/deno/tests/review_fleet_prs_gate_audit_3116_test.ts`,
   `worker/deno/tests/merge_gate_fail_closed_test.ts`,
   `worker/deno/tests/check_runs_batch_test.ts`.
-- Changed tests: unfinished-suite assertions that formerly expected ready/passed
-  now expect waiting/pending, as required by the issue. No other behaviour
-  assertions were removed. Completed success/skipped/neutral, zero-run failures,
-  cancellation precedence, completed reruns, other apps and absent suite data
-  retain coverage. The review-pass and merge-override tests include completed
-  controls; parity includes case folding and nonzero run counts.
+- Review regressions in `worker/deno/tests/review_fleet_prs_gate_4347_test.ts`:
+  `skipReason: unfinished Actions suites wait despite a green rollup` covers
+  queued/running suites, nonzero counts and stale conclusions;
+  `skipReason: failures and cancellations precede unfinished Actions suites`
+  preserves precedence; `pass: unfinished Actions heads never enter the ready list`
+  drives the review pass with a completed-green control.
+- Worker regressions in `worker/deno/tests/direct_merge_test.ts`:
+  `direct_merge - checkCiStatus waits for an unfinished github-actions suite (QUEUED)` covers GraphQL;
+  `direct_merge - REST fallback waits for unfinished Actions suites` covers REST;
+  `direct_merge - pending suites cannot mask red rollups, runs, statuses or suites` covers
+  failure precedence; `direct_merge - no-checks override cannot bypass unfinished Actions CI`
+  drives the real CI reader through the merge gate with a completed control.
+- Changed expectations: unfinished-suite assertions that formerly expected
+  ready/passed now expect waiting/pending, as required by the issue. No other
+  behaviour assertions were removed. Existing tests in those two files retain
+  completed success/skipped/neutral, zero-run failure, cancellation, completed
+  rerun, other-app and absent-suite coverage.
 - The twinned rules are `skipReason` in the standalone review script and
-  `determineCiStatus` in the worker. The parity test exercises both real readers.
+  `determineCiStatus` in the worker. The parity test
+  `the worker and review gate agree on unfinished suites beside green checks`
+  exercises both readers, including case folding, other apps and nonzero counts.
   `recordLifecyclePrSnapshot` is the additional existing caller: its regression
+  `PR observations do not record quality passed while an Actions suite is unfinished`
   checks the real ledger records pending CI as unverified. The no-checks retry
   wording was checked against `worker/deno/lib/merge_block_escalation.ts`,
   `classifyMergeAttempt` (`no_checks` returns `retry`).
 - Targeted formatting, lint and type checks passed. The initial type check found
   a union narrowing error in the lifecycle test; it was corrected and rerun green.
+- `./quality.sh < /dev/null`: passed with skipped checks. Tests, lint, type
+  checks, formatting, completeness, Mermaid, Markdown, Semgrep and gitleaks
+  passed. Config integration skipped because the container has no worker config;
+  local Checkov skipped because neither its pinned binary nor image is available.
+- `deno task pr-summary-check --base main`: passed, zero blocked and zero
+  not-checked gates. Closure, independent review and bug-label reproduction
+  sections were not applicable to this issue's labels and body.
 - Related skill rules checked: CI green/pending, cancelled checks and the red
   dependency-audit exception. The changed CI rule was applied to this diff;
   the skill, code comments, design principles, manual and tests agree that an
@@ -114,5 +135,7 @@ Remote CI and independent code review are pending.
 
 ## Remaining checks and risks
 
-Full quality and summary gates have not run yet. No age-based abandoned-suite
-exception was added; an API-reported unfinished Actions suite remains pending.
+Config integration and local Checkov were skipped by the full gate; remote CI
+and independent review have not been verified. No live concurrency delay was
+recreated, and no abandoned Actions suite without a workflow run was established.
+An API-reported unfinished Actions suite remains pending regardless of age.
