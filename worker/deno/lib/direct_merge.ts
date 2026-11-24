@@ -640,7 +640,7 @@ function rollupStateToCiStatus(
  * - If a completed GitHub Actions check suite created no check run and has a
  *   conclusion off the passing allowlist → failed (Issue #4347).
  * - If no check runs, commit statuses or unfinished Actions suites exist →
- *   no_checks (unverified — #3705).
+ *   no_checks (unverified).
  * - If any check run's conclusion is not on the passing allowlist → failed.
  * - If the combined status state is not `success`/`pending` → failed.
  * - If any check run is not completed → pending.
