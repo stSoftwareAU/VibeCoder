@@ -198,7 +198,7 @@ flowchart LR
     cover the behaviour.
 - Results on the final code head:
   - `deno task test:unit tests/mcp_server_entries_test.ts tests/gemini_settings_5341_test.ts tests/agent_provider_gemini_test.ts`:
-    50 passed, 0 failed.
+    51 passed, 0 failed (re-counted on the head).
   - `deno task test:unit tests/codegraph_context_test.ts tests/repo_context_trial_docs_test.ts`:
     38 passed, 0 failed.
   - `./quality.sh < /dev/null`: exit 0, Result: PASSED (with skipped checks:

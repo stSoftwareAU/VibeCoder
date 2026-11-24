@@ -74,6 +74,9 @@ interface SeenByCli {
   settings: Record<string, unknown>;
   settingsDir: string;
   policy: string;
+  /** What the CLI read from stdin, and the argv it was started with. */
+  stdin: string;
+  argv: string;
 }
 
 /** Runs `body` with a Gemini stub that records the per-run settings tree. */
@@ -92,6 +95,9 @@ mkdir -p "$dir/runs/$n"
 cp -R "$(dirname "$settings")/." "$dir/runs/$n/"
 printf '%s\\n' "$(dirname "$settings")" > "$dir/runs/$n/settings-dir"
 : > "$dir/ran"
+# The prompt arrives on stdin; record it and the argv the CLI was started with.
+cat > "$dir/runs/$n/stdin"
+printf '%s\\n' "$@" > "$dir/runs/$n/argv"
 cat <<'AGENT_FIXTURE_EOF'
 ${SUCCESS_STREAM}AGENT_FIXTURE_EOF
 exit 0
@@ -111,6 +117,8 @@ exit 0
       settingsDir: (await Deno.readTextFile(`${stub.dir}/runs/0/settings-dir`))
         .trim(),
       policy: await Deno.readTextFile(`${stub.dir}/runs/0/policy/deny.toml`),
+      stdin: await Deno.readTextFile(`${stub.dir}/runs/0/stdin`),
+      argv: await Deno.readTextFile(`${stub.dir}/runs/0/argv`),
     };
     return { value, ran, seen };
   }, { prefix: "gemini_policy_5524_" });
@@ -278,17 +286,15 @@ Deno.test({
     try {
       const outcome = await withGeminiStub(root, async (stub, env) => {
         const mockClaude: Partial<ClaudeDeps> = {
-          // The production processor builds the options; the provider and the
-          // CLI binary are pointed at the stub. The system prompt is dropped
-          // because Gemini takes its prompt as one argv element, which the
-          // fixture prompt plus the real system prompt would exceed, and the
-          // browser MCP entry is dropped so the settings file holds only the
-          // denials; neither changes the denials under test.
+          // The production processor builds the options, including its real
+          // system prompt; the provider and the CLI binary are pointed at the
+          // stub. The browser MCP entry is dropped so the settings file holds
+          // only the denials under test.
           runClaudeWithRetry:
             ((options: Parameters<typeof runClaudeWithTimeout>[0]) =>
               runClaudeWithTimeout(
                 onGemini(
-                  { ...options, systemPrompt: "", mcpConfig: undefined },
+                  { ...options, mcpConfig: undefined },
                   stub.path,
                   env,
                 ),
@@ -352,6 +358,28 @@ Deno.test({
         policyPaths: [`${outcome.seen.settingsDir}/policy`],
       });
       assertEquals(await exists(outcome.seen.settingsDir), false);
+      // The real PR-feedback prompt is past Linux's 128 KiB single-argument
+      // cap, so the run only starts because it travels on stdin (PR #5524
+      // review): the stub received all of it and argv carries none of it.
+      const stdinBytes = new TextEncoder().encode(outcome.seen.stdin).length;
+      assert(
+        stdinBytes > 131_072,
+        `the composed prompt is ${stdinBytes} bytes; expected more than 128 KiB`,
+      );
+      assertStringIncludes(
+        outcome.seen.stdin,
+        "Please fix the typo on line 10",
+      );
+      assertStringIncludes(
+        outcome.seen.stdin,
+        "Do not use the following tools",
+      );
+      assertEquals(outcome.seen.argv.includes("--prompt"), false);
+      assertEquals(outcome.seen.argv.includes("Please fix the typo"), false);
+      assert(
+        new TextEncoder().encode(outcome.seen.argv).length < 131_072,
+        "argv must stay under the single-argument cap",
+      );
     } finally {
       await Deno.remove(root, { recursive: true });
       await Deno.remove(workDir, { recursive: true });

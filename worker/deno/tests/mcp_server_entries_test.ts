@@ -11,7 +11,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { buildGeminiMcpServers } from "../lib/gemini_settings.ts";
 import { readMcpServerEntries } from "../lib/mcp_server_entries.ts";
 import { IMAGE_AGENT_PROVIDERS_ENV } from "../lib/agent_provider.ts";
@@ -182,7 +182,9 @@ exit 0
       const flag = outcome.argv.indexOf("--allowed-mcp-server-names");
       assert(flag >= 0, `no allowed-server flag in ${outcome.argv.join(" ")}`);
       assertEquals(outcome.argv[flag + 1], "");
-      assertStringIncludes(outcome.argv.join("\n"), "--prompt");
+      // The prompt travels on stdin, so argv carries no `--prompt` (PR #5524
+      // review).
+      assertEquals(outcome.argv.includes("--prompt"), false);
     } finally {
       await Deno.remove(root, { recursive: true });
     }

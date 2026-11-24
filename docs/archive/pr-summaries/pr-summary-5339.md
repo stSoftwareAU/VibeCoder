@@ -217,7 +217,7 @@ Issue numbers cited as provenance:
 - Red run against base: I restored the base production files (`gemini_auth.ts`,
   `gemini_env.ts`, `agent_provider.ts`, the three `*_env.ts`,
   `provider_billing.ts`) and kept the new tests. The denylist test and the
-  feasibility test failed (`FAILED | 53 passed | 2 failed`).
+  feasibility test failed (the two failures in that run).
   `gemini_subscription_auth_test.ts` failed to type-check because
   `initialiseGeminiHome` and `resolveGeminiAuthMode` do not exist on base. The
   new redaction tests failed before the rules existed. All pass at the head.

@@ -8,7 +8,10 @@
  *
  * The shape is `gemini --prompt <PROMPT>`: the CLI is interactive by default
  * and `-p/--prompt` is what makes one run headless, which is the only mode an
- * unattended worker can use.
+ * unattended worker can use. The worker's runs send the prompt on stdin
+ * instead (`promptViaStdin`, see {@link GeminiInvocation}): a piped stdin makes
+ * the CLI headless and it reads the prompt from there, which keeps a prompt
+ * past Linux's 128 KiB single-argument cap out of argv.
  *
  * In Quorum mode Gemini is the judge, so its verdict has to be read rather
  * than guessed at. Three CLI facts drive the translation from
@@ -242,6 +245,26 @@ export interface GeminiInvocation extends AgentPromptParts {
    * Absent or empty loads none; see {@link buildGeminiArgs}.
    */
   mcpServerNames?: readonly string[];
+  /**
+   * The prompt travels on the child's stdin, so no `--prompt` is emitted and
+   * the composed prompt stays out of argv. Linux caps one argv element at
+   * 128 KiB and a real PR-feedback or issue prompt exceeds it ("Argument list
+   * too long" at spawn). Gemini CLI 0.68.0 is headless whenever stdin is not a
+   * TTY and takes the piped text as the prompt (`packages/cli/src/gemini.tsx`,
+   * `packages/core/src/utils/headless.ts`; 8 MB cap in `utils/readStdin.ts`).
+   * The caller writes {@link composeGeminiPrompt}'s result to stdin.
+   */
+  promptViaStdin?: boolean;
+}
+
+/**
+ * The single prompt a Gemini run takes: system guidance, the tool restriction
+ * and the run's own prompt, composed by the shared composer. It is the stdin
+ * body when {@link GeminiInvocation.promptViaStdin} is set and the `--prompt`
+ * value otherwise.
+ */
+export function composeGeminiPrompt(parts: AgentPromptParts): string {
+  return composeAgentPrompt(parts);
 }
 
 /**
@@ -257,7 +280,8 @@ export interface GeminiInvocation extends AgentPromptParts {
  * a configured lever that does nothing is visible rather than silent.
  *
  * @param invocation - Prompt, model/effort selection and resume state.
- * @returns The argument list, prompt last.
+ * @returns The argument list, `--prompt <text>` last, or no prompt at all when
+ *   `promptViaStdin` is set.
  */
 export function buildGeminiArgs(invocation: GeminiInvocation): string[] {
   const args: string[] = [...STANDARD_FLAGS];
@@ -299,6 +323,8 @@ export function buildGeminiArgs(invocation: GeminiInvocation): string[] {
     (invocation.mcpServerNames ?? []).join(","),
   );
 
-  args.push("--prompt", composeAgentPrompt(invocation));
+  if (!invocation.promptViaStdin) {
+    args.push("--prompt", composeGeminiPrompt(invocation));
+  }
   return args;
 }

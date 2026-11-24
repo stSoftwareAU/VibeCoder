@@ -101,6 +101,7 @@ import {
 } from "./codex_auth_mode.ts";
 import {
   buildGeminiArgs,
+  composeGeminiPrompt,
   resolveGeminiEffort,
   resolveGeminiModel,
 } from "./gemini_executor.ts";
@@ -1127,7 +1128,11 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
     denylist: GEMINI_ENV_DENYLIST,
   },
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/gemini.sh` },
-  promptTransport: "argv",
+  // Stdin, as for Claude and Codex (Issue #4385): the composed system prompt
+  // and prompt of a real PR-feedback or issue run exceed Linux's 128 KiB
+  // single-argument cap (PR #5524 review). A caller that does not set
+  // `promptViaStdin` still gets `--prompt <text>`.
+  promptTransport: "stdin",
   // The stream-json decoder and failure classifier (Issue #5340), deferred
   // for the same import cycle as Claude's above.
   get output(): AgentOutputAdapter {
@@ -1173,6 +1178,17 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
       // The servers the run's config names, the only ones the CLI loads
       // (Issue #5343).
       mcpServerNames,
+      promptViaStdin: request.promptViaStdin,
+    });
+  },
+
+  // The whole composed prompt: Gemini has no separate system-prompt or
+  // denied-tools flag, so both fold into the one prompt (`agent_prompt.ts`).
+  stdinBody(request: AgentInvocationRequest): string {
+    return composeGeminiPrompt({
+      prompt: request.prompt,
+      systemPrompt: request.systemPrompt,
+      disallowedTools: request.disallowedTools,
     });
   },
 
