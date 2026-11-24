@@ -1191,14 +1191,15 @@ When creating the PR, include evidence based on the type of change:
   it created itself (`Deno.makeTempDir`, `mktemp -d`), and prove cleanup through
   a temp-root parameter pointed at that directory (see **Never let a unit test
   inherit the host's state** in `CODING-STANDARDS.md`). When the
-  change relies on how git, `gh`, the GitHub API or another external tool
-  behaves in a particular case, run the real tool on that case first and build
-  the fake's fixture from the observed output (see **Observe the real tool
-  before you rely on it** in the guidelines). The PR summary's Evidence gives
-  the command you ran and the part of the output the code depends on, or cites
-  the tool's documentation or source when the case cannot be observed safely. A
-  fake built from the behaviour you expected rather than the behaviour you
-  observed is a blocking self-review finding. When the change adds or changes a
+  change relies on what git, `gh`, the GitHub API or another external tool
+  prints or returns, take the test's input from the tool, not from what you
+  expect it to be: run the tool in the test where the suite has it, in the
+  environment production gives it, or use output copied from a real run; if the
+  case cannot be observed safely, take it from the tool's documentation or
+  source (see **Observe the real tool before you rely on it** in the
+  guidelines). A fake built from the behaviour you expected rather than the
+  behaviour you observed is a blocking self-review finding.
+  When the change adds or changes a
   recorded failure or degradation reason that quotes a tool's output, the reason
   quotes the line that names the cause and its test asserts that cause text, not
   only the prefix (see **A failure reason names the cause, not just the
