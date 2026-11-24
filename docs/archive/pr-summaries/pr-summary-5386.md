@@ -81,8 +81,13 @@ Docs and prompt change only; no runtime code changed.
     where the suite has it", "in the environment production gives it", "or use
     output copied from a real run" and "take it from the tool's documentation or
     source". "If the issue names real examples, use them" is still pinned.
-  - **New absence check:** the four retired phrases must not appear in the
-    located paragraph. Locating the paragraph is the positive control.
+  - **New absence check:** four phrases from the old rule must not appear in
+    the located paragraph: "run the real tool on that case first", "in a
+    particular case", "give the command you ran and the part of the output the
+    code depends on" and "Build the fake's fixture from the observed output".
+    This set is not the same as the retired pins above. "cite the tool's
+    documentation or source" is not in it, and "in a particular case" was never
+    pinned. Locating the paragraph is the positive control.
   - **Issue-prompt test:** it now pins "take the test's input from the tool" and
     "run the tool in the test where the suite has it". It still pins the
     back-reference and the blocking self-review sentence, and it asserts that
