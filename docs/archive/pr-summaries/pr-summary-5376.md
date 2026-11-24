@@ -4,21 +4,21 @@
 
 Planning and question failures now record and honour the escalating re-claim
 cooldown (2 h → 6 h → 24 h) that their failure comment already promises.
-`findAndProcessByLabel` opts these two routes into a new `failureCooldown`
-mode. In that mode `handleIssueFailure` is wrapped so a posted failure record
-also records a ladder cooldown entry, and the label scan skips an issue while
-that entry holds. Before this change a planning issue that kept failing was
-re-run every cycle. The stale `handlePlanningFailure` doc comment ("failed-once/failed
-progression") is corrected, and the docs that said "the planning path records
-no cooldown" now describe the new behaviour. Closes #5376.
+`findAndProcessByLabel` opts these two routes into a new `failureCooldown` mode.
+In that mode `handleIssueFailure` is wrapped so a posted failure record also
+records a ladder cooldown entry, and the label scan skips an issue while that
+entry holds. Before this change a planning issue that kept failing was re-run
+every cycle. The stale `handlePlanningFailure` doc comment ("failed-once/failed
+progression") is corrected, and the docs that said "the planning path records no
+cooldown" now describe the new behaviour. Closes #5376.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The triage decision chose the first option: keep the comment text and make
-  the routes match it, because each repeated planning run costs a full agent
-  run on an unattended host.
+- The triage decision chose the first option: keep the comment text and make the
+  routes match it, because each repeated planning run costs a full agent run on
+  an unattended host.
 - The cooldown is recorded by wrapping `WorkerDeps.github.handleIssueFailure`
   inside the route, not at `!processed`. Processors return `ok: false` for
   declines too (a lost claim race), and those must not cost a 2 h hold.
@@ -37,8 +37,8 @@ no cooldown" now describe the new behaviour. Closes #5376.
   by a coding-route skip does not delay a fresh planning hand-off, and nor does
   this process's processed-issue registry.
 - The hold uses the same `cooldownConfig` (factory `workDir`) the writer uses.
-  `isIssueInCooldown` now delegates to the extracted sync `isHeldByCooldown`
-  and behaves exactly as before.
+  `isIssueInCooldown` now delegates to the extracted sync `isHeldByCooldown` and
+  behaves exactly as before.
 - Only planning and question opt in. Refinement, grill-me and quorum never call
   `handleIssueFailure`, and the gated custom route keeps its own hold.
 
@@ -46,9 +46,9 @@ no cooldown" now describe the new behaviour. Closes #5376.
 
 - Finding, outside this issue's scope and not changed here: on the coding path
   the claim scan's `loadRunLocalHolds` holds an issue for as long as any entry
-  of it exists. `loadState` keeps kinded entries for the 48 h escalation
-  window, so a coding failure is held for up to 48 h, longer than the 2 h the
-  comment states.
+  of it exists. `loadState` keeps kinded entries for the 48 h escalation window,
+  so a coding failure is held for up to 48 h, longer than the 2 h the comment
+  states.
 
 ## Evidence
 
@@ -88,12 +88,11 @@ sequenceDiagram
     CD->>CD: recordIssueCooldown(kind) — next scan holds 2 h → 6 h → 24 h
 ```
 
-Cited issues: #5376 (this issue);
-#1949: Ordinary coding-run failures never reach the failed-once/failed ladder:
-a non-timeout failure gets a flat 10-minute cooldown and is re-claimed every
-cycle for ever;
-#4158: Never park an assigned issue: drop the terminal `failed` label and the
-repeated-failure needs-human hand-off.
+Cited issues: #5376 (this issue); #1949: Ordinary coding-run failures never
+reach the failed-once/failed ladder: a non-timeout failure gets a flat 10-minute
+cooldown and is re-claimed every cycle for ever; #4158: Never park an assigned
+issue: drop the terminal `failed` label and the repeated-failure needs-human
+hand-off.
 
 Docs updated: `docs/workflows/label-flows.md` (the `failed-once` row and short
 card), `docs/workflows/planning-and-questions.md` (the loud-failure paragraph
@@ -115,13 +114,13 @@ table row). The doc comments in `find_issues_by_label.ts`,
   `worker/deno/tests/run_core_production_deps_test.ts`,
   `worker/deno/tests/find_issues_by_label_gating_test.ts` and
   `worker/deno/tests/lib_sweep_coverage_test.ts` passed (125 passed, 0 failed).
-- `./quality.sh` on the final head passed, with config integration and
-  checkov skipped by the gate itself.
+- `./quality.sh` on the final head passed, with config integration and checkov
+  skipped by the gate itself.
 - Guards on the new path: the cooldown is recorded after the original
   `handleIssueFailure` runs, so every label, comment and non-fault early return
-  in it still applies. Claim release and the run-stats comment in the
-  processors are unchanged.
+  in it still applies. Claim release and the run-stats comment in the processors
+  are unchanged.
 - Limitation: the two-line wiring inside the `createProductionRunCoreDeps`
   closure cannot be driven by a unit test. Its label scan and the processors'
-  `ghClient` spawn a real `gh` with no injectable seam. The tests drive the
-  same `prepareLabelRouteFailureCooldown` composition the closure calls.
+  `ghClient` spawn a real `gh` with no injectable seam. The tests drive the same
+  `prepareLabelRouteFailureCooldown` composition the closure calls.
