@@ -499,7 +499,7 @@ function noFallbackFinding(file: WorkflowFile, slug: string): PartialFinding {
       "      - name: Gitleaks (open-source CLI fallback)\n" +
       "        if: env.GITLEAKS_LICENSE == ''\n        run: |\n" +
       "          ./gitleaks git --redact --no-banner --exit-code 1 \\\n" +
-      '            --log-opts="${BASE_SHA}..${HEAD_SHA}" .\n```\n\n' +
+      '            --log-opts="--diff-merges=first-parent ${BASE_SHA}..${HEAD_SHA}" .\n```\n\n' +
       "Download the CLI by pinned version and verify it against its " +
       "published SHA-256 checksum, as the canonical template does. Expose " +
       "`GITLEAKS_LICENSE` at job level so the step-level `if:` can branch " +
