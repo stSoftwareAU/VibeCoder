@@ -16,6 +16,7 @@ import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
 import { gitOperationsCommand } from "../commands/git_operations.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { gitOk, setupGitRepoFixture } from "./support/git_repo_fixture.ts";
+import { NO_HOST_GIT_CONFIG } from "./support/no_host_git_config.ts";
 
 const config = buildDefaultWorkerConfig();
 
@@ -30,7 +31,7 @@ Deno.test(
       const result = await ensureMilestoneBranchExists(
         "milestone/3906-example",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       );
 
       assert(
@@ -62,7 +63,7 @@ Deno.test(
       const result = await ensureMilestoneBranchExists(
         "milestone/existing",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       );
 
       assert(
@@ -86,7 +87,7 @@ Deno.test(
       const result = await ensureMilestoneBranchExists(
         "milestone/unbuildable",
         "no-such-default",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       );
 
       assertEquals(result.ok, false);
@@ -118,7 +119,7 @@ Deno.test(
       const result = await ensureMilestoneBranchExists(
         "milestone/unpushable",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       );
 
       assertEquals(result.ok, false);
@@ -144,6 +145,7 @@ Deno.test(
           "milestone-branch": "milestone/unbuildable",
           "default-branch": "no-such-default",
           cwd: fx.clone,
+          env: NO_HOST_GIT_CONFIG,
         },
         config,
       );
@@ -168,6 +170,7 @@ Deno.test(
           "milestone-branch": "milestone/recreated",
           "default-branch": "main",
           cwd: fx.clone,
+          env: NO_HOST_GIT_CONFIG,
         },
         config,
       );
@@ -177,6 +180,65 @@ Deno.test(
         (await gitOk(["rev-parse", "milestone/recreated"], fx.remote)).trim();
       const mainSha = (await gitOk(["rev-parse", "main"], fx.remote)).trim();
       assertEquals(remoteSha, mainSha);
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "git operations command - ensure-milestone-branch refuses an env that widens the git shield (Issue #5371)",
+  async () => {
+    const fx = await setupRepo();
+    try {
+      const result = await gitOperationsCommand.execute(
+        {
+          operation: "ensure-milestone-branch",
+          "milestone-branch": "milestone/refused-env",
+          "default-branch": "main",
+          cwd: fx.clone,
+          env: { ...NO_HOST_GIT_CONFIG, GIT_SSH_COMMAND: "echo pwned" },
+        },
+        config,
+      );
+
+      assertEquals(result.success, false);
+      assertStringIncludes(result.message, "GIT_SSH_COMMAND");
+      // Refused before any git ran, so the branch was never created on origin.
+      assertEquals(
+        (await gitOk(["branch", "--list", "milestone/refused-env"], fx.remote))
+          .trim(),
+        "",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "git operations command - ensure-milestone-branch refuses a non-string env value (Issue #5371)",
+  async () => {
+    const fx = await setupRepo();
+    try {
+      const result = await gitOperationsCommand.execute(
+        {
+          operation: "ensure-milestone-branch",
+          "milestone-branch": "milestone/refused-type",
+          "default-branch": "main",
+          cwd: fx.clone,
+          env: { GIT_CONFIG_COUNT: 1 },
+        },
+        config,
+      );
+
+      assertEquals(result.success, false);
+      assertStringIncludes(result.message, "GIT_CONFIG_COUNT");
+      assertEquals(
+        (await gitOk(["branch", "--list", "milestone/refused-type"], fx.remote))
+          .trim(),
+        "",
+      );
     } finally {
       await fx.cleanup();
     }

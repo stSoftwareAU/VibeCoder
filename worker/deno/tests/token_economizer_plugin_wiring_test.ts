@@ -1518,6 +1518,7 @@ Deno.test("a learnings round trip pulls an empty store, pushes a learned state f
         runId,
         pluginDir: layout.fakePluginDir,
         learningsStoreUrl: store,
+        learningsGitEnv: NO_HOST_GIT_CONFIG,
         checkLearningsVisibility: PRIVATE_STORE,
         scanLearnings: CLEAN_SCAN,
         logger,
@@ -1599,6 +1600,7 @@ Deno.test("a public learnings store is refused: the plugin still loads, the refu
       runId: "public-1",
       pluginDir: layout.fakePluginDir,
       learningsStoreUrl: store,
+      learningsGitEnv: NO_HOST_GIT_CONFIG,
       checkLearningsVisibility: () =>
         Promise.resolve({ private: false, reason: "repository is public" }),
       logger,
@@ -1645,6 +1647,7 @@ Deno.test("an unreachable learnings store is unavailable, logged as a WARNING, a
       runId: "missing-1",
       pluginDir: layout.fakePluginDir,
       learningsStoreUrl: join(layout.root, "missing.git"),
+      learningsGitEnv: NO_HOST_GIT_CONFIG,
       checkLearningsVisibility: PRIVATE_STORE,
       logger,
     });
@@ -1706,6 +1709,7 @@ Deno.test("a failed learnings push leaves the run's result unchanged and is logg
       runId: "fail-1",
       pluginDir: layout.fakePluginDir,
       learningsStoreUrl: store,
+      learningsGitEnv: NO_HOST_GIT_CONFIG,
       checkLearningsVisibility: PRIVATE_STORE,
       scanLearnings: CLEAN_SCAN,
       logger,
@@ -1790,6 +1794,7 @@ Deno.test("a learnings scratch directory symlinked outside the work root is refu
       runId: "alias-1",
       pluginDir: layout.fakePluginDir,
       learningsStoreUrl: store,
+      learningsGitEnv: NO_HOST_GIT_CONFIG,
       checkLearningsVisibility: PRIVATE_STORE,
       logger,
     });
@@ -1829,6 +1834,7 @@ Deno.test("a learnings scratch directory at its normal place reaches the pull an
       runId: "normal-1",
       pluginDir: layout.fakePluginDir,
       learningsStoreUrl: store,
+      learningsGitEnv: NO_HOST_GIT_CONFIG,
       checkLearningsVisibility: PRIVATE_STORE,
       logger,
     });

@@ -1,13 +1,23 @@
 /**
  * Git settings that shut a test's git calls away from the host's config and
- * hooks (Issue #5254, Issue #5309).
+ * hooks (Issue #5254, Issue #5309, Issue #5371).
  *
  * The fleet container injects a `core.hooksPath` through `GIT_CONFIG_COUNT`,
  * so a fixture push would run the host's pre-push hook. These constants close
  * that route for every git call a fixture makes.
  *
- * Fixtures using `NO_HOST_GIT_CONFIG` must set their own identity (`user.name`
- * and `user.email` via repo config, `-c`, or `GIT_AUTHOR_*`/`GIT_COMMITTER_*`),
+ * Production functions a test calls (`pushUnpushedCommits`,
+ * `commitAndPushPending`, `syncMilestoneBranchWithDefault`, `updatePrBranch`,
+ * `claimMilestoneSync`, ...) run git through `runGitCommand`, which overlays
+ * only `options.env` on the inherited environment. Such a test must therefore
+ * pass `env: NO_HOST_GIT_CONFIG` in the `GitCommandOptions` it hands them,
+ * spreading the shield last over any env it already has. Where a test instead
+ * injects a production `runGit` seam, pass `runShieldedGit`, which applies the
+ * same shield without changing the argv production built (Issue #5371).
+ *
+ * Fixtures and tests whose production calls commit, when using
+ * `NO_HOST_GIT_CONFIG`, must set their own identity (`user.name` and
+ * `user.email` via repo config, `-c`, or `GIT_AUTHOR_*`/`GIT_COMMITTER_*`),
  * because the global config is no longer read.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
@@ -44,6 +54,17 @@ export function runFixtureGit(
   options: GitCommandOptions = {},
 ): ReturnType<typeof runGitCommand> {
   return runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
+    ...options,
+    env: { ...options.env, ...NO_HOST_GIT_CONFIG },
+  });
+}
+
+/** Shielded git for injecting as a production `runGit` seam, where argv must stay as production built it (Issue #5371). */
+export function runShieldedGit(
+  args: string[],
+  options: GitCommandOptions = {},
+): ReturnType<typeof runGitCommand> {
+  return runGitCommand(args, {
     ...options,
     env: { ...options.env, ...NO_HOST_GIT_CONFIG },
   });

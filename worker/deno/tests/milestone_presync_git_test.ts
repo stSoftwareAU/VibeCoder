@@ -113,6 +113,7 @@ Deno.test(
         workDir,
         config: { ...buildDefaultWorkerConfig(), workDir },
         logger: silentLogger,
+        env: NO_HOST_GIT_CONFIG,
       });
 
       assertEquals(result.status, "synced");
@@ -141,7 +142,7 @@ Deno.test(
       const created = await createFeatureBranchFromBase(
         "issue-1780-child",
         MILESTONE_BRANCH,
-        { cwd: clone },
+        { cwd: clone, env: NO_HOST_GIT_CONFIG },
       );
       assert(created.ok, created.ok ? "" : created.error.message);
       assertEquals(await git(["rev-parse", "HEAD"], clone), syncedTip);
@@ -191,6 +192,7 @@ Deno.test(
         workDir,
         config: { ...buildDefaultWorkerConfig(), workDir },
         logger,
+        env: NO_HOST_GIT_CONFIG,
       });
 
       assert(
@@ -237,6 +239,7 @@ Deno.test(
         workDir,
         config: { ...buildDefaultWorkerConfig(), workDir },
         logger: silentLogger,
+        env: NO_HOST_GIT_CONFIG,
       });
 
       assertEquals(result.status, "level");
