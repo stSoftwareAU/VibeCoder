@@ -5,7 +5,7 @@
  * prompt must say so: the gate's failing command and output, the merged-in
  * commits' subjects, and the never-side-pick contract unchanged — all of the
  * repository-produced text inside this run's untrusted fence. And it is a
- * second run against the cycle's single grant, so it is refused by name when
+ * run against the cycle's single grant, so it is refused by name when
  * that grant no longer covers one.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
@@ -161,6 +161,84 @@ Deno.test("merge conflict prompt - an ordinary resolution renders no repair bloc
   assertEquals(prompt.includes("Repair Mode"), false);
   assertStringIncludes(prompt, "already in progress in your working tree");
   assertEquals(/\{\{[A-Z_]+\}\}/.test(prompt), false);
+});
+
+Deno.test("merge conflict prompt - a first repair with no textual conflicts names the verification failure", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "clean-repair-prompt-" });
+  try {
+    const captured: Captured = { prompts: [], options: [] };
+    let announcements = 0;
+    const agent = bindMilestoneConflictAgent({
+      repo: "stSoftwareAU/VibeCoder",
+      grant: {
+        agentAllowed: true,
+        agentTimeoutSeconds: 900,
+        onAgentRungEntered: async () => {
+          announcements++;
+        },
+      },
+      config: config(3600),
+      logger: silentLogger(),
+      promptsDir: PROMPTS_DIR,
+      runAgent: makeRunner(captured),
+      now: () => 0,
+    });
+    assert(agent);
+    const result = await agent({
+      conflictedFiles: [],
+      milestoneBranch: "milestone/example",
+      defaultBranch: "main",
+      workDir,
+      repair: {
+        ...REPAIR,
+        mergedCommitSubjects: [...REPAIR.mergedCommitSubjects],
+      },
+    });
+    assert(result.ok);
+    const prompt = captured.prompts[0]!;
+    assertStringIncludes(
+      prompt,
+      "no textual conflicts — this run repairs the verification failure above",
+    );
+    assertStringIncludes(
+      prompt,
+      "The merge is **already resolved and committed**",
+    );
+    assertStringIncludes(prompt, REPAIR.failingCommand);
+    assertStringIncludes(prompt, REPAIR.output);
+    assertStringIncludes(prompt, "this run repairs its verification failure");
+    assertEquals(prompt.includes("and the merge has conflicted"), false);
+    assertEquals(
+      prompt.includes("run `git status` and resolve what it lists"),
+      false,
+    );
+    assertEquals(captured.options[0]?.timeoutSeconds, 900);
+    assertEquals(announcements, 1);
+
+    await runMergeConflictAgent({
+      repo: "stSoftwareAU/VibeCoder",
+      target: { kind: "branch", intoBranch: "milestone/example" },
+      baseBranch: "main",
+      conflictedFiles: [],
+      workDir,
+      promptsDir: PROMPTS_DIR,
+      logger: silentLogger(),
+      runAgent: makeRunner(captured),
+    });
+    assertStringIncludes(
+      captured.prompts[1]!,
+      "run `git status` and resolve what it lists",
+    );
+    assertStringIncludes(captured.prompts[1]!, "and the merge has conflicted");
+    assertEquals(
+      captured.prompts[1]!.includes(
+        "this run repairs the verification failure above",
+      ),
+      false,
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
 });
 
 Deno.test("merge conflict prompt - a repair whose merge is staged, not committed, says so (Issue #4616)", async () => {
