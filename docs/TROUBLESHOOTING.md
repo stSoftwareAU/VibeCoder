@@ -247,7 +247,9 @@ after the container is gone (see
 [Resilience & Concurrency](workflows/resilience-and-concurrency.md#-wedged-container-watchdog)).
 The next worker start files that record as a `bug` issue carrying only the run's
 facts, the figures derived from the record (silence before capture, the
-guest-probe state, guest memory and guest pressure, plus the host's free disk
+guest-probe state, guest memory, guest pressure and the last liveness tick
+from the newest `[liveness] run-pressure` or `[liveness] tick=` line in the
+worker log tail (`not in the log tail` if absent), plus the host's free disk
 and host memory pressure at capture, read on the host so present even when the
 guest does not answer, Issue #5250) and a last step logged, from
 a fixed list (`pre-PR verifier`, `quality gate`,
