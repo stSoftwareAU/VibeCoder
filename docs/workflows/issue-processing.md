@@ -1263,38 +1263,37 @@ cases of a changed compound condition. Name the relevant existing or new tests
 in the current PR's review; do not require flipping operands individually or
 repeating mutation proofs during later unrelated work.
 
-**A fake mirrors the production implementation it stands in for (Issues #3224, #3900).**
+**A fake mirrors the production implementation it stands in for (Issues #3224, #3900, #5372).**
 The stub-contract and observe-real-tool rules cover external callees —
 another repository's binary, git, `gh`, the GitHub API. Fleet
-PRs instead relied on a property of the repository's own port that only
-the in-repo fake had: GRQ-AutoTrader#2546 assumed `broker.open_orders()`
+PRs instead relied on a property of the repository's own producer that
+only the in-repo fake had: GRQ-AutoTrader#2546 assumed `broker.open_orders()`
 lists hand-placed orders, as `FakeBroker` does, while `IbkrRest::reports`
 drops every order with no `order_ref`; #2460's newest-first early stop
 lived only in the DynamoDB client no test reached; and #2407's in-memory
-store never loses a conditional write. The guidelines now require reading
-the production implementation first and confirming it has the property
-the change relies on, fixing whichever side is wrong, pinning fake and
-production together with one contract test (or testing at the production
-adapter), and naming in the PR summary the production implementation
-each load-bearing fake stands in for and the property relied on. The
-issue prompt's Bugs/Enhancements requirement makes a change whose only
-proof is a fake more permissive than its production implementation a
-blocking self-review finding. The rule also covers a test that fakes a
-response from the repository's own server or service by hand — an HTTP
-body, status or header, a queue message, or a file the other side writes —
-across processes and languages, not only in-process traits or interfaces.
-Two private fleet PRs (Issue #3900) were sent back for a card test with
-server-measure values the server never produces, and for a "retry later"
-detection that read the error code from the wrong JSON key or from a header
-the deployed CORS config does not expose. For such a response the fixture
-must come from the producer's real output: a golden the server's tests
-produce or verify, or a contract test that runs the server's serialiser for
-that response kind; a PR adds a golden when the repository has none for that
-response kind. A header the client depends on is checked against what the
-deployed configuration lets the client read (for example, a CORS
-exposed-headers list), and the PR summary names where that deployed setting
-is set. A change whose only proof is a fixture the producer never emits
-is a blocking self-review finding.
+store never loses a conditional write. Two private fleet PRs (Issue #3900)
+were sent back for a card test with server-measure values the server never
+produces, and for a "retry later" detection that read the error code from
+the wrong JSON key or from a header the deployed CORS config does not
+expose. The guidelines' rule covers the repository's own producers: when a
+test hands the changed code something a producer returns or writes, the
+test takes it from the producer — it calls the producer, loads output that
+the producer's own tests generate or verify, runs one contract test against
+both the fake and the production adapter, or tests the behaviour at the
+production adapter itself. Before relying on a property of what the
+producer returns, the author reads the production implementation, confirms
+the property and fixes whichever side is wrong; a header the client
+depends on is checked against what the deployed configuration lets the
+client read (for example, a CORS exposed-headers list). The issue prompt's
+Bugs/Enhancements requirement makes a change whose only proof is a fake
+more permissive than its production implementation, or a fixture the
+producer never emits, a blocking self-review finding. Issue #5372
+shortened the rule after the pattern recurred on fleet PRs, among them
+three where one worker module wrote what another read in the same
+process, a case neither of the rule's listed triggers (a port, a wire
+format) named. It dropped those lists, the golden-file remedy and the two
+PR-summary lines the rule asked for, since a summary line saying a fixture
+came from the producer checked nothing.
 
 When two inputs could supply the result, give the candidates different values
 and assert the required source value in the result (Issue #3851).
