@@ -106,6 +106,19 @@ Deno.test("redactSecrets - the google-api-key rule masks exactly the 39-characte
   );
 });
 
+Deno.test("redactSecrets - the Google OAuth rules stop at their length caps (Issue #5339)", () => {
+  const access = "ya29." + "c".repeat(2048);
+  assertEquals(
+    redactSecrets(`token ${access}tail rejected`),
+    `token ${REDACTION_PLACEHOLDER}tail rejected`,
+  );
+  const refresh = "1//0" + "d".repeat(512);
+  assertEquals(
+    redactSecrets(`token ${refresh}!tail rejected`),
+    `token ${REDACTION_PLACEHOLDER}!tail rejected`,
+  );
+});
+
 Deno.test("redactSecrets - near-miss provider prefixes do not stall the new rules (Issue #36)", () => {
   const sk = fill("sk-" + "a".repeat(19) + "!");
   assertEquals(redactSecrets(sk), sk);

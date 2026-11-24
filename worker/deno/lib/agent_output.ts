@@ -9,13 +9,14 @@
  * match — which is how a quoted "429" in an agent's own answer could read as a
  * refusal, and a 403 could read as an unavailable model.
  *
- * This module is the contract both vendors are decoded *into*: one typed
+ * This module is the contract every provider is decoded *into*: one typed
  * result (final text, session identity, usage, progress, terminal status,
  * structured errors) and one typed failure (a named category, its evidence,
  * quota scope and reset, retry-after). The per-provider adapters
- * (`claude_output_adapter.ts`, `codex_output_adapter.ts`) own their CLI's
- * event shapes and nothing else; the provider descriptor names the adapter, so
- * the runner never tests a vendor id.
+ * (`claude_output_adapter.ts`, `codex_output_adapter.ts`,
+ * `gemini_output_adapter.ts`) own their CLI's event shapes and nothing else;
+ * the provider descriptor names the adapter, so the runner never tests a
+ * vendor id.
  *
  * Three rules the whole contract exists to keep:
  *
@@ -329,6 +330,17 @@ export function readObject(
  */
 export const BALANCE_EXHAUSTED_RE =
   /\b(?:api )?error:?\s*(?:402\b|insufficient (?:balance|credits?)\b)|\b402\s+(?:insufficient (?:balance|credits?)|payment required)\b|\bcredit balance is too low\b/i;
+
+/**
+ * Transport failures the CLI reports in prose (Issues #1695, #5340).
+ *
+ * Read by both the Codex and the Gemini adapters, so the two cannot disagree
+ * about what a dropped connection or an overloaded upstream looks like in
+ * text. A structured status code is still preferred where one exists (see
+ * {@link isNetworkStatus}).
+ */
+export const NETWORK_PROSE_RE =
+  /overloaded|high demand|econnreset|econnrefused|etimedout|enotfound|socket hang up|stream disconnected|connection (?:reset|refused|closed)/i;
 
 /**
  * HTTP statuses that mean the transport failed, not the credential, the model

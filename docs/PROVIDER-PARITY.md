@@ -81,8 +81,32 @@ path. Nothing is inferred from a provider id.
 | -------- | ------------------------ | ------- |
 | Claude | `CLAUDE_CODE_OAUTH_TOKEN` | `ANTHROPIC_API_KEY` |
 | Codex | a ChatGPT login persisted under `CODEX_HOME` | `OPENAI_API_KEY`, `CODEX_API_KEY` |
-| Gemini | none | `GEMINI_API_KEY` |
+| Gemini | a Google login persisted under `GEMINI_CLI_HOME` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
 | DeepSeek | none | `DEEPSEEK_API_KEY` |
+
+A Gemini Google-account login proves a fixed-price subscription
+(`gemini-google-login`) when an explicit `GEMINI_CLI_HOME` holds
+`.gemini/oauth_creds.json` with a `refresh_token` and `.gemini/settings.json`
+selects no other auth type; free-tier and paid logins classify the same. A
+`settings.json` selecting `gemini-api-key` is `metered`
+(`gemini-settings-api-key`), and a corrupt or unreadable login is `unknown`
+(`gemini-login-unreadable (<fault>)`) unless a metered key is also present,
+when it is `metered`. With no `GEMINI_CLI_HOME`,
+`GEMINI_API_KEY` / `GOOGLE_API_KEY` stay `metered`. `GEMINI_CLI_HOME` is a
+non-secret state selector in `gemini/provider.env`, so `setup.sh` provisioning
+is unchanged. At startup the worker seeds
+`<GEMINI_CLI_HOME>/.gemini/oauth_creds.json` once from
+`<credential dir>/gemini/oauth_creds.json` (owner-only `0600`, with a
+`refresh_token`) and never overwrites an existing, refreshed login; with
+neither file present worker startup fails with an error naming both paths. The
+Gemini child then gets that home plus `GOOGLE_GENAI_USE_GCA=true` and neither
+`GEMINI_API_KEY` nor `GOOGLE_API_KEY`, so an expired login fails
+authentication instead of becoming metered spend (mirroring Codex's
+`CODEX_HOME` guard); `GEMINI_CLI_HOME` is denied by name to the Claude, Codex
+and DeepSeek children. Encrypted credential storage
+(`GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=true`) is not supported. The owner's
+one-time login and seeding steps are in
+[Gemini subscription authentication](GEMINI-SUBSCRIPTION-AUTH.md).
 
 Three rules follow, and they are separate:
 
@@ -127,19 +151,39 @@ flowchart TD
     B --> R
 ```
 
+## Gemini capabilities
+
+The Gemini descriptor (`GEMINI_PROVIDER`, `agent_provider.ts:1079-1209`)
+carries the following, read from the code against the pinned Gemini CLI 0.68.0;
+every path in the Code column is under `worker/deno/lib/`.
+
+| Capability | Gemini | Code |
+| ---------- | ------ | ---- |
+| Output adapter | `--output-format stream-json` NDJSON is decoded by `GEMINI_OUTPUT_ADAPTER` into the answer, session, usage and a typed failure: out-of-memory, authentication, quota-exhausted, model-unavailable, turn-limit, network, rate-limit, task-failure (Issue #5340) | `gemini_executor.ts:66-67`; `gemini_output_adapter.ts:414-530`, `:533`; `agent_provider.ts:1133-1135` |
+| Session resume | By worker-generated id: `--session-id <id>` on the first phase or after another provider's state; `--resume <id>` once Gemini reported that id; `--resume latest` is refused (Issue #5342) | `session_resume.ts:214-228` (`geminiSessionFlags`); `gemini_executor.ts:269-286` |
+| Tool denials | Written to a per-run settings file the CLI reads from `GEMINI_CLI_SYSTEM_SETTINGS_PATH`: mapped tools go to `tools.exclude`, `Task` / `Agent` denials set `experimental.enableAgents: false`, and `NotebookEdit` needs no setting (Gemini has no notebook tool); a `Bash(<prefix>:*)` denial (the `pr_review` feedback run's `git push`, `gh pr merge` and `gh api`, the best-practices scan's `cargo` family) becomes a deny rule in `policy/deny.toml` beside the settings file, which the settings name under `policyPaths` and the CLI's Policy Engine applies to a shell command, a sub-command of `a && b` and a `bash -c` body alike, but not through a leading `FOO=1` assignment (PR #5524 review); a denied tool with no Gemini mapping (including a `Bash(...)` that is not a plain `:*` prefix), or a file that cannot be written, refuses the spawn (Issue #5341) | `gemini_settings.ts:36`, `:50-57`, `:120` (`buildGeminiToolSettings`), `:286` (`writeGeminiRunSettings`); `agent_provider.ts:1196-1208`; `claude_runner.ts:1665` (`prepareRunSettings` call) |
+| MCP servers | The run's MCP config is written under `mcpServers` in the same settings file, and `--allowed-mcp-server-names` always names exactly those servers; its empty form loads none, including servers from the user's own settings or extensions (Issue #5343) | `gemini_settings.ts:294-298`; `gemini_executor.ts:288-300`; `agent_provider.ts:1150-1155` |
+| Approvals and sandbox | `--approval-mode yolo` and `--skip-trust`; the CLI's own `--sandbox` is deliberately absent, the container is the boundary | `gemini_executor.ts:65-71` |
+| Sub-agents (`--agents`) and advisor edit guard (`--settings`) | Not carried; an issue run that wants sub-agents is rerouted to Claude or stripped before spawn | `agent_provider.ts:1150-1177` (`buildInvocation`); `issue_run_provider_agents.ts` |
+| Orchestration roles | The executor, both reviewer and the explorer roles (not the manager, which needs stream compaction Gemini lacks) can run on Gemini, with denials through the settings file (Issue #5341) | `orchestration/capabilities.ts:58-66` (`ROLE_REQUIRED_CAPABILITIES`), `:154-232` (`assertRoleSupported`); `claude_runner.ts:536-540` |
+
 ## Routing and fallback
 
 | Key | Default | Meaning |
 | --- | ------- | ------- |
 | `agent_provider` | `claude` | Preferred provider |
 | `repo_config.<repo>.agent_provider` | unset | Per-repo provider pin (Issue #2048); binds when no per-invocation selection names one, and beats both the global `agent_provider` and `auto` ranking for that repo |
-| `agent_provider_mode` | `auto` with two or more subscription providers enabled, else `pinned` | `pinned` preserves the existing provider choice; `auto` ranks eligible fixed-price subscriptions (default since #5089) |
+| `agent_provider_mode` | `auto` with two or more subscription-capable providers (Claude, Codex, Gemini) enabled, else `pinned`; a provider other than the preferred `agent_provider` proved metered (an API key alone) does not count | `pinned` preserves the existing provider choice; `auto` ranks eligible fixed-price subscriptions (default since #5089) |
 | `agent_providers` | preferred alone | Enabled set (credentials mounted) |
 | `agent_provider_fallback` | `[]` | Ordered alternatives; empty **pins** the preferred provider |
 
 `agent_provider_mode: "auto"` is the quota-aware path from #1926. Before each
 work item it ranks enabled Claude OAuth and Codex ChatGPT subscriptions using
 the lowest remaining percentage across each provider's current known windows.
+A Gemini Google-account login (under an explicit `GEMINI_CLI_HOME`) is also a
+candidate, but its quota is passive: no network probe and no windows, so it
+ranks after every provider with fresh known quota. A Gemini API key alone is
+metered and never selected.
 The provider with more remaining capacity wins in either direction. Status
 freshness still controls eligibility; an exact tie is not broken (the input
 order stands, and the next work item re-decides — owner decision, #5089). API-key accounts, unknown billing and providers without a
@@ -210,8 +254,10 @@ its own provider (Issue #4986). The fallback is not restricted to fixed-price
 subscriptions — see [Subscription-only billing
 policy](#subscription-only-billing-policy) for what it logs when the
 alternative is metered. Quota-aware auto selection is the default on a host
-with two or more subscription providers enabled (#5089); a host with one stays
-pinned.
+with two or more subscription-capable providers (Claude, Codex, Gemini)
+enabled (#5089); a host with fewer stays pinned. A provider other than the
+preferred `agent_provider` whose credentials are proved metered (an API key
+alone) does not count; the preferred provider always counts.
 
 ## Staged rollout
 
@@ -252,14 +298,26 @@ WIP branches are untouched.
   described in [CONFIGURATION.md](CONFIGURATION.md#-session-resume)
   (Issue #2337). A Codex or Gemini run carries the stream's full transcript and
   logs `compaction unavailable` naming the provider.
-- Automatic selection currently supports Claude OAuth and Codex ChatGPT
-  subscriptions. Gemini, DeepSeek and every unknown or metered billing mode are
-  ineligible. The shipped default remains pinned.
+- Automatic selection supports Claude OAuth, Codex ChatGPT and Gemini
+  Google-account logins. A Gemini login (fixed-price under an explicit
+  `GEMINI_CLI_HOME`) has passive quota: `geminiStatus` does no probe and
+  reports no windows, so it ranks in the `fresh-unknown-quota` band after every
+  provider with fresh known quota. A run-reported quota exhaustion makes it
+  `exhausted` until its retry time (the stated reset, or a five-minute
+  cooldown), and an authentication failure makes it unavailable. A Gemini API
+  key alone is `metered` (`api-key-account`) and never selected; with
+  neither credential, billing is `unknown` and Gemini is excluded. DeepSeek and every unknown or metered
+  billing mode are ineligible. The default is `auto` when two or more
+  subscription-capable providers are enabled (#5089), where a provider other
+  than the preferred `agent_provider` proved metered does not count and the
+  preferred provider always counts.
 - Quota *probing* is still per provider (`provider_auto_runtime.ts`), even
   though billing classification is now descriptor-declared. Adding a
   subscription provider means writing its status adapter as well as its
-  `billing` declaration. Those adapters (`claudeStatus`, `codexStatus`) still
-  test the same credential variables themselves while answering their own
+  `billing` declaration. Two of those adapters (`claudeStatus`, `codexStatus`)
+  still test the same credential variables themselves while answering their own
   question — remaining quota — so the same facts are written down twice.
+  `geminiStatus` does not: it is built on `classifyProviderBilling` and reads
+  the shared classifier rather than re-testing variables.
   Folding them into the shared classifier changes what is eligible for
   `auto`, which this goal deliberately stages behind the soak qualification.
