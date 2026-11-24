@@ -50,7 +50,10 @@ export interface EgressSidecarOptions {
   logFile?: string;
   /** Apple attaches both networks at creation; no Docker connect command. */
   apple?: boolean;
-  /** Record ownership only after a successful create/start. */
+  /**
+   * Ownership hooks: the network is recorded after a successful create, the
+   * proxy before its start (a failed start can still leave the container).
+   */
   cancelled?: () => boolean;
   created?: (resource: "network" | "proxy") => Promise<void>;
 }
@@ -188,13 +191,16 @@ export async function startEgressSidecar(
   if (plan.networkCreateArgs.length) await options.created?.("network");
   if (!apple) await run(plan.proxyStopArgs);
   const packed = await pack(plan.proxyBundle);
+  // Recorded before the start: a start that fails can still leave the container,
+  // and the proxy name is unique to the launch and its delete tolerates "not
+  // found" (Issue #5488).
+  await options.created?.("proxy");
   const started = await run(plan.proxyRunArgs, packed);
   if (started.code !== 0) {
     throw new Error(
       `egress sidecar: the egress proxy did not start (exit ${started.code}) — refusing to launch. ${started.stderr.trim()}`,
     );
   }
-  await options.created?.("proxy");
   const deadline = now() + readyTimeoutMs;
   let listening = false;
   while (now() <= deadline) {

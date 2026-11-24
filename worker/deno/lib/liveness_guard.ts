@@ -526,3 +526,75 @@ export async function readLivenessTickPressure(
   );
   return { memAvailableMib, pressureMemory, pressureCpu };
 }
+
+/**
+ * Marker of the end-of-cycle liveness tick line (Issue #2479). The hard-kill
+ * facts read it back (Issue #4815).
+ */
+export const LIVENESS_TICK_MARKER = "[liveness] tick=";
+
+/**
+ * Marker of the pressure line logged while an issue run is in flight
+ * (Issue #4815). The hard-kill facts read it back.
+ */
+export const RUN_PRESSURE_MARKER = "[liveness] run-pressure";
+
+/**
+ * How often an in-flight issue run logs its pressure line (Issue #4815).
+ * The end-of-cycle tick runs about every forty minutes and never during a
+ * run, so without this line a guest that freezes mid-run leaves no reading
+ * taken after the claim.
+ */
+export const RUN_PRESSURE_INTERVAL_MS = 60_000;
+
+/** Injectable parts of {@link withRunPressureTicks}. */
+export interface RunPressureTickOptions {
+  /** Writes one line to the worker log. */
+  log: (message: string) => void;
+  /** Takes one reading. Defaults to {@link readLivenessTickPressure}. */
+  read?: () => Promise<LivenessTickPressure>;
+  /** Defaults to {@link RUN_PRESSURE_INTERVAL_MS}. */
+  intervalMs?: number;
+}
+
+/**
+ * Run `work`, logging a pressure line when it starts and every `intervalMs`
+ * until it settles (Issue #4815).
+ *
+ * The line is `[liveness] run-pressure ` followed by
+ * {@link formatLivenessPressureFields}. A reading still pending when the
+ * timer fires skips that beat, so a stuck `cat` cannot pile up readers. The
+ * timer is cleared when `work` settles, and a reading that settles later is
+ * not logged. A failed reading or log never fails `work`.
+ */
+export async function withRunPressureTicks<T>(
+  work: () => Promise<T>,
+  options: RunPressureTickOptions,
+): Promise<T> {
+  const read = options.read ?? (() => readLivenessTickPressure());
+  let running = true;
+  let pending = false;
+  const beat = async () => {
+    if (pending) return;
+    pending = true;
+    try {
+      const fields = formatLivenessPressureFields(await read());
+      if (running) options.log(`${RUN_PRESSURE_MARKER} ${fields}`);
+    } catch {
+      // Best effort: the line is evidence, never a reason to fail the run.
+    } finally {
+      pending = false;
+    }
+  };
+  void beat();
+  const timer = setInterval(
+    () => void beat(),
+    options.intervalMs ?? RUN_PRESSURE_INTERVAL_MS,
+  );
+  try {
+    return await work();
+  } finally {
+    running = false;
+    clearInterval(timer);
+  }
+}
