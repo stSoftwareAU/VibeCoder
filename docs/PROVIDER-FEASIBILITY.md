@@ -99,10 +99,11 @@ flagged.
    marked `apiEquivalent: true` (`token_usage.ts:241-281`, `:474-476`).
 3. **Dotted ids are understated.** The `gpt-5` prefix also matches `gpt-5.2` and
    `gpt-5.3-codex`, which the table's comment says OpenAI prices dearer. They
-   cost at the `gpt-5` rate (`token_usage.ts:464-467`). The worker routes
-   none of them: the Codex tiers route to `gpt-6-astra`, `gpt-6.1-sol` and
-   `gpt-6-luna` (`token_usage.ts:469-473`; `config_defaults.ts:1333-1354`,
-   `:1379-1383`).
+   cost at the `gpt-5` rate (`token_usage.ts:464-467`). By default the worker
+   routes none of them: the default Codex tiers route to `gpt-6-astra`,
+   `gpt-6.1-sol` and `gpt-6-luna` (`token_usage.ts:469-473`;
+   `config_defaults.ts:1333-1354`, `:1379-1383`); an operator override
+   (`codex_executor.ts:152-158`) can route one.
 4. **No row for `gpt-6-astra` or `gpt-6.1-sol`.** `lookupModelPricing` returns
    `null` (`token_usage.ts:654`, `:708`). The two surfaces then disagree. Run
    statistics leave the model out of the total, show `pricing unknown` and mark

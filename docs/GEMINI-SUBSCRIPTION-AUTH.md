@@ -36,12 +36,17 @@ probed and Gemini's billing comes from the API-key check.
 
 ## One-time login
 
-On the host (or a trusted machine), run the CLI with the home set and choose
-**Sign in with Google**:
+On a trusted machine (the host or any machine with a browser), run the CLI
+against a scratch home and choose **Sign in with Google**, for example:
 
 ```bash
-GEMINI_CLI_HOME=/home/vibe/auto-issue-work-agent-state/gemini gemini
+GEMINI_CLI_HOME="$HOME/gemini-login" gemini
 ```
+
+The login it writes is `<that home>/.gemini/oauth_creds.json`. That file is what
+"Seeding the login" below copies into the credential directory; the worker seeds
+the persistent in-container home from it, so no login is run inside the
+container.
 
 With no browser on the machine, set `NO_BROWSER=true` too. The CLI then prints a
 sign-in URL and asks for the authorisation code ("Enter the authorization
@@ -78,10 +83,10 @@ GEMINI_CLI_HOME=/home/vibe/auto-issue-work-agent-state/gemini
 still provisions only `VIBE_LAUNCHAGENT_GEMINI_API_KEY`, so this line is written
 by hand.
 
-Place the login file beside it as `gemini/oauth_creds.json`, owner-only
-(`0600`), with the directory `0700`. At startup the credential preflight
-(`worker/deno/lib/credential_preflight.ts` calls `initialiseGeminiHome` in
-`worker/deno/lib/gemini_auth.ts`) seeds
+Copy the `oauth_creds.json` the login wrote beside it as
+`gemini/oauth_creds.json`, owner-only (`0600`), with the directory `0700`. At
+startup the credential preflight (`worker/deno/lib/credential_preflight.ts`
+calls `initialiseGeminiHome` in `worker/deno/lib/gemini_auth.ts`) seeds
 `<GEMINI_CLI_HOME>/.gemini/oauth_creds.json` once when it is missing. A seed
 with no non-blank `refresh_token` fails startup with an error naming both the
 target and the seed path; a seed that is not owner-only fails naming the seed.
@@ -155,7 +160,8 @@ Before enabling Gemini on a production host:
 
 1. Perform the one-time Google-account login.
 2. Confirm `oauth_creds.json` is present in the persistent Gemini home and is
-   not in the repository, logs or read-only provider credential mount.
+   not in the repository or logs (the read-only credential mount holds only the
+   one-time seed).
 3. Run a Gemini-only smoke issue.
 4. Destroy/recreate the worker container and run another smoke issue without
    logging in again.
