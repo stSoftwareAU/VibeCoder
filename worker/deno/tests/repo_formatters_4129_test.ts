@@ -176,7 +176,11 @@ Deno.test("formatBeforeGate passes only worker-owned archive paths to deno fmt (
             return Promise.resolve({ exitCode: 0, output: "" });
           },
           runGitCommand: fakeGit(
-            ["worker/deno/deno.json", ...ARCHIVE],
+            [
+              "worker/deno/deno.json",
+              ...ARCHIVE,
+              "docs/archive/pr-summaries/bad.facts.json",
+            ],
             [...ARCHIVE],
           ),
           logger,
@@ -242,7 +246,7 @@ Deno.test("formatBeforeGate leaves the archive alone when the repo has no Deno f
             ran = true;
             return Promise.resolve({ exitCode: 0, output: "" });
           },
-          runGitCommand: fakeGit(["README.md"], []),
+          runGitCommand: fakeGit(["README.md", ...ARCHIVE], []),
           logger,
           runId: () => "test-run",
         },
@@ -290,7 +294,7 @@ Deno.test("formatBeforeGate logs a formatter that cannot write and still returns
               output:
                 `Error writing files: Permission denied (os error 13)\n${usage}`,
             }),
-          runGitCommand: fakeGit(["deno.json"], []),
+          runGitCommand: fakeGit(["deno.json", ...ARCHIVE], []),
           logger,
           runId: () => "test-run",
         },
@@ -326,7 +330,7 @@ Deno.test("formatBeforeGate logs a missing formatter binary and still returns (I
           runCommand: () => {
             throw new Error("deno fmt binary missing");
           },
-          runGitCommand: fakeGit(["deno.json"], []),
+          runGitCommand: fakeGit(["deno.json", ...ARCHIVE], []),
           logger,
           runId: () => "test-run",
         },
