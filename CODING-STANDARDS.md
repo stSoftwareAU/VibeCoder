@@ -1161,14 +1161,12 @@ permissive or more restrictive than the tool, so a test passes on input the
 tool rejects or fails on input it accepts, is a blocking self-review finding.
 
 **Observe the real tool before you rely on it.** When a decision depends on
-how git, `gh`, the GitHub API or another external tool behaves in a
-particular case (exit code, warnings on stderr, case-sensitivity, ordering,
-which items a response includes), run the real tool on that case first. If
-the issue names real examples, use them. Build the fake's fixture from the
-observed output, not from what you expect it to be. In the PR summary, give
-the command you ran and the part of the output the code depends on. If the
-case cannot be observed safely, cite the tool's documentation or source for
-that behaviour.
+what git, `gh`, the GitHub API or another external tool prints or returns,
+take the test's input from the tool, not from what you expect it to be: run
+the tool in the test where the suite has it, in the environment production
+gives it, or use output copied from a real run. If the issue names real
+examples, use them. If the case cannot be observed safely, take it from the
+tool's documentation or source.
 
 **A failure-reason test asserts the cause.** A test of a recorded error, log or
 ledger reason triggers a realistic failure of the real tool, or of a fake built
