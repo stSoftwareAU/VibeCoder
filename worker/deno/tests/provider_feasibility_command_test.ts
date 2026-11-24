@@ -29,8 +29,11 @@ import {
   runCliVersion,
   runProviderFeasibility,
 } from "../commands/provider_feasibility.ts";
+import {
+  evaluateFeasibility,
+  type FeasibilityRow,
+} from "../lib/provider_feasibility.ts";
 import { resolveCodexHome } from "../lib/codex_auth_mode.ts";
-import type { FeasibilityRow } from "../lib/provider_feasibility.ts";
 import type { CommandResult, WorkerConfig } from "../types.ts";
 
 /** A throwaway OpenAI-shaped key, assembled at runtime so the source holds no key-shaped literal. */
@@ -214,6 +217,71 @@ Deno.test("codex with a persisted ChatGPT login withholds the metered key from t
     }
     assertEquals(recorder.quotaHomes, [codexHome]);
     assertEquals(result.message.includes(OPENAI_KEY), false);
+  });
+});
+
+Deno.test("gemini with a Google login withholds the metered key and blocks no more than codex's ChatGPT login (Issue #5339)", async () => {
+  await withDirs(async (dirs) => {
+    const geminiHome = `${dirs.workDir}/gemini-home`;
+    await Deno.mkdir(`${geminiHome}/.gemini`, { recursive: true });
+    await Deno.writeTextFile(
+      `${geminiHome}/.gemini/oauth_creds.json`,
+      JSON.stringify({ refresh_token: "test-refresh", access_token: "y" }),
+    );
+    const codexHome = `${dirs.workDir}/codex-home`;
+    await Deno.mkdir(codexHome, { recursive: true });
+    await Deno.writeTextFile(
+      `${codexHome}/auth.json`,
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { id_token: "x", access_token: "y", refresh_token: "z" },
+      }),
+    );
+    const geminiFacts = await gatherProviderHostFacts(
+      "gemini",
+      fakeDeps(dirs, {
+        GEMINI_CLI_HOME: geminiHome,
+        GEMINI_API_KEY: "gemini-test-key",
+      }, newRecorder()),
+    );
+    const codexFacts = await gatherProviderHostFacts(
+      "codex",
+      fakeDeps(dirs, { CODEX_HOME: codexHome }, newRecorder()),
+    );
+    assertEquals(geminiFacts.billing.billingMode, "fixed-subscription");
+    assertEquals(geminiFacts.meteredVarsInChild, []);
+    const context = {
+      facts: new Map([["gemini", geminiFacts], ["codex", codexFacts]]),
+      validatedModels: new Set(["gemini:m", "codex:m"]),
+    };
+    const geminiRow = evaluateFeasibility(
+      {
+        role: "manager",
+        provider: "gemini",
+        model: "m",
+        managerProvider: "gemini",
+      },
+      context,
+    );
+    const codexRow = evaluateFeasibility(
+      {
+        role: "manager",
+        provider: "codex",
+        model: "m",
+        managerProvider: "codex",
+      },
+      context,
+    );
+    assertEquals(
+      geminiRow.blockers.some((blocker) => blocker.startsWith("billing-")),
+      false,
+    );
+    for (const blocker of geminiRow.blockers) {
+      assert(
+        codexRow.blockers.includes(blocker),
+        `gemini-only blocker: ${blocker}`,
+      );
+    }
   });
 });
 

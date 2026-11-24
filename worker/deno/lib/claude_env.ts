@@ -61,6 +61,9 @@ import { runningInContainerImage } from "./container_stamp.ts";
  * to the secret-shape pattern, so no future allowlist edit can hand the
  * Anthropic child another vendor's key.
  *
+ * `GEMINI_CLI_HOME` (the Gemini Google-account login home) is denied by name
+ * too, as `CODEX_HOME` is: only the Gemini child may select that login.
+ *
  * `GH_TOKEN` is deliberately NOT denied — it is the short-lived installation
  * token the model legitimately uses via `gh`. What that token may *do* is
  * constrained by the `gh` PATH shim (`gh_guard_shim.ts`, Issue #3643), not by
@@ -72,6 +75,7 @@ export const CLAUDE_ENV_DENYLIST: readonly string[] = [
   "CODEX_API_KEY",
   "CODEX_HOME",
   "GEMINI_API_KEY",
+  "GEMINI_CLI_HOME",
   "GOOGLE_API_KEY",
   "DEEPSEEK_API_KEY",
 ];

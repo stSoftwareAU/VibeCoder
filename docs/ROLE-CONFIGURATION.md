@@ -85,9 +85,12 @@ reviewer to read-only by recording the checkout before the call and restoring
 checkout changes afterwards (Issue #4356). This does not deny Bash or prevent
 commands and builds outside the checkout. Codex's own `--sandbox` is not used:
 it needs bubblewrap and a fresh procfs mount, which the agent container cannot
-provide. Gemini receives tool restrictions as prompt text, not an enforced
-CLI denial; DeepSeek has no proved fixed-price subscription. Those combinations
-fail closed. A role call never moves to `agent_provider_fallback` after a
+provide. Gemini is admitted as `executor`, `spec_reviewer`, `standards_reviewer`
+and `explorer`, with its tool denials enforced through a per-run settings file
+(Issue #5341). A Gemini `manager` is refused because Gemini cannot compact its
+stream. DeepSeek has no proved fixed-price subscription. The Gemini `manager`
+and DeepSeek combinations fail closed. A role call never moves to
+`agent_provider_fallback` after a
 model refusal: the gate pins the role's provider through the retry ladder
 (Issue #4986). Explicit provider selection still does not provide
 filesystem/network isolation. A host without the requested

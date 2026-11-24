@@ -15,13 +15,20 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertMatch, assertNotEquals } from "@std/assert";
+import {
+  assertEquals,
+  assertMatch,
+  assertNotEquals,
+  assertThrows,
+} from "@std/assert";
+import { buildGeminiArgs } from "../lib/gemini_executor.ts";
 import {
   adoptProviderSession,
   buildSessionResumeArgs,
   buildSessionResumeFlags,
   codexResumeSessionId,
   createSessionResumeState,
+  geminiSessionFlags,
   generateSessionId,
   isPersistableSessionId,
   recordPhaseCompletion,
@@ -264,4 +271,77 @@ Deno.test("isPersistableSessionId - Codex accepts a non-UUID thread id", () => {
     isPersistableSessionId("6f1f2c0a-9b7d-4c3e-8a11-2b3c4d5e6f70", "claude"),
     true,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Gemini session flags (Issue #5342)
+// ---------------------------------------------------------------------------
+
+const GEMINI_UUID = "3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b";
+
+Deno.test("geminiSessionFlags - no state carries neither flag", () => {
+  assertEquals(geminiSessionFlags(undefined), {});
+});
+
+Deno.test("geminiSessionFlags - phase 0 starts a session under the worker id", () => {
+  assertEquals(
+    geminiSessionFlags({ sessionId: GEMINI_UUID, phaseCount: 0 }),
+    { sessionId: GEMINI_UUID },
+  );
+});
+
+Deno.test("geminiSessionFlags - a later Gemini-reported state resumes by id", () => {
+  assertEquals(
+    geminiSessionFlags({
+      sessionId: GEMINI_UUID,
+      phaseCount: 2,
+      providerId: "gemini",
+    }),
+    { resumeSessionId: GEMINI_UUID },
+  );
+});
+
+Deno.test("geminiSessionFlags - a later foreign state starts a session", () => {
+  assertEquals(
+    geminiSessionFlags({
+      sessionId: GEMINI_UUID,
+      phaseCount: 2,
+      providerId: "claude",
+    }),
+    { sessionId: GEMINI_UUID },
+  );
+  const flags = geminiSessionFlags({
+    sessionId: "thread-abc",
+    phaseCount: 2,
+    providerId: "codex",
+  });
+  assertEquals(flags.resumeSessionId, undefined);
+  assertEquals(flags.sessionId !== "thread-abc", true);
+  assertMatch(flags.sessionId!, /^[0-9a-f-]{36}$/);
+});
+
+Deno.test("buildGeminiArgs - both session ids is refused", () => {
+  assertThrows(
+    () =>
+      buildGeminiArgs({
+        prompt: "p",
+        sessionId: GEMINI_UUID,
+        resumeSessionId: GEMINI_UUID,
+      }),
+    Error,
+    "together with --resume",
+  );
+});
+
+Deno.test("buildGeminiArgs - resuming latest is refused", () => {
+  assertThrows(
+    () => buildGeminiArgs({ prompt: "p", resumeSessionId: "latest" }),
+    Error,
+    "latest",
+  );
+});
+
+Deno.test("isPersistableSessionId - a Gemini id is persistable only as a UUID", () => {
+  assertEquals(isPersistableSessionId(GEMINI_UUID, "gemini"), true);
+  assertEquals(isPersistableSessionId("thread-abc", "gemini"), false);
 });
