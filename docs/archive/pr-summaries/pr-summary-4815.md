@@ -30,25 +30,25 @@ established, so this PR does not close the issue. Part of #4815.
 
 ### Essential Design Decisions
 
-- Only digits and fixed words leave the tick line, the same rule as the
-  sibling figures in `worker/deno/lib/hard_kill_guest_facts.ts`. Each figure is
-  captured by a bounded pattern behind a fixed literal (`mem_available_mib=`,
+- Only digits and fixed words leave the tick line, the same rule as the sibling
+  figures in `worker/deno/lib/hard_kill_guest_facts.ts`. Each figure is captured
+  by a bounded pattern behind a fixed literal (`mem_available_mib=`,
   `pressure_memory=`, `pressure_cpu=`), and the line is cut to 2000 characters
   first. Hook fields and any other text on the line are never copied
 - The newest tick in the tail wins, and its own log time is appended as
   `(logged <time>Z)`, so a reader can see how stale the figures are next to the
   `Last log time` line
-- The new line sits directly after `**Guest pressure:**` in
-  `hardKillFactLines`, so the issue body and the facts backfill both carry it.
-  The shorter recurrence follow-up line is unchanged, because the backfill
-  posts the full facts for each recurrence
+- The new line sits directly after `**Guest pressure:**` in `hardKillFactLines`,
+  so the issue body and the facts backfill both carry it. The shorter recurrence
+  follow-up line is unchanged, because the backfill posts the full facts for
+  each recurrence
 
 ### Undiscoverable Facts
 
 - The raw evidence for all four posted kills is in `~/logs/hard-kill-archive/`
-  on GRQ-3 and was not readable from this host. The backfill has already
-  posted facts for those archived files, so this line appears from the next
-  recurrence on
+  on GRQ-3 and was not readable from this host. The backfill has already posted
+  facts for those archived files, so this line appears from the next recurrence
+  on
 
 ## Evidence
 
@@ -66,26 +66,28 @@ flowchart LR
 
 - Producer read: `formatLivenessPressureFields` in
   `worker/deno/lib/liveness_guard.ts` writes the fields, and the tick line is
-  logged in `worker/deno/lib/run_core_production_deps.ts`. The parser's
-  contract test builds its input with that serialiser
+  logged in `worker/deno/lib/run_core_production_deps.ts`. The parser's contract
+  test builds its input with that serialiser
 - Docs: the **Filing.** bullet in `docs/CALLBACKS.md` names the new figure and
   its `not in the log tail` value. The module comments of
   `worker/deno/lib/hard_kill_guest_facts.ts` and
-  `worker/deno/lib/hard_kill_report.ts` now count seven figures, and the list
-  of fact lines in `worker/deno/lib/hard_kill_facts_backfill.ts` names the new
-  line
+  `worker/deno/lib/hard_kill_report.ts` now count seven figures, and the list of
+  fact lines in `worker/deno/lib/hard_kill_facts_backfill.ts` names the new line
 - Issue numbers this diff cites: #4815 (this issue)
 
 ## Reproduction
 
 - **symptom** — every kill posted here shows `Guest memory: not available` and
-  `Guest pressure: not available`, so the facts cannot tell a starved guest
-  from any other freeze
+  `Guest pressure: not available`, so the facts cannot tell a starved guest from
+  any other freeze
 - **status** — `partial` — reason: the wedge itself was not reproduced (its
   evidence is on GRQ-3). The new tests went red before the fact existed: the
-  test file failed type-check with `TS2305 … has no exported member
-  'hardKillLastLivenessTick'`. After the change they pass
-- **regression test** — `worker/deno/tests/hard_kill_guest_facts_test.ts::the tick line the liveness guard writes is read back (Issue #4815)`
+  test file failed type-check with
+  `TS2305 … has no exported member
+  'hardKillLastLivenessTick'`. After the
+  change they pass
+- **regression test** —
+  `worker/deno/tests/hard_kill_guest_facts_test.ts::the tick line the liveness guard writes is read back (Issue #4815)`
 
 ## Acceptance Criteria
 
@@ -99,8 +101,8 @@ flowchart LR
 
 - New, in `worker/deno/tests/hard_kill_guest_facts_test.ts`, the section "The
   last liveness tick in the worker log tail (Issue #4815)":
-  - the newest tick wins over an older one, and the literal figures and log
-    time are read back
+  - the newest tick wins over an older one, and the literal figures and log time
+    are read back
   - a tail with no tick, and an `unavailable: …` tail, read
     `not in the log tail`
   - `mem_available_mib=unavailable` with unreadable pressure gives
@@ -119,7 +121,8 @@ flowchart LR
   the blank-line check moves down by one. Every earlier expected line is kept
 - New, same file: "a liveness tick in the log tail shows in the body (Issue
   #4815)" drives `formatHardKillBody` and asserts the new line's value
-- Results on the head: `deno test --allow-all tests/hard_kill_guest_facts_test.ts
+- Results on the head:
+  `deno test --allow-all tests/hard_kill_guest_facts_test.ts
   tests/hard_kill_report_test.ts tests/hard_kill_facts_backfill_4815_test.ts`
   from `worker/deno` passed (128 tests; the contract test was then added, and
   `hard_kill_guest_facts_test.ts` passed 39 of 39). `./quality.sh`:
