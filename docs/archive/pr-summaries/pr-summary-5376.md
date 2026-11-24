@@ -49,9 +49,6 @@ no cooldown" now describe the new behaviour. Closes #5376.
   of it exists. `loadState` keeps kinded entries for the 48 h escalation
   window, so a coding failure is held for up to 48 h, longer than the 2 h the
   comment states.
-- The previous run was parked by the host-disk guard after its code commit. This
-  run added the sweep-ledger registration that the gate asked for, plus this
-  summary.
 
 ## Evidence
 
@@ -112,13 +109,14 @@ table row). The doc comments in `find_issues_by_label.ts`,
 - Extended: `worker/deno/tests/cooldown_state_test.ts`, with 4 tests added and
   no existing assertion changed or removed.
 - No existing test was edited.
-- `./quality.sh` before the ledger registration failed on exactly one test,
-  `worker/deno/tests/lib_sweep_coverage_test.ts` (the new module was
-  unclaimed), with 36171 tests passing.
-- After the registration, `deno task test:unit tests/lib_sweep_coverage_test.ts`
-  passed (39 tests) and `deno task check:manifests` passed (876 tests).
-- The final `./quality.sh` result on the head is recorded in the run's final
-  message.
+- On the final head, `deno task test:unit` over
+  `worker/deno/tests/label_route_failure_cooldown_test.ts`,
+  `worker/deno/tests/cooldown_state_test.ts`,
+  `worker/deno/tests/run_core_production_deps_test.ts`,
+  `worker/deno/tests/find_issues_by_label_gating_test.ts` and
+  `worker/deno/tests/lib_sweep_coverage_test.ts` passed (125 passed, 0 failed).
+- `./quality.sh` on the final head passed, with config integration and
+  checkov skipped by the gate itself.
 - Guards on the new path: the cooldown is recorded after the original
   `handleIssueFailure` runs, so every label, comment and non-fault early return
   in it still applies. Claim release and the run-stats comment in the
