@@ -445,8 +445,12 @@ requires demonstrated IPv4 blocking, and refuses any observed direct IPv6 or
 hostname escape. A regression exits 90 before claims, using the existing restart
 backoff. Setup itself gets at most three attempts and never silently drops a
 protection. The host supervisor keeps its controlled listener alive, saves proxy
-logs, and cleans only resources recorded as its own. Stale cleanup requires both
-the original launcher and its supervisor to be dead; it never sweeps active
+logs, and cleans only resources recorded as its own. The proxy is recorded in
+the ownership journal before it starts, so a start that fails after the runtime
+created the container is removed by that failed attempt's own cleanup before the
+retry, or by stale cleanup, which always deletes the journal's own proxy name
+before its network. Stale cleanup requires both the original launcher and its
+supervisor to be dead; it never sweeps active
 worker containers or arbitrary networks. Ownership journals are private host
 state in `~/.vibe-apple-egress`, outside all canonical worker bind mounts.
 Runtime I/O and shutdown have hard-kill deadlines, including inherited pipes
