@@ -2,9 +2,10 @@
 
 `commandIndex` now skips the words that an assignment's unclosed `$( … )`,
 `$(( … ))` or backtick value spans. `shellCommands` splits words at the blanks
-inside such a value. Before this change, `X=$(cat v) aws-emulator-run -- ./test.sh`
-read `v)` as the command word, and the best-practices scan reported missing AWS
-Emulator wiring for a repository that was wired correctly. Closes #5378.
+inside such a value. Before this change,
+`X=$(cat v) aws-emulator-run -- ./test.sh` read `v)` as the command word, and
+the best-practices scan reported missing AWS Emulator wiring for a repository
+that was wired correctly. Closes #5378.
 
 ## Spec
 
@@ -12,8 +13,8 @@ Emulator wiring for a repository that was wired correctly. Closes #5378.
 
 - The issue offered two fixes. This one is in `commandIndex`, not in the
   `shellCommands` tokeniser, because many existing fixtures rely on
-  `shellCommands` still exposing the commands inside a `$( … )`. Those
-  fixtures include the round-11 and round-12 subshell and substitution tests in
+  `shellCommands` still exposing the commands inside a `$( … )`. Those fixtures
+  include the round-11 and round-12 subshell and substitution tests in
   `worker/deno/tests/aws_emulator_in_ci_check_test.ts`.
 - The skip reuses the existing quote-aware `parenBalance` and `backtickCount`
   helpers, so a quoted `)` does not close the substitution.
@@ -40,15 +41,15 @@ Emulator wiring for a repository that was wired correctly. Closes #5378.
 
 ### Undiscoverable Facts
 
-- On this milestone branch, `./t.sh` from the issue's example is not
-  recognised as a test command, so the fixtures use `./test.sh`. The plain
+- On this milestone branch, `./t.sh` from the issue's example is not recognised
+  as a test command, so the fixtures use `./test.sh`. The plain
   `aws-emulator-run -- ./t.sh` is false on the base branch too.
 
 ## Evidence
 
 This is a backend change with no UI. Reproduction on the base branch
-(`origin/milestone/aws-emulator-validator-hardening`) ran `workflowRunsAwsEmulator`
-on a `pull_request` step:
+(`origin/milestone/aws-emulator-validator-hardening`) ran
+`workflowRunsAwsEmulator` on a `pull_request` step:
 
 - **False on the base branch:**
   - `X=$(cat v) aws-emulator-run -- ./test.sh`
@@ -80,20 +81,39 @@ flowchart LR
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — Changing what a shared helper returns changes every caller: no test went through another existing caller — evidence: `worker/deno/lib/shell_command_words.ts` — reason: fixed in this diff
-- **violation** — Every changed call site needs a test that goes red without it, for the prefix sites in `staticStatus` and `failureExits` — evidence: `worker/deno/lib/shell_command_words.ts` — reason: fixed in this diff
-- **violation** — Prose about the PR's own change left out the `;`/`|`/line-break limit — evidence: `docs/BEST-PRACTICES-SCAN.md` — reason: fixed in this diff
-- **violation** — The gate-over-text evasion table had no separator row and no nested row — evidence: `worker/deno/tests/aws_emulator_in_ci_check_test.ts` — reason: fixed in this diff
-- **clean** — Checked "Check where you insert" (review-enforced), dummy and "how" tests, nothing test-only (`commandPrefixWords` has production callers), negative tests that hold the forbidden input, host-state isolation, no regex added, fail-closed on an unclosed substitution, no twinned copy of the command-word rule, Australian English, commit safety
+- **violation** — Changing what a shared helper returns changes every caller: no
+  test went through another existing caller — evidence:
+  `worker/deno/lib/shell_command_words.ts` — reason: fixed in this diff
+- **violation** — Every changed call site needs a test that goes red without it,
+  for the prefix sites in `staticStatus` and `failureExits` — evidence:
+  `worker/deno/lib/shell_command_words.ts` — reason: fixed in this diff
+- **violation** — Prose about the PR's own change left out the
+  `;`/`|`/line-break limit — evidence: `docs/BEST-PRACTICES-SCAN.md` — reason:
+  fixed in this diff
+- **violation** — The gate-over-text evasion table had no separator row and no
+  nested row — evidence: `worker/deno/tests/aws_emulator_in_ci_check_test.ts` —
+  reason: fixed in this diff
+- **clean** — Checked "Check where you insert" (review-enforced), dummy and
+  "how" tests, nothing test-only (`commandPrefixWords` has production callers),
+  negative tests that hold the forbidden input, host-state isolation, no regex
+  added, fail-closed on an unclosed substitution, no twinned copy of the
+  command-word rule, Australian English, commit safety
 
 ## Test Plan
 
-- Added the Issue #5378 tests to `worker/deno/tests/aws_emulator_in_ci_check_test.ts`. No existing test was edited.
+- Added the Issue #5378 tests to
+  `worker/deno/tests/aws_emulator_in_ci_check_test.ts`. No existing test was
+  edited.
   - A `workflowRunsAwsEmulator` table:
-    - assignment, backtick, `env`, arithmetic, quoted-`)`, inner-`!` and nested-substitution rows that must be true;
+    - assignment, backtick, `env`, arithmetic, quoted-`)`, inner-`!` and
+      nested-substitution rows that must be true;
     - controls that were already true;
-    - false rows: `… echo aws-emulator-run`, a runner inside the substitution, an unclosed substitution, and the pinned `|` limit.
-  - Direct `commandIndex` and `commandPrefixWords` tests with literal expected values.
-  - A `checkAwsEmulatorInCI` test for a workflow step and a repository script, with an `echo $(cat v)` control.
-  - Tests through other callers: the `cargo test` embedded route, the `staticStatus` prefix and the `failureExits` prefix.
+    - false rows: `… echo aws-emulator-run`, a runner inside the substitution,
+      an unclosed substitution, and the pinned `|` limit.
+  - Direct `commandIndex` and `commandPrefixWords` tests with literal expected
+    values.
+  - A `checkAwsEmulatorInCI` test for a workflow step and a repository script,
+    with an `echo $(cat v)` control.
+  - Tests through other callers: the `cargo test` embedded route, the
+    `staticStatus` prefix and the `failureExits` prefix.
 - Twinned-rule search: no second copy of the command-word rule was found.
