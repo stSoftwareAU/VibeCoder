@@ -2254,8 +2254,8 @@ function maskLeads(
       if (index !== -1) later[q] = at + index;
     }
   };
-  // The masks are walked from last to first, so each stretch of output is read
-  // once; the quote and flag pointers also move only backwards.
+  // Scan each unmasked gap once per quote kind, from the last mask backwards;
+  // the quote and flag pointers also move only backwards.
   let from = text.length;
   let c = closes.length - 1;
   let f = starts.length - 1;

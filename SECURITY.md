@@ -557,9 +557,9 @@ escape-aware read covers at most 4,096 characters or escapes, and a value whose
 escape never closes (`"C:\dir\"`) falls back to ending at the first quote.
 
 A bare value that starts at, or contains, the closing quote of a credential
-flag's quoted value can keep that quote in front of the placeholder (Issues
-#5363 and #5456). In `--password 'alpha beta TOKEN='tail` the `TOKEN=` value opens at
-that quote; masking the quote with the value left the `secret-cli-flag` rule no
+flag's quoted value can keep that quote in front of the placeholder
+(Issues #5363 and #5456). In `--password 'alpha beta TOKEN='tail` the `TOKEN=`
+value opens at that quote; masking it with the value left the `secret-cli-flag` rule no
 closing quote, so it masked only `'alpha` and published `beta`. The quote is
 kept only when the flag's opening quote lies outside every assignment mask.
 When the quote sits inside an outer label's value that is masked whole, it is
