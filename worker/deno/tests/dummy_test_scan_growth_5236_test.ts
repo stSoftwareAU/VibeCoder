@@ -42,7 +42,7 @@ for (const kind of ["strong", "weak"] as const) {
       "helper called by every test",
       build,
       scanDummyTests,
-      { baseChars: 40000, repeats: 1 },
+      { baseChars: 40000, repeats: 3 },
     );
     assertEquals(scan.notes, []);
     if (kind === "strong") {
@@ -73,7 +73,7 @@ for (
       "nested registrations",
       build,
       scanDummyTests,
-      { baseChars: 30000, repeats: 1 },
+      { baseChars: 30000, repeats: 3 },
     );
     assertEquals(scan.notes, []);
     if (inner.startsWith("assertEquals")) {
@@ -112,7 +112,7 @@ for (const kind of ["strong", "weak"] as const) {
       "named callback registered by every test",
       build,
       scanDummyTests,
-      { baseChars: 40000, repeats: 1 },
+      { baseChars: 40000, repeats: 3 },
     );
     assertEquals(scan.notes, []);
     if (kind === "strong") {
@@ -141,7 +141,7 @@ for (const call of ["assertEquals(f(), 1);", "assertExists(x);"]) {
       "nested registrations calling a helper's parameter",
       build,
       scanDummyTests,
-      { baseChars: 30000, repeats: 1 },
+      { baseChars: 30000, repeats: 3 },
     );
     assertEquals(scan.notes, []);
     if (call.startsWith("assertEquals")) {
