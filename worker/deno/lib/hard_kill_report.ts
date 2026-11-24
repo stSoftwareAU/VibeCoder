@@ -21,10 +21,11 @@
  * The issue lands in a public repository, and the killed run may have been
  * working a private one. So the issue carries only the facts the worker and
  * launcher wrote themselves (host, container, run, signature, trigger, reason,
- * times), a last step logged drawn from a fixed label list, four guest
+ * times), a last step logged drawn from a fixed label list, five guest
  * figures derived from the evidence (the silent time, the probe state, the
- * guest memory and the guest pressure) and two host figures read on the host
- * at reap time (the host disk and the host memory; Issue #5250). All six are
+ * guest memory, the guest pressure and the last liveness tick in the log tail;
+ * Issue #4815) and two host figures read on the host
+ * at reap time (the host disk and the host memory; Issue #5250). All seven are
  * worded in `hard_kill_guest_facts.ts`. The derived figures are fixed words
  * and digits only, never guest or host command text. The log,
  * transcript, boot and guest text, the last log line, the last tool call and
@@ -50,6 +51,7 @@ import {
   hardKillGuestProbe,
   hardKillHostDisk,
   hardKillHostMemory,
+  hardKillLastLivenessTick,
   hardKillSilentFor,
 } from "./hard_kill_guest_facts.ts";
 import {
@@ -577,6 +579,7 @@ export function hardKillFactLines(
     `**Guest probe:** \`${hardKillGuestProbe(evidence)}\``,
     `**Guest memory:** ${hardKillGuestMemory(evidence)}`,
     `**Guest pressure:** ${hardKillGuestPressure(evidence)}`,
+    `**Last liveness tick:** ${hardKillLastLivenessTick(evidence)}`,
     `**Host disk:** ${hardKillHostDisk(evidence)}`,
     `**Host memory:** ${hardKillHostMemory(evidence)}`,
   ];

@@ -306,6 +306,31 @@ Deno.test("PR observations fail quality when a startup-failed check suite sits u
     });
   }
 });
+Deno.test("PR observations do not record quality passed while an Actions suite is unfinished", async () => {
+  for (const status of ["queued", "in_progress", "completed"]) {
+    await withLedger(async (path) => {
+      await record(path, {}, undefined, {
+        ...rollup,
+        checkSuites: [{
+          id: 31,
+          appSlug: "github-actions",
+          status,
+          conclusion: status === "completed" ? "success" : null,
+          checkRunCount: 0,
+        }],
+      });
+      const events = await readLifecycleLedger(path);
+      assertEquals(
+        events.filter((e) => e.kind === "gate").filter((e) =>
+          e.gate === "quality"
+        ).map((
+          e,
+        ) => e.result),
+        [status === "completed" ? "pass" : "skipped"],
+      );
+    });
+  }
+});
 Deno.test("PR observations skip markerless PRs and retain closed-unmerged outcomes", () =>
   withLedger(async (path) => {
     await record(path, { body: "Closes #1" });
