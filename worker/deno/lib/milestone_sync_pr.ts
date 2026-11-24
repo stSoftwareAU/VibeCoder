@@ -29,6 +29,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
+import { cleanBackSync } from "./clean_back_sync.ts";
 import type { Result } from "../types.ts";
 import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { clearMilestoneReviewRequests } from "./milestone_pr_reviewers.ts";
@@ -379,7 +380,57 @@ export async function raiseMilestoneSyncPr(
   defaultBranch: string,
   deps: MilestoneSyncPrDeps,
 ): Promise<Result<MilestoneSyncPrOutcome>> {
-  const branch = syncBranchFor(milestoneBranch);
+  const verified = await cleanBackSync(
+    repo,
+    milestoneBranch,
+    defaultBranch,
+    deps.git,
+  );
+  const stableBranch = syncBranchFor(milestoneBranch);
+  const branch = verified?.branch ?? stableBranch;
+
+  // A certificate binds one base and head. Let an existing sync land first
+  // rather than opening another PR each time Develop advances.
+  if (verified) {
+    try {
+      const listed = await deps.gh([
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--base",
+        milestoneBranch,
+        "--state",
+        "open",
+        "--author",
+        "VibeCoderST",
+        "--limit",
+        "100",
+        "--json",
+        "headRefName,headRefOid,isCrossRepository",
+      ]);
+      const pending = (JSON.parse(listed) as {
+        headRefName: string;
+        headRefOid: string;
+        isCrossRepository: boolean;
+      }[]).find((pr) =>
+        !pr.isCrossRepository &&
+        (pr.headRefName === stableBranch ||
+          pr.headRefName === verified.branch.slice(0, -40) + pr.headRefOid)
+      );
+      if (pending) {
+        return {
+          ok: true,
+          value: { branch: pending.headRefName, opened: false, pushed: false },
+        };
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        error: new Error(`Could not inspect pending sync PRs: ${error}`),
+      };
+    }
+  }
 
   // Issue #1568: `--force-with-lease` with no explicit value verifies against
   // `refs/remotes/origin/<branch>`. A clone that has never fetched that ref
@@ -419,14 +470,16 @@ export async function raiseMilestoneSyncPr(
     return remote.code === 2;
   };
   const pushBranch = () =>
-    deps.git([
-      "push",
-      confirmedAbsent
-        ? `--force-with-lease=refs/heads/${branch}:`
-        : "--force-with-lease",
-      "origin",
-      `HEAD:refs/heads/${branch}`,
-    ]);
+    verified
+      ? deps.git(["push", "origin", `${verified.head}:refs/heads/${branch}`])
+      : deps.git([
+        "push",
+        confirmedAbsent
+          ? `--force-with-lease=refs/heads/${branch}:`
+          : "--force-with-lease",
+        "origin",
+        `HEAD:refs/heads/${branch}`,
+      ]);
   const baseline = await fetchBaseline();
   confirmedAbsent = await confirmAbsence(baseline.code);
 
@@ -449,7 +502,7 @@ export async function raiseMilestoneSyncPr(
         `branch could not be read; pushing as before (Issue #3690)`,
     );
   }
-  const skipPush = carried === "carries";
+  const skipPush = !verified && carried === "carries";
 
   // Force-with-lease: the sync branch is this function's alone, and a stale
   // one from an earlier cycle carries a merge that is no longer current.
