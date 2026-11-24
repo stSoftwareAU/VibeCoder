@@ -85,6 +85,10 @@ flowchart TD
     control: the bare gate blocks on the uncommitted markdownlint violation.
     Through `workOnIssueCompletion`, the push succeeds, HEAD is unchanged, the
     committed copy is on disk, and the stash holds the rewrite. Red on base.
+    CI fix: the test returns early (with a `console.warn`) when no runnable
+    `markdownlint-cli2` is found, the same way the Rust tests skip without
+    `cargo`. The validate-scripts runner has none installed, so the gate
+    correctly blocked with "markdownlint-cli2 could not be found".
 - No existing test was edited.
 - Docs: I corrected the formatter paragraph in `docs/INTERNALS.md` and the
   archive-formatting section in `docs/CONFIGURATION.md`, which said the stashed

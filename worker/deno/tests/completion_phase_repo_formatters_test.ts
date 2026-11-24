@@ -21,6 +21,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { PRE_PUSH_GATE_MARKER } from "../lib/failure_diagnosis.ts";
 import { gateUnpushedCommits } from "../lib/git_push.ts";
+import { findMarkdownlintBinary } from "../lib/pre_push_gate.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
@@ -438,6 +439,20 @@ Deno.test({
     "completion - in a repository with no Deno config an uncommitted archive summary edit is still set aside (Issue #5393)",
   permissions: { read: true, write: true, run: true, env: true },
   async fn() {
+    // The gate blocks, rather than waves through, a configured markdownlint
+    // with no binary; the validate-scripts runner has none installed.
+    if (
+      await findMarkdownlintBinary(
+        "/nonexistent",
+        Deno.env.get("PATH") ?? "",
+      ) ===
+        null
+    ) {
+      console.warn(
+        "skipping markdownlint archive-summary test: markdownlint-cli2 not installed",
+      );
+      return;
+    }
     const summary = "docs/archive/pr-summaries/pr-summary-10.md";
     const committed = "# Summary\n\nDelivered.\n";
     // Skips a heading level (MD001), so markdownlint blocks the working tree.
