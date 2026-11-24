@@ -23,7 +23,7 @@ import {
 import {
   NO_HOST_GIT_CONFIG,
   NO_HOST_HOOKS_ARGS,
-  runFixtureGit,
+  runShieldedGit,
 } from "./support/no_host_git_config.ts";
 
 Deno.test("classifyBranchLineage preserves an unavailable shared lookup as an explicit unknown (Issue #3977)", async () => {
@@ -312,7 +312,7 @@ Deno.test(
         repo: "stSoftwareAU/VibeCoder",
         branch: BRANCH,
         baseBranch: "main",
-        runGit: runFixtureGit,
+        runGit: runShieldedGit,
         runGh: mergedPrStub(531, squashCommit),
         cwd: writer,
       });
@@ -386,7 +386,7 @@ Deno.test(
         repo: "stSoftwareAU/VibeCoder",
         branch: BRANCH,
         baseBranch: "main",
-        runGit: runFixtureGit,
+        runGit: runShieldedGit,
         runGh: mergedPrStub(531, squashCommit),
         cwd: writer,
       });
@@ -426,7 +426,7 @@ Deno.test(
         repo: "stSoftwareAU/VibeCoder",
         branch: "issue-9-fresh",
         baseBranch: "main",
-        runGit: runFixtureGit,
+        runGit: runShieldedGit,
         runGh: () => Promise.resolve("[]"),
         cwd: clone,
       });
@@ -459,7 +459,7 @@ Deno.test(
         repo: "stSoftwareAU/VibeCoder",
         branch: "issue-9-on-top",
         baseBranch: "main",
-        runGit: runFixtureGit,
+        runGit: runShieldedGit,
         runGh: () => {
           throw new Error("gh must not be called for an up-to-date branch");
         },
@@ -486,7 +486,7 @@ Deno.test(
         repo: "stSoftwareAU/VibeCoder",
         branch: BRANCH,
         baseBranch: "main",
-        runGit: runFixtureGit,
+        runGit: runShieldedGit,
         runGh: () => Promise.reject(new Error("gh: API rate limit exceeded")),
         cwd: writer,
       });
@@ -518,7 +518,7 @@ Deno.test(
       const result = await rebaseOntoBase({
         branch: BRANCH,
         baseRef: "origin/main",
-        runGit: runFixtureGit,
+        runGit: runShieldedGit,
         cwd: writer,
       });
 
@@ -569,7 +569,7 @@ Deno.test(
       const result = await rebaseOntoBase({
         branch: "issue-9-conflict",
         baseRef: "origin/main",
-        runGit: runFixtureGit,
+        runGit: runShieldedGit,
         cwd: clone,
       });
 
@@ -602,7 +602,7 @@ Deno.test(
         repo: "stSoftwareAU/VibeCoder",
         branch: BRANCH,
         baseRef: "origin/main",
-        runGit: runFixtureGit,
+        runGit: runShieldedGit,
         runGh: mergedPrStub(531, squashCommit),
         cwd: writer,
       });
@@ -627,7 +627,7 @@ Deno.test(
         repo: "stSoftwareAU/VibeCoder",
         branch: BRANCH,
         baseRef: "origin/main",
-        runGit: runFixtureGit,
+        runGit: runShieldedGit,
         runGh: mergedPrStub(531, "0".repeat(40)),
         cwd: writer,
       });

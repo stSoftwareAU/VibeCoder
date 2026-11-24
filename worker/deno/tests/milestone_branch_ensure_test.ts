@@ -185,3 +185,62 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "git operations command - ensure-milestone-branch refuses an env that widens the git shield (Issue #5371)",
+  async () => {
+    const fx = await setupRepo();
+    try {
+      const result = await gitOperationsCommand.execute(
+        {
+          operation: "ensure-milestone-branch",
+          "milestone-branch": "milestone/refused-env",
+          "default-branch": "main",
+          cwd: fx.clone,
+          env: { ...NO_HOST_GIT_CONFIG, GIT_SSH_COMMAND: "echo pwned" },
+        },
+        config,
+      );
+
+      assertEquals(result.success, false);
+      assertStringIncludes(result.message, "GIT_SSH_COMMAND");
+      // Refused before any git ran, so the branch was never created on origin.
+      assertEquals(
+        (await gitOk(["branch", "--list", "milestone/refused-env"], fx.remote))
+          .trim(),
+        "",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "git operations command - ensure-milestone-branch refuses a non-string env value (Issue #5371)",
+  async () => {
+    const fx = await setupRepo();
+    try {
+      const result = await gitOperationsCommand.execute(
+        {
+          operation: "ensure-milestone-branch",
+          "milestone-branch": "milestone/refused-type",
+          "default-branch": "main",
+          cwd: fx.clone,
+          env: { GIT_CONFIG_COUNT: 1 },
+        },
+        config,
+      );
+
+      assertEquals(result.success, false);
+      assertStringIncludes(result.message, "GIT_CONFIG_COUNT");
+      assertEquals(
+        (await gitOk(["branch", "--list", "milestone/refused-type"], fx.remote))
+          .trim(),
+        "",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);

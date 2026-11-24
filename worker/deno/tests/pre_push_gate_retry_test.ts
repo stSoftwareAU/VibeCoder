@@ -768,13 +768,13 @@ Deno.test("pre-push gate retry - real git: the fix is committed locally and neve
         reconcileHeadToBranch: (branch, options) =>
           reconcileHeadToBranch(branch, {
             ...options,
-            env: NO_HOST_GIT_CONFIG,
+            env: { ...options?.env, ...NO_HOST_GIT_CONFIG },
           }),
         commitAndPushPending: (...a: Parameters<typeof commitAndPushPending>) =>
           commitAndPushPending(
             a[0],
             a[1],
-            { ...a[2], env: NO_HOST_GIT_CONFIG },
+            { ...a[2], env: { ...a[2]?.env, ...NO_HOST_GIT_CONFIG } },
             a[3],
             a[4],
             a[5],

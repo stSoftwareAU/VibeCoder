@@ -15,7 +15,7 @@ import {
 import {
   NO_HOST_GIT_CONFIG,
   NO_HOST_HOOKS_ARGS,
-  runFixtureGit,
+  runShieldedGit,
 } from "./support/no_host_git_config.ts";
 
 async function makeTempWorkDir(): Promise<string> {
@@ -518,7 +518,7 @@ Deno.test("stale_workdir - pushUnpushedBranches rescues an unpushed issue branch
   try {
     const { upstream, clone } = await buildUnpushedFixture(tmp);
     const rescue = await pushUnpushedBranches(clone, {
-      runGit: runFixtureGit,
+      runGit: runShieldedGit,
     });
     assertEquals(rescue.ok, true);
     assertEquals(rescue.pushedBranches, ["issue-11-wip"]);
@@ -592,7 +592,7 @@ Deno.test("stale_workdir - a stale clone with pushed-only work is still removed 
 
     const result = await scanAndCleanupStaleWorkDirs({
       workDir,
-      rescue: (path) => pushUnpushedBranches(path, { runGit: runFixtureGit }),
+      rescue: (path) => pushUnpushedBranches(path, { runGit: runShieldedGit }),
     });
     // The rescue pushed the WIP branch, then the removal proceeded.
     assertEquals(result.removedStale, ["repo"]);

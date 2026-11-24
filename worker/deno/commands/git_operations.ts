@@ -120,6 +120,36 @@ export function buildShallowCloneArgs(
   ];
 }
 
+/** The only git environment keys a caller may pass (Issue #5371). */
+const SHIELD_ENV_KEYS: readonly string[] = [
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_NOSYSTEM",
+];
+
+/** Why a caller's `env` is refused, or undefined when it is an allowed shield env. */
+function refuseShieldEnv(value: unknown): string | undefined {
+  const isPlainObject = typeof value === "object" && value !== null &&
+    !Array.isArray(value) &&
+    [Object.prototype, null].includes(Object.getPrototypeOf(value));
+  if (!isPlainObject) {
+    return `Refused env: expected an object with only ${
+      SHIELD_ENV_KEYS.join(", ")
+    } keys`;
+  }
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    if (!SHIELD_ENV_KEYS.includes(key)) {
+      return `Refused env key '${key}': only ${
+        SHIELD_ENV_KEYS.join(", ")
+      } may be passed`;
+    }
+    if (typeof val !== "string") {
+      return `Refused env key '${key}': its value must be a string`;
+    }
+  }
+  return undefined;
+}
+
 export const gitOperationsCommand: Command = {
   name: "git-operations",
   description:
@@ -131,10 +161,12 @@ export const gitOperationsCommand: Command = {
   ): Promise<CommandResult> {
     const operation = String(args["operation"] ?? "");
     const cwd = args["cwd"] ? String(args["cwd"]) : undefined;
-    // Issue #5371: an optional `env` carries the git environment to every git call.
-    const env = typeof args["env"] === "object" && args["env"] !== null
-      ? args["env"] as Record<string, string>
-      : undefined;
+    // Issue #5371: shuts out host git config; anything wider is refused, before any git runs.
+    const envRefusal = args["env"] === undefined
+      ? undefined
+      : refuseShieldEnv(args["env"]);
+    if (envRefusal) return { success: false, message: envRefusal };
+    const env = args["env"] as Record<string, string> | undefined;
     const gitOptions: GitCommandOptions = {
       ...(cwd ? { cwd } : {}),
       ...(env ? { env } : {}),

@@ -309,6 +309,7 @@ function pullOpts(
     checkVisibility: PRIVATE,
     mayTransfer: ALWAYS,
     logger,
+    gitEnv: NO_HOST_GIT_CONFIG,
     ...extra,
   };
 }
@@ -333,6 +334,7 @@ function pushOpts(
     stop,
     logger,
     scanStaged: cleanScan,
+    gitEnv: NO_HOST_GIT_CONFIG,
     ...extra,
   };
 }

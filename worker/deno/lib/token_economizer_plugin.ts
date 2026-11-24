@@ -126,6 +126,8 @@ export interface TokenEconomizerLaunch {
     readonly checkVisibility?: VisibilityCheck;
     /** Test seam for the push's staged scan. Absent: the gitleaks scan (Issue #4957). */
     readonly scanStaged?: (cwd: string) => Promise<StagedScan>;
+    /** Test seam: the env overlaid on the push's git calls. Absent: the inherited environment (Issue #5371). */
+    readonly gitEnv?: Record<string, string>;
   };
 }
 
@@ -173,6 +175,8 @@ export interface ResolveTokenEconomizerLaunchOptions {
   runId?: string;
   /** Test seam: the learnings store's clone URL. Absent: the GitHub URL (Issue #4957). */
   learningsStoreUrl?: string;
+  /** Test seam: the env overlaid on the learnings git calls. Absent: the inherited environment (Issue #5371). */
+  learningsGitEnv?: Record<string, string>;
   /** Test seam: the learnings visibility check. Absent: the GitHub check (Issue #4957). */
   checkLearningsVisibility?: VisibilityCheck;
   /** Test seam: the push's staged secret scan. Absent: the gitleaks scan (Issue #4957). */
@@ -507,6 +511,7 @@ export async function resolveTokenEconomizerLaunch(
         home: realState,
         runId,
         storeUrl: opts.learningsStoreUrl,
+        gitEnv: opts.learningsGitEnv,
         checkVisibility: opts.checkLearningsVisibility,
         scanStaged: opts.scanLearnings,
         logger,
@@ -571,11 +576,13 @@ async function pullRunLearnings(args: {
   storeUrl?: string;
   checkVisibility?: VisibilityCheck;
   scanStaged?: (cwd: string) => Promise<StagedScan>;
+  gitEnv?: Record<string, string>;
   logger?: LearningsLogger;
 }): Promise<NonNullable<TokenEconomizerLaunch["learnings"]>> {
   const { learningsRepo, checkout, workRoot, runId, logger } = args;
   const checkVisibility = args.checkVisibility;
   const scanStaged = args.scanStaged;
+  const gitEnv = args.gitEnv;
   const unavailable = (reason: string) => {
     logger?.warn(`token-economizer learnings: unavailable: ${reason}`);
     return {
@@ -583,6 +590,7 @@ async function pullRunLearnings(args: {
       persistence: { status: "unavailable" as const, reason },
       checkVisibility,
       scanStaged,
+      gitEnv,
     };
   };
   try {
@@ -612,10 +620,17 @@ async function pullRunLearnings(args: {
       scratchDir,
       storeUrl: args.storeUrl,
       checkVisibility,
+      gitEnv,
       mayTransfer: () => tokenEconomizerMaySync(workRoot),
       logger,
     });
-    return { repo: learningsRepo, persistence, checkVisibility, scanStaged };
+    return {
+      repo: learningsRepo,
+      persistence,
+      checkVisibility,
+      scanStaged,
+      gitEnv,
+    };
   } catch (err) {
     return unavailable(redactSecrets(errorMessage(err)));
   }

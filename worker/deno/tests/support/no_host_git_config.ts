@@ -11,7 +11,9 @@
  * `claimMilestoneSync`, ...) run git through `runGitCommand`, which overlays
  * only `options.env` on the inherited environment. Such a test must therefore
  * pass `env: NO_HOST_GIT_CONFIG` in the `GitCommandOptions` it hands them,
- * spreading the shield last over any env it already has.
+ * spreading the shield last over any env it already has. Where a test instead
+ * injects a production `runGit` seam, pass `runShieldedGit`, which applies the
+ * same shield without changing the argv production built (Issue #5371).
  *
  * Fixtures and tests whose production calls commit, when using
  * `NO_HOST_GIT_CONFIG`, must set their own identity (`user.name` and
@@ -52,6 +54,17 @@ export function runFixtureGit(
   options: GitCommandOptions = {},
 ): ReturnType<typeof runGitCommand> {
   return runGitCommand([...NO_HOST_HOOKS_ARGS, ...args], {
+    ...options,
+    env: { ...options.env, ...NO_HOST_GIT_CONFIG },
+  });
+}
+
+/** Shielded git for injecting as a production `runGit` seam, where argv must stay as production built it (Issue #5371). */
+export function runShieldedGit(
+  args: string[],
+  options: GitCommandOptions = {},
+): ReturnType<typeof runGitCommand> {
+  return runGitCommand(args, {
     ...options,
     env: { ...options.env, ...NO_HOST_GIT_CONFIG },
   });
