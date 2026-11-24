@@ -256,8 +256,9 @@ Deno.test("execute_phase - a non-external allocation plans the claude provider (
 });
 
 Deno.test("execute_phase - the graft sink receives the rerouted provider on a gemini host (Issue #4109)", async () => {
-  // Gemini has no MCP transport, so a gemini run is never handed graft. The
-  // planner reroutes it to Claude, which takes the graft MCP server.
+  // The planner reroutes the gemini-hosted run to Claude, and the graft sink
+  // must be handed that rerouted run (Issue #5343: Gemini takes MCP servers
+  // too, but the reroute still decides the provider this sink sees).
   configureHost("gemini");
   try {
     const logs: string[] = [];
@@ -693,8 +694,9 @@ Deno.test("execute_claude_phase - the codegraph sink receives the rerouted provi
 });
 
 Deno.test("execute_claude_phase - the graft sink receives the rerouted provider (Issue #4109)", async () => {
-  // Gemini has no MCP transport, so a gemini run is never handed graft. The
-  // planner reroutes it to Claude, which takes the graft MCP server.
+  // The planner reroutes the gemini-hosted run to Claude, and the graft sink
+  // must be handed that rerouted run (Issue #5343: Gemini takes MCP servers
+  // too, but the reroute still decides the provider this sink sees).
   configureHost("gemini");
   try {
     const observed: ClaudePhaseObserved = {
