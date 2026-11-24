@@ -44,7 +44,7 @@ GEMINI_CLI_HOME=/home/vibe/auto-issue-work-agent-state/gemini gemini
 ```
 
 With no browser on the machine, set `NO_BROWSER=true` too. The CLI then prints a
-sign-in URL and asks for the authorization code ("Enter the authorization
+sign-in URL and asks for the authorisation code ("Enter the authorization
 code:") instead of opening a browser (upstream
 `packages/core/src/code_assist/oauth2.ts`, `authWithUserCode`; read from the
 upstream main branch, not re-checked against the 0.68.0 pin).
@@ -55,7 +55,10 @@ support encrypted storage.
 
 `settings.json` must select no other auth type: `security.auth.selectedType`
 absent or `"oauth-personal"`. A value of `"gemini-api-key"` classifies as
-metered; any other value is `unknown` and ineligible.
+metered; any other value is `unknown` and ineligible. The `unknown` label
+holds only when no `GEMINI_API_KEY` / `GOOGLE_API_KEY` is present; with one, the
+classification is `metered` (named by that variable), so still never an auto
+candidate.
 
 ```json
 { "security": { "auth": { "selectedType": "oauth-personal" } } }
@@ -96,7 +99,10 @@ a free-tier login counts as fixed-price.
 `GEMINI_API_KEY` / `GOOGLE_API_KEY` alone are `metered`: never selected by
 `agent_provider_mode: "auto"`, usable only when Gemini is pinned (or named in
 the opt-in `agent_provider_fallback`). A corrupt or unreadable login is
-`unknown` (`gemini-login-unreadable (<fault>)`) and ineligible.
+`unknown` (`gemini-login-unreadable (<fault>)`) and ineligible for auto. That
+`unknown` label holds only when no `GEMINI_API_KEY` / `GOOGLE_API_KEY` is
+present; with one, the classification is `metered` (named by that variable), so
+still never an auto candidate.
 
 In `auto` a login is a candidate with passive quota: no probe, no windows, so it
 ranks after providers with fresh known quota. A run-reported quota exhaustion
