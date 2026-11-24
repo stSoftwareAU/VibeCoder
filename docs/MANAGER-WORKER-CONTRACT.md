@@ -90,10 +90,12 @@ Per-provider behaviour, from the same file:
   returns the composed system prompt, tool restriction and prompt, and
   `buildGeminiArgs` then emits no `--prompt`, so the prompt stays under Linux's
   128 KiB single-argument cap). `buildInvocation`
-  (`:1155`) calls `buildGeminiArgs` (`:1034`, defined at
-  `worker/deno/lib/gemini_executor.ts:251`) and carries no `agents` or
-  `settingsJson`. `buildChildEnv` (`:1050`) uses `buildGeminiChildEnv`
-  (`worker/deno/lib/gemini_env.ts:92`).
+  (`:1155`) calls `buildGeminiArgs` (`:1164`, defined at
+  `worker/deno/lib/gemini_executor.ts:286`) and carries no `agents` or
+  `settingsJson`. `buildChildEnv` (`:1195`) uses
+  `buildIsolatedGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:128`), which
+  applies the billing guard on top of `buildGeminiChildEnv`
+  (`worker/deno/lib/gemini_env.ts:100`).
 - **DeepSeek:** `promptTransport` is `"stdin"` (`:1111`). `buildInvocation`
   (`:1147`) destructures out `agents` and `settingsJson` (`:1166`). `agents`
   triggers `warnDeepSeekAgentsUnsupported` (`:1167`,
