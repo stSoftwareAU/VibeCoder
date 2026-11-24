@@ -55,7 +55,7 @@ import {
   syncMilestoneBranchWithDefault,
   updatePrBranch,
 } from "../lib/git_pull.ts";
-import { runGitCommand } from "../lib/git_timeout.ts";
+import { type GitCommandOptions, runGitCommand } from "../lib/git_timeout.ts";
 import {
   checkCloneOwnership,
   discardBrokenClone,
@@ -131,7 +131,14 @@ export const gitOperationsCommand: Command = {
   ): Promise<CommandResult> {
     const operation = String(args["operation"] ?? "");
     const cwd = args["cwd"] ? String(args["cwd"]) : undefined;
-    const gitOptions = cwd ? { cwd } : {};
+    // Issue #5371: an optional `env` carries the git environment to every git call.
+    const env = typeof args["env"] === "object" && args["env"] !== null
+      ? args["env"] as Record<string, string>
+      : undefined;
+    const gitOptions: GitCommandOptions = {
+      ...(cwd ? { cwd } : {}),
+      ...(env ? { env } : {}),
+    };
 
     switch (operation) {
       case "create-branch-name": {

@@ -285,6 +285,8 @@ async function runCompletion(
         order.push("format");
         return await formatter(repo, baseRef) as never;
       },
+      // The archive commit runs its git through the shield too (Issue #5371).
+      formatterDeps: realFormatterDeps(),
       gateUnpushedCommits: (...args) => {
         order.push("gate");
         return gateUnpushedCommits(

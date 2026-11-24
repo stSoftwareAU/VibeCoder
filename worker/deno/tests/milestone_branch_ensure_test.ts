@@ -16,6 +16,7 @@ import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
 import { gitOperationsCommand } from "../commands/git_operations.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { gitOk, setupGitRepoFixture } from "./support/git_repo_fixture.ts";
+import { NO_HOST_GIT_CONFIG } from "./support/no_host_git_config.ts";
 
 const config = buildDefaultWorkerConfig();
 
@@ -30,7 +31,7 @@ Deno.test(
       const result = await ensureMilestoneBranchExists(
         "milestone/3906-example",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       );
 
       assert(
@@ -62,7 +63,7 @@ Deno.test(
       const result = await ensureMilestoneBranchExists(
         "milestone/existing",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       );
 
       assert(
@@ -86,7 +87,7 @@ Deno.test(
       const result = await ensureMilestoneBranchExists(
         "milestone/unbuildable",
         "no-such-default",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       );
 
       assertEquals(result.ok, false);
@@ -118,7 +119,7 @@ Deno.test(
       const result = await ensureMilestoneBranchExists(
         "milestone/unpushable",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       );
 
       assertEquals(result.ok, false);
@@ -144,6 +145,7 @@ Deno.test(
           "milestone-branch": "milestone/unbuildable",
           "default-branch": "no-such-default",
           cwd: fx.clone,
+          env: NO_HOST_GIT_CONFIG,
         },
         config,
       );
@@ -168,6 +170,7 @@ Deno.test(
           "milestone-branch": "milestone/recreated",
           "default-branch": "main",
           cwd: fx.clone,
+          env: NO_HOST_GIT_CONFIG,
         },
         config,
       );

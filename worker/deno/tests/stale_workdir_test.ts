@@ -15,6 +15,7 @@ import {
 import {
   NO_HOST_GIT_CONFIG,
   NO_HOST_HOOKS_ARGS,
+  runFixtureGit,
 } from "./support/no_host_git_config.ts";
 
 async function makeTempWorkDir(): Promise<string> {
@@ -516,7 +517,9 @@ Deno.test("stale_workdir - pushUnpushedBranches rescues an unpushed issue branch
   const tmp = await Deno.makeTempDir({ prefix: "stale_rescue_" });
   try {
     const { upstream, clone } = await buildUnpushedFixture(tmp);
-    const rescue = await pushUnpushedBranches(clone);
+    const rescue = await pushUnpushedBranches(clone, {
+      runGit: runFixtureGit,
+    });
     assertEquals(rescue.ok, true);
     assertEquals(rescue.pushedBranches, ["issue-11-wip"]);
     // The commit is now on the origin.
@@ -574,7 +577,7 @@ Deno.test("stale_workdir - a failing push keeps the stale directory with a loud 
 });
 
 Deno.test("stale_workdir - a stale clone with pushed-only work is still removed after rescue (Issue #4170)", async () => {
-  const { scanAndCleanupStaleWorkDirs } = await import(
+  const { scanAndCleanupStaleWorkDirs, pushUnpushedBranches } = await import(
     "../lib/stale_workdir.ts"
   );
   const tmp = await Deno.makeTempDir({ prefix: "stale_rescue_" });
@@ -587,7 +590,10 @@ Deno.test("stale_workdir - a stale clone with pushed-only work is still removed 
     const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     await Deno.utime(repoDir, old, old);
 
-    const result = await scanAndCleanupStaleWorkDirs({ workDir });
+    const result = await scanAndCleanupStaleWorkDirs({
+      workDir,
+      rescue: (path) => pushUnpushedBranches(path, { runGit: runFixtureGit }),
+    });
     // The rescue pushed the WIP branch, then the removal proceeded.
     assertEquals(result.removedStale, ["repo"]);
     const remote = await runRescueGit(

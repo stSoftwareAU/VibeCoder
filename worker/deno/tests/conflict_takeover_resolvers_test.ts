@@ -107,6 +107,7 @@ Deno.test("resolveOnFixBranch - a clean merge lands on the fix branch and never 
 
     const resolvers = bindConflictTakeoverResolvers({
       checkout: () => Promise.resolve(localPath),
+      runGit: runFixtureGit,
     });
 
     const pr = makePr({ headSha: headCommit });
@@ -399,6 +400,7 @@ Deno.test("a gated takeover resolves a genuine conflict into a fix PR (Issue #30
 
     const resolvers = bindConflictTakeoverResolvers({
       checkout: () => Promise.resolve(localPath),
+      runGit: runFixtureGit,
       agentFn: async (request) => {
         await Deno.writeTextFile(
           `${request.workDir}/shared.ts`,
@@ -493,6 +495,7 @@ Deno.test("resolveViaLadder - the agent resolves a genuine conflict and the head
     const headCommit = await divergeOnShared(localPath, "feature/x");
     const resolvers = bindConflictTakeoverResolvers({
       checkout: () => Promise.resolve(localPath),
+      runGit: runFixtureGit,
       agentFn: resolvingAgent("head version\nmain version\n"),
     });
 
