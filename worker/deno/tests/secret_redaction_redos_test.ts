@@ -34,6 +34,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  containsSecret,
   REDACTION_PLACEHOLDER,
   redactSecrets,
 } from "../lib/secret_redaction.ts";
@@ -242,4 +243,38 @@ Deno.test("redactSecrets - a long fence run after a label passes through unchang
     const hostile = `PASSWORD:\n${fill.repeat(HOSTILE_CHARS)}`;
     assertEquals(redactSecrets(hostile), hostile);
   }
+});
+
+/**
+ * Issue #5373 - the `secret-assignment` key was quadratic on a long unbroken
+ * run of key characters holding many credential keywords that no separator
+ * follows, a shape the decode pass reaches by joining short lines.
+ */
+Deno.test("redactSecrets - a long unbroken run of credential keywords passes through unchanged (Issue #5373)", () => {
+  const run = "TOKENx".repeat(87_382);
+  assertEquals(redactSecrets(run), run);
+  assertEquals(containsSecret(run), false);
+  assertEquals(
+    redactSecrets(run + " API_TOKEN=hunter2value"),
+    run + " API_TOKEN=" + REDACTION_PLACEHOLDER,
+  );
+});
+
+Deno.test("redactSecrets - line-wrapped credential keywords joined by the decode pass stay linear (Issue #5373)", () => {
+  const lines = "MY_TOKEN\n".repeat(116_509);
+  assertEquals(redactSecrets(lines), lines);
+  assertEquals(containsSecret(lines), false);
+  assertEquals(
+    redactSecrets(lines + "API_TOKEN=hunter2value"),
+    lines + "API_TOKEN=" + REDACTION_PLACEHOLDER,
+  );
+});
+
+Deno.test("redactSecrets - a key at the 63-character bound is still masked (Issue #5373)", () => {
+  const key = "A".repeat(63) + "TOKEN" + "B".repeat(63);
+  assertEquals(containsSecret(`${key}=hunter2value`), true);
+  assertEquals(
+    redactSecrets(`${key}=hunter2value`),
+    `${key}=${REDACTION_PLACEHOLDER}`,
+  );
 });

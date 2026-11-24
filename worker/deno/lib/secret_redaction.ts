@@ -50,7 +50,7 @@ import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
  * means and why every quantifier is bounded.
  */
 const SECRET_ASSIGNMENT_PATTERN =
-  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?[*`>]{0,3}\s*(?::|(?<!>)=)(?:[*_]{1,3}(?=\s))?\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])((?=\S{0,63}[A-Za-z0-9])(?:"(?:[^"\\]|\\[^]){1,4096}"|'(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|"[^"]+"|'[^']+'|[^\s"]+)|"(?=[^"]{0,255}[A-Za-z0-9])(?:(?:[^"\\]|\\[^]){1,4096}"|[^"]+"|[^"\n\r\u2028\u2029]+)|'(?=[^']{0,255}[A-Za-z0-9])(?:(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|[^']+'))/gi;
+  /\b([A-Za-z0-9_]{0,63}(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]{0,63})(["']?[*`>]{0,3}\s*(?::|(?<!>)=)(?:[*_]{1,3}(?=\s))?\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])((?=\S{0,63}[A-Za-z0-9])(?:"(?:[^"\\]|\\[^]){1,4096}"|'(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|"[^"]+"|'[^']+'|[^\s"]+)|"(?=[^"]{0,255}[A-Za-z0-9])(?:(?:[^"\\]|\\[^]){1,4096}"|[^"]+"|[^"\n\r\u2028\u2029]+)|'(?=[^']{0,255}[A-Za-z0-9])(?:(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|[^']+'))/gi;
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -826,6 +826,14 @@ const RULES: readonly RedactionRule[] = [
   //     still parses. The already-redacted lookahead tolerates that opening
   //     quote, so the pass stays idempotent and `containsSecret` stays false
   //     on its own output.
+  //   - the key's runs of key characters either side of the credential keyword
+  //     are bounded at 63 characters each, as `secret-cli-flag` bounds its
+  //     flag-name runs (Issue #5373). Unbounded, the engine retried every
+  //     keyword position in a long run that no separator follows and rescanned
+  //     the rest of the run each time, which was quadratic (the linearity rule
+  //     in the module header), and the decode pass's joined lines reach the
+  //     same shape. The accepted limit: a key with more than 63 key characters
+  //     before or after its keyword is not matched.
   {
     name: "secret-assignment",
     apply: redactAssignments,
