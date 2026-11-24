@@ -97,7 +97,8 @@ flowchart LR
   `processIssue`), not a hand-placed line
 - Docs: the **Filing.** bullet in `docs/CALLBACKS.md` names the new figure, the
   two lines it reads (and that a run logs the first every minute), and its
-  `not in the log tail` value. The module comments of
+  `not in the log tail` value. `docs/TROUBLESHOOTING.md` and
+  `docs/workflows/resilience-and-concurrency.md` describe that field for operators. The module comments of
   `worker/deno/lib/hard_kill_guest_facts.ts` and
   `worker/deno/lib/hard_kill_report.ts` now count seven figures, and the list of
   fact lines in `worker/deno/lib/hard_kill_facts_backfill.ts` names the new line
