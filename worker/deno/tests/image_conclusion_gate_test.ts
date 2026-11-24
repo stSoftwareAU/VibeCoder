@@ -33,6 +33,11 @@ Deno.test("image conclusion gate - an untrusted image withholds the already-reso
   assertEquals(decision.imageCount, 1);
   assertStringIncludes(decision.auditMessage ?? "", "[SECURITY]");
   assertStringIncludes(decision.auditMessage ?? "", "Issue #1385");
+  assertStringIncludes(decision.auditMessage ?? "", "retried as not finished");
+  assert(
+    !(decision.auditMessage ?? "").includes("human review"),
+    "a withheld close is retried, never handed to a human (Issue #4227)",
+  );
 });
 
 Deno.test("image conclusion gate - the audit line reports the count, never the URL", () => {
