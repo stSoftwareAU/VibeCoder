@@ -229,6 +229,31 @@ for (
   });
 }
 
+for (const networkPresent of [true, false]) {
+  Deno.test(`stale cleanup clears a missing proxy's journal (network present: ${networkPresent})`, async () => {
+    await withDir(async (dir) => {
+      const launch = fixture();
+      const fake = fakeRuntime();
+      if (networkPresent) fake.networks.add(launch.network);
+      const journal = `${dir}/${launch.network}.json`;
+      await Deno.writeTextFile(
+        journal,
+        JSON.stringify(ownership(launch, true, false)),
+      );
+      const lines: string[] = [];
+      await reapStaleAppleOwnership(
+        dir,
+        fake.run,
+        () => false,
+        (line) => lines.push(line),
+      );
+      assertEquals([...fake.networks], []);
+      assertEquals(await exists(journal), false);
+      assertEquals(lines, []);
+    });
+  });
+}
+
 for (const livePid of [42, 43]) {
   Deno.test(`stale cleanup never touches resources of a live pid ${livePid}`, async () => {
     await withDir(async (dir) => {
