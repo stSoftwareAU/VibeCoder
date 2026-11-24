@@ -84,11 +84,11 @@ export interface LowPriorityCollectionResult {
   hasOpenIssues: boolean;
   /**
    * Issue #2751: true when the repo has at least one open low-priority
-   * issue that is not waiting on a human — no handoff label (failed,
-   * refine-issue, planning, question, needs-revision, needs-human) and no
+   * issue that is not waiting on a human — no handoff label (refine-issue,
+   * planning, question, needs-revision, needs-human) and no
    * assignee outside the fleet. Dependency-blocked, PR-blocked and
    * fleet-assigned issues still count. This, not `hasOpenIssues`, gates
-   * the repo's idle tasks.
+   * the repo's idle tasks. A leftover `failed` label alone still counts.
    */
   hasSuppressingLowPriority: boolean;
 }
