@@ -1240,8 +1240,8 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
     envVars: DEEPSEEK_CREDENTIAL_ENV_VARS,
     provisionEnvVar: "VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY",
   },
-  // DeepSeek bills per token against an API key (Issue #1923), the same as
-  // Gemini: metered, and never an automatic-routing candidate.
+  // DeepSeek bills per token against an API key (Issue #1923), as a Gemini
+  // API key does: metered, and never an automatic-routing candidate.
   billing: {
     subscriptionEnvVars: [],
     meteredEnvVars: DEEPSEEK_CREDENTIAL_ENV_VARS,
