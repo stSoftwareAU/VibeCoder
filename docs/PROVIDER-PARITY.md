@@ -81,7 +81,7 @@ path. Nothing is inferred from a provider id.
 | -------- | ------------------------ | ------- |
 | Claude | `CLAUDE_CODE_OAUTH_TOKEN` | `ANTHROPIC_API_KEY` |
 | Codex | a ChatGPT login persisted under `CODEX_HOME` | `OPENAI_API_KEY`, `CODEX_API_KEY` |
-| Gemini | a Google-account login persisted under `GEMINI_CLI_HOME` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| Gemini | a Google login persisted under `GEMINI_CLI_HOME` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
 | DeepSeek | none | `DEEPSEEK_API_KEY` |
 
 A Gemini Google-account login proves a fixed-price subscription
@@ -90,7 +90,8 @@ A Gemini Google-account login proves a fixed-price subscription
 selects no other auth type; free-tier and paid logins classify the same. A
 `settings.json` selecting `gemini-api-key` is `metered`
 (`gemini-settings-api-key`), and a corrupt or unreadable login is `unknown`
-(`gemini-login-unreadable (<fault>)`). With no `GEMINI_CLI_HOME`,
+(`gemini-login-unreadable (<fault>)`) unless a metered key is also present,
+when it is `metered`. With no `GEMINI_CLI_HOME`,
 `GEMINI_API_KEY` / `GOOGLE_API_KEY` stay `metered`. `GEMINI_CLI_HOME` is a
 non-secret state selector in `gemini/provider.env`, so `setup.sh` provisioning
 is unchanged. At startup the worker seeds
@@ -103,7 +104,9 @@ Gemini child then gets that home plus `GOOGLE_GENAI_USE_GCA=true` and neither
 authentication instead of becoming metered spend (mirroring Codex's
 `CODEX_HOME` guard); `GEMINI_CLI_HOME` is denied by name to the Claude, Codex
 and DeepSeek children. Encrypted credential storage
-(`GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=true`) is not supported.
+(`GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=true`) is not supported. The owner's
+one-time login and seeding steps are in
+[Gemini subscription authentication](GEMINI-SUBSCRIPTION-AUTH.md).
 
 Three rules follow, and they are separate:
 
@@ -147,6 +150,22 @@ flowchart TD
     F -->|operator opted in| B["classify billing, log it loudly"]
     B --> R
 ```
+
+## Gemini capabilities
+
+The Gemini descriptor (`GEMINI_PROVIDER`, `agent_provider.ts:1076-1206`)
+carries the following, read from the code against the pinned Gemini CLI 0.68.0;
+every path in the Code column is under `worker/deno/lib/`.
+
+| Capability | Gemini | Code |
+| ---------- | ------ | ---- |
+| Output adapter | `--output-format stream-json` NDJSON is decoded by `GEMINI_OUTPUT_ADAPTER` into the answer, session, usage and a typed failure: out-of-memory, authentication, quota-exhausted, model-unavailable, turn-limit, network, rate-limit, task-failure (Issue #5340) | `gemini_executor.ts:66-67`; `gemini_output_adapter.ts:414-530`, `:533`; `agent_provider.ts:1130-1132` |
+| Session resume | By worker-generated id: `--session-id <id>` on the first phase or after another provider's state; `--resume <id>` once Gemini reported that id; `--resume latest` is refused (Issue #5342) | `session_resume.ts:214-228` (`geminiSessionFlags`); `gemini_executor.ts:269-286` |
+| Tool denials | Written to a per-run settings file the CLI reads from `GEMINI_CLI_SYSTEM_SETTINGS_PATH`: mapped tools go to `tools.exclude`, `Task` / `Agent` denials set `experimental.enableAgents: false`, and `NotebookEdit` needs no setting (Gemini has no notebook tool); a denied tool with no Gemini mapping, or a file that cannot be written, refuses the spawn (Issue #5341) | `gemini_settings.ts:25`, `:50-57`, `:70-105` (`buildGeminiToolSettings`), `:225` (`writeGeminiRunSettings`); `agent_provider.ts:1193-1205`; `claude_runner.ts:1665` (`prepareRunSettings` call) |
+| MCP servers | The run's MCP config is written under `mcpServers` in the same settings file, and `--allowed-mcp-server-names` always names exactly those servers; its empty form loads none, including servers from the user's own settings or extensions (Issue #5343) | `gemini_settings.ts:233-237`; `gemini_executor.ts:288-300`; `agent_provider.ts:1149-1155` |
+| Approvals and sandbox | `--approval-mode yolo` and `--skip-trust`; the CLI's own `--sandbox` is deliberately absent, the container is the boundary | `gemini_executor.ts:65-71` |
+| Sub-agents (`--agents`) and advisor edit guard (`--settings`) | Not carried; an issue run that wants sub-agents is rerouted to Claude or stripped before spawn | `agent_provider.ts:1147-1174` (`buildInvocation`); `issue_run_provider_agents.ts` |
+| Orchestration roles | The executor, both reviewer and the explorer roles (not the manager, which needs stream compaction Gemini lacks) can run on Gemini, with denials through the settings file (Issue #5341) | `orchestration/capabilities.ts:58-66` (`ROLE_REQUIRED_CAPABILITIES`), `:154-232` (`assertRoleSupported`); `claude_runner.ts:536-540` |
 
 ## Routing and fallback
 
