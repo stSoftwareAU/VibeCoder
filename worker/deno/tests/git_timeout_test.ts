@@ -83,7 +83,8 @@ Deno.test("git timeout - push provenance excludes remote owner commits even with
         buildPushArgs("origin", "feature", { setUpstream: true }),
         {
           cwd,
-          env: { ...env, ...auditEnv, ...NO_HOST_GIT_CONFIG },
+          // The audit env goes after the shield so it re-enables the journal.
+          env: { ...env, ...NO_HOST_GIT_CONFIG, ...auditEnv },
         },
       );
       assertEquals(pushed.ok, true);
