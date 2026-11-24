@@ -567,6 +567,15 @@ an outer label's value that is masked whole, as in
 `--token 'alpha beta credentials: TOKEN='tail`, the base behaviour applies and
 `beta credentials:` is still published.
 
+A quoted value whose closing quote is where the `secret-cli-flag` rule opens a
+credential flag's value is masked through that flag's value (Issue #5457).
+Given `API_TOKEN='abc` and, on the next line, `run --password '<value>'`, the
+first value closed at the flag's opening quote, so the mask covered the flag's
+name, the flag rule never saw it, and `<value>` was published. The same held
+for a double-quoted Windows path ending in a backslash and a quoted message
+ending in `token:` with text glued to its closing quote. The mask now runs
+through the flag's value.
+
 The label side stays deliberately blunt — it catches real secrets — apart from
 the prose-heading check below. The value is judged before the mask is applied,
 and, apart from that check, **only when the separator crossed a line break**:
