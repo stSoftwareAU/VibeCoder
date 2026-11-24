@@ -30,7 +30,7 @@ import {
 } from "../lib/pr_feedback_drift_check.ts";
 import { prResponseMessagePath } from "../lib/pr_branch_preparation.ts";
 
-Deno.test("buildDriftQuestionPrompt opens the base only for a parity sentence (Issue #4223)", () => {
+Deno.test("buildDriftQuestionPrompt names the base for context only and asks no parity question (Issue #5432)", () => {
   const shared = {
     repo: "org/repo",
     prNumber: 7,
@@ -38,17 +38,18 @@ Deno.test("buildDriftQuestionPrompt opens the base only for a parity sentence (I
     files: ["docs/manual.md"],
   };
   const withBase = buildDriftQuestionPrompt({ ...shared, baseRef: "main" });
-  assertStringIncludes(withBase, "git show origin/main:");
-  assertStringIncludes(withBase, "as before");
-  assertStringIncludes(withBase, "file:line");
-  assertFalse(withBase.includes("not against the base"));
-  assertFalse(withBase.includes("git show undefined:"));
+  assertStringIncludes(withBase, "`origin/main`, named for context only");
+  assertStringIncludes(withBase, "not against the base");
+  assertFalse(withBase.includes("git show origin/main:"));
+  assertFalse(withBase.includes("parity sentence"));
+  assertFalse(withBase.includes("as before"));
+  // Positive control: the doc-prose question is still asked for a manual.
+  assertStringIncludes(withBase, "For each listed Markdown manual or prompt");
 
   const noBase = buildDriftQuestionPrompt({ ...shared, baseRef: undefined });
-  assertFalse(noBase.includes("git show"));
-  assertStringIncludes(noBase, "as before");
-  assertStringIncludes(noBase, "file:line");
-  assertFalse(noBase.includes("not against the base"));
+  assertFalse(noBase.includes("origin/"));
+  assertFalse(noBase.includes("as before"));
+  assertStringIncludes(noBase, "For each listed Markdown manual or prompt");
 });
 
 // ---------------------------------------------------------------------------

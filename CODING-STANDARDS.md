@@ -996,20 +996,13 @@ does not establish production wiring (Issues #3253, #5205).
 **A new case re-reads the text it now reaches.** When a change sends a new
 case to text that already exists — a widened condition, a new arm or allowed
 value, a newly called function or component, or a new state on a screen that
-already exists (an earlier date, a paged or partial load, a fallback, an empty
-or error case) — list every message the screen already renders: notes,
-empty-state text, warnings, badges and labels. For each one, say whether it
-is still true in the new state. If it is not, reword it, hide it or mark it,
-so the new state never shows a message written for another state. Add a test that
-renders the new state and asserts each message that differs in that state,
-or is absent from it. A test that renders only the new rows stays green
-while an old message is wrong, so include existing messages whose meaning
-the new state changes. A pre-existing message left unchanged that is false
-or misleading in the new state is a blocking self-review finding. This is
-the rendered-screen counterpart of the bullet under **A Code Change Owes
-a Docs Change** below on a change that alters what an existing state
-means. List the messages checked in the PR summary's Test Plan
-(Issue #3259).
+already exists — follow the new case to each place that shows, posts or prints
+something for it, and read what that place says. Reword, hide or mark any text
+that is false or misleading for the new case. Add a test that puts the new case
+through and asserts each text that differs for it, or is absent from it. A test
+that checks only the new behaviour stays green while an old message is wrong.
+Pre-existing text left unchanged that is false or misleading for the new case
+is a blocking self-review finding (Issues #3259, #3877).
 
 **Changing what a shared helper returns, refuses or finds changes every
 caller.** Before a helper that other code already calls starts returning,
@@ -1131,33 +1124,22 @@ the PR summary with a source link to the callee's code or docs.
 
 **A fake mirrors the production implementation it stands in for.** The stub
 rule above covers another repository's binary; this covers the repository's
-own producers. It applies when a test double replaces one of the repository's
-own ports (a trait or interface with a production implementation), and
-equally when a test fakes a response from the repository's own server or
-service by hand: an HTTP body, status or header, a queue message, or a file
-the other side writes. It applies across processes and languages, not only
-to in-process traits or interfaces. When the change relies on a property of
-that port or response, read the production implementation first and confirm
-it has that property. Examples of such properties: which rows a read returns,
-a filter, ordering or paging, which value types a write accepts, or whether a
-conditional write can lose. If the fake behaves differently, fix whichever side
-is wrong. Then pin the two together with one contract test that runs against
-both, or against the production adapter's parsing of a recorded response,
-or test the behaviour at the production adapter itself. For a faked response,
-take the fixture from the producer's real output: a golden the server's tests
-produce or verify, or a contract test that runs the server's serialiser for
-that response kind. When the repository has no golden for that response kind
-yet, the PR adds one. Check a header the client depends on against what the
+own producers. When a test hands the changed code something one of those
+producers returns or writes, take it from the producer: call the producer in
+the test, load output that the producer's own tests generate or verify, run
+one contract test against both the fake and the production adapter, or test
+the behaviour at the production adapter itself. When the change relies on a
+property of what the producer returns, read the production implementation
+first and confirm it has that property; if the fake behaves differently, fix
+whichever side is wrong. Check a header the client depends on against what the
 deployed configuration lets the client read (for example a CORS exposed-headers
-list), and name in the PR summary where that is set. A fix to the fake is
-still held to **A red run counts only against the base branch**. In the PR
-summary, name the production implementation each load-bearing fake stands in
-for and the property the change relies on. A change whose only proof is a fake
-more permissive than its production implementation is a blocking self-review
-finding, and so is one whose only proof is a fixture the producer never emits.
+list). A fix to the fake is still held to **A red run counts only against the
+base branch**. A change whose only proof is a fake more permissive than its
+production implementation, or a fixture the producer never emits, is a
+blocking self-review finding (Issues #3224, #3900).
 
 **A test of a third-party tool's input uses that tool's semantics.** The
-fake rule above covers the repository's own ports and server responses;
+fake rule above covers the repository's own producers;
 this covers a pattern or config that an external tool reads — Renovate
 `matchStrings` or `managerFilePatterns`, Actions `branches` or `paths`
 filters, linter or scanner configs. When the tool's own validator or engine
@@ -1172,14 +1154,12 @@ permissive or more restrictive than the tool, so a test passes on input the
 tool rejects or fails on input it accepts, is a blocking self-review finding.
 
 **Observe the real tool before you rely on it.** When a decision depends on
-how git, `gh`, the GitHub API or another external tool behaves in a
-particular case (exit code, warnings on stderr, case-sensitivity, ordering,
-which items a response includes), run the real tool on that case first. If
-the issue names real examples, use them. Build the fake's fixture from the
-observed output, not from what you expect it to be. In the PR summary, give
-the command you ran and the part of the output the code depends on. If the
-case cannot be observed safely, cite the tool's documentation or source for
-that behaviour.
+what git, `gh`, the GitHub API or another external tool prints or returns,
+take the test's input from the tool, not from what you expect it to be: run
+the tool in the test where the suite has it, in the environment production
+gives it, or use output copied from a real run. If the issue names real
+examples, use them. If the case cannot be observed safely, take it from the
+tool's documentation or source.
 
 **A failure-reason test asserts the cause.** A test of a recorded error, log or
 ledger reason triggers a realistic failure of the real tool, or of a fake built
@@ -1949,28 +1929,16 @@ non-existent tail containing `..` appended after canonicalisation).
 
 ## A Code Change Owes a Docs Change
 
-When you rename a symbol, change a signature or a default, add or remove a flag,
-or change a documented command, grep the repo's docs for the old name and update
-every surface that mentions it — README, `docs/`, operator manuals, prompt
-templates, and agent instructions — in the same change. Do it before the commit,
-not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
+When a change renames or removes something, or changes the behaviour, meaning,
+default or value of something a doc or comment describes, every other statement
+of the old version is now false. Before you commit, search for the old version:
+grep README, `docs/`, prompts and agent instructions, source doc comments and
+user-visible strings for the old name **and** for the stem of the old wording
+or value (`replac\w*`, not "replaces"). The old wording includes each doc line
+your own diff removed or rewrote. Read the sentence around every hit and fix
+each one the change makes false, including in a file the diff does not otherwise
+touch. Then re-run the grep on the final head.
 
-- Changing the **behaviour or meaning** of an existing function, field,
-  setting or endpoint while keeping its name also owes a docs change — the
-  rename rule alone misses it, because there is no old name to grep for.
-- Grep for the **unchanged name**, then re-read every hit — including the doc
-  comment directly above the changed code, the doc comments on the definitions
-  and callers of what changed, wherever they live, and the prose beside any
-  example you updated — and fix any that still describe the old behaviour.
-- **Doc comments outside the diff go stale too.** Grep source files, not only
-  the manuals: for each name the change removes or whose behaviour it changes,
-  and for the shared constants, types and helpers the changed code defines or
-  calls. Read every doc comment and module doc a hit lands in, and fix any
-  sentence the change makes false, including in a file the diff does not
-  otherwise touch. A constant's definition, a reader's safety argument and a
-  helper's list of callers are where these go stale.
-- Updating an example alone is not enough: if the surrounding prose still
-  describes the old contract, the doc is still stale.
 - **Adding a member owes a docs change too.** When the change adds a member to
   something a comment or doc lists or counts (a field, enum variant, flag,
   column, case, exit, refusal or output), that list names the new member in the
@@ -1979,16 +1947,6 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   header, and every list you wrote or edited. For a named set listed in other
   files, grep for one or two **existing sibling members**, not the new one: the
   new name is in no doc yet.
-- When a change alters what an existing **state, enum variant, field or value**
-  means — even though its name stays — find every place that **renders or
-  explains** it: API response strings and labels, reason and stage sentences,
-  UI copy, and the docs prose for those fields. Make each one true for **every
-  case** the new behaviour produces, not only the common one. Grep for the
-  variant or field name **and** for the old wording.
-- Grep for the **stem** of a behavioural claim, not one inflection
-  (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
-  final head after editing. In a file you update, read every passage that
-  mentions the changed surface, not only the section you edited.
 - **Check where you insert.** Before adding a new function, item, test or
   paragraph, read the lines directly above and below the insertion point. A
   doc comment, attribute or decorator directly above belongs to the item
