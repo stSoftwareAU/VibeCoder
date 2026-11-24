@@ -30,9 +30,9 @@ import {
 import {
   CODEGRAPH_INDEX_TIMEOUT_MS,
   CODEGRAPH_UNAVAILABLE_MARKER,
+  type CodegraphStatus,
   prepareCodegraphContext,
 } from "../lib/codegraph_context.ts";
-import { GEMINI_PROVIDER_ID } from "../lib/agent_provider.ts";
 
 const TRIAL_PAGE = "docs/REPO-CONTEXT-TRIAL.md";
 
@@ -133,24 +133,20 @@ Deno.test("the windows section describes the sequence and the manual switch-over
   );
 });
 
-Deno.test("the exclusions section excludes the statuses the runner really returns", async () => {
+Deno.test("the exclusions section excludes `off` and the published `unsupported` status", async () => {
   const off = await prepareCodegraphContext({
     repoDir: "/nonexistent",
     enabled: false,
     providerId: "claude",
     logger: { warn: () => {} },
   });
-  const gemini = await prepareCodegraphContext({
-    repoDir: "/nonexistent",
-    enabled: true,
-    providerId: GEMINI_PROVIDER_ID,
-    logger: { warn: () => {} },
-  });
   assertEquals(off.status, "off");
-  assertEquals(gemini.status, "unsupported");
 
+  // Issue #5343: no provider returns `unsupported` any more, but it remains a
+  // published CodegraphStatus member, so the trial still excludes it if it
+  // appears.
   const exclusions = section(read(TRIAL_PAGE), /exclusion/i);
-  for (const status of [off.status, gemini.status]) {
+  for (const status of [off.status, "unsupported" satisfies CodegraphStatus]) {
     assert(
       exclusions.includes(`\`${status}\``),
       `the exclusions section must say how \`${status}\` runs are treated`,

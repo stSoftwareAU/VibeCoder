@@ -1,0 +1,12 @@
+{
+  "issue": 5340,
+  "chunk": "top-up-5340",
+  "title": "top-up: Gemini output adapter",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5340",
+  "definition": "modules added for decoding Gemini CLI stream-json and classifying its failures: gemini_output_adapter.ts (#5340)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/gemini_output_adapter.ts"
+  ],
+  "sweptAt": "41a34955441a862470d4d4edfd41156c5a36e641"
+}
