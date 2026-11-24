@@ -13,12 +13,15 @@ fuller resolution verification before delivery. Closes #5530.
   previously reset that tree without offering the repair rung.
 - Reuse `runGateWithRepair`, including its diagnostics, staging safety, two-round
   limit and amend handling, rather than introducing another repair loop.
+  Repair-mode prompts describe the committed merge and an empty conflict list
+  as a verification repair.
 
 ### Essential Design Decisions
 
-- Repair requires a failed check, readable merge/default tips and a new local
-  merge commit. Initial known infrastructure causes and fast-forward failures
-  remain refused without repair; existing attempt classification stays intact.
+- On the clean-merge path, repair requires a failed check, readable merge/default
+  tips and a new local merge commit. Initial known infrastructure causes and
+  fast-forward failures remain refused without repair; existing attempt
+  classification stays intact.
 - The initial type-check verdict is reused. Agent edits then run through
   `resolutionGate`, including the repository's supported checks and unit suite;
   skipped re-verification cannot authorise delivery.
@@ -56,6 +59,11 @@ fuller resolution verification before delivery. Closes #5530.
   one merge commit retaining both parents.
 - The check runner invokes the fixture's discovered Deno command; it replaces
   the host account drop, not the compiler. The tests require no private source.
+- `worker/deno/tests/milestone_gate_repair_prompt_test.ts` drives the real agent
+  binding with an empty conflict list and a first repair request. It verifies
+  the diagnostic reaches repair-mode text, the grant applies and the attempt
+  announces once, with an ordinary-resolution control. This regression also
+  failed before the prompt correction and passed afterwards.
 - Existing private-fallback redaction tests pass. No private repository names,
   refs, source paths or original replies are added to this public record.
 - #5530: Merge fallback: the merge gate refused the merged tree (the
@@ -92,7 +100,15 @@ flowchart TD
   refusal, unavailable agent, skipped re-verification and failed amend.
   The persistent-failure case also asserts timing attribution and charged
   attempt classification. No existing assertions were removed or changed.
-- `deno task test:unit` passed 165 tests across that suite and
+- Added the first-repair prompt regression in
+  `worker/deno/tests/milestone_gate_repair_prompt_test.ts`; existing prompt
+  assertions were retained. Related descriptions checked: the repair-mode
+  override in `worker/deno/lib/prompt_builder.ts`, the conflicted-file and
+  no-side-pick rules in `prompts/merge_conflict/prompt.md`, and the shared
+  grant/announcement binding. The descriptive change agrees with those rules
+  and this diff's clean-merge case; no new agent rule was introduced.
+- The final targeted `deno task test:unit` run passed 260 tests across fifteen
+  suites: that suite and
   `worker/deno/tests/milestone_gate_repair_test.ts`,
   `worker/deno/tests/milestone_gate_repair_land_unverified_4326_test.ts`,
   `worker/deno/tests/milestone_sync_merge_gate_test.ts`,
@@ -100,11 +116,13 @@ flowchart TD
   `worker/deno/tests/milestone_merge_gate_verdict_test.ts`,
   `worker/deno/tests/milestone_branch_sync_test.ts`,
   `worker/deno/tests/milestone_sync_already_synced_test.ts` and
-  `worker/deno/tests/milestone_sync_dirty_clone_test.ts`.
-- A second targeted `deno task test:unit` passed 45 tests in
+  `worker/deno/tests/milestone_sync_dirty_clone_test.ts`,
   `worker/deno/tests/merge_fallback_issue_test.ts`,
-  `worker/deno/tests/merge_fallback_vibecoder_4456_test.ts` and
-  `worker/deno/tests/milestone_gate_repair_prompt_test.ts`.
+  `worker/deno/tests/merge_fallback_vibecoder_4456_test.ts`,
+  `worker/deno/tests/milestone_gate_repair_prompt_test.ts`,
+  `worker/deno/tests/merge_conflict_prompt_v2_test.ts`,
+  `worker/deno/tests/merge_conflict_prompt_fence_1377_test.ts` and
+  `worker/deno/tests/merge_conflict_agent_test.ts`.
 - Targeted Deno formatting, lint and type checks passed. `deno task
   check:manifests` passed: 876 tests passed, one existing test ignored.
 - Existing clean-delivery guards remain: ref validation, clone/history checks,

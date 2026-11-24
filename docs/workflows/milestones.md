@@ -489,7 +489,8 @@ charged merge-gate refusal. An unavailable agent or exhausted repair grant
 leaves the tree refused. An initial infrastructure refusal keeps its cause and
 buys no repair; a fast-forward failure is also refused without amending the
 default branch's existing commit. Passing and initially skipped clean-merge
-checks keep their existing delivery behaviour.
+checks keep their existing delivery behaviour. Repair-mode prompts describe
+the committed merge and an empty conflict list as a verification repair.
 
 **Every automatic resolution is verified before it is pushed.** The merged tree
 must pass the repository's own Issue #974 type check, its `check:manifests`
