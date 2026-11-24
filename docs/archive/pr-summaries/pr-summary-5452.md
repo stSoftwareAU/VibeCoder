@@ -42,14 +42,14 @@ None.
   obsolete bullet wording is replaced by pins for behaviour, meaning, defaults,
   values, old names and stems, removed doc lines and the final-head re-run.
   Word-for-word parity between the standards and guidelines remains checked.
-- Modified `worker/deno/tests/source_doc_comments_3219_docs_test.ts`:
-  the separate source-comment and definitions/callers wording is replaced by
-  the paragraph's source-comment scope, sentence review and outside-diff pins.
-  Step 3 must carry the same paragraph and retain its pointer and manual lookup.
-  The removed summary requirement now has a whole-file absence check; the
+- Modified `worker/deno/tests/source_doc_comments_3219_docs_test.ts`: the
+  separate source-comment and definitions/callers wording is replaced by the
+  paragraph's source-comment scope, sentence review and outside-diff pins. Step
+  3 must carry the same paragraph and retain its pointer and manual lookup. The
+  removed summary requirement now has a whole-file absence check; the
   `pr_feedback` assertions are unchanged.
-- Test-first run against unchanged documentation: three expected failures,
-  with the unchanged `pr_feedback` test passing. Final targeted run through
+- Test-first run against unchanged documentation: three expected failures, with
+  the unchanged `pr_feedback` test passing. Final targeted run through
   `deno task test:unit`: **30 passed, 0 failed**, covering both modified files
   and these six unchanged neighbouring suites:
   - `worker/deno/tests/coding_guidelines_additive_member_3137_test.ts`
@@ -61,8 +61,8 @@ None.
 - Targeted Deno formatting, lint and type checks passed.
 - `timeout 900 ./quality.sh --sequential < /dev/null`: **passed with skips**;
   both unit passes, lint, type check, formatting, Markdown lint, Semgrep and
-  gitleaks passed. Config integration lacked `.config.json`; Checkov lacked
-  its pinned binary or container image.
+  gitleaks passed. Config integration lacked `.config.json`; Checkov lacked its
+  pinned binary or container image.
 - `deno task pr-summary-check`: passed, with zero blocked or unchecked gates.
 
 ## Merge verification
