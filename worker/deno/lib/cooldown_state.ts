@@ -77,7 +77,8 @@ export const ESCALATION_HISTORY_SECONDS = 48 * 60 * 60;
  * broadened to every non-transient failure by Issue #1949): first failure
  * → 2 h (one full cycle plus margin, instead of the 600 s base that let
  * VibeCoder#4281 burn four consecutive hourly cycles); second → 6 h; third
- * and later → 24 h, at which point the caller also escalates to a human.
+ * and later → 24 h. The ladder is never terminal: the issue is retried when
+ * the cooldown ends and never handed to a human (Issue #4158).
  */
 export const ESCALATING_COOLDOWN_LADDER_SECONDS: readonly number[] = [
   2 * 60 * 60,
@@ -291,9 +292,11 @@ export interface RecordCooldownOutcome {
 /**
  * Record that an issue failed (skip for cooldown period).
  *
- * Ladder-class failures (Issue #4304, #1949) step an escalating ladder —
- * the returned `consecutiveFailures` lets the caller escalate to a human
- * once retrying stops being credible.
+ * Ladder-class failures (Issue #4304, #1949) step an escalating ladder;
+ * the returned `consecutiveFailures` counts them inside the escalation
+ * window. No caller escalates on that count: the cooldown is the whole
+ * response to a repeated failure, and the issue is never handed to a human
+ * (Issue #4158).
  */
 export async function recordIssueCooldown(
   config: CooldownConfig,

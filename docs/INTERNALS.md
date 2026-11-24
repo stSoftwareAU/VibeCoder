@@ -5921,10 +5921,9 @@ Two changes close that:
   comment and applies no label, leaving the issue claimable. In
   `coding_failure_ladder.ts` the class gets its own `record-only`
   disposition, so the failure earns the plain cooldown rather than the
-  escalating 2 h → 6 h → 24 h one and never reaches the three-strike
-  `needs-human` park — skipping the ladder while leaving the cooldown in
-  place would have re-created the same human chore one rung later. It is
-  deliberately **not** `transient`: a transient decision returns before
+  escalating 2 h → 6 h → 24 h one, so a repository-configuration refusal
+  never waits out a ladder rung meant for a failure of the issue itself. It
+  is deliberately **not** `transient`: a transient decision returns before
   `handleIssueFailure` is reached, and the main loop's only route into that
   call is `planCodingFailure`'s `applyLadder`, so a transient refusal would
   have left every sibling issue with no written record at all. The
