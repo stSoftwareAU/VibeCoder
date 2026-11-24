@@ -210,6 +210,28 @@ Deno.test("config - loadConfig records the provider fallback policy for the agen
   }
 });
 
+Deno.test("config - loadConfig orders a Gemini subscription before pay-per-call fallbacks (Issue #5339)", async () => {
+  const env = statedEnv({
+    [IMAGE_AGENT_PROVIDERS_ENV]: "claude,gemini,deepseek",
+  });
+  try {
+    await withTempConfig({
+      allowed_authors: ["testuser"],
+      repos: ["org/repo"],
+      agent_provider: "claude",
+      agent_providers: ["claude", "gemini", "deepseek"],
+      agent_provider_fallback: ["deepseek"],
+    }, async (configPath) => {
+      await loadConfig(configPath, { env });
+      const policy = configuredProviderFallbackPolicy();
+      assertEquals(policy?.mode, "ordered");
+      assertEquals(policy?.alternatives, ["gemini", "deepseek"]);
+    });
+  } finally {
+    setConfiguredProviderFallbackPolicy(undefined);
+  }
+});
+
 Deno.test("config - loadConfig resolves the active provider through the injected lookup (Issue #2086)", async () => {
   // The lookup states the installed set, so both halves below hold on a
   // single-provider image as much as on a two-provider one. A loader that

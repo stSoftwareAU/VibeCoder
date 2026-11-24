@@ -1205,6 +1205,141 @@ Deno.test("executeClaude - fails on Claude auth error", async () => {
   );
 });
 
+Deno.test("executeClaude - a structured authentication verdict fails the phase with its cause (Issue #5340)", async () => {
+  // Issue #5340: a Gemini run that emitted only a terminal `result` error has
+  // empty output and empty stderr, so the text scan cannot see it. The
+  // provider's own classifier verdict must still fail the phase as an
+  // authentication failure, and its structured error must name the cause.
+  const ctx = makeContext();
+  const state = makeState();
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 1,
+            output: "",
+            stderr: "",
+            timedOut: false,
+            agentFailure: {
+              category: "authentication",
+              message: "Gemini refused the credential",
+              evidence: "structured",
+              terminal: true,
+              errors: [],
+            },
+            agentOutput: {
+              text: "",
+              textSource: "none",
+              status: "failed",
+              progress: { events: 0 },
+              errors: [
+                {
+                  source: "result",
+                  code: "UnauthorizedError",
+                  message:
+                    "[API Error: Request had invalid authentication credentials.]",
+                  raw: {},
+                },
+              ],
+              malformedLines: 0,
+            },
+          },
+        }) as never,
+      // Only the structured verdict can fire here.
+      isClaudeAuthError: () => false,
+    },
+    git: {
+      runGitCommand: () =>
+        Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        }),
+    },
+  });
+
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+
+  assertEquals(result.status, "failure");
+  const reason = (result as { reason: string }).reason;
+  assertEquals(reason.includes("authentication"), true, reason);
+  assertEquals(
+    reason.includes("invalid authentication credentials"),
+    true,
+    reason,
+  );
+});
+
+Deno.test("executeClaude - a non-auth structured verdict does not fail the phase as an auth error (Issue #5340)", async () => {
+  // Negative control for the test above: the same exit-1 run with the same
+  // structured error, but the provider classified it as a rate limit. It must
+  // not be reported as a Claude authentication error.
+  const ctx = makeContext();
+  const state = makeState();
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 1,
+            output: "",
+            stderr: "",
+            timedOut: false,
+            agentFailure: {
+              category: "rate-limit",
+              message: "Gemini rate limit reached",
+              evidence: "structured",
+              terminal: false,
+              errors: [],
+            },
+            agentOutput: {
+              text: "",
+              textSource: "none",
+              status: "failed",
+              progress: { events: 0 },
+              errors: [
+                {
+                  source: "result",
+                  code: "UnauthorizedError",
+                  message:
+                    "[API Error: Request had invalid authentication credentials.]",
+                  raw: {},
+                },
+              ],
+              malformedLines: 0,
+            },
+          },
+        }) as never,
+      isClaudeAuthError: () => false,
+    },
+    git: {
+      runGitCommand: () =>
+        Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        }),
+    },
+  });
+
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+
+  assertEquals(result.status, "failure");
+  assertEquals(
+    (result as { category: string }).category,
+    "interrupted",
+    (result as { reason: string }).reason,
+  );
+  assertEquals(
+    (result as { reason: string }).reason.includes(
+      "Claude authentication error",
+    ),
+    false,
+    (result as { reason: string }).reason,
+  );
+});
+
 Deno.test("executeClaude #46 - an external SIGTERM fails the phase, not continue", async () => {
   // The old code let a `terminated` result fall through to change detection
   // and `continue`, so completion ran over a half-done tree and failed for the

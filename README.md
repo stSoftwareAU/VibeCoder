@@ -89,10 +89,16 @@ API-key and unknown-billing accounts are never selected:
 }
 ```
 
-Auto mode is the default whenever two or more subscription providers are
-enabled (Issue #5089); set `agent_provider_mode: "pinned"` to keep one
-provider. The provider with the most remaining quota wins; an exact tie is not
-broken, and `agent_provider` plays no part in the choice. An explicit
+Auto mode is the default whenever two or more subscription-capable providers
+(Claude, Codex, Gemini) are enabled (Issue #5089), except that a provider
+other than the preferred `agent_provider` (default `claude`) whose current
+credentials are proved metered (an API key alone) does not count, so Claude
+plus a Gemini on only an API key stays pinned. The preferred provider always
+counts, because pinning it on a metered key would spend per token while auto
+routes away from it. Set
+`agent_provider_mode: "pinned"` to keep one provider. The provider with the
+most remaining quota wins; an exact tie is not broken, and `agent_provider`
+plays no part in the choice. An explicit
 per-invocation provider remains absolute, and `VIBE_AGENT_PROVIDER` can pin an
 enabled provider for that process. If every eligible subscription is exhausted
 or unavailable, the worker waits instead of falling through to metered usage.
@@ -481,6 +487,7 @@ flowchart LR
 | **[Code Mode experiment](docs/CODE-MODE-EXPERIMENT.md)**                       | Record of the Claude Code Code Mode experiment: why it is blocked for the fleet's `claude -p` runs (the observed warning, two further refusals read from the CLI binary, the version floor), the reproducing command, the bar once feasible, and how a new issue restarts it. Status: blocked |
 | **[Codex Budget Sources](docs/CODEX-BUDGET-SOURCES.md)**                       | What the pinned Codex CLI actually exposes about remaining quota, verified against its source: the rollout `token_count` snapshot, explicit exhaustion evidence, subscription vs API-key billing, and what was rejected and why |
 | **[Codex subscription auth](docs/CODEX-SUBSCRIPTION-AUTH.md)**                  | Persistent ChatGPT login for unattended Codex runs: where the refreshed auth state survives a container replacement, and the billing guard that withholds `OPENAI_API_KEY` / `CODEX_API_KEY` from a subscription run |
+| **[Gemini subscription auth](docs/GEMINI-SUBSCRIPTION-AUTH.md)**                | Persistent Google-account login for unattended Gemini runs: where the login under `GEMINI_CLI_HOME` survives a container replacement, how to seed it, and the billing guard that withholds `GEMINI_API_KEY` / `GOOGLE_API_KEY` from a login run |
 | **[Provider parity](docs/PROVIDER-PARITY.md)**                                 | The subscription-only billing policy, shared quota scheduler, scoped usage pauses, multiple Codex credentials, opt-in fallback, and the staged Codex rollout / rollback runbook |
 | **[Manager-worker contract](docs/MANAGER-WORKER-CONTRACT.md)**                 | Provider-neutral manager-worker contract: cited current behaviour, target envelope and lifecycle, compatibility matrix, rollout order                  |
 | **[Subscription soak](docs/SUBSCRIPTION-SOAK.md)**                             | Restart/soak qualification for subscription providers: automated restart-cycle coverage, the operator-facing observability surface, and the manual soak procedure a release engineer runs before `auto` routing |

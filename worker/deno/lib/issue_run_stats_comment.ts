@@ -53,7 +53,6 @@ import {
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
 import { buildDegradationReport, formatCount } from "./planning_run_stats.ts";
-import { GEMINI_PROVIDER_ID } from "./agent_provider.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import {
   buildPhaseInvocations,
@@ -196,9 +195,8 @@ function formatIndexSeconds(seconds: number): string {
  * index still reports the seconds it spent; a status with no figures at all
  * (`off`, `unsupported`) reports the status alone rather than an empty tail.
  *
- * `unsupported` names the provider that causes it — a Gemini-routed run has no
- * MCP transport to reach the index through, which is the only way this status
- * arises ({@link prepareCodegraphContext}).
+ * No provider produces `unsupported` today (Issue #5343); the status is kept
+ * in the published schema, so it renders bare ({@link prepareCodegraphContext}).
  *
  * @param codegraph - What this run's CodeGraph step produced
  * @returns The markdown line, ready to append to the stats section
@@ -206,9 +204,7 @@ function formatIndexSeconds(seconds: number): string {
 export function buildCodegraphStatsLine(
   codegraph: CodegraphContextResult,
 ): string {
-  const status = codegraph.status === "unsupported"
-    ? `unsupported (${GEMINI_PROVIDER_ID})`
-    : codegraph.status;
+  const status = codegraph.status;
   const figures = [
     codegraph.indexSeconds === undefined
       ? undefined
