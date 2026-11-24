@@ -254,8 +254,8 @@ export interface CheckSuiteNode {
   /** The suite's conclusion, set once it is COMPLETED. */
   conclusion?: string | null;
   /**
-   * Check runs this suite created. Only `totalCount === 0` is a suite signal:
-   * a suite with runs is already judged through the rollup (Issue #4347).
+   * Check runs this suite created. Only `totalCount === 0` is a suite failure
+   * signal: a completed suite with runs is judged through the rollup (Issue #4347).
    */
   checkRuns?: { totalCount?: number | null } | null;
 }
@@ -852,8 +852,8 @@ export async function ownDiffUnchanged(
 
 // Sorts one searched PR: null when it is ready for review, else why not.
 // GitHub's rollup already treats skipped and neutral checks as passing. A
-// failed GitHub Actions suite counts as red even when the rollup does not
-// (Issue #4347).
+// failed zero-run Actions suite counts as red even when the rollup does not;
+// unfinished Actions suites wait even beside a green rollup.
 export async function skipReason(
   pr: SearchPr,
   reviewer: string,
@@ -896,7 +896,15 @@ export async function skipReason(
   // even though the rollup is not (Issue #4347). Checked before waiting-ci,
   // since such a commit may have no rollup at all.
   if (redSuites.length > 0) return "ci-failed";
-  if (rollup?.state !== "SUCCESS") return "waiting-ci";
+  // A queued workflow can have no check run yet, so a green rollup alone
+  // does not establish that Actions finished.
+  if (
+    rollup?.state !== "SUCCESS" ||
+    commit?.checkSuites.nodes.some((suite) =>
+      suite.app?.slug === "github-actions" &&
+      suite.status?.toUpperCase() !== "COMPLETED"
+    )
+  ) return "waiting-ci";
   if (reviewedAtHead(pr.reviews.nodes, reviewer, pr.headRefOid)) {
     return "already-reviewed";
   }
