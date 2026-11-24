@@ -105,6 +105,17 @@ Deno.test("(a) accepts the script invoked through bash", () => {
   );
 });
 
+Deno.test("the toolchain step is recognised after an env operand X=$(cat v) and not as an argument (Issue #5378)", () => {
+  expectFindings(
+    mutate([TOOLCHAIN_ANCHOR, `X=$(cat v) ${TOOLCHAIN_ANCHOR}`]),
+    [],
+  );
+  expectFindings(
+    mutate([TOOLCHAIN_ANCHOR, `X=$(cat v) echo ${TOOLCHAIN_ANCHOR}`]),
+    ["[pinned-install]"],
+  );
+});
+
 Deno.test("(a) refuses a script call followed by || true", () => {
   expectFindings(
     mutate([

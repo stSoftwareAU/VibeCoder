@@ -964,6 +964,7 @@ for (
     // A `!` inside the substitution is not a status-inverting prefix.
     ["X=$(test ! -f v) aws-emulator-run -- ./test.sh", true],
     ["X=$(test ! v) aws-emulator-run -- ./test.sh", true],
+    ["X=$(cat $(echo v w)) aws-emulator-run -- ./test.sh", true],
     ["X=$(cat v) Y=$(cat w) aws-emulator-run -- ./test.sh", true],
     // Controls already true before the fix.
     ['X="$(cat v)" aws-emulator-run -- ./test.sh', true],
@@ -974,6 +975,9 @@ for (
     ["X=$(cat v aws-emulator-run -- ./test.sh)", false],
     // Never closed: nothing after it is a command.
     ["X=$(cat v aws-emulator-run -- ./test.sh", false],
+    // These pin the documented limit: shellCommands splits a substitution at
+    // a `|` (or `;`, `&`, line break), so the runner is not seen after it.
+    ["X=$(cat v | tr -d x) aws-emulator-run -- ./test.sh", false],
   ] as const
 ) {
   Deno.test(`workflowRunsAwsEmulator - ${run} is ${expected} (Issue #5378)`, () => {
@@ -1038,6 +1042,72 @@ Deno.test("checkAwsEmulatorInCI - a runner after X=$(cat v) counts in a step and
     ),
   });
   assertEquals(control.wiring, "missing", "control");
+});
+
+// Issue #5378: the other callers of commandIndex read the same words.
+Deno.test("checkAwsEmulatorInCI - X=$(cat v) before cargo test, a status prefix and a failure exit (Issue #5378)", async () => {
+  // isCargoTestCommand: the assignment is skipped, so `cargo test` is found.
+  const marker = "# aws-emulator-embedded: version=1.2.3; justification=x\n";
+  const cargo = await checkRepoWith({
+    "Cargo.toml": CARGO_TOML_AWS,
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${marker}X=$(cat v) cargo test`),
+    ),
+  });
+  assertEquals(cargo.wiring, "official-embedded", "cargo test");
+  const cargoEcho = await checkRepoWith({
+    "Cargo.toml": CARGO_TOML_AWS,
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${marker}X=$(cat v) echo cargo test`),
+    ),
+  });
+  assertEquals(cargoEcho.wiring, "missing", "echo cargo test");
+
+  // staticStatus: a `!` inside the substitution does not invert `false`.
+  const inWorkflow = async (body: string) =>
+    (await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    })).wiring;
+  assertEquals(
+    await inWorkflow(`X=$(test ! v) false && ${RUNNER_STEP}`),
+    "missing",
+    "substitution ! does not invert false",
+  );
+  // Controls: a real prefix `!` is honoured (`! true` is false, `true` is
+  // true), so the pair shows the inner `!` above was ignored on purpose.
+  assertEquals(
+    await inWorkflow(`! true && ${RUNNER_STEP}`),
+    "missing",
+    "! true",
+  );
+  assertEquals(
+    await inWorkflow(`true && ${RUNNER_STEP}`),
+    "official-server",
+    "true",
+  );
+
+  // failureExits: without set -e, `|| exit 1` makes the script fail with the
+  // runner; a prefix `!` breaks that; a `!` inside the substitution does not.
+  const inScript = async (body: string) =>
+    (await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    })).wiring;
+  assertEquals(
+    await inScript(`${RUNNER_STEP} || exit 1\necho done`),
+    "official-server",
+    "|| exit 1",
+  );
+  assertEquals(
+    await inScript(`! ${RUNNER_STEP} || exit 1\necho done`),
+    "missing",
+    "! runner || exit 1",
+  );
+  assertEquals(
+    await inScript(`X=$(test ! v) ${RUNNER_STEP} || exit 1\necho done`),
+    "official-server",
+    "substitution ! then runner || exit 1",
+  );
 });
 
 Deno.test("workflowRunsAwsEmulator - step runs aws-emulator-run wrapper", () => {
@@ -4787,4 +4857,28 @@ Deno.test("checkAwsEmulatorInCI - the in-script diagnostic names the script path
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+Deno.test("checkAwsEmulatorInCI - an exec inside X=$(...) does not exec the runner (Issue #5378)", async () => {
+  // No set -e: only `exec` makes the runner's status the script's status.
+  const inScript = async (body: string) =>
+    (await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    })).wiring;
+  assertEquals(
+    await inScript(`exec ${RUNNER_STEP}\necho more`),
+    "official-server",
+    "exec runner",
+  );
+  assertEquals(
+    await inScript(`${RUNNER_STEP}\necho more`),
+    "missing",
+    "runner, then more",
+  );
+  assertEquals(
+    await inScript(`X=$(echo exec v) ${RUNNER_STEP}\necho more`),
+    "missing",
+    "exec inside the substitution",
+  );
 });
