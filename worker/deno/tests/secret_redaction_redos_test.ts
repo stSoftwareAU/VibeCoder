@@ -110,6 +110,37 @@ Deno.test("redactSecrets - a run of near-miss AIzaSy prefixes passes through unc
   );
 });
 
+Deno.test("redactSecrets - a run of near-miss ya29. prefixes passes through unchanged (google-oauth-access-token, Issue #5339)", () => {
+  // One character short of the 20-character minimum body.
+  const unit = "ya29." + "b".repeat(19) + " ";
+  const hostile = unit.repeat(20_000);
+  assertEquals(
+    redactSecrets(hostile),
+    hostile,
+    "near-miss text must pass through unchanged",
+  );
+  const token = "ya29." + "Q".repeat(40);
+  assert(
+    !redactSecrets(hostile + token).includes(token),
+    "a real token after the run must still be masked",
+  );
+});
+
+Deno.test("redactSecrets - a run of near-miss 1//0 prefixes passes through unchanged (google-oauth-refresh-token, Issue #5339)", () => {
+  const unit = "1//0" + "b".repeat(19) + " ";
+  const hostile = unit.repeat(20_000);
+  assertEquals(
+    redactSecrets(hostile),
+    hostile,
+    "near-miss text must pass through unchanged",
+  );
+  const token = "1//0" + "Q".repeat(40);
+  assert(
+    !redactSecrets(hostile + token).includes(token),
+    "a real token after the run must still be masked",
+  );
+});
+
 Deno.test("redactSecrets - provider keys in the tail of a huge input are still masked (Issue #36)", () => {
   const openai = "sk-proj-" + "9".repeat(60);
   const google = "AIzaSy" + "7".repeat(33);

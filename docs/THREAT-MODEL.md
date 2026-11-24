@@ -303,9 +303,10 @@ A change that weakens one of these in exchange for a stronger prompt-level
 defence is a bad trade, and this document exists to make that visible.
 
 Provider tool restrictions are not execution containment. Claude's CLI
-enforces `--disallowed-tools`; Codex and Gemini receive tool restrictions as
-prompt text. Selecting a provider does not disable model-refusal fallback or
-provide filesystem/network isolation. External orchestration role calls are
+enforces `--disallowed-tools`; Gemini enforces its tool restrictions through a
+per-run settings file (Issue #5341); Codex receives tool restrictions as prompt
+text. Selecting a provider does not disable model-refusal fallback or provide
+filesystem/network isolation. External orchestration role calls are
 pinned: the gate passes `enableProviderFallback: false`, so a role call never
 moves to `agent_provider_fallback` after a model refusal (Issue #4986). The
 Codex read-only role guard restores changes to the selected checkout, but does

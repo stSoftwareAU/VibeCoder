@@ -49,6 +49,7 @@ import {
   extractRetryAfterSeconds,
   failureMessage,
   isNetworkStatus,
+  NETWORK_PROSE_RE,
   parseJsonlEvents,
   readNumber,
   readObject,
@@ -65,10 +66,6 @@ import type { TokenUsage } from "./token_usage.ts";
 
 /** The provider id this adapter decodes for. */
 const PROVIDER_ID = "codex";
-
-/** Transport failures the CLI reports in prose. */
-const NETWORK_RE =
-  /overloaded|high demand|econnreset|econnrefused|etimedout|enotfound|socket hang up|stream disconnected|connection (?:reset|refused|closed)/i;
 
 /** A refusal about the model rather than the credential or the window. */
 const MODEL_UNAVAILABLE_RE =
@@ -449,7 +446,7 @@ function classifyCodexFailure(
 
   if (
     isNetworkStatus(httpStatus) ||
-    (NETWORK_RE.test(surface) && !RATE_LIMIT_RE.test(surface))
+    (NETWORK_PROSE_RE.test(surface) && !RATE_LIMIT_RE.test(surface))
   ) {
     return agentFailure({
       category: "network",

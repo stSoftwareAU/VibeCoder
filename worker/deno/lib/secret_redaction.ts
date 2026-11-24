@@ -581,6 +581,27 @@ const RULES: readonly RedactionRule[] = [
     pattern: /\bAIzaSy[A-Za-z0-9_-]{33}/g,
     replace: () => REDACTION_PLACEHOLDER,
   },
+  // Google OAuth access token (Issue #5339). The worker provisions a Google
+  // account login (`oauth_creds.json`) into the home the Gemini child reads,
+  // and a failing child can echo the bearer token. Access tokens carry the
+  // fixed `ya29.` prefix followed by a URL-safe body; the body is bounded
+  // ({20,2048}) so a long run cannot rescan, and the 20-character floor plus
+  // the leading word boundary keep the rule off prose such as a short `ya29.` fragment.
+  {
+    name: "google-oauth-access-token",
+    pattern: /\bya29\.[A-Za-z0-9_.-]{20,2048}/g,
+    replace: () => REDACTION_PLACEHOLDER,
+  },
+  // Google OAuth refresh token (Issue #5339). Refresh tokens start `1//0`
+  // and run on in URL-safe characters. `1//0` is short and slash-heavy, so
+  // the lookbehind refuses a start inside a longer word or path (a URL
+  // `…/1//0…` or `a1//0…`), the body is bounded ({20,512}) and the 20-character
+  // floor leaves short fragments such as `1//0abc` alone.
+  {
+    name: "google-oauth-refresh-token",
+    pattern: /(?<![A-Za-z0-9_\/-])1\/\/0[A-Za-z0-9_-]{20,512}/g,
+    replace: () => REDACTION_PLACEHOLDER,
+  },
   // AWS secret access key, anchored to the access-key id that precedes it.
   //
   // The id has a fixed shape and is matched on its own below; the SECRET has
