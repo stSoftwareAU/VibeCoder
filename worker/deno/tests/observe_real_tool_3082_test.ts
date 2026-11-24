@@ -10,6 +10,9 @@
  * after the stub-contract paragraph and before the workflow-validator
  * paragraph; and the issue prompt's PR Raising Requirements section must
  * require the same observed-fixture discipline for Bugs/Enhancements.
+ * Issue #5386 shortened the rule: the test's input is taken from the tool, run
+ * in the test where the suite has it, in the production environment; the
+ * PR-summary Evidence sentence was retired.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -37,11 +40,20 @@ function observeRealToolParagraph(
 }
 
 const KEY_PHRASES = [
-  "run the real tool on that case first",
+  "prints or returns",
+  "take the test's input from the tool, not from what you expect it to be",
+  "run the tool in the test where the suite has it",
+  "in the environment production gives it",
+  "or use output copied from a real run",
   "If the issue names real examples, use them",
-  "Build the fake's fixture from the observed output",
+  "take it from the tool's documentation or source",
+];
+
+const RETIRED_PHRASES = [
+  "run the real tool on that case first",
+  "in a particular case",
   "give the command you ran and the part of the output the code depends on",
-  "cite the tool's documentation or source",
+  "Build the fake's fixture from the observed output",
 ];
 
 Deno.test("both surfaces carry the observe-real-tool rule (Issue #3082)", async () => {
@@ -65,6 +77,12 @@ Deno.test("both surfaces carry the observe-real-tool rule (Issue #3082)", async 
       assert(
         paragraph.includes(phrase),
         `${surface} is missing "${phrase}" from the observe-real-tool rule: ${paragraph}`,
+      );
+    }
+    for (const phrase of RETIRED_PHRASES) {
+      assert(
+        !paragraph.includes(phrase),
+        `${surface} still carries "${phrase}" in the observe-real-tool rule; Issue #5386 retired it: ${paragraph}`,
       );
     }
   }
@@ -130,12 +148,12 @@ Deno.test("issue prompt PR Raising Requirements require observed fixtures for Bu
   );
 
   assert(
-    text.includes("run the real tool on that case first"),
-    `PR Raising Requirements is missing the run-first requirement: ${text}`,
+    text.includes("take the test's input from the tool"),
+    `PR Raising Requirements is missing the input-from-the-tool requirement: ${text}`,
   );
   assert(
-    text.includes("build the fake's fixture from the observed output"),
-    `PR Raising Requirements is missing the fixture-from-observation requirement: ${text}`,
+    text.includes("run the tool in the test where the suite has it"),
+    `PR Raising Requirements is missing the run-in-the-test requirement: ${text}`,
   );
   assert(
     text.includes("Observe the real tool before you rely on it"),
@@ -146,5 +164,9 @@ Deno.test("issue prompt PR Raising Requirements require observed fixtures for Bu
       "the behaviour you observed is a blocking self-review finding",
     ),
     `PR Raising Requirements is missing the blocking self-review finding: ${text}`,
+  );
+  assert(
+    !text.includes("The PR summary's Evidence gives the command you ran"),
+    `PR Raising Requirements still carries the PR-summary Evidence sentence; Issue #5386 retired it: ${text}`,
   );
 });
