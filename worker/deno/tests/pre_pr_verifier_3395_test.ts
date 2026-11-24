@@ -12,7 +12,11 @@ import {
 } from "@std/assert";
 import { closureGapFindings } from "../lib/closure_met_check.ts";
 import { loadTrustedCapabilityBundle } from "../lib/capability_security_guidance.ts";
-import type { ClaudeRunResult } from "../lib/claude_runner.ts";
+import {
+  type ClaudeRunResult,
+  runClaudeWithTimeout,
+} from "../lib/claude_runner.ts";
+import { IMAGE_AGENT_PROVIDERS_ENV } from "../lib/agent_provider.ts";
 import {
   buildPrePrVerifierGateComment,
   buildPrePrVerifierPrompt,
@@ -28,6 +32,7 @@ import {
   renderReviewBrief,
   type ReviewBriefFields,
   runPrePrVerifier,
+  verifierDisallowedTools,
 } from "../lib/pre_pr_verifier.ts";
 import {
   createDefaultDeps,
@@ -37,6 +42,9 @@ import { auditSendBack } from "../../../.claude/skills/review-fleet-prs/scripts/
 import { parseFableReview } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 import { git, gitOk } from "./support/git_repo_fixture.ts";
 import { makeRecordingLogger } from "./support/fake_claim_hub.ts";
+import { envFrom } from "./support/env_lookup.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 const TEMPLATE = await Deno.readTextFile(
   new URL("../../../prompts/pr_review_brief/prompt.md", import.meta.url),
@@ -992,6 +1000,107 @@ Deno.test("runPrePrVerifier defaults to the running provider's top-tier model, n
   } finally {
     await f.cleanup();
   }
+});
+
+// Issue #5341: on Gemini the verifier denies `Bash` outright in place of its
+// `Bash(<pattern>)` entries (stricter than the policy-file prefix denial that
+// PR #5524 review added). Other providers keep the list as it is.
+Deno.test("verifierDisallowedTools denies Bash outright on Gemini and leaves other providers' lists alone (Issue #5341)", () => {
+  const tools = [
+    "Agent",
+    "Bash(gh:*)",
+    "Bash(git push:*)",
+    "WebFetch",
+    "Bash",
+  ];
+  assertEquals(verifierDisallowedTools(tools, "gemini"), [
+    "Agent",
+    "Bash",
+    "WebFetch",
+  ]);
+  assertEquals(verifierDisallowedTools(tools, "claude"), tools);
+  assertEquals(verifierDisallowedTools(tools, "codex"), tools);
+});
+
+Deno.test({
+  name:
+    "runPrePrVerifier on Gemini spawns with a settings file that denies the shell, and is checked rather than refused (Issue #5341)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const f = await makeRepo();
+    const root = await Deno.makeTempDir({ prefix: "pre_pr_verifier_5341_" });
+    const tmps: string[] = [];
+    try {
+      const seen: Array<{ tools: readonly string[]; settings: string }> = [];
+      const runnerErrors: string[] = [];
+      const body =
+        `cat "$GEMINI_CLI_SYSTEM_SETTINGS_PATH" > "$(dirname "$0")/settings"
+exit 0
+`;
+      const deps = makeDeps(async (options) => {
+        // The verifier's own denied tools, through the real runner on Gemini.
+        const settings = await withAgentStub(body, async (stub) => {
+          const run = await runClaudeWithTimeout({
+            clock: fakeClock(),
+            prompt: "test",
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+            agentProvider: "gemini",
+            agentBinaryPath: stub.path,
+            env: envFrom({
+              [IMAGE_AGENT_PROVIDERS_ENV]: "claude,gemini",
+              TMPDIR: root,
+            }),
+            parentEnv: { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" },
+            disallowedTools: options.disallowedTools,
+          });
+          if (!run.ok) runnerErrors.push(run.error.message);
+          try {
+            return await Deno.readTextFile(`${stub.dir}/settings`);
+          } catch {
+            return "";
+          }
+        }, { prefix: "pre_pr_verifier_5341_" });
+        seen.push({ tools: options.disallowedTools ?? [], settings });
+        return okRun({ output: REPLY_CLEAN });
+      }, tmps);
+      const result = await runPrePrVerifier(inputFor(f), {
+        ...deps,
+        activeProviderId: () => "gemini",
+      });
+      assertEquals(runnerErrors, []);
+      assertEquals(result.status, "checked");
+      assertEquals(seen.length, 1);
+      assertEquals(seen[0]!.tools, [
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "Agent",
+        "Task",
+        "WebFetch",
+        "WebSearch",
+        "Bash",
+      ]);
+      assertEquals(
+        JSON.parse(seen[0]!.settings),
+        {
+          tools: {
+            exclude: [
+              "enter_plan_mode",
+              "exit_plan_mode",
+              "web_fetch",
+              "google_web_search",
+              "run_shell_command",
+            ],
+          },
+          experimental: { enableAgents: false },
+        },
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+      await f.cleanup();
+    }
+  },
 });
 
 // ---- shared parser: every caller still parses what it used to -------------

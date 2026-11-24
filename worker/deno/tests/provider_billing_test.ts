@@ -292,8 +292,9 @@ Deno.test("classifyProviderBilling - an unreadable login does not hide a metered
 });
 
 Deno.test("classifyProviderBilling - DeepSeek and Gemini API keys are metered (Issue #1923)", () => {
-  // Neither vendor offers a fixed-price subscription VibeCoder can run
-  // unattended, so neither may ever be reported as one.
+  // An API key is per-token spend for both vendors, so a key alone may never
+  // be reported as a subscription. Gemini can be fixed-price only through a
+  // Google-account login under an explicit GEMINI_CLI_HOME (Issue #5339).
   assertEquals(
     classifyProviderBilling("deepseek", {
       workDir: UNUSED_WORK_DIR,

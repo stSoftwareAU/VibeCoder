@@ -35,10 +35,7 @@ import {
 import { estimateCost } from "../lib/token_usage.ts";
 import type { GraftContextResult } from "../lib/graft_context.ts";
 import type { QualityGateAttemptOutcome } from "../lib/issue_run_stats_comment.ts";
-import {
-  type CodegraphContextResult,
-  prepareCodegraphContext,
-} from "../lib/codegraph_context.ts";
+import type { CodegraphContextResult } from "../lib/codegraph_context.ts";
 import { GEMINI_PROVIDER_ID } from "../lib/agent_provider.ts";
 import { RTK_OFF, type RtkOutputResult } from "../lib/rtk_output.ts";
 import { tokenEconomizerNotRun } from "../lib/token_economizer_run_stats.ts";
@@ -1246,22 +1243,13 @@ Deno.test("codegraph line - a failure with no figures reports the status alone",
   assertEquals(codegraphLineOf(body), "- **CodeGraph:** failed");
 });
 
-Deno.test("codegraph line - a Gemini-routed run names the unsupported provider", async () => {
-  // Driven from the real preparation step rather than a hand-made result, so
-  // the line's `(gemini)` and the only status-producing path stay pinned
-  // together: a second excluded provider fails this test instead of silently
-  // publishing the wrong provider name.
-  const codegraph = await prepareCodegraphContext({
-    repoDir: "/tmp/not-read-on-this-path",
-    enabled: true,
-    providerId: GEMINI_PROVIDER_ID,
-    logger: { warn: () => {} },
-  });
-
-  assertEquals(codegraph.status, "unsupported");
+Deno.test("codegraph line - an unsupported status renders bare (Issue #5343)", () => {
+  // No provider produces `unsupported` today; the status stays in the
+  // published schema, so the line names no provider.
+  const body = commentWithCodegraph({ status: "unsupported", enabled: true });
   assertEquals(
-    codegraphLineOf(commentWithCodegraph(codegraph)),
-    "- **CodeGraph:** unsupported (gemini)",
+    codegraphLineOf(body),
+    "- **CodeGraph:** unsupported",
   );
 });
 
