@@ -6,10 +6,10 @@ The public hard-kill facts now carry a `**Last liveness tick:**` line. It holds
 the guest's last-known `MemAvailable` and its memory and CPU pressure averages,
 read from the newest `[liveness] run-pressure` or `[liveness] tick=` line in the
 worker log tail that the evidence record already holds. Every kill posted on
-this issue has `Guest probe: did not answer`, so `Guest memory` and `Guest pressure` read
-`not available`. The leading explanation for a frozen guest, memory starvation
-during the `quality gate` or the `pre-PR verifier`, could therefore never be
-confirmed or ruled out from the posted facts.
+this issue has `Guest probe: did not answer`, so `Guest memory` and
+`Guest pressure` read `not available`. The leading explanation for a frozen
+guest, memory starvation during the `quality gate` or the `pre-PR verifier`,
+could therefore never be confirmed or ruled out from the posted facts.
 
 The end-of-cycle `[liveness] tick=` line runs only once every 20 loop cycles
 (about every forty minutes) and never while an issue run is in flight, so on its
@@ -53,9 +53,9 @@ established, so this PR does not close the issue. Part of #4815.
   by a bounded pattern behind a fixed literal (`mem_available_mib=`,
   `pressure_memory=`, `pressure_cpu=`), and the line is cut to 2000 characters
   first. Hook fields and any other text on the line are never copied
-- The newest line with either marker in the tail wins, and its own log time is appended as
-  `(logged <time>Z)`, so a reader can see how stale the figures are next to the
-  `Last log time` line
+- The newest line with either marker in the tail wins, and its own log time is
+  appended as `(logged <time>Z)`, so a reader can see how stale the figures are
+  next to the `Last log time` line
 - The new line sits directly after `**Guest pressure:**` in `hardKillFactLines`,
   so the issue body and the facts backfill both carry it. The shorter recurrence
   follow-up line is unchanged, because the backfill posts the full facts for
@@ -63,9 +63,9 @@ established, so this PR does not close the issue. Part of #4815.
 
 ### Undiscoverable Facts
 
-- The fact reads the 200-line worker log tail. If more than 200 lines are
-  logged after the last `[liveness] run-pressure` line and before the freeze,
-  the fact falls back to an older tick or reads `not in the log tail`
+- The fact reads the 200-line worker log tail. If more than 200 lines are logged
+  after the last `[liveness] run-pressure` line and before the freeze, the fact
+  falls back to an older tick or reads `not in the log tail`
 
 - The raw evidence for all four posted kills is in `~/logs/hard-kill-archive/`
   on GRQ-3 and was not readable from this host. The backfill has already posted
@@ -91,12 +91,12 @@ flowchart LR
   `worker/deno/lib/liveness_guard.ts` writes the fields for both lines. The
   end-of-cycle tick is logged in `worker/deno/lib/run_core_production_deps.ts`
   under `livenessTick % LIVENESS_CHECK_CADENCE === 1`
-  (`LIVENESS_CHECK_CADENCE = 20`, `worker/deno/lib/run_core.ts`), and the
-  in-run line is logged by `withRunPressureTicks`. The tests drive the real
-  writer (`withRunPressureTicks` through the real `createLogger`, and the
-  production `processIssue`), not a hand-placed line
-- Docs: the **Filing.** bullet in `docs/CALLBACKS.md` names the new figure,
-  the two lines it reads (and that a run logs the first every minute), and its
+  (`LIVENESS_CHECK_CADENCE = 20`, `worker/deno/lib/run_core.ts`), and the in-run
+  line is logged by `withRunPressureTicks`. The tests drive the real writer
+  (`withRunPressureTicks` through the real `createLogger`, and the production
+  `processIssue`), not a hand-placed line
+- Docs: the **Filing.** bullet in `docs/CALLBACKS.md` names the new figure, the
+  two lines it reads (and that a run logs the first every minute), and its
   `not in the log tail` value. The module comments of
   `worker/deno/lib/hard_kill_guest_facts.ts` and
   `worker/deno/lib/hard_kill_report.ts` now count seven figures, and the list of
@@ -199,6 +199,7 @@ flowchart LR
   tests/hard_kill_report_test.ts tests/hard_kill_facts_backfill_4815_test.ts
   tests/run_pressure_wiring_4815_test.ts tests/liveness_guard_test.ts
   tests/liveness_pressure_4225_test.ts tests/run_core_liveness_test.ts
-  tests/custom_label_dispatch_test.ts` passed 168 of 168, with stdin from
-  `/dev/null`. `deno fmt` and `deno lint` are clean on the changed files. The
-  worker re-runs `./quality.sh` over this tree before the PR is raised
+  tests/custom_label_dispatch_test.ts`
+  passed 168 of 168, with stdin from `/dev/null`. `deno fmt` and `deno lint` are
+  clean on the changed files. The worker re-runs `./quality.sh` over this tree
+  before the PR is raised
