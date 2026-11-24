@@ -743,6 +743,15 @@ line after `: `, with a further word after it on that line; or, under Markdown
 markers, after a plural credential noun (`**Tokens:** sunshine and more`) with
 any further text after it on that line.
 
+One false positive is accepted as well (Issue #5399). Prose that quotes a
+credential word before a colon has the word after the colon masked: the title
+`… a word containing "Token": PR #5251's title …` is published with `PR`
+replaced by the placeholder, and a plural (`"Tokens": counts are shown below`)
+is masked the same way. That shape cannot be told apart from a JSON or YAML
+field with a bare value (`"Token": hunter2value`), so the product-heading
+exemption is not extended to it: a missed credential costs more than a
+corrupted word in a title.
+
 ### Transformed secrets are decoded, then re-scanned
 
 A signature rule only recognises the credential's **original** bytes, so a
