@@ -388,7 +388,9 @@ let lastGraphqlQuotaReading: GraphqlQuotaReading | null = null;
 import {
   checkLivenessWindow,
   formatLivenessPressureFields,
+  LIVENESS_TICK_MARKER,
   readLivenessTickPressure,
+  withRunPressureTicks,
 } from "./liveness_guard.ts";
 
 // Crash handling
@@ -7096,7 +7098,7 @@ export async function createProductionRunCoreDeps(
             await readLivenessTickPressure(),
           );
           logger.info(
-            `[liveness] tick=${tick} alerted=${v.alerted} ` +
+            `${LIVENESS_TICK_MARKER}${tick} alerted=${v.alerted} ` +
               `live_epoch=${v.liveEpoch ?? "none"} ` +
               `last_idle_claimed=${v.lastIdleClaimedEpoch ?? "none"} ` +
               `last_productive=${v.lastProductiveEpoch ?? "none"} ` +
@@ -7141,6 +7143,17 @@ export async function createProductionRunCoreDeps(
       } catch { /* already closed */ }
     }
   };
+
+  // Issue #4815: the end-of-cycle tick never runs during an issue run, so a
+  // guest that freezes mid-run left no reading taken after the claim. Each
+  // run logs its own pressure line every minute until it settles, and the
+  // hard-kill facts read the newest one back from the worker log tail.
+  const processIssueUnticked = deps.processIssue;
+  deps.processIssue = (issue, cycleDeadlineEpochMs, laneId) =>
+    withRunPressureTicks(
+      () => processIssueUnticked(issue, cycleDeadlineEpochMs, laneId),
+      { log: (message) => logger.info(message) },
+    );
 
   return { deps, config: coreConfig, cleanup };
 }
