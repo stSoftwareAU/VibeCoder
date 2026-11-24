@@ -176,7 +176,11 @@ Deno.test("formatBeforeGate passes only worker-owned archive paths to deno fmt (
             return Promise.resolve({ exitCode: 0, output: "" });
           },
           runGitCommand: fakeGit(
-            ["worker/deno/deno.json", ...ARCHIVE],
+            [
+              "worker/deno/deno.json",
+              ...ARCHIVE,
+              "docs/archive/pr-summaries/bad.facts.json",
+            ],
             [...ARCHIVE],
           ),
           logger,
@@ -242,7 +246,7 @@ Deno.test("formatBeforeGate leaves the archive alone when the repo has no Deno f
             ran = true;
             return Promise.resolve({ exitCode: 0, output: "" });
           },
-          runGitCommand: fakeGit(["README.md"], []),
+          runGitCommand: fakeGit(["README.md", ...ARCHIVE], []),
           logger,
           runId: () => "test-run",
         },
@@ -290,7 +294,7 @@ Deno.test("formatBeforeGate logs a formatter that cannot write and still returns
               output:
                 `Error writing files: Permission denied (os error 13)\n${usage}`,
             }),
-          runGitCommand: fakeGit(["deno.json"], []),
+          runGitCommand: fakeGit(["deno.json", ...ARCHIVE], []),
           logger,
           runId: () => "test-run",
         },
@@ -326,7 +330,7 @@ Deno.test("formatBeforeGate logs a missing formatter binary and still returns (I
           runCommand: () => {
             throw new Error("deno fmt binary missing");
           },
-          runGitCommand: fakeGit(["deno.json"], []),
+          runGitCommand: fakeGit(["deno.json", ...ARCHIVE], []),
           logger,
           runId: () => "test-run",
         },
@@ -561,7 +565,7 @@ async function formatSeededFiles(
     beforeFormat?: (repo: string) => Promise<void>;
     setAsideUncommittedArchive?: boolean;
     /** Where the Deno config sits; the default keeps it under `worker/deno`. */
-    denoConfig?: string;
+    denoConfig?: string | null;
     /** Run the production `formatBranchChanges` rather than a stub. */
     realBranchFormatter?: boolean;
     /** Replaces the production git runner, to stage a failing command. */
@@ -569,7 +573,13 @@ async function formatSeededFiles(
   } = {},
 ): Promise<{ repo: string; logger: Logger & { lines: string[] } }> {
   const repo = await initRepo(root);
-  await writeFile(repo, options.denoConfig ?? "worker/deno/deno.json", "{}\n");
+  if (options.denoConfig !== null) {
+    await writeFile(
+      repo,
+      options.denoConfig ?? "worker/deno/deno.json",
+      "{}\n",
+    );
+  }
   for (const [path, body] of Object.entries(files)) {
     await writeFile(repo, path, body);
   }
@@ -931,6 +941,62 @@ Deno.test("formatBeforeGate stashes an uncommitted archive summary when asked, a
     assertEquals(await git(repo, ["status", "--porcelain"]), "");
     assertEquals(await git(repo, ["show", `stash@{0}:${ARCHIVE[2]}`]), edit);
     assertStringIncludes(logger.lines.join("\n"), "set aside");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate stashes an uncommitted archive summary when asked in a repository with no Deno config (Issue #5393)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5393-stash-" });
+  try {
+    const seed = "# Summary\n\nNot delivered.\n";
+    const edit = `# Summary\n\nEdited after the seed.\n\n${LONG_PARAGRAPH}\n`;
+    const { repo, logger } = await formatSeededFiles(root, {
+      [ARCHIVE[0]]: LONG_LINE,
+      [ARCHIVE[2]]: seed,
+    }, {
+      denoConfig: null,
+      setAsideUncommittedArchive: true,
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[2], edit),
+    });
+    assertEquals(
+      (await git(repo, ["log", "-1", "--format=%s"])).trim(),
+      "seed",
+    );
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`), seed);
+    assertEquals(await git(repo, ["status", "--porcelain"]), "");
+    assertEquals(await git(repo, ["show", `stash@{0}:${ARCHIVE[2]}`]), edit);
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[0]}`), LONG_LINE);
+    const lines = logger.lines.join("\n");
+    assertStringIncludes(lines, "set aside");
+    assertStringIncludes(lines, "no Deno formatter in this repository");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate leaves an uncommitted archive summary alone without the set-aside option in a repository with no Deno config (Issue #5393)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt5393-control-" });
+  try {
+    const seed = "# Summary\n\nNot delivered.\n";
+    const edit = `# Summary\n\nEdited after the seed.\n\n${LONG_PARAGRAPH}\n`;
+    const { repo, logger } = await formatSeededFiles(root, {
+      [ARCHIVE[0]]: LONG_LINE,
+      [ARCHIVE[2]]: seed,
+    }, {
+      denoConfig: null,
+      beforeFormat: (repo) => writeFile(repo, ARCHIVE[2], edit),
+    });
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`), edit);
+    assertEquals((await git(repo, ["stash", "list"])).trim(), "");
+    assertEquals(
+      (await git(repo, ["log", "-1", "--format=%s"])).trim(),
+      "seed",
+    );
+    assertStringIncludes(
+      logger.lines.join("\n"),
+      "no Deno formatter in this repository",
+    );
   } finally {
     await Deno.remove(root, { recursive: true });
   }
