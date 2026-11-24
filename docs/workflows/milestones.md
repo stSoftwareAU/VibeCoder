@@ -341,7 +341,7 @@ Long-running milestones can drift significantly from the default branch, causing
 
 3. **Pass order — longest behind first (Issue #2309):** Before a repository's branches are synced, each one's behind count is measured against the default tip just fetched (one `git rev-list --count origin/<milestone>..origin/<default>`) and they are synced behind-count descending, because the branch carrying the most drift is the one most likely to conflict and the one whose conflict is cheapest to settle today. A branch the ledger already records against this tip is level by construction and is not measured at all, so an idle cycle pays nothing for an order it will not use; a branch whose count cannot be read sorts as level and is still synced, only later in the pass. A level branch still takes the cheap cadence path above. The order is decided within each repository's pass, so the cross-repo cursor (Issue #2215) and the per-repo lease (Issue #2030) are untouched.
 4. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
-5. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
+5. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. A clean merge goes through the repository's type check before delivery; a semantic failure in a new merge commit can use the repair rounds described below.
 6. **Conflict handling:** If a merge conflict occurs, the worker **triages** it file by file rather than taking one side wholesale (Issue #1559) — see [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). What the triage cannot decide climbs the rest of the ladder (Issue #1777): the deterministic dependency rules, then the resolution agent. Only a file **every** rung leaves undecided aborts the merge and escalates with both sides prepared, without blocking other work.
 7. **Gated branches:** Where a ruleset refuses the direct push, the same merge lands through a `sync/milestone-<name>` PR (Issue #589). That PR merges as a **merge commit, never a squash** (Issue #1048) — see below. Before it force-pushes that branch, the sync reads the remote `sync/milestone-<name>` head: when it already holds the same merge (same tree, same tips) nothing is pushed, so an open sync PR's checks are not restarted for no change; a comparison git cannot answer pushes as before (Issue #3690, see `docs/milestone-sync-overhead.md`).
 
@@ -479,6 +479,19 @@ would lose a case escalates instead. Equal case names are not enough to take a
 side, because an assertion changed inside a case with the same name is a silent
 loss.
 
+**A clean textual merge can still need a repair (Issue #5530).** When the
+repository's type check rejects a new merge commit, the sync offers the existing
+agent rung up to two repair rounds, carrying the failing command, diagnostic
+output and merged commit subjects. Each edited tree must pass the fuller
+resolution verification below before the repair is folded into the merge commit
+and delivered. A persistent failure resets the local branch and remains a
+charged merge-gate refusal. An unavailable agent or exhausted repair grant
+leaves the tree refused. An initial infrastructure refusal keeps its cause and
+buys no repair; a fast-forward failure is also refused without amending the
+default branch's existing commit. Passing and initially skipped clean-merge
+checks keep their existing delivery behaviour. Repair-mode prompts describe
+the committed merge and an empty conflict list as a verification repair.
+
 **Every automatic resolution is verified before it is pushed.** The merged tree
 must pass the repository's own Issue #974 type check, its `check:manifests`
 task and its unit suite (`test:unit`, else `test`, else `cargo test`, else the
@@ -584,6 +597,8 @@ those minutes are counted as `agent`, not as `gate` — the gate's own slices
 either side of the repair accumulate into one `gate` entry. A stage started
 and never stopped renders as `unfinished` rather than vanishing from the line.
 
+A clean merge reaching its gate and delivery path emits a timings log record
+too, including when its gate refuses delivery; repair time belongs to `agent`.
 A sync that refuses or escalates emits the same log record. It posts no
 "resolved a conflict automatically" notice to carry the line, but it spent the
 same minutes, and a twenty-minute sync that concluded in a refusal is exactly
