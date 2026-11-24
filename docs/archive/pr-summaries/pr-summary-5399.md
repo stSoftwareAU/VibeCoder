@@ -3,7 +3,8 @@
 ## Summary
 
 The triage decision on the issue keeps the `secret-assignment` mask on prose
-that quotes a credential word before a colon (`… containing "Token": PR …`).
+that quotes a credential word, then a colon, then more prose (the title of
+#5253 is the reported case).
 This PR changes no production code. It records that false positive in the
 secret-assignment section of `SECURITY.md` and pins the current masking with
 tests, so the choice is visible and is not reported again. Closes #5399.
@@ -12,9 +13,9 @@ tests, so the choice is visible and is not reported again. Closes #5399.
 
 ### Intent and Rationale
 
-- The shape `"Token": word` cannot be told apart from a JSON or YAML field with
-  a bare value, and a missed credential costs more than a corrupted word in a
-  title, so the mask stays (the issue's 2026-11-23 triage decision).
+- A quoted credential word followed by a colon and a word cannot be told apart
+  from a JSON or YAML field with a bare value, and a missed credential costs
+  more than a corrupted word in a title, so the mask stays (the issue's 2026-11-23 triage decision).
 
 ### Essential Design Decisions
 
@@ -46,7 +47,7 @@ true for both, so the reported behaviour holds and the tests pin it.
   - the reported title shape masks `PR`, and `containsSecret` is true;
   - the plural `"Tokens":` and single-quoted `'Token':` forms are masked the
     same way;
-  - the JSON/YAML field `"Token": hunter2value` is masked;
+  - a JSON/YAML field holding a quoted `Token` key and a bare value is masked;
   - control: the bare product heading `TokenBudget: run the agreed trial`
     survives, while its quoted form is masked.
 - These tests pin current behaviour (no fix), so they are green on the base
