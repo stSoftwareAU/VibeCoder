@@ -457,17 +457,35 @@ Deno.test("positive control: a fixed subscription runs even when a metered key i
   });
 });
 
-Deno.test("an executor on a provider that cannot enforce denied tools is refused", async () => {
+Deno.test("a Gemini executor passes the role check through its settings-file enforcement and is held by the billing check (Issue #5341)", async () => {
   await withWorkDir(async (dir) => {
     const fake = fakeInvoker();
     const outcome = await runExternalOrchestration(
       optionsFor(dir, fake.invoke, {
         executor: { provider: "gemini" },
-        env: {},
       }),
     );
     assertEquals(outcome.state, "refused");
-    assertEquals(outcome.refusal?.kind, "missing_tool_support");
+    assertEquals(outcome.refusal?.kind, "metered_billing");
+    assertStringIncludes(outcome.refusal?.message ?? "", "gemini");
+    assertEquals(fake.calls.length, 0);
+  });
+});
+
+Deno.test("a Gemini manager is refused before any call because Gemini cannot compact its stream (Issue #5341)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeInvoker();
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, fake.invoke, {
+        manager: { provider: "gemini" },
+      }),
+    );
+    assertEquals(outcome.state, "refused");
+    assertEquals(outcome.refusal?.kind, "unsupported_capability");
+    assertStringIncludes(
+      outcome.refusal?.message ?? "",
+      "cannot compact its stream",
+    );
     assertEquals(fake.calls.length, 0);
   });
 });

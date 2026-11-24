@@ -110,6 +110,7 @@ export async function chooseBabysitterProvider(
     configuredMode: raw.agent_provider_mode,
     configuredProvider: raw.agent_provider,
     configuredProviders: raw.agent_providers,
+    billingContext: { workDir: deps.workDir, env },
   });
   if (configured.mode !== "auto" || pin) {
     if (

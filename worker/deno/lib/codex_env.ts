@@ -29,7 +29,8 @@ import { CLAUDE_CREDENTIAL_ENV_VARS } from "./claude_env.ts";
  * other vendor's credential — Anthropic's, Google's since Issue #4107 and
  * DeepSeek's since Issue #412: Codex authenticates with its own key, so
  * another vendor's credential in its environment is only ever an exfiltration
- * target.
+ * target. The Gemini Google-account login home (`GEMINI_CLI_HOME`) is denied
+ * by name too, as `CODEX_HOME` is denied to the other children.
  *
  * The Anthropic names come from {@link CLAUDE_CREDENTIAL_ENV_VARS} rather than
  * a second copy of them, so a name Anthropic adds later is denied here the day
@@ -42,6 +43,7 @@ export const CODEX_ENV_DENYLIST: readonly string[] = [
   ...WORKER_ONLY_SECRET_ENV_VARS,
   ...CLAUDE_CREDENTIAL_ENV_VARS,
   "GEMINI_API_KEY",
+  "GEMINI_CLI_HOME",
   "GOOGLE_API_KEY",
   "DEEPSEEK_API_KEY",
 ];

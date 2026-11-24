@@ -2205,19 +2205,25 @@ async function executeClaudeBody(
   // having raised a correct PR, yet the whole-transcript scan tripped and
   // recorded the success as an authentication failure. Read only the CLI's
   // error surface (stderr + the final output lines), and only for a non-zero
-  // exit.
+  // exit. Issue #5340: the provider's own classifier verdict (agentFailure)
+  // counts as the CLI's own signal too, and its structured error lines name the
+  // cause in the evidence snippet.
   const authSurface = [
     claudeResult.value.stderr ?? "",
+    ...(claudeResult.value.agentOutput?.errors ?? []).map((e) =>
+      `${e.code ?? ""} ${e.message}`.trim()
+    ),
     claudeResult.value.output.trim().split("\n").slice(-15).join("\n"),
   ].join("\n");
   if (
     claudeResult.value.exitCode !== 0 &&
-    deps.claude.isClaudeAuthError(
-      authSurface,
-      typeof effectiveAgentProvider === "string"
-        ? effectiveAgentProvider
-        : effectiveAgentProvider?.id,
-    )
+    (claudeResult.value.agentFailure?.category === "authentication" ||
+      deps.claude.isClaudeAuthError(
+        authSurface,
+        typeof effectiveAgentProvider === "string"
+          ? effectiveAgentProvider
+          : effectiveAgentProvider?.id,
+      ))
   ) {
     // Cross-check for evidence of success before blaming the credential: a run
     // that left commits ahead of base is a false positive on issue content,
