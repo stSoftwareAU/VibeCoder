@@ -11,6 +11,17 @@
  * start them; `--allowed-mcp-server-names` in `gemini_executor.ts` restricts
  * which of them load.
  *
+ * A `Bash(<prefix>:*)` denial cannot be a `tools.exclude` entry: the CLI turns
+ * each entry into a whole-tool deny rule (Gemini CLI 0.68.0,
+ * `packages/core/src/policy/config.ts`). It is carried as a deny rule in a
+ * policy file instead, which the settings file names under `policyPaths`
+ * (PR #5524 review). The Policy Engine denies a shell command whose text starts
+ * with the prefix and then a space, a quote or its end, including a sub-command
+ * of `a && b` and the body of `bash -c '...'`, so it reads as Claude's
+ * `Bash(<prefix>:*)` does. It does not look through an environment assignment
+ * before the command (`FOO=1 cargo build`): observed on the CLI's own engine,
+ * 0.68.0.
+ *
  * The builders are pure; the writer is the only part that touches the disk.
  *
  * Australian English spelling throughout (behaviour, organisation, honour).
@@ -47,6 +58,42 @@ const GEMINI_TOOL_FOR_DENIAL: ReadonlyMap<string, string> = new Map([
   ["ExitPlanMode", "exit_plan_mode"],
 ]);
 
+/** The Gemini CLI's shell tool, which a command-prefix denial applies to. */
+const GEMINI_SHELL_TOOL = "run_shell_command";
+
+/**
+ * A denial of one shell command prefix: `Bash(git push:*)`. The prefix is
+ * written into a TOML string, so it is limited to what the allow-list below
+ * admits; any other form of `Bash(...)` stays unmapped and refuses the run.
+ */
+const SHELL_PREFIX_DENIAL = /^Bash\((.+):\*\)$/;
+
+/** Characters a command prefix may hold: a word, then words, flags and paths. */
+const SHELL_PREFIX_SHAPE = /^[A-Za-z0-9_][A-Za-z0-9_./ -]*$/;
+
+/** The prefix a `Bash(<prefix>:*)` denial names, or undefined when it is not one. */
+function shellPrefixOf(tool: string): string | undefined {
+  const prefix = SHELL_PREFIX_DENIAL.exec(tool)?.[1];
+  if (prefix === undefined) return undefined;
+  if (prefix !== prefix.trim() || !SHELL_PREFIX_SHAPE.test(prefix)) {
+    return undefined;
+  }
+  return prefix;
+}
+
+/** The deny-rule file for a run's shell prefixes, in the CLI's policy syntax. */
+function buildShellPrefixPolicy(prefixes: readonly string[]): string {
+  // A JSON string is a valid TOML basic string for the allow-listed characters.
+  const list = prefixes.map((prefix) => JSON.stringify(prefix)).join(", ");
+  return `[[rule]]
+toolName = ${JSON.stringify(GEMINI_SHELL_TOOL)}
+commandPrefix = [${list}]
+decision = "deny"
+priority = 999
+denyMessage = "Denied by the worker for this run."
+`;
+}
+
 /** Denials that turn off sub-agents through `experimental.enableAgents`. */
 const SUB_AGENT_DENIALS: ReadonlySet<string> = new Set(["Task", "Agent"]);
 
@@ -61,17 +108,21 @@ const NO_TOOL_DENIALS: ReadonlySet<string> = new Set(["NotebookEdit"]);
  *
  * `tools.exclude` lists each Gemini tool once, in order of first appearance;
  * `tools` is omitted when nothing is excluded, and `experimental` when neither
- * sub-agent name is denied. A name with no mapping (exact match only) refuses
- * the whole list, naming every such tool.
+ * sub-agent name is denied. A `Bash(<prefix>:*)` name becomes one deny rule in
+ * `policy`, in order of first appearance; the writer names the file holding it
+ * in `policyPaths`. A name with no mapping (exact match only, or a `Bash(...)`
+ * that is not a plain prefix) refuses the whole list, naming every such tool.
  *
  * @param disallowedTools - Tool names the run denies, as the runner names them.
- * @returns The settings object, or the refusal naming the unmapped tools.
+ * @returns The settings object and policy rules, or the refusal naming the
+ *   unmapped tools.
  */
 export function buildGeminiToolSettings(
   disallowedTools: readonly string[],
 ): ToolDenialSettings {
   const exclude: string[] = [];
   const unmapped: string[] = [];
+  const prefixes: string[] = [];
   let subAgentsOff = false;
   for (const tool of disallowedTools) {
     if (SUB_AGENT_DENIALS.has(tool)) {
@@ -80,7 +131,10 @@ export function buildGeminiToolSettings(
       continue;
     } else {
       const geminiTool = GEMINI_TOOL_FOR_DENIAL.get(tool);
-      if (geminiTool === undefined) {
+      const prefix = geminiTool === undefined ? shellPrefixOf(tool) : undefined;
+      if (prefix !== undefined) {
+        if (!prefixes.includes(prefix)) prefixes.push(prefix);
+      } else if (geminiTool === undefined) {
         if (!unmapped.includes(tool)) unmapped.push(tool);
       } else if (!exclude.includes(geminiTool)) {
         exclude.push(geminiTool);
@@ -101,7 +155,9 @@ export function buildGeminiToolSettings(
   const settings: Record<string, unknown> = {};
   if (exclude.length > 0) settings.tools = { exclude };
   if (subAgentsOff) settings.experimental = { enableAgents: false };
-  return { ok: true, settings };
+  return prefixes.length === 0
+    ? { ok: true, settings }
+    : { ok: true, settings, policy: buildShellPrefixPolicy(prefixes) };
 }
 
 /** One stdio MCP server as the Gemini CLI's `mcpServers` setting takes it. */
@@ -216,6 +272,11 @@ async function removeDirectory(dir: string): Promise<string | undefined> {
  * (Issue #5343). A config that cannot be read, or yields no usable server,
  * refuses the spawn, as Codex's does.
  *
+ * With command-prefix denials, the rules are written to `policy/deny.toml` in
+ * the same directory and the settings name that directory under `policyPaths`.
+ * Both files are removed by `cleanup`; a failure to write either refuses the
+ * spawn.
+ *
  * @param request - The denials to enforce, the environment lookup and the
  *   run's MCP config path, when it has one.
  * @returns The environment that points the CLI at the file (its path is the
@@ -260,8 +321,17 @@ export async function writeGeminiRunSettings(request: {
   }
 
   const filePath = `${dir}/settings.json`;
+  const policyDir = `${dir}/policy`;
   try {
     await Deno.chmod(dir, 0o700);
+    if (built.policy !== undefined) {
+      await Deno.mkdir(policyDir, { mode: 0o700 });
+      await Deno.writeTextFile(`${policyDir}/deny.toml`, built.policy, {
+        mode: 0o600,
+        createNew: true,
+      });
+      built.settings.policyPaths = [policyDir];
+    }
     await Deno.writeTextFile(
       filePath,
       `${JSON.stringify(built.settings, null, 2)}\n`,

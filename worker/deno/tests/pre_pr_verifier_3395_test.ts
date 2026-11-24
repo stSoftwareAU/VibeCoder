@@ -1002,10 +1002,9 @@ Deno.test("runPrePrVerifier defaults to the running provider's top-tier model, n
   }
 });
 
-// Issue #5341: Gemini's per-run settings file cannot hold a `Bash(<pattern>)`
-// denial and the runner refuses a Gemini spawn that carries one, so on Gemini
-// the verifier denies `Bash` outright in their place. Other providers keep the
-// list as it is.
+// Issue #5341: on Gemini the verifier denies `Bash` outright in place of its
+// `Bash(<pattern>)` entries (stricter than the policy-file prefix denial that
+// PR #5524 review added). Other providers keep the list as it is.
 Deno.test("verifierDisallowedTools denies Bash outright on Gemini and leaves other providers' lists alone (Issue #5341)", () => {
   const tools = [
     "Agent",

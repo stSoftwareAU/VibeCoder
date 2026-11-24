@@ -21,8 +21,9 @@
  *   `origin` removed, so it has no push destination.
  * - Claude's CLI enforces `disallowedTools`; Codex receives the list as
  *   prompt text. Gemini enforces it through its per-run settings file
- *   (Issue #5341), which cannot hold a `Bash(<pattern>)` entry, so on Gemini
- *   the verifier denies `Bash` outright in their place
+ *   (Issue #5341). A `Bash(<prefix>:*)` entry would ride in that file's policy
+ *   file (PR #5524 review), but the verifier keeps its earlier, stricter shape:
+ *   on Gemini it denies `Bash` outright in their place
  *   ({@link verifierDisallowedTools}) and runs with no shell. Read-only mode
  *   explicitly selects Claude and requests Claude config isolation; a
  *   non-Claude provider fallback is refused by the runner before spawn.
@@ -395,11 +396,11 @@ export const PRE_PR_VERIFIER_DISALLOWED_TOOLS: readonly string[] = [
 ];
 
 /**
- * The verifier's denied tools on `providerId` (Issue #5341). Gemini's settings
- * file cannot deny a `Bash(<pattern>)` entry, and the runner refuses a Gemini
- * spawn that carries one, so on Gemini those entries become `Bash`: the
- * verifier loses its shell rather than the denial. Every other provider gets
- * the list unchanged.
+ * The verifier's denied tools on `providerId` (Issue #5341). Gemini can carry
+ * a `Bash(<prefix>:*)` denial in a policy file (PR #5524 review), but the
+ * verifier keeps its stricter shape there: those entries become `Bash`, so it
+ * loses its shell rather than any denial. Every other provider gets the list
+ * unchanged.
  */
 export function verifierDisallowedTools(
   tools: readonly string[],

@@ -107,13 +107,15 @@ Deno.test("the executor list denies only sub-agents and writes no tools key (Iss
 });
 
 Deno.test("an unmapped denied tool is refused as missing_tool_support naming it (Issue #5341)", () => {
-  const refused = buildGeminiToolSettings(["Edit", "Bash(git push:*)"]);
+  // `Bash(git push *)` is not the `:*` prefix form (which a policy file
+  // carries, PR #5524 review), so no Gemini setting enforces it.
+  const refused = buildGeminiToolSettings(["Edit", "Bash(git push *)"]);
   assert(
     !refused.ok,
-    "Bash(git push:*) has no Gemini setting, so it is refused",
+    "Bash(git push *) has no Gemini setting, so it is refused",
   );
   assertEquals(refused.refusal.kind, "missing_tool_support");
-  assertStringIncludes(refused.refusal.message, "Bash(git push:*)");
+  assertStringIncludes(refused.refusal.message, "Bash(git push *)");
   // Control: the mapped name alone is admitted.
   assertEquals(settingsOf(buildGeminiToolSettings(["Edit"])), {
     tools: { exclude: ["replace"] },
@@ -316,7 +318,7 @@ Deno.test({
               TMPDIR: root,
             }),
             parentEnv: { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" },
-            disallowedTools: ["Bash(git push:*)"],
+            disallowedTools: ["Bash(git push *)"],
           });
           return { result, ran: await exists(`${stub.dir}/ran`) };
         },
@@ -328,7 +330,7 @@ Deno.test({
         outcome.result.error.message,
         "Refused to start the agent",
       );
-      assertStringIncludes(outcome.result.error.message, "Bash(git push:*)");
+      assertStringIncludes(outcome.result.error.message, "Bash(git push *)");
       assertEquals(outcome.ran, false, "the agent never started");
       assertEquals([...Deno.readDirSync(root)].length, 0);
     } finally {
