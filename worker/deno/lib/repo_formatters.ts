@@ -13,8 +13,11 @@
  * outermost tracked `Cargo.toml` directory whose `.rs` files changed. The one
  * exception: a worker-owned archive file with uncommitted changes is left out
  * of `deno fmt` even when its Deno root covers it (Issue #5328), so the gate's
- * check could still flag it. If any tracked file differs afterwards, the formatted paths, and only those, are
- * committed as one `style: apply repository formatters` commit.
+ * check could still flag it. A branch-changed path git no longer tracks
+ * (removed from the index but still on disk) is left out too: it is not in the
+ * push, and `git add -u` cannot stage it (Issue #5410). If any tracked file
+ * differs afterwards, the formatted paths, and only those, are committed as one
+ * `style: apply repository formatters` commit.
  *
  * Markdown outside the worker's own archive is never handed to `deno fmt`:
  * it re-wraps whole documents and trips markdownlint MD018, so a Markdown
@@ -404,7 +407,8 @@ async function stashUncommittedArchive(
  * directories are touched, and they are formatted only when the repository
  * tracks a Deno config — that is the formatter the pre-push gate will check
  * them with. The `setAsideUncommitted` stash below happens regardless of a Deno
- * config (Issue #5393).
+ * config (Issue #5393). An archive path git no longer tracks is left out
+ * first, since `git add -u` cannot stage it (Issue #5410).
  * Before `deno fmt` runs, each Markdown file has its linkage-only lines
  * isolated (see {@link isolateLinkageLines}) and each JSON file is rewritten
  * with sorted keys; a file is written back only when it changed. Files over
@@ -447,8 +451,8 @@ export async function formatWorkerOwnedArchive(
       deps.logger.warn(`repo formatters: ${changed.error}`);
       return;
     }
-    const archiveFiles = changed.value.filter(isWorkerOwnedArchiveFile);
-    if (archiveFiles.length === 0) return;
+    const changedArchive = changed.value.filter(isWorkerOwnedArchiveFile);
+    if (changedArchive.length === 0) return;
 
     const tracked = await deps.runGitCommand(["ls-files", "-z"], {
       cwd: repoPath,
@@ -462,6 +466,20 @@ export async function formatWorkerOwnedArchive(
     const trackedPaths = tracked.value.stdout.split("\0").filter((p) =>
       p.length > 0
     );
+    // A path git no longer tracks cannot be staged by `git add -u` (Issue #5410).
+    const trackedSet = new Set(trackedPaths);
+    const archiveFiles = changedArchive.filter((path) => trackedSet.has(path));
+    const untrackedArchive = changedArchive.filter((path) =>
+      !trackedSet.has(path)
+    );
+    if (untrackedArchive.length > 0) {
+      deps.logger.info(
+        `repo formatters: left ${
+          untrackedArchive.join(", ")
+        } out of the archive formatting: no longer tracked by git (Issue #5410)`,
+      );
+    }
+    if (archiveFiles.length === 0) return;
     const hasDenoFormatter = trackedPaths.some(isDenoConfig);
     const noFormatterMessage = "repo formatters: no Deno formatter in this " +
       "repository; worker-owned archive Markdown and JSON left for the gate";
@@ -639,6 +657,29 @@ async function withoutUncommittedArchive(
 }
 
 /**
+ * `changed` without the paths git no longer tracks (Issue #5410).
+ *
+ * A file removed from the index with `git rm --cached` but still on disk is in
+ * the branch's file list. `git add -u` cannot stage it and it is not in the
+ * push, so the formatters leave it alone and say so in the log.
+ */
+function withoutUntracked(
+  changed: readonly string[],
+  tracked: ReadonlySet<string>,
+  deps: RepoFormatterDeps,
+): string[] {
+  const dropped = changed.filter((path) => !tracked.has(path));
+  if (dropped.length > 0) {
+    deps.logger.info(
+      `repo formatters: left ${
+        dropped.join(", ")
+      } out of the formatters: no longer tracked by git (Issue #5410)`,
+    );
+  }
+  return changed.filter((path) => tracked.has(path));
+}
+
+/**
  * Run the repository's formatters over `changed` and commit the result.
  *
  * Only the files a changed-file check (`planChangedFileChecks`) would flag
@@ -656,7 +697,9 @@ async function withoutUncommittedArchive(
  * `changed` first: not formatted and not committed here, whatever Deno config
  * covers it (see {@link formatWorkerOwnedArchive}). A gate that judges the
  * working tree still sees that edit unless the caller asks for it to be set
- * aside (the completion phase does).
+ * aside (the completion phase does). A changed path git no longer tracks is
+ * dropped from `changed` as well, since `git add -u` cannot stage it (Issue
+ * #5410).
  * Never throws: any unexpected failure is logged and reported via `gitError`
  * instead, and a formatter that fails is logged and recorded in `failures` —
  * the caller's own check still runs and reports what was left unfixed.
@@ -681,7 +724,11 @@ export async function runRepoFormatters(
     const paths = lsFiles.value.stdout.split("\0").filter((p) => p.length > 0);
 
     const steps = planFormatterFixes(
-      await withoutUncommittedArchive(repoPath, changed, deps),
+      await withoutUncommittedArchive(
+        repoPath,
+        withoutUntracked(changed, new Set(paths), deps),
+        deps,
+      ),
       paths,
       await loadDenoScopes(repoPath, paths),
     );
