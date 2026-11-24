@@ -504,13 +504,14 @@ function hasSecretOutsidePublishedFields(
  *
  * Redacts the string values of {@link PUBLISHED_FIELD_KEYS} on the top-level
  * object, mirroring the `-f body=…` field rules. Returns the re-serialised
- * JSON when a value changed, or undefined when nothing needed masking. Fails
+ * JSON to send instead, or undefined when the original can be sent as is. Fails
  * closed on a secret it cannot place structurally: a non-object body, or a
  * secret surviving in any field the key-scan does not cover — an unparseable
- * or off-field secret must never pass through unscanned. An unchanged body is
- * scanned as its original text and as the parsed object; a changed one only as
- * the parsed object that is sent. Both object scans blank the published strings
- * (see {@link hasSecretOutsidePublishedFields}).
+ * or off-field secret must never pass through unscanned. The check runs on the
+ * parsed object with its published strings blanked (see
+ * {@link hasSecretOutsidePublishedFields}), never on the JSON-escaped text. An
+ * unchanged body whose original text still trips the scan is sent as its
+ * canonical re-serialisation, so every byte sent has been checked.
  *
  * @throws UnredactableBodyError when the body hides a secret it cannot mask.
  */
@@ -536,14 +537,10 @@ function maskedJsonBody(text: string): string | undefined {
       }
     }
   }
-  // Unchanged: scan the original text (gh sends it; catches a duplicate key
-  // JSON.parse drops) and the parsed object. Changed: only the parsed object
-  // that is sent. Scanning the whole serialisation refused masked text, because
-  // JSON escaping (\n, \") made it read as a fresh secret (Issue #5416).
-  const leaked = changed
-    ? hasSecretOutsidePublishedFields(obj)
-    : maskBody(text) !== text || hasSecretOutsidePublishedFields(obj);
-  if (leaked) {
+  // Check the parsed object structurally, never the escaped serialisation:
+  // JSON escaping (\n, \") made already-masked text read as a fresh secret
+  // (Issue #5416). Published strings were each scanned by the loop above.
+  if (hasSecretOutsidePublishedFields(obj)) {
     throw new UnredactableBodyError(
       "<input-body>",
       "the --input body carries a secret outside its redactable body " +
@@ -551,7 +548,11 @@ function maskedJsonBody(text: string): string | undefined {
         "inline with -f body=…",
     );
   }
-  return changed ? JSON.stringify(obj) : undefined;
+  if (changed) return JSON.stringify(obj);
+  // Unchanged and structurally clean. When the original text still trips the
+  // scan (escaping, or a duplicate key JSON.parse dropped), send the canonical
+  // copy: every byte of it was checked above, which is not true of the original.
+  return maskBody(text) !== text ? JSON.stringify(obj) : undefined;
 }
 
 /**

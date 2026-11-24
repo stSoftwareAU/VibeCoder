@@ -9,8 +9,11 @@ quote into `\"`. The `secret-assignment` rule then read the already masked value
 as a new secret. The check now looks only at what the key scan cannot reach: the
 parsed object with its published string fields blanked. That remainder is
 scanned as serialised text and as raw parsed strings (every key and string
-value, nested objects and arrays included). A body with nothing to mask is still
-scanned as its original text too. The new test's synthetic 40-character fixture
+value, nested objects and arrays included). This holds on both paths. A body
+with nothing to mask whose original text still trips the scan, for example one
+that is already masked or carries a duplicate key, is no longer refused. It is
+sent as its canonical `JSON.stringify` copy, materialised like a masked body, so
+every byte sent has been checked. The new test's synthetic 40-character fixture
 tripped gitleaks' `generic-api-key` rule. It is now assembled from two halves,
 and the test file is path-allowlisted in `.github/gitleaks.toml`, following the
 sibling redaction fixtures, because a pushed commit carries the literal in one
@@ -32,11 +35,14 @@ piece. Closes #5416.
 
 ### Essential Design Decisions
 
-- On the unchanged path the original file is what `gh` sends, so the original
-  text is still scanned (it keeps catching a duplicate key that `JSON.parse`
-  drops), and the structural check is added on top. On the changed path
-  `JSON.stringify(obj)` is sent, so the structural check alone covers every byte
-  outside the masked published strings.
+- The fail-closed check is structural on both paths and never reads the
+  JSON-escaped text. The original text decides only which bytes are sent. When
+  it scans clean, the original file is sent untouched (the clean-body
+  byte-for-byte contract). When it trips but the parsed object is clean, the
+  canonical `JSON.stringify(obj)` is sent instead. That copy holds only parsed
+  data, and all of it has been checked. A duplicate key that `JSON.parse` drops
+  is therefore never published: it is absent from the copy. Sending the copy
+  needs a writer, so with no writer it still fails closed.
 - `isPublishedString(key, value)` is the single test for "a published string
   field": the masking loop and the remainder builder both call it, so they
   cannot disagree on which fields are blanked. A published key holding a
@@ -67,12 +73,11 @@ Backend-only change: no UI files touched.
 flowchart TD
     A[--input JSON object] --> B[mask published string fields]
     B --> C{anything masked?}
-    C -- no --> D[scan original text<br/>+ remainder check]
-    C -- yes --> E[remainder check only]
-    D --> F{secret found?}
-    E --> F
+    C --> F{remainder check:<br/>secret found?}
     F -- yes --> G[UnredactableBodyError]
-    F -- no --> H[send original / masked copy]
+    F -- no --> I{masked, or original<br/>text trips the scan?}
+    I -- yes --> H[send canonical copy]
+    I -- no --> J[send original untouched]
     subgraph R[remainder check]
       R1[blank published strings] --> R2[scan serialised remainder]
       R1 --> R3[scan every key and string value raw]
@@ -81,11 +86,18 @@ flowchart TD
 
 - Red run against the base `gh_body_redaction.ts` with the new test file
   (`worker/deno/lib/gh_body_redaction.ts` swapped for the base-branch copy, new
-  test kept): `FAILED | 3 passed | 6 failed`. The three cross-line/quoted bodies
-  were refused, the top-level off-field test's allowed control was refused by
-  the same bug, and both JSON-quoted off-field secrets were not refused
-  (`Expected function to throw.`).
-- After the fix: `ok | 9 passed | 0 failed` for the new file.
+  test kept): `FAILED | 3 passed | 13 failed`. The three cross-line/quoted
+  bodies were refused, and so were the three already-masked bodies. The
+  top-level off-field test's allowed control was refused by the same bug. Every
+  JSON-quoted off-field secret was not refused (`Expected function to throw.`).
+- Red run against the previous head of this branch, which still scanned the
+  original text on the unchanged path: `FAILED | 13 passed | 3 failed`. The
+  three failures are the new unchanged-path tests (already-masked bodies, the
+  duplicate key, and the no-writer refusal, which refused for the wrong reason).
+- Red run with the raw parsed-string scan disabled (`collectStrings` check
+  short-circuited): `FAILED | 10 passed | 6 failed`. All six JSON-quoted tests
+  failed, which shows the nested, array and key tests reach that scan.
+- After the fix: `ok | 16 passed | 0 failed` for the new file.
 
 ## Test Plan
 
@@ -106,10 +118,27 @@ Every test drives `redactGhBodyArgs` with `--input`:
   `a quoted secret hidden by JSON escaping refuses on the changed path`. Each
   asserts `UnredactableBodyError` with `outside its redactable body`. Each has
   an allowed control (the same object with the off-field secret removed is
-  sent).
+  sent). The nested, array and non-string-title tests use `GH_TOKEN_SAMPLE`,
+  which the serialised scan already catches.
+- **The raw parsed-string scan:** the next four tests use a JSON-quoted
+  `"password": "<value>"` secret, which only the raw scan sees:
+  `a JSON-quoted secret in a nested value refuses on the changed path`,
+  `a JSON-quoted secret in a nested value refuses on the unchanged path`,
+  `a JSON-quoted secret inside an array refuses` and
+  `a JSON-quoted secret in an object key refuses`. Each asserts the refusal and
+  has an allowed control. On the unchanged path, the control returns the argv
+  untouched and writes nothing.
 - **Fail-closed on the unchanged path:**
   `a quoted secret hidden by JSON escaping refuses on the unchanged path`. Its
   control returns the argv untouched and writes nothing.
+- **The unchanged path sends rather than refuses:**
+  `an already-masked body is sent as its canonical copy` sends the issue's three
+  already-masked texts. Each is rewritten to one materialised file whose parsed
+  body equals the input.
+  `a secret in a duplicate key JSON.parse drops is never sent` sends only the
+  surviving `{"body":"ok","head":"clean"}`, and the token is absent from the
+  file. `an already-masked body with no writer still fails closed` asserts the
+  `no writer` refusal.
 - **Existing coverage still green, unedited:**
   `worker/deno/tests/gh_body_redaction_test.ts` (the #92 `--input` suite,
   including `a secret outside the body field refuses rather than pass unscanned`
@@ -118,22 +147,27 @@ Every test drives `redactGhBodyArgs` with `--input`:
   `worker/deno/tests/gh_body_prompt_leak_backstop_1421_test.ts`,
   `worker/deno/tests/gh_body_redaction_masked_instruction_2390_test.ts` and
   `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`. Run together
-  with the new file: `ok | 385 passed | 0 failed`. No existing test was edited.
+  with the new file: `ok | 392 passed | 0 failed`. Adding `gh_spawn_test.ts`,
+  `gh_guard_cli_test.ts` and `gh_guard_shim_test.ts` gives
+  `ok | 487 passed | 0 failed`. No existing test was edited.
 - **gitleaks:**
   `gitleaks git --config .github/gitleaks.toml --log-opts="e1663b703..HEAD" .`
   (8.30.1) reported `no leaks found` after the allowlist entry.
   `worker/deno/tests/gitleaks_check_test.ts` and
   `worker/deno/tests/gitleaks_template_conformance_test.ts` pass.
-- **Full gate:** `./quality.sh < /dev/null` ran on the final code and returned
-  `Result: PASSED (with skipped checks)`. `config integration` and `checkov`
-  were skipped by the gate itself.
+- **Full gate:** `./quality.sh < /dev/null` returned
+  `Result: PASSED (with skipped checks)` before the unchanged-path fix.
+  `config integration` and `checkov` were skipped by the gate itself. After the
+  fix, I ran `deno fmt`, `deno lint` and `deno check` on both changed files,
+  plus the suites above. The worker re-runs the full gate.
 - **Docs:** I grepped `SECURITY.md`, `docs/THREAT-MODEL.md`, `docs/*.md` and
   `README.md` for `--input`, `redactable`, `rescan` and `re-serialis`. No manual
   describes the rescan mechanism. `SECURITY.md` §6a and threat-model control C24
   say an `--input` body that cannot be safely masked is refused, which stays
-  true. I updated the `maskedJsonBody` doc comment and the comment above its
-  check. The module doc ("hides a secret outside a redactable field … raises
-  UnredactableBodyError") stays true, so it was not changed.
+  true. I updated the `maskedJsonBody` doc comment, its return description and
+  the comments above its check and its return. The module doc ("hides a secret
+  outside a redactable field … raises UnredactableBodyError") stays true, so it
+  was not changed.
 - **Issue numbers:** the only issue number cited is #5416 ("gh api --input: the
   fail-closed rescan refuses a correctly masked body whose text reads
   differently once JSON-escaped").

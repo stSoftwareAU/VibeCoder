@@ -256,3 +256,112 @@ Deno.test("redactGhBodyArgs #5416 - a quoted secret hidden by JSON escaping refu
   assertEquals(redactGhBodyArgs(INPUT_ARGS, clean, control.writer), INPUT_ARGS);
   assertEquals(control.written.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// The unchanged path: an already-masked body is sent, not refused. Its original
+// text trips the scan only once JSON-escaped, so the canonical copy is sent.
+// ---------------------------------------------------------------------------
+
+Deno.test("redactGhBodyArgs #5416 - an already-masked body is sent as its canonical copy", () => {
+  const bodies = [
+    `password:\n${REDACTION_PLACEHOLDER}`,
+    `Rotate these credentials:\nDEPLOY_TOKEN = "${REDACTION_PLACEHOLDER}"`,
+    `secrets:\n  API_TOKEN: "${REDACTION_PLACEHOLDER}"`,
+  ];
+  for (const body of bodies) {
+    const read = readerFor({ "/tmp/c.json": JSON.stringify({ body }) });
+    const { writer, written } = capturingWriter();
+    const out = redactGhBodyArgs(INPUT_ARGS, read, writer);
+    assertEquals(out[3], "/tmp/gh-input-1.json");
+    assertEquals(written.length, 1);
+    assertEquals(JSON.parse(written[0] ?? "{}"), { body });
+  }
+});
+
+Deno.test("redactGhBodyArgs #5416 - a secret in a duplicate key JSON.parse drops is never sent", () => {
+  // JSON.parse keeps the last `head`, so the parsed object is clean; the
+  // original text is not, so the canonical copy is sent in its place.
+  const text = `{"body":"ok","head":"t ${GH_TOKEN_SAMPLE}","head":"clean"}`;
+  const read = readerFor({ "/tmp/c.json": text });
+  const { writer, written } = capturingWriter();
+  const out = redactGhBodyArgs(INPUT_ARGS, read, writer);
+  assertEquals(out[3], "/tmp/gh-input-1.json");
+  assertEquals(written.length, 1);
+  assertEquals((written[0] ?? "").includes(GH_TOKEN_SAMPLE), false);
+  assertEquals(JSON.parse(written[0] ?? "{}"), { body: "ok", head: "clean" });
+});
+
+Deno.test("redactGhBodyArgs #5416 - an already-masked body with no writer still fails closed", () => {
+  const read = readerFor({
+    "/tmp/c.json": JSON.stringify({
+      body: `password:\n${REDACTION_PLACEHOLDER}`,
+    }),
+  });
+  assertThrows(
+    () => redactGhBodyArgs(INPUT_ARGS, read),
+    UnredactableBodyError,
+    "no writer",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The raw parsed-string scan: a JSON-quoted secret that escaping hides from the
+// serialised scan still refuses wherever it sits in the remainder
+// ---------------------------------------------------------------------------
+
+/** A secret only the raw parsed-string scan sees: escaping hides its quotes. */
+const QUOTED_SECRET = `"password": "${SECRET_VALUE}"`;
+
+/** Assert `doc` refuses as an off-field secret and `clean` is accepted. */
+function assertRefusesWithControl(
+  doc: Record<string, unknown>,
+  clean: Record<string, unknown>,
+  cleanIsMasked: boolean,
+): void {
+  const read = readerFor({ "/tmp/c.json": JSON.stringify(doc) });
+  assertThrows(
+    () => redactGhBodyArgs(INPUT_ARGS, read, capturingWriter().writer),
+    UnredactableBodyError,
+    "outside its redactable body",
+  );
+  const control = capturingWriter();
+  const out = redactGhBodyArgs(
+    INPUT_ARGS,
+    readerFor({ "/tmp/c.json": JSON.stringify(clean) }),
+    control.writer,
+  );
+  assertEquals(control.written.length, cleanIsMasked ? 1 : 0);
+  if (!cleanIsMasked) assertEquals(out, INPUT_ARGS);
+}
+
+Deno.test("redactGhBodyArgs #5416 - a JSON-quoted secret in a nested value refuses on the changed path", () => {
+  assertRefusesWithControl(
+    { body: `see ${GH_TOKEN_SAMPLE}`, meta: { nested: QUOTED_SECRET } },
+    { body: `see ${GH_TOKEN_SAMPLE}`, meta: { nested: "clean" } },
+    true,
+  );
+});
+
+Deno.test("redactGhBodyArgs #5416 - a JSON-quoted secret in a nested value refuses on the unchanged path", () => {
+  assertRefusesWithControl(
+    { body: "an ordinary comment", meta: { nested: QUOTED_SECRET } },
+    { body: "an ordinary comment", meta: { nested: "clean" } },
+    false,
+  );
+});
+
+Deno.test("redactGhBodyArgs #5416 - a JSON-quoted secret inside an array refuses", () => {
+  assertRefusesWithControl(
+    { body: `see ${GH_TOKEN_SAMPLE}`, labels: ["a", QUOTED_SECRET] },
+    { body: `see ${GH_TOKEN_SAMPLE}`, labels: ["a", "clean"] },
+    true,
+  );
+});
+
+Deno.test("redactGhBodyArgs #5416 - a JSON-quoted secret in an object key refuses", () => {
+  assertRefusesWithControl(
+    { body: `see ${GH_TOKEN_SAMPLE}`, meta: { [QUOTED_SECRET]: 1 } },
+    { body: `see ${GH_TOKEN_SAMPLE}`, meta: { clean: 1 } },
+    true,
+  );
+});
