@@ -464,8 +464,11 @@ are removed, so `env "X"=1 aws-emulator-run …` counts and
 `-i` or `--split-string=echo` ends that scan and stays the command word, so it
 earns no credit; a `VAR=value` whose unquoted `$( … )` or backtick value holds a
 blank, but no `;`, `|`, `&` or line break, as in
-`X=$(cat v) aws-emulator-run …`, is skipped whole) and the
-`time`/`nice`/`timeout`/`command` wrappers are skipped and quotes are stripped,
+`X=$(cat v) aws-emulator-run …`, is skipped whole), a `case` arm's pattern at
+the arm's start (`test) aws-emulator-run …`, `a|b) …` or `(test) …`; not after a
+`;&` or `;;&` fall-through, whose next pattern stays the command word and earns
+no credit) and the `time`/`nice`/`timeout`/`command` wrappers are skipped and
+quotes are stripped,
 must be `aws-emulator-run` or a path ending `/aws-emulator-run`. The invocation
 must also be able to run: a job or step whose `if:` is statically false
 (`false`, `${{ false }}`, `0`) earns no credit, nor does a command after an

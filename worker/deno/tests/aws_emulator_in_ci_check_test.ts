@@ -4988,3 +4988,108 @@ Deno.test("checkAwsEmulatorInCI - each commandIndex caller reads the command aft
     assertEquals(await wiring(files), expected, label);
   }
 });
+
+// Issue #5382: a `case` arm's pattern is not the command word.
+Deno.test("reachableCommands - strips a case arm's pattern (Issue #5382)", () => {
+  const cases: [string, string, string[][]][] = [
+    [
+      "one-line arm",
+      "case $1 in\n  test) aws-emulator-run -- ./t.sh ;;\nesac",
+      [["aws-emulator-run", "--", "./t.sh"]],
+    ],
+    ["three alternatives", "case $1 in\n  a|b|c) cmd ;;\nesac", [["cmd"]]],
+    [
+      "spaced close paren",
+      "case $1 in\n  test ) cmd ;;\nesac",
+      [["cmd"]],
+    ],
+    [
+      "second arm",
+      "case $1 in\n  a) x ;;\n  b) y ;;\nesac",
+      [["x"], ["y"]],
+    ],
+    ["header on the same line", "case $1 in a) cmd ;; esac", [["cmd"]]],
+    [
+      "pattern alone on its line",
+      "case $1 in\n  test)\n    cmd\n    ;;\nesac",
+      [["cmd"]],
+    ],
+    [
+      "control: multi-line body",
+      "case $1 in\n  a)\n    echo x\n    cmd\n    ;;\nesac",
+      [["echo", "x"], ["cmd"]],
+    ],
+    [
+      "control: nested case",
+      "case $1 in\n  a) case $2 in\n    b) cmd ;;\n  esac ;;\nesac",
+      [["cmd"]],
+    ],
+  ];
+  for (const [label, script, expected] of cases) {
+    const found = reachableCommands(script);
+    assertEquals(found.map((c) => c.words), expected, label);
+  }
+  const runner = reachableCommands(
+    "case $1 in\n  test) aws-emulator-run -- ./t.sh ;;\nesac",
+  )[0];
+  assertEquals(commandIndex(runner?.words ?? []), 0);
+
+  const alternatives = reachableCommands("case $1 in\n  a|b) cmd ;;\nesac");
+  assertEquals(alternatives.map((c) => c.words), [["cmd"]]);
+  assertEquals(alternatives[0]?.sep, ";;");
+
+  const paren = reachableCommands("case $1 in\n  (test) cmd ;;\nesac");
+  assertEquals(paren.map((c) => c.words), [["cmd"]]);
+  assertEquals(paren[0]?.subshells, []);
+});
+
+Deno.test("checkAwsEmulatorInCI - a one-line case arm runs the runner in a step and a script (Issue #5382)", async () => {
+  const bodies = [
+    `case "$1" in\n  test) ${RUNNER_STEP} ;;\nesac`,
+    `case "$1" in\n  a|test) ${RUNNER_STEP} ;;\nesac`,
+    `case "$1" in\n  (test) ${RUNNER_STEP} ;;\nesac`,
+    `case "$1" in test) ${RUNNER_STEP} ;; esac`,
+  ];
+  for (const body of bodies) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "official-server", `workflow: ${body}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(inScript.wiring, "official-server", `script: ${body}`);
+  }
+  const control = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`case "$1" in\n  test) echo ${RUNNER_STEP} ;;\nesac`),
+    ),
+  });
+  assertEquals(control.wiring, "missing", "control");
+});
+
+Deno.test("checkAwsEmulatorInCI - failure-exit idioms inside a one-line case arm (Issue #5382)", async () => {
+  const inScript = async (body: string) =>
+    (await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\necho done\n`,
+    })).wiring;
+  assertEquals(
+    await inScript(
+      `case "$1" in\n  test) if ! ${RUNNER_STEP}; then exit 1; fi ;;\nesac`,
+    ),
+    "official-server",
+    "if !",
+  );
+  assertEquals(
+    await inScript(`case "$1" in\n  test) ${RUNNER_STEP} || exit 1 ;;\nesac`),
+    "official-server",
+    "|| exit",
+  );
+  assertEquals(
+    await inScript(`case "$1" in\n  test) ! ${RUNNER_STEP} || exit 1 ;;\nesac`),
+    "missing",
+    "! cmd || exit",
+  );
+});
