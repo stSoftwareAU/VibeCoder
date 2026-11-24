@@ -44,21 +44,21 @@ review). Closes #5341.
   - Every other unlisted name, including a `Bash(...)` that is not a plain `:*`
     prefix such as `Bash(git push *)`, is refused as the issue states.
   - So on a Gemini host, the `pr_review` feedback run (`Bash(git push:*)`) and
-    the best-practices static scan (`Bash(cargo:*)`, …) are now enforced
-    through that policy file. Before this change they ran with those denials as
-    prompt text only.
+    the best-practices static scan (`Bash(cargo:*)`, …) are now enforced through
+    that policy file. Before this change they ran with those denials as prompt
+    text only.
   - The pre-PR verifier keeps a stricter shape. Its deny list carries
     `Bash(gh:*)`, `Bash(git push:*)`, `Bash(curl:*)` and `Bash(wget:*)`. Those
     are plain `:*` prefixes, so the policy file could carry them, but the
-    verifier chooses a stricter denial.
-    `verifierDisallowedTools` in `worker/deno/lib/pre_pr_verifier.ts`
-    swaps those entries for a plain `Bash` denial when the verifier runs on
-    Gemini. That maps to `run_shell_command`. The Gemini verifier keeps every
-    denial, but it has no shell. Its prompt still asks it to run checks, so it
-    reports a check that needs a command as not run. Claude, Codex and the
-    read-only verifier (always Claude) get the list unchanged. If the runner
-    falls back from Claude to Gemini mid-run, the `Bash(<prefix>:*)` list is
-    written as policy deny rules, so the run is enforced, not refused.
+    verifier chooses a stricter denial. `verifierDisallowedTools` in
+    `worker/deno/lib/pre_pr_verifier.ts` swaps those entries for a plain `Bash`
+    denial when the verifier runs on Gemini. That maps to `run_shell_command`.
+    The Gemini verifier keeps every denial, but it has no shell. Its prompt
+    still asks it to run checks, so it reports a check that needs a command as
+    not run. Claude, Codex and the read-only verifier (always Claude) get the
+    list unchanged. If the runner falls back from Claude to Gemini mid-run, the
+    `Bash(<prefix>:*)` list is written as policy deny rules, so the run is
+    enforced, not refused.
 - **Where the file goes.** It is written to
   `<TMPDIR>/vibe-gemini-settings-*/settings.json`. `TMPDIR` is read through the
   run's own env lookup (`options.env`), or the system temp directory is used
