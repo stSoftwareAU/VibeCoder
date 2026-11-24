@@ -93,8 +93,8 @@ nothing (VibeCoder#4607, #4709, #4999 and private fleet PRs).
 - `worker/deno/tests/third_party_tool_semantics_3235_test.ts`: unchanged. It
   passes with the reworded back-reference.
 - `worker/deno/tests/dummy_test_scan_growth_5236_test.ts`, an unrelated test
-  edited in the same PR (commit "Harden dummy-test scan growth guards against CI
-  timing noise"): the four `assertLinearGrowth` guards change `repeats: 1` to
+  edited in the same PR to harden its growth guards against CI timing noise:
+  the four `assertLinearGrowth` guards change `repeats: 1` to
   `repeats: 3`. A CI run read a single 58 ms reading against the 50 ms grace;
   `fastestInterleaved` in `worker/deno/tests/support/growth.ts` keeps the
   fastest of the interleaved readings per size, so three readings make one
