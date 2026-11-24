@@ -7,12 +7,14 @@
  *
  * New-work gating (Issue #937): the label routes that *answer* an issue —
  * `planning`, `question`, `refine-issue`, `grill-me` — remove their own label
- * when they finish, so re-dispatch is self-limiting and they need no further
- * gate. A route that *raises a pull request* has no such stop: the label
- * stays on the issue, `unassign_on_pr_created` unassigns it, and the next
- * cycle re-runs the whole implementation pipeline against the open PR. Such a
- * route opts in with `gateNewWork`, which applies the same eligibility gates
- * `work-on` gets through `lib/new_work_eligibility.ts`.
+ * when they succeed, so re-dispatch is self-limiting and they need no
+ * `gateNewWork`. A failed planning or question run keeps its label, so those
+ * two routes pass an `isIssueInCooldown` hold for the escalating failure
+ * cooldown (Issue #5376). A route that *raises a pull request* has no such
+ * stop: the label stays on the issue, `unassign_on_pr_created` unassigns it,
+ * and the next cycle re-runs the whole implementation pipeline against the
+ * open PR. Such a route opts in with `gateNewWork`, which applies the same
+ * eligibility gates `work-on` gets through `lib/new_work_eligibility.ts`.
  *
  * Authorship gate (Issue #3083): for operational dispatch labels
  * (planning/question/refine-issue/grill-me/needs-revision, plus the operator's

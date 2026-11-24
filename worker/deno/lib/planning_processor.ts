@@ -3180,7 +3180,10 @@ export async function isIssueClosed(
 // ---------------------------------------------------------------------------
 
 /**
- * Handle planning failure with failed-once/failed progression.
+ * Record the failure under `failed-once` through `handleIssueFailure` (never
+ * `failed`, Issue #4158), post the run stats and release the claim. The
+ * planning route's `failureCooldown` wrapper records the escalating cooldown
+ * that failure record promises (Issue #5376).
  */
 async function handlePlanningFailure(
   repo: string,

@@ -326,6 +326,74 @@ export async function recordIssueCooldown(
 }
 
 /**
+ * The cooldown decision over an already-loaded state (Issue #5376).
+ *
+ * `escalatingOnly` ignores flat (unkinded) entries, so only a recorded failure
+ * holds the issue. `now` is in Unix seconds.
+ */
+export function isHeldByCooldown(
+  state: CooldownState,
+  issueRetryCooldown: number,
+  repo: string,
+  issueNumber: number,
+  options: { escalatingOnly?: boolean; now?: number } = {},
+): boolean {
+  const now = options.now ?? nowSeconds();
+
+  // Find the most recent entry for this repo/issue
+  const matching = state.entries
+    .filter((e) =>
+      e.repo === repo && e.issueNumber === issueNumber &&
+      (!options.escalatingOnly || isCooldownFailureKind(e.kind))
+    )
+    .sort((a, b) => b.timestamp - a.timestamp);
+
+  if (matching.length === 0) return false;
+
+  const latest = matching[0]!;
+  // Escalating window for ladder-class failures (Issue #4304, #1949): the
+  // more consecutive failures, the longer the issue stays off the menu.
+  const duration = isCooldownFailureKind(latest.kind)
+    ? Math.max(
+      issueRetryCooldown,
+      escalatingCooldownSeconds(
+        countRecentEscalatingFailures(state, repo, issueNumber, now),
+      ),
+    )
+    : issueRetryCooldown;
+  return (now - latest.timestamp) < duration;
+}
+
+/**
+ * The claim scan's cooldown hold (Issue #5376): the latest entry's window, or
+ * the ladder window of the latest recorded failure when a flat entry landed
+ * after it.
+ *
+ * Holding an issue for as long as any entry of it exists held a failed issue
+ * for the 48 h escalation history instead of the 2 h → 6 h → 24 h its failure
+ * comment states. `now` is in Unix seconds.
+ */
+export function isHeldByAnyCooldown(
+  state: CooldownState,
+  issueRetryCooldown: number,
+  repo: string,
+  issueNumber: number,
+  options: { now?: number } = {},
+): boolean {
+  return isHeldByCooldown(
+    state,
+    issueRetryCooldown,
+    repo,
+    issueNumber,
+    options,
+  ) ||
+    isHeldByCooldown(state, issueRetryCooldown, repo, issueNumber, {
+      ...options,
+      escalatingOnly: true,
+    });
+}
+
+/**
  * Check if an issue is currently in cooldown.
  *
  * Returns true if the issue should be skipped.
@@ -336,27 +404,7 @@ export async function isIssueInCooldown(
   issueNumber: number,
 ): Promise<boolean> {
   const state = await loadState(config.workDir, config.issueRetryCooldown);
-  const now = nowSeconds();
-
-  // Find the most recent entry for this repo/issue
-  const matching = state.entries
-    .filter((e) => e.repo === repo && e.issueNumber === issueNumber)
-    .sort((a, b) => b.timestamp - a.timestamp);
-
-  if (matching.length === 0) return false;
-
-  const latest = matching[0]!;
-  // Escalating window for ladder-class failures (Issue #4304, #1949): the
-  // more consecutive failures, the longer the issue stays off the menu.
-  const duration = isCooldownFailureKind(latest.kind)
-    ? Math.max(
-      config.issueRetryCooldown,
-      escalatingCooldownSeconds(
-        countRecentEscalatingFailures(state, repo, issueNumber, now),
-      ),
-    )
-    : config.issueRetryCooldown;
-  return (now - latest.timestamp) < duration;
+  return isHeldByCooldown(state, config.issueRetryCooldown, repo, issueNumber);
 }
 
 /**
