@@ -189,6 +189,31 @@ Deno.test("gemini provider - a disallowed-tools list is carried into the prompt,
 
 const SESSION_UUID = "3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b";
 
+Deno.test("gemini provider - promptViaStdin keeps the prompt off argv and stdinBody carries the whole composed prompt (PR #5524 review)", () => {
+  const prompt = "x".repeat(200_000);
+  const systemPrompt = "You run unattended inside a sandboxed container.";
+  const request = {
+    prompt,
+    systemPrompt,
+    disallowedTools: ["Bash(git push:*)"],
+  };
+  const viaStdin = gemini.buildInvocation({ ...request, promptViaStdin: true });
+  assertEquals(viaStdin.includes("--prompt"), false);
+  assertEquals(viaStdin.some((a) => a.includes("x".repeat(100))), false);
+  assert(
+    viaStdin.every((a) => a.length < 131_072),
+    "no argv element may reach MAX_ARG_STRLEN",
+  );
+  const body = gemini.stdinBody!(request);
+  assertStringIncludes(body, systemPrompt);
+  assertStringIncludes(body, "Bash(git push:*)");
+  assertStringIncludes(body, prompt);
+  // A caller that does not ask for stdin still gets the prompt in argv.
+  const viaArgv = gemini.buildInvocation(request);
+  assertEquals(viaArgv.at(-2), "--prompt");
+  assertEquals(viaArgv.at(-1), body);
+});
+
 Deno.test("gemini provider - the first phase starts a session under the worker-generated id", () => {
   const args = gemini.buildInvocation({
     prompt: "phase one",
