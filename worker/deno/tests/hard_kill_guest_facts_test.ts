@@ -16,7 +16,7 @@
  * Uses Australian English spelling throughout (behaviour, colour, etc.).
  */
 
-import { assertEquals, assertFalse } from "@std/assert";
+import { assert, assertEquals, assertFalse } from "@std/assert";
 import {
   captureHardKillEvidence,
   DEFAULT_EXEC_TIMEOUT_MS,
@@ -34,8 +34,16 @@ import {
   hardKillGuestProbe,
   hardKillHostDisk,
   hardKillHostMemory,
+  hardKillLastLivenessTick,
   hardKillSilentFor,
 } from "../lib/hard_kill_guest_facts.ts";
+import {
+  collapseProcPressureText,
+  formatLivenessPressureFields,
+  type LivenessTickPressure,
+  withRunPressureTicks,
+} from "../lib/liveness_guard.ts";
+import { createLogger } from "../lib/logger.ts";
 
 const CONTAINER = "vibe-coder-5062";
 const NOW = Date.parse("2026-11-11T17:42:07.603Z");
@@ -645,4 +653,210 @@ Deno.test("hardKillHostMemory gives not available for unknown, inconsistent or h
       memory.slice(0, 40),
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// The last liveness tick in the worker log tail (Issue #4815)
+// ---------------------------------------------------------------------------
+
+const TICK_PREFIX = "[2026-11-04 21:16:02Z] INFO: [GRQ-3 o/r#4972] [liveness]";
+const TICK_HEAD =
+  "tick=7 alerted=false live_epoch=1 last_idle_claimed=0 last_productive=5";
+
+/** A record whose worker log tail is `lines`. */
+function tailRecord(lines: string[] | string): HardKillEvidence {
+  const ev = recordWith();
+  ev.evidence.workerLogTail = Array.isArray(lines) ? lines.join("\n") : lines;
+  return ev;
+}
+
+Deno.test("the newest liveness tick in the tail wins (Issue #4815)", () => {
+  const ev = tailRecord([
+    `${TICK_PREFIX} ${TICK_HEAD} mem_available_mib=3000`,
+    `[2026-11-04 21:17:02Z] INFO: [GRQ-3 o/r#4972] [liveness] ${TICK_HEAD} mem_available_mib=120 pressure_memory=some,avg10=45.00,avg60=40.00,avg300=10.00,total=123,full,avg10=30.12,avg60=1.00,avg300=0.50,total=99 pressure_cpu=some,avg10=2.00,avg60=1.00,avg300=0.00,total=5`,
+    "[2026-11-04 21:17:03Z] INFO: something else",
+    "no timestamp here",
+  ]);
+  assertEquals(
+    hardKillLastLivenessTick(ev),
+    "MemAvailable 120 MiB, memory some avg10=45.00, memory full avg10=30.12, cpu some avg10=2.00 (logged 2026-11-04 21:17:02Z)",
+  );
+});
+
+Deno.test("no tick in the tail reads not in the log tail (Issue #4815)", () => {
+  assertEquals(
+    hardKillLastLivenessTick(tailRecord("[2026-11-04 21:16:02Z] INFO: x")),
+    "not in the log tail",
+  );
+  assertEquals(
+    hardKillLastLivenessTick(tailRecord("unavailable: log file missing")),
+    "not in the log tail",
+  );
+});
+
+Deno.test("unavailable figures are fixed words (Issue #4815)", () => {
+  assertEquals(
+    hardKillLastLivenessTick(tailRecord(
+      `${TICK_PREFIX} ${TICK_HEAD} mem_available_mib=unavailable pressure_memory=unavailable pressure_cpu=empty`,
+    )),
+    "MemAvailable unavailable (logged 2026-11-04 21:16:02Z)",
+  );
+});
+
+Deno.test("tick text never leaks and malformed numbers are dropped (Issue #4815)", () => {
+  const out = hardKillLastLivenessTick(tailRecord(
+    `${TICK_PREFIX} ${TICK_HEAD} hook=/home/u/secret-repo ghp_abc123 mem_available_mib=77 pressure_memory=some,avg10=1234.5,avg60=1.00,avg300=1.00,total=1,full,avg10=9.999,avg60=1.00,avg300=1.00,total=1`,
+  ));
+  assertEquals(out, "MemAvailable 77 MiB (logged 2026-11-04 21:16:02Z)");
+  assertFalse(out.includes("secret-repo"));
+  assertFalse(out.includes("ghp_"));
+  assertFalse(out.includes("1234"));
+});
+
+Deno.test("a tick with only garbage has no readable figures (Issue #4815)", () => {
+  assertEquals(
+    hardKillLastLivenessTick(tailRecord(`${TICK_PREFIX} tick=!!garbage`)),
+    "no readable figures (logged 2026-11-04 21:16:02Z)",
+  );
+});
+
+Deno.test("hostile tick lines return promptly with a fixed result (Issue #4815)", () => {
+  assertEquals(
+    hardKillLastLivenessTick(tailRecord(
+      `${TICK_PREFIX} ${TICK_HEAD} ${"a".repeat(200_000)}`,
+    )),
+    "no readable figures (logged 2026-11-04 21:16:02Z)",
+  );
+  assertEquals(
+    hardKillLastLivenessTick(tailRecord(
+      `${TICK_PREFIX} ${TICK_HEAD} mem_available_mib=5 pressure_memory=${
+        ",".repeat(200_000)
+      }`,
+    )),
+    "MemAvailable 5 MiB (logged 2026-11-04 21:16:02Z)",
+  );
+});
+
+Deno.test("the tick line the liveness guard writes is read back (Issue #4815)", () => {
+  const fields = formatLivenessPressureFields({
+    memAvailableMib: 512,
+    pressureMemory: collapseProcPressureText(
+      "some avg10=12.50 avg60=3.00 avg300=1.00 total=42\nfull avg10=4.25 avg60=1.00 avg300=0.00 total=7\n",
+    ),
+    pressureCpu: collapseProcPressureText(
+      "some avg10=0.75 avg60=0.10 avg300=0.00 total=9\n",
+    ),
+  });
+  const ev = tailRecord(`${TICK_PREFIX} ${TICK_HEAD} hook_state=ok ${fields}`);
+  assertEquals(
+    hardKillLastLivenessTick(ev),
+    "MemAvailable 512 MiB, memory some avg10=12.50, memory full avg10=4.25, cpu some avg10=0.75 (logged 2026-11-04 21:16:02Z)",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The pressure line an in-flight run logs (Issue #4815)
+// ---------------------------------------------------------------------------
+
+/** A reading whose memory is `mib` and whose memory pressure is `avg10`. */
+function readingOf(mib: number, avg10: string): LivenessTickPressure {
+  return {
+    memAvailableMib: mib,
+    pressureMemory: collapseProcPressureText(
+      `some avg10=${avg10} avg60=1.00 avg300=0.00 total=1\n`,
+    ),
+    pressureCpu: collapseProcPressureText(
+      "some avg10=0.50 avg60=0.10 avg300=0.00 total=1\n",
+    ),
+  };
+}
+
+Deno.test("a reading taken during the run is what the fact reports (Issue #4815)", async () => {
+  const lines: string[] = [];
+  const logger = createLogger({ write: (m) => lines.push(m), host: "GRQ-3" });
+  // The end-of-cycle tick, logged before the claim with a healthy reading.
+  logger.info(
+    `[liveness] ${TICK_HEAD} hook_state=ok ${
+      formatLivenessPressureFields(readingOf(4000, "0.00"))
+    }`,
+  );
+  logger.info("Claimed o/r#4815");
+  const readings = [readingOf(900, "10.00"), readingOf(120, "85.25")];
+  let reads = 0;
+  await withRunPressureTicks(
+    async () => {
+      // The run is in flight until both in-run readings have been logged.
+      while (reads < readings.length) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      logger.info("[pre-PR verifier] starting");
+    },
+    {
+      log: (message) => logger.info(message),
+      read: () => {
+        const reading = readings[Math.min(reads, readings.length - 1)];
+        reads += 1;
+        return Promise.resolve(reading as LivenessTickPressure);
+      },
+      intervalMs: 10,
+    },
+  );
+  const fact = hardKillLastLivenessTick(tailRecord(lines));
+  assert(
+    fact.startsWith(
+      "MemAvailable 120 MiB, memory some avg10=85.25, cpu some avg10=0.50 (logged ",
+    ),
+    fact,
+  );
+  const claimAt = lines.findIndex((l) => l.includes("Claimed o/r#4815"));
+  const runLines = lines.filter((l) => l.includes("[liveness] run-pressure"));
+  assert(runLines.length >= 2, lines.join("\n"));
+  assert(lines.indexOf(runLines[0] ?? "") > claimAt);
+});
+
+Deno.test("the run pressure line is logged at the start and stops when the run settles (Issue #4815)", async () => {
+  const logged: string[] = [];
+  let resolveLate: (r: LivenessTickPressure) => void = () => {};
+  let reads = 0;
+  const result = await withRunPressureTicks(
+    () =>
+      new Promise<string>((resolve) => setTimeout(() => resolve("done"), 30)),
+    {
+      log: (m) => logged.push(m),
+      read: () => {
+        reads += 1;
+        if (reads === 1) return Promise.resolve(readingOf(512, "1.00"));
+        // The second reading never settles while the run is in flight, so the
+        // beats after it are skipped rather than stacking readers.
+        return new Promise((resolve) => {
+          resolveLate = resolve;
+        });
+      },
+      intervalMs: 5,
+    },
+  );
+  assertEquals(result, "done");
+  assertEquals(reads, 2);
+  resolveLate(readingOf(1, "99.00"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assertEquals(logged, [
+    `[liveness] run-pressure ${
+      formatLivenessPressureFields(readingOf(512, "1.00"))
+    }`,
+  ]);
+});
+
+Deno.test("a failed run pressure reading does not fail the run (Issue #4815)", async () => {
+  const logged: string[] = [];
+  const result = await withRunPressureTicks(
+    () => Promise.resolve(7),
+    {
+      log: (m) => logged.push(m),
+      read: () => Promise.reject(new Error("cat hung")),
+      intervalMs: 5,
+    },
+  );
+  assertEquals(result, 7);
+  assertEquals(logged, []);
 });

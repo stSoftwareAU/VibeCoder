@@ -1,6 +1,9 @@
 /** Apple-specific argv/capability adapter; policy and proxy stay shared. */
 import type { ParsedContainerLaunchPlan } from "./container_launch.ts";
-import type { EgressSidecarPlan } from "./egress_sidecar.ts";
+import type {
+  EgressCommandRunner,
+  EgressSidecarPlan,
+} from "./egress_sidecar.ts";
 import type { AppleEgressMode } from "./apple_egress_controls.ts";
 
 /** Cleanup authority must never live in a worker-visible bind mount. */
@@ -368,6 +371,77 @@ export function staleAppleOwnership(
     alive(value.manager)
   ) return undefined;
   return value;
+}
+
+/** Record one created resource in the private ownership journal. */
+export async function recordAppleOwnership(
+  journal: string,
+  owned: AppleOwnership,
+  resource: "network" | "proxy",
+): Promise<void> {
+  if (resource === "network") owned.createdNetwork = true;
+  else owned.createdProxy = true;
+  await Deno.writeTextFile(`${journal}.tmp`, JSON.stringify(owned), {
+    mode: 0o600,
+  });
+  await Deno.rename(`${journal}.tmp`, journal);
+}
+
+/** Limit the cleanup plan to resources this attempt recorded as its own. */
+export function appleOwnedSidecar(
+  sidecar: EgressSidecarPlan,
+  owned: AppleOwnership,
+): EgressSidecarPlan {
+  return {
+    ...sidecar,
+    proxyName: owned.createdProxy ? owned.proxy : "",
+    proxyStopArgs: owned.createdProxy ? sidecar.proxyStopArgs : [],
+    networkRemoveArgs: owned.createdNetwork ? sidecar.networkRemoveArgs : [],
+  };
+}
+
+/**
+ * Remove resources of launches whose launcher and supervisor are both dead.
+ * Only journals this supervisor wrote confer ownership. Never enumerate or
+ * remove arbitrary runtime resources, including any active fleet network.
+ */
+export async function reapStaleAppleOwnership(
+  stateDir: string,
+  run: EgressCommandRunner,
+  alive: (pid: number) => boolean,
+  log: (line: string) => void = console.error,
+): Promise<void> {
+  for await (const entry of Deno.readDir(stateDir)) {
+    if (
+      !entry.isFile ||
+      !/^vibe-egress-owned-[1-9]\d*-[a-f0-9]{24}\.json$/.test(entry.name)
+    ) continue;
+    const path = `${stateDir}/${entry.name}`;
+    try {
+      const previous = staleAppleOwnership(
+        await Deno.readTextFile(path),
+        entry.name,
+        alive,
+      );
+      if (!previous) continue;
+      // staleAppleOwnership proves the proxy name is `${network}-proxy` for this
+      // journal's own nonce, and journals written before Issue #5488 said
+      // createdProxy:false for proxies that exist, so the flag cannot skip this.
+      const proxy = await run(["delete", "--force", previous.proxy]);
+      if (proxy.code && !/not found|does not exist/i.test(proxy.stderr)) {
+        throw new Error(proxy.stderr);
+      }
+      if (previous.createdNetwork) {
+        const network = await run(["network", "delete", previous.network]);
+        if (network.code && !/not found|does not exist/i.test(network.stderr)) {
+          throw new Error(network.stderr);
+        }
+      }
+      await Deno.remove(path);
+    } catch (error) {
+      log(`[egress] stale cleanup retained ${entry.name}: ${error}`);
+    }
+  }
 }
 
 /** Retry failed setup only, preserving the selected mode across every attempt. */
