@@ -147,7 +147,7 @@ Deno.test("sync point 1, work start: the feature branch starts at the current or
 
     const created = await createFeatureBranchFromBase(FEATURE, MILESTONE, {
       cwd: worker,
-      env: trace.env,
+      env: { ...trace.env, ...NO_HOST_GIT_CONFIG },
     });
 
     assert(created.ok, created.ok ? "" : created.error.message);
@@ -181,7 +181,10 @@ Deno.test("sync point 2, PR raise: the milestone syncs with default before the f
     const mainTip = await remoteTip(fx, "main");
 
     const runGit: GitRunner = (args, options) =>
-      runGitCommand(args, { ...options, env: trace.env });
+      runGitCommand(args, {
+        ...options,
+        env: { ...trace.env, ...NO_HOST_GIT_CONFIG },
+      });
     const outcome = await syncBranchesForPrRaise({
       branch: FEATURE,
       baseBranch: MILESTONE,
@@ -193,7 +196,7 @@ Deno.test("sync point 2, PR raise: the milestone syncs with default before the f
         const synced = await syncMilestoneBranchWithDefault(
           MILESTONE,
           "main",
-          { cwd: msync, env: trace.env },
+          { cwd: msync, env: { ...trace.env, ...NO_HOST_GIT_CONFIG } },
           undefined,
           passGate,
         );
@@ -210,7 +213,7 @@ Deno.test("sync point 2, PR raise: the milestone syncs with default before the f
 
     const pushed = await pushUnpushedCommits(FEATURE, {
       cwd: worker,
-      env: trace.env,
+      env: { ...trace.env, ...NO_HOST_GIT_CONFIG },
     });
     assert(pushed.ok, pushed.ok ? "" : pushed.error.message);
 
@@ -400,7 +403,7 @@ Deno.test("sync point 3, pre-merge: a PR behind its target is synced by merge an
 
     const synced = await ensurePrMergeable("o/r", 1, FEATURE, MILESTONE, {
       cwd: worker,
-      env: trace.env,
+      env: { ...trace.env, ...NO_HOST_GIT_CONFIG },
     });
 
     assert(synced.ok, synced.ok ? "" : synced.error.message);
