@@ -7,8 +7,9 @@ spawn. `assertRoleSupported` reads Gemini's enforcement from the descriptor's
 settings builder, so Gemini is admitted as `executor`, `spec_reviewer`,
 `standards_reviewer` and `explorer`. A Gemini `manager` is still refused with
 `cannot compact its stream`. On Gemini, the pre-PR verifier denies `Bash`
-outright in place of its `Bash(<pattern>)` entries, so the run is enforced
-rather than refused. Closes #5341.
+outright in place of its `Bash(<pattern>)` entries. That is stricter than the
+policy-file denial that a plain `Bash(<prefix>:*)` entry now gets (PR #5524
+review). Closes #5341.
 
 ## Spec
 
@@ -38,22 +39,26 @@ rather than refused. Closes #5341.
     default Gemini run.
   - `WebFetch` and `WebSearch` map to `web_fetch` and `google_web_search`. The
     existing summarise, closure-verdict and drift-check deny lists carry them.
-  - Every other unlisted name, including Claude permission patterns such as
-    `Bash(git push:*)`, is refused as the issue states.
+  - A plain `Bash(<prefix>:*)` name is carried as a deny rule in a policy file
+    beside the settings file (PR #5524 review).
+  - Every other unlisted name, including a `Bash(...)` that is not a plain `:*`
+    prefix such as `Bash(git push *)`, is refused as the issue states.
   - So on a Gemini host, the `pr_review` feedback run (`Bash(git push:*)`) and
-    the best-practices static scan (`Bash(cargo:*)`, …) are now refused before
-    spawn. Before this change they ran with those denials as prompt text only.
-  - The pre-PR verifier is the exception. Its deny list carries `Bash(gh:*)`,
-    `Bash(git push:*)`, `Bash(curl:*)` and `Bash(wget:*)`, so on Gemini it would
-    be refused too, and the completion phase would record it as not checked.
-    Instead, `verifierDisallowedTools` in `worker/deno/lib/pre_pr_verifier.ts`
+    the best-practices static scan (`Bash(cargo:*)`, …) are now enforced
+    through that policy file. Before this change they ran with those denials as
+    prompt text only.
+  - The pre-PR verifier keeps a stricter shape. Its deny list carries
+    `Bash(gh:*)`, `Bash(git push:*)`, `Bash(curl:*)` and `Bash(wget:*)`. Those
+    are plain `:*` prefixes, so the policy file could carry them, but the
+    verifier chooses a stricter denial.
+    `verifierDisallowedTools` in `worker/deno/lib/pre_pr_verifier.ts`
     swaps those entries for a plain `Bash` denial when the verifier runs on
     Gemini. That maps to `run_shell_command`. The Gemini verifier keeps every
     denial, but it has no shell. Its prompt still asks it to run checks, so it
     reports a check that needs a command as not run. Claude, Codex and the
     read-only verifier (always Claude) get the list unchanged. If the runner
-    falls back from Claude to Gemini mid-run, the `Bash(<pattern>)` list is
-    still refused before spawn, so the verifier fails closed as not checked.
+    falls back from Claude to Gemini mid-run, the `Bash(<prefix>:*)` list is
+    written as policy deny rules, so the run is enforced, not refused.
 - **Where the file goes.** It is written to
   `<TMPDIR>/vibe-gemini-settings-*/settings.json`. `TMPDIR` is read through the
   run's own env lookup (`options.env`), or the system temp directory is used
@@ -197,10 +202,11 @@ sequenceDiagram
   reason: fixed in this diff: `WebFetch`/`WebSearch` now map, and the summarise
   and closure-verdict lists are asserted by
   `worker/deno/tests/gemini_settings_5341_test.ts::the existing summarise and closure-verdict callers are enforced, not refused (Issue #5341)`;
-  `Bash(<pattern>)` callers are refused as the issue requires, except the pre-PR
-  verifier, which denies `Bash` outright on Gemini (added after the reviews,
-  from the pre-PR verifier's finding); both decisions are recorded under
-  Essential Design Decisions
+  plain `Bash(<prefix>:*)` callers are enforced through a policy file (PR #5524
+  review), and a `Bash(...)` that is not a plain `:*` prefix is refused as the
+  issue requires; the pre-PR verifier still denies `Bash` outright on Gemini
+  (added after the reviews, from the pre-PR verifier's finding); both decisions
+  are recorded under Essential Design Decisions
 - **violation** — A test named for one step must reach that step: the Gemini
   executor billing test was refused by the Claude manager's billing check first
   — evidence: `worker/deno/tests/orchestration_3642_orchestrator_test.ts:470` —
@@ -223,7 +229,7 @@ sequenceDiagram
 
 - Added `worker/deno/tests/gemini_settings_5341_test.ts`:
   - builder cases: the reviewer, executor and empty lists, the plan-mode
-    defaults, an unmapped `Bash(git push:*)` refused with an `["Edit"]` positive
+    defaults, an unmapped `Bash(git push *)` refused with an `["Edit"]` positive
     control, and the real `SUMMARISE_DISALLOWED_TOOLS` and
     `CLOSURE_VERDICT_DISALLOWED_TOOLS` lists mapped to literal settings;
   - writer exact-content and cleanup case;
@@ -244,9 +250,15 @@ sequenceDiagram
     exact (`enter_plan_mode`, `exit_plan_mode`, `web_fetch`,
     `google_web_search`, `run_shell_command`, `enableAgents: false`):
     `worker/deno/tests/pre_pr_verifier_3395_test.ts::runPrePrVerifier on Gemini spawns with a settings file that denies the shell, and is checked rather than refused (Issue #5341)`.
-  - Red-checked: with `verifierDisallowedTools` returning the list unchanged,
-    both tests fail. The runner test's message is `Refused to start the agent`,
-    naming `Bash(gh:*)`, `Bash(git push:*)`, `Bash(curl:*)` and `Bash(wget:*)`.
+  - Red-checked before the PR #5524 review change, when a `Bash(<prefix>:*)`
+    name was still refused: with `verifierDisallowedTools` returning the list
+    unchanged, both tests failed and the runner test's message was
+    `Refused to start the agent`, naming `Bash(gh:*)`, `Bash(git push:*)`,
+    `Bash(curl:*)` and `Bash(wget:*)`. At the head those four are carried in a
+    policy file, so the runner no longer refuses them. With the list unchanged
+    the unit test still fails on its literal lists, and the runner test's exact
+    settings-file check fails (no `run_shell_command` entry; a policy file is
+    named instead).
 - Red first: the new module failed to resolve before it existed. The contracts
   test failed on Gemini reviewer admission before `capabilities.ts` changed. The
   summarise and closure test failed with
