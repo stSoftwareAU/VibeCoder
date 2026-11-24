@@ -1090,10 +1090,10 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
   // subscription (so isSubscriptionCapable is true); an API key alone is
   // metered. No variable carries the login, so the proof is a probe. It reads
   // only an EXPLICIT GEMINI_CLI_HOME: that is the one home
-  // `buildIsolatedGeminiChildEnv` gives the child. Automatic selection still
-  // needs a Gemini status adapter, which `resolveAutomaticProviderStatus` in
-  // `provider_auto_runtime.ts` does not have yet (it answers
-  // `fixed-subscription-status-not-supported`): not yet, #5344 will add it.
+  // `buildIsolatedGeminiChildEnv` gives the child. Automatic selection reads
+  // this classification: `resolveAutomaticProviderStatus` in
+  // `provider_auto_runtime.ts` reports a login as an auto candidate with
+  // passive quota (no probe, no windows; Issue #5344).
   billing: {
     subscriptionEnvVars: [],
     meteredEnvVars: GEMINI_CREDENTIAL_ENV_VARS,

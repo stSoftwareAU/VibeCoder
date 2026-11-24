@@ -17,8 +17,14 @@
  *
  * Only providers whose billing mode can be proved to be a fixed subscription
  * are eligible. Claude is proved by `CLAUDE_CODE_OAUTH_TOKEN`; Codex is proved
- * by ChatGPT auth in its persistent `CODEX_HOME`. API keys and every provider
- * without a fixed-subscription adapter are excluded rather than guessed.
+ * by ChatGPT auth in its persistent `CODEX_HOME`. Gemini is proved by a Google
+ * account login under an explicit `GEMINI_CLI_HOME` and joins auto with
+ * passive quota (Issue #5344): no network probe and no windows, so it ranks
+ * after every provider with a known window. A run-reported quota exhaustion or
+ * authentication failure (the outage record) makes it exhausted/unavailable.
+ * API keys and every provider without a fixed-subscription adapter are
+ * excluded rather than guessed. A provider proved metered does not count
+ * toward the two-subscription default.
  *
  * Australian English spelling throughout (behaviour, authorised).
  */
@@ -33,7 +39,10 @@ import { subscriptionStatusFromClaudeBudget } from "./claude_pool_budget.ts";
 import { probeClaudeTokenBudget } from "./claude_token_budget.ts";
 
 import { CodexBudgetAdapter } from "./codex_budget.ts";
-import { classifyProviderBilling } from "./provider_billing.ts";
+import {
+  classifyProviderBilling,
+  type ProviderBillingContext,
+} from "./provider_billing.ts";
 import {
   probeCodexSubscriptionQuota,
   quotaCandidateFromCodexBudget,
@@ -82,6 +91,11 @@ export interface AutomaticProviderConfigInput {
   readonly configuredProvider?: unknown;
   readonly configuredProviders?: unknown;
   readonly environmentProvider?: string;
+  /**
+   * When given, a subscription-capable provider whose credential is proved
+   * metered does not count toward the default (Issue #5344).
+   */
+  readonly billingContext?: ProviderBillingContext;
 }
 
 function stringArray(value: unknown): string[] {
@@ -97,7 +111,9 @@ function stringArray(value: unknown): string[] {
  *
  * An environment provider is an explicit emergency/operator pin and wins over
  * automatic mode. An absent mode resolves to auto when two or more distinct
- * subscription-capable providers are enabled (Issue #5089), else pinned.
+ * subscription-capable providers are enabled (Issue #5089), else pinned. With
+ * a `billingContext`, a provider proved metered (an API key and no login) does
+ * not count; one whose billing is unknown still does (Issue #5344).
  */
 export function resolveAutomaticProviderConfig(
   input: AutomaticProviderConfigInput,
@@ -130,7 +146,12 @@ export function resolveAutomaticProviderConfig(
     };
   }
   const subscriptions = new Set(
-    stringArray(input.configuredProviders).filter(isSubscriptionCapable),
+    stringArray(input.configuredProviders).filter((id) =>
+      isSubscriptionCapable(id) &&
+      (input.billingContext === undefined ||
+        classifyProviderBilling(id, input.billingContext).billingMode !==
+          "metered")
+    ),
   );
   return subscriptions.size >= 2
     ? { mode: "auto", preference: [], reason: "default-auto" }
@@ -147,6 +168,7 @@ interface RawProviderModeConfig {
 async function readModeConfig(
   env: EnvLookup,
   readTextFile: (path: string) => Promise<string>,
+  workDir: string,
 ): Promise<AutomaticProviderConfig> {
   const environmentProvider = env(AGENT_PROVIDER_ENV)?.trim();
   const path = env("CONFIG_PATH")?.trim() || ".config.json";
@@ -176,6 +198,7 @@ async function readModeConfig(
     configuredMode: raw.agent_provider_mode,
     configuredProvider: raw.agent_provider,
     configuredProviders: raw.agent_providers,
+    billingContext: { workDir, env },
   });
   // Preserve the established config-file precedence in pinned mode. Once the
   // file explicitly opts into auto, the environment becomes an emergency
@@ -323,6 +346,35 @@ async function codexStatus(
 }
 
 /**
+ * Gemini status from the stored login alone (Issue #5344). No network call and
+ * no probe: a Google login is a fixed subscription with no readable quota, so
+ * it carries no windows and ranks as fresh-unknown-quota.
+ */
+function geminiStatus(
+  workDir: string,
+  env: EnvLookup,
+  now: number,
+): ProviderSubscriptionStatus {
+  const billing = classifyProviderBilling("gemini", { workDir, env });
+  if (billing.billingMode === "fixed-subscription") {
+    return {
+      provider: "gemini",
+      credentialLabel: "active",
+      billingMode: "fixed-subscription",
+      availability: "available",
+      windows: [],
+      observedAt: now,
+      confidence: "inferred",
+      reason: billing.reason,
+    };
+  }
+  if (billing.billingMode === "metered") {
+    return unavailableStatus("gemini", now, "metered", "api-key-account");
+  }
+  return unavailableStatus("gemini", now, "unknown", billing.reason);
+}
+
+/**
  * Authentication evidence for the soak observability surface, stripped of every
  * credential value (Issue #1927).
  *
@@ -389,6 +441,8 @@ export async function resolveAutomaticProviderStatus(
       return await claudeStatus(context.env, context.now);
     case "codex":
       return await codexStatus(context.env, context.now, context.probeCodex);
+    case "gemini":
+      return geminiStatus(context.workDir, context.env, context.now);
     default:
       return unavailableStatus(
         providerId,
@@ -457,7 +511,11 @@ export async function refreshAutomaticProviderRouting(options: {
   const readTextFile = options.readTextFile ??
     ((path) => Deno.readTextFile(path));
   const log = options.log ?? ((message: string) => console.error(message));
-  const config = await readModeConfig(env, readTextFile);
+  const config = await readModeConfig(
+    env,
+    readTextFile,
+    options.workDir,
+  );
 
   if (config.mode !== "auto") {
     setAutomaticProviderRoutingActive(false);

@@ -154,13 +154,17 @@ flowchart TD
 | --- | ------- | ------- |
 | `agent_provider` | `claude` | Preferred provider |
 | `repo_config.<repo>.agent_provider` | unset | Per-repo provider pin (Issue #2048); binds when no per-invocation selection names one, and beats both the global `agent_provider` and `auto` ranking for that repo |
-| `agent_provider_mode` | `auto` with two or more subscription-capable providers (Claude, Codex, Gemini) enabled, else `pinned` | `pinned` preserves the existing provider choice; `auto` ranks eligible fixed-price subscriptions (default since #5089) |
+| `agent_provider_mode` | `auto` with two or more subscription-capable providers (Claude, Codex, Gemini) enabled, else `pinned`; a provider proved metered (an API key alone) does not count | `pinned` preserves the existing provider choice; `auto` ranks eligible fixed-price subscriptions (default since #5089) |
 | `agent_providers` | preferred alone | Enabled set (credentials mounted) |
 | `agent_provider_fallback` | `[]` | Ordered alternatives; empty **pins** the preferred provider |
 
 `agent_provider_mode: "auto"` is the quota-aware path from #1926. Before each
 work item it ranks enabled Claude OAuth and Codex ChatGPT subscriptions using
 the lowest remaining percentage across each provider's current known windows.
+A Gemini Google-account login (under an explicit `GEMINI_CLI_HOME`) is also a
+candidate, but its quota is passive: no network probe and no windows, so it
+ranks after every provider with a known window. A Gemini API key alone is
+metered and never selected.
 The provider with more remaining capacity wins in either direction. Status
 freshness still controls eligibility; an exact tie is not broken (the input
 order stands, and the next work item re-decides — owner decision, #5089). API-key accounts, unknown billing and providers without a
@@ -273,17 +277,25 @@ WIP branches are untouched.
   described in [CONFIGURATION.md](CONFIGURATION.md#-session-resume)
   (Issue #2337). A Codex or Gemini run carries the stream's full transcript and
   logs `compaction unavailable` naming the provider.
-- Automatic selection currently supports Claude OAuth and Codex ChatGPT
-  subscriptions. A Gemini Google-account login classifies as a fixed-price
-  subscription, but `resolveAutomaticProviderStatus` has no Gemini status
-  adapter yet and answers `fixed-subscription-status-not-supported` (not yet:
-  #5344), so `auto` cannot pick Gemini. DeepSeek and every unknown or metered
-  billing mode are ineligible. The shipped default remains pinned.
+- Automatic selection supports Claude OAuth, Codex ChatGPT and Gemini
+  Google-account logins. A Gemini login (fixed-price under an explicit
+  `GEMINI_CLI_HOME`) has passive quota: `geminiStatus` does no probe and
+  reports no windows, so it ranks in the `fresh-unknown-quota` band after every
+  provider with a known window. A run-reported quota exhaustion makes it
+  `exhausted` until its retry time (the stated reset, or a five-minute
+  cooldown), and an authentication failure makes it unavailable. A Gemini API
+  key alone is `metered` (`api-key-account`) and never selected; neither
+  credential is `unknown` and excluded. DeepSeek and every unknown or metered
+  billing mode are ineligible. The default is `auto` when two or more
+  subscription-capable providers are enabled (#5089), where a provider proved
+  metered does not count.
 - Quota *probing* is still per provider (`provider_auto_runtime.ts`), even
   though billing classification is now descriptor-declared. Adding a
   subscription provider means writing its status adapter as well as its
-  `billing` declaration. Those adapters (`claudeStatus`, `codexStatus`) still
-  test the same credential variables themselves while answering their own
+  `billing` declaration. Two of those adapters (`claudeStatus`, `codexStatus`)
+  still test the same credential variables themselves while answering their own
   question — remaining quota — so the same facts are written down twice.
+  `geminiStatus` does not: it is built on `classifyProviderBilling` and reads
+  the shared classifier rather than re-testing variables.
   Folding them into the shared classifier changes what is eligible for
   `auto`, which this goal deliberately stages behind the soak qualification.
