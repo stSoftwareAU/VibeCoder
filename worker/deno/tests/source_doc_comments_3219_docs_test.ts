@@ -8,13 +8,12 @@
  * named only manuals, so nothing sent the agent to those comments.
  *
  * CODING-STANDARDS.md "A Code Change Owes a Docs Change" and its mirror in
- * the coding_guidelines prompt must both carry the same source-comment rule,
+ * the coding_guidelines prompt must both carry the same docs-change paragraph,
  * word for word once wrapping is ignored; the issue prompt's step 3 and the
  * pr_feedback sweep must both send the agent to source files.
  *
- * Each pinned phrase was absent from its section on the base branch
- * (checked with `deno task drift-pins-on-base`), so deleting the new rule
- * turns this suite red.
+ * The consolidated paragraph retains source comments and files outside the
+ * diff; the pr_feedback sweep keeps its existing source-comment guidance.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -24,17 +23,18 @@ import {
   DocSection,
   excerpt,
   flat,
+  flatWholeFile,
   readRepoDoc,
   section,
 } from "./support/markdown_docs.ts";
 
 const SECTION = "A Code Change Owes a Docs Change";
-const RULE_START = "- **Doc comments outside the diff go stale too.**";
+const RULE_START = "When a change renames or removes something,";
 
-/** The rule's bullet, from its bold lead-in to the next bullet or paragraph. */
-function ruleBullet(sectionText: DocSection, what: string): string {
+/** The consolidated paragraph, excluding the retained sibling rules. */
+function ruleParagraph(sectionText: DocSection, what: string): string {
   const start = sectionText.indexOf(RULE_START);
-  assert(start >= 0, `could not locate the source-comment rule in ${what}`);
+  assert(start >= 0, `could not locate the docs-change paragraph in ${what}`);
   const rest = sectionText.slice(start + RULE_START.length);
   const ends = [rest.indexOf("\n- "), rest.indexOf("\n\n")].filter((i) =>
     i >= 0
@@ -46,15 +46,10 @@ function ruleBullet(sectionText: DocSection, what: string): string {
 }
 
 const RULE_PHRASES = [
-  "Grep source files, not only the manuals",
-  "the shared constants, types and helpers the changed code defines or calls",
-  "Read every doc comment and module doc a hit lands in",
+  "grep README, `docs/`, prompts and agent instructions, source doc comments and user-visible strings",
+  "Read the sentence around every hit and fix each one the change makes false",
   "including in a file the diff does not otherwise touch",
 ];
-
-/** The widened "unchanged name" bullet: definitions and callers, anywhere. */
-const WIDENED_PHRASE =
-  "the doc comments on the definitions and callers of what changed, wherever they live";
 
 Deno.test("both standards surfaces carry the source doc-comment rule, word for word (Issue #3219)", async () => {
   const standards = section(
@@ -72,23 +67,19 @@ Deno.test("both standards surfaces carry the source doc-comment rule, word for w
       ["coding_guidelines", guidelines],
     ] as const
   ) {
-    const bullet = ruleBullet(text, surface);
+    const paragraph = ruleParagraph(text, surface);
     for (const phrase of RULE_PHRASES) {
       assert(
-        bullet.includes(phrase),
-        `${surface} is missing "${phrase}" from the source-comment rule: ${bullet}`,
+        paragraph.includes(phrase),
+        `${surface} is missing "${phrase}" from the docs-change paragraph: ${paragraph}`,
       );
     }
-    assert(
-      flat(text).includes(WIDENED_PHRASE),
-      `${surface} no longer widens the unchanged-name bullet to definitions and callers`,
-    );
   }
 
   assertEquals(
-    ruleBullet(standards, "CODING-STANDARDS.md"),
-    ruleBullet(guidelines, "coding_guidelines"),
-    "the source-comment rule must be identical on both surfaces",
+    ruleParagraph(standards, "CODING-STANDARDS.md"),
+    ruleParagraph(guidelines, "coding_guidelines"),
+    "the docs-change paragraph must be identical on both surfaces",
   );
 });
 
@@ -100,17 +91,35 @@ const PROMPT_PHRASES = [
 ];
 
 Deno.test("issue prompt step 3 sends the docs sweep to source doc comments (Issue #3219)", async () => {
-  const text = flat(
-    section(await readRepoDoc("prompts/issue/prompt.md"), "Instructions"),
+  const issue = await readRepoDoc("prompts/issue/prompt.md");
+  const instructions = section(issue, "Instructions");
+  const start = instructions.indexOf("3. Update the documentation");
+  const end = instructions.indexOf("\n4. ", start);
+  assert(start >= 0 && end > start, "could not locate issue prompt step 3");
+  const text = flat(excerpt(instructions, start, end));
+  const paragraph = ruleParagraph(
+    section(await readRepoDoc("CODING-STANDARDS.md"), SECTION),
+    "CODING-STANDARDS.md",
   );
-  for (const phrase of PROMPT_PHRASES) {
+  assert(
+    text.includes(paragraph),
+    "issue prompt step 3 must carry the same docs-change paragraph",
+  );
+  for (
+    const phrase of [
+      "see **A Code Change Owes a Docs Change** in `CODING-STANDARDS.md`",
+      "find the **manual section** that documents the surface you changed by grepping for the surface's own name",
+      "read that section through and fix every sentence the change makes false",
+    ]
+  ) {
     assert(text.includes(phrase), `the issue prompt is missing "${phrase}"`);
   }
-  assert(
-    text.includes(
+  assertEquals(
+    flatWholeFile(issue).includes(
       "Name the section you read and the doc files you updated in the PR summary",
     ),
-    "the issue prompt must retain manual and source-comment review guidance",
+    false,
+    "the issue prompt must drop the redundant docs-summary requirement",
   );
 });
 
