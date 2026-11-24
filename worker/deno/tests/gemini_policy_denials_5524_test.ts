@@ -54,10 +54,19 @@ const SUCCESS_STREAM = Deno.readTextFileSync(
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
-/** The policy file for the three `pr_review` prefixes, byte for byte. */
+/** The policy file for the three plain `pr_review` prefixes, byte for byte. */
 const PR_REVIEW_POLICY = `[[rule]]
 toolName = "run_shell_command"
 commandPrefix = ["git push", "gh pr merge", "gh api"]
+decision = "deny"
+priority = 999
+denyMessage = "Denied by the worker for this run."
+`;
+
+/** The policy file of a real `pr_review` run: the three prefixes plus their RTK forms (Issue #5571). */
+const PR_REVIEW_RUN_POLICY = `[[rule]]
+toolName = "run_shell_command"
+commandPrefix = ["git push", "gh pr merge", "gh api", "rtk git push", "rtk gh pr merge", "rtk gh api"]
 decision = "deny"
 priority = 999
 denyMessage = "Denied by the worker for this run."
@@ -353,7 +362,7 @@ Deno.test({
         "the Gemini agent was never started, so the run was refused",
       );
       assert(outcome.seen);
-      assertEquals(outcome.seen.policy, PR_REVIEW_POLICY);
+      assertEquals(outcome.seen.policy, PR_REVIEW_RUN_POLICY);
       assertEquals(outcome.seen.settings, {
         policyPaths: [`${outcome.seen.settingsDir}/policy`],
       });
