@@ -2,8 +2,8 @@
 
 ## Summary
 
-Corrected the operator docs and doc comments that still promised a
-`needs-human` hand-off on the third failure. The `issue_retry_cooldown` row in
+Corrected the operator docs and doc comments that still promised a `needs-human`
+hand-off on the third failure. The `issue_retry_cooldown` row in
 `docs/CONFIGURATION.md` now says that every non-transient failure, timeouts
 included, steps the 2 h → 6 h → 24 h cooldown within the 48 h window. It also
 says the issue is retried when the cooldown ends and is never handed to a human
@@ -21,8 +21,9 @@ that described a "three-strike `needs-human` park". Closes #5377.
 
 ### Essential Design Decisions
 
-- Docs and comments only; no behaviour changes. `RecordCooldownOutcome.consecutiveFailures`
-  stays as it is, and its doc now says that no caller escalates on it.
+- Docs and comments only; no behaviour changes.
+  `RecordCooldownOutcome.consecutiveFailures` stays as it is, and its doc now
+  says that no caller escalates on it.
 - The row says `issue_retry_cooldown` wins when it is longer than the ladder
   rung, matching the `Math.max` in `isHeldByCooldown`.
 - `docs/INTERNALS.md:5924` carried the same false claim, so it is fixed in this
@@ -55,12 +56,32 @@ the head code:
 
 ## Test Plan
 
-- No test was added or edited, because the change is to prose and doc comments only.
-- `deno task test:unit tests/cooldown_state_test.ts tests/config_docs_consistency_test.ts tests/doc_prose_claims_test.ts`
-  (from `worker/deno`) passed: 54 passed, 0 failed.
-- `deno fmt --check lib/cooldown_state.ts` passed.
-- `./quality.sh` result is recorded below once it has run on the head.
-- Docs sweep: I grepped the head for `handoff on the third`, `three-strike`,
-  `escalate(s) to a human` and `consecutive timeouts` outside `docs/archive/` and
-  `docs/audits/`. The four corrected passages were the only hits that make this
-  claim. `docs/INTERNALS.md:3593`, a setup-phase hand-off, is unrelated.
+- No test was added or edited, because the change is to prose and doc comments
+  only.
+- `deno task test:unit` over every test file that names `CONFIGURATION.md`,
+  `INTERNALS.md` or `cooldown_state` (30 files, picked with `git grep -l`, among
+  them `worker/deno/tests/cooldown_state_test.ts`,
+  `worker/deno/tests/config_docs_consistency_test.ts` and
+  `worker/deno/tests/doc_prose_claims_test.ts`) passed on the head: 366 passed,
+  0 failed.
+- `deno lint`, `deno check` and `deno fmt --check` on
+  `worker/deno/lib/cooldown_state.ts` passed.
+- `./quality.sh` was started twice, bounded at 300 s and then 1500 s. Every
+  stage before the full `deno test` suite passed: the chokepoint and
+  completeness checks, mermaid, markdownlint, semgrep, gitleaks and the
+  release-tag ruleset. Config integration and checkov were skipped. The suite,
+  which this container runs sequentially, did not finish within either bound, so
+  the full gate was not completed. The worker runs it again before the PR is
+  raised.
+- Docs sweep: on the head I grepped for `handoff on the third`, `three-strike`,
+  `consecutive timeouts within`, `also escalates to a human` and
+  `lets the caller escalate`, outside `docs/archive/` and `docs/audits/`. There
+  are no hits left. `DESIGN-PRINCIPLES.md:1058` (the zero-checks merge gate) and
+  `docs/INTERNALS.md:3593` (a setup-phase hand-off) mention escalation to a
+  human for other reasons and are unchanged.
+
+<!-- vibe-quality-gate-skipped reason="the sequential full deno test stage did not finish within the 1500 s bound; every earlier stage passed and the targeted tests for the edited docs and file passed" -->
+
+## Merge verification
+
+- Full `./quality.sh` and CI: pending until observed on the PR.
