@@ -11,17 +11,17 @@ fuller resolution verification before delivery. Closes #5530.
 - Git can merge an interface change and a milestone implementor without a
   textual conflict, leaving a tree that does not compile. The clean-merge path
   previously reset that tree without offering the repair rung.
-- Reuse `runGateWithRepair`, including its diagnostics, staging safety, two-round
-  limit and amend handling, rather than introducing another repair loop.
-  Repair-mode prompts describe the committed merge and an empty conflict list
-  as a verification repair.
+- Reuse `runGateWithRepair`, including its diagnostics, staging safety,
+  two-round limit and amend handling, rather than introducing another repair
+  loop. Repair-mode prompts describe the committed merge and an empty conflict
+  list as a verification repair.
 
 ### Essential Design Decisions
 
-- On the clean-merge path, repair requires a failed check, readable merge/default
-  tips and a new local merge commit. Initial known infrastructure causes and
-  fast-forward failures remain refused without repair; existing attempt
-  classification stays intact.
+- On the clean-merge path, repair requires a failed check, readable
+  merge/default tips and a new local merge commit. Initial known infrastructure
+  causes and fast-forward failures remain refused without repair; existing
+  attempt classification stays intact.
 - The initial type-check verdict is reused. Agent edits then run through
   `resolutionGate`, including the repository's supported checks and unit suite;
   skipped re-verification cannot authorise delivery.
@@ -35,12 +35,12 @@ fuller resolution verification before delivery. Closes #5530.
 
 - The available logs and sync ledger on `vibe-coder-36627`, and the accessible
   run archive, contained no records for the source hosts `vibe-coder-13535`
-  (09:31:25.947Z) or `vibe-coder-78347` (10:23:12.899Z and 10:43:30.864Z)
-  on 24 November 2026. This is a single-host investigation with an archive
-  lookup, not a fleet-wide reconstruction.
+  (09:31:25.947Z) or `vibe-coder-78347` (10:23:12.899Z and 10:43:30.864Z) on 24
+  November 2026. This is a single-host investigation with an archive lookup, not
+  a fleet-wide reconstruction.
 - The original check command, diagnostic, branch tips and repair history could
-  not be recovered. The confirmed defect below does not establish which
-  compiler error occurred in those private runs.
+  not be recovered. The confirmed defect below does not establish which compiler
+  error occurred in those private runs.
 - The unfixed clean-merge path also omitted its timing log. Its typed gate
   refusal still has no fallback timing payload; the historical missing timings
   were not used to diagnose a compiler failure.
@@ -51,9 +51,9 @@ fuller resolution verification before delivery. Closes #5530.
   `worker/deno/lib/milestone_gate_repair.ts` for eligible clean-merge failures.
   `judgeSyncFailure` in `worker/deno/lib/milestone_branch_sync.ts` continues to
   classify persistent tree failures and infrastructure refusals.
-- The new regression in
-  `worker/deno/tests/milestone_sync_gate_repair_test.ts` runs a real
-  `deno task check`: both input trees compile, their clean merge reports
+- The new regression in `worker/deno/tests/milestone_sync_gate_repair_test.ts`
+  runs a real `deno task check`: both input trees compile, their clean merge
+  reports
   `TS2420 [ERROR]: Class 'Worker' incorrectly implements interface 'Service'.`
   with a missing `stop` method, and the supplied repair reaches the remote as
   one merge commit retaining both parents.
@@ -93,23 +93,22 @@ flowchart TD
 
 ## Test Plan
 
-- Added twelve cases in
-  `worker/deno/tests/milestone_sync_gate_repair_test.ts`: successful compiler
-  repair/delivery, persistent failure after two rounds, fuller-suite failure,
-  four initial infrastructure causes, exhausted repair grant, fast-forward
-  refusal, unavailable agent, skipped re-verification and failed amend.
-  The persistent-failure case also asserts timing attribution and charged
-  attempt classification. No existing assertions were removed or changed.
+- Added twelve cases in `worker/deno/tests/milestone_sync_gate_repair_test.ts`:
+  successful compiler repair/delivery, persistent failure after two rounds,
+  fuller-suite failure, four initial infrastructure causes, exhausted repair
+  grant, fast-forward refusal, unavailable agent, skipped re-verification and
+  failed amend. The persistent-failure case also asserts timing attribution and
+  charged attempt classification. No existing assertions were removed or
+  changed.
 - Added the first-repair prompt regression in
   `worker/deno/tests/milestone_gate_repair_prompt_test.ts`; existing prompt
   assertions were retained. Related descriptions checked: the repair-mode
   override in `worker/deno/lib/prompt_builder.ts`, the conflicted-file and
   no-side-pick rules in `prompts/merge_conflict/prompt.md`, and the shared
-  grant/announcement binding. The descriptive change agrees with those rules
-  and this diff's clean-merge case; no new agent rule was introduced.
+  grant/announcement binding. The descriptive change agrees with those rules and
+  this diff's clean-merge case; no new agent rule was introduced.
 - The final targeted `deno task test:unit` run passed 260 tests across fifteen
-  suites: that suite and
-  `worker/deno/tests/milestone_gate_repair_test.ts`,
+  suites: that suite and `worker/deno/tests/milestone_gate_repair_test.ts`,
   `worker/deno/tests/milestone_gate_repair_land_unverified_4326_test.ts`,
   `worker/deno/tests/milestone_sync_merge_gate_test.ts`,
   `worker/deno/tests/milestone_merge_gate_cause_test.ts`,
