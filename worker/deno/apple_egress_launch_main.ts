@@ -6,13 +6,15 @@ import {
   appleChildOutput,
   appleLaunch,
   appleMode,
+  appleOwnedSidecar,
   type AppleOwnership,
   appleStateDirectory,
   appleWorkerArgs,
   appleWorkerEnv,
   boundedAppleChild,
+  reapStaleAppleOwnership,
+  recordAppleOwnership,
   retryAppleEgress,
-  staleAppleOwnership,
 } from "./lib/apple_egress_launch.ts";
 import {
   type EgressCommandRunner,
@@ -77,46 +79,11 @@ async function requireCommand(executable: string, args: readonly string[]) {
 const hostHome = Deno.env.get("HOME");
 if (!hostHome) throw new Error("Apple supervisor requires the host HOME");
 const stateDir = await appleStateDirectory(hostHome, plan.run);
-// Only journals written after creation confer ownership. Never enumerate or
-// remove arbitrary runtime resources, including any active fleet network.
-for await (const entry of Deno.readDir(stateDir)) {
-  if (
-    !entry.isFile ||
-    !/^vibe-egress-owned-[1-9]\d*-[a-f0-9]{24}\.json$/.test(entry.name)
-  ) continue;
-  const path = `${stateDir}/${entry.name}`;
-  try {
-    const previous = staleAppleOwnership(
-      await Deno.readTextFile(path),
-      entry.name,
-      alive,
-    );
-    if (!previous) continue;
-    if (previous.createdProxy) {
-      const result = await command(runtime, [
-        "delete",
-        "--force",
-        previous.proxy,
-      ]);
-      if (result.code && !/not found|does not exist/i.test(result.stderr)) {
-        throw new Error(result.stderr);
-      }
-    }
-    if (previous.createdNetwork) {
-      const result = await command(runtime, [
-        "network",
-        "delete",
-        previous.network,
-      ]);
-      if (result.code && !/not found|does not exist/i.test(result.stderr)) {
-        throw new Error(result.stderr);
-      }
-    }
-    await Deno.remove(path);
-  } catch (error) {
-    console.error(`[egress] stale cleanup retained ${entry.name}: ${error}`);
-  }
-}
+await reapStaleAppleOwnership(
+  stateDir,
+  (args) => command(runtime, args),
+  alive,
+);
 
 const caps = appleCapabilities(
   await requireCommand(runtime, ["--version"]),
@@ -190,14 +157,7 @@ try {
         apple: true,
         run,
         cancelled: () => stopped,
-        created: async (resource) => {
-          if (resource === "network") owned.createdNetwork = true;
-          else owned.createdProxy = true;
-          await Deno.writeTextFile(`${journal}.tmp`, JSON.stringify(owned), {
-            mode: 0o600,
-          });
-          await Deno.rename(`${journal}.tmp`, journal);
-        },
+        created: (resource) => recordAppleOwnership(journal, owned, resource),
       });
       if (!attachment) throw new Error("Apple proxy address was not measured");
       listener = Deno.listen({ hostname: "0.0.0.0", port: 0 });
@@ -305,14 +265,10 @@ try {
       listener = undefined;
       toClose?.close();
       await listenerTask;
-      const problems = await stopEgressSidecar({
-        ...launch.sidecar,
-        proxyName: owned.createdProxy ? launch.proxy : "",
-        proxyStopArgs: owned.createdProxy ? launch.sidecar.proxyStopArgs : [],
-        networkRemoveArgs: owned.createdNetwork
-          ? launch.sidecar.networkRemoveArgs
-          : [],
-      }, { apple: true, run, logFile: `${logDir}/egress-proxy.log` });
+      const problems = await stopEgressSidecar(
+        appleOwnedSidecar(launch.sidecar, owned),
+        { apple: true, run, logFile: `${logDir}/egress-proxy.log` },
+      );
       for (const problem of problems) {
         console.error(`[egress] cleanup: ${problem}`);
       }
