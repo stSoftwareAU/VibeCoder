@@ -37,6 +37,10 @@ import {
   hardKillLastLivenessTick,
   hardKillSilentFor,
 } from "../lib/hard_kill_guest_facts.ts";
+import {
+  collapseProcPressureText,
+  formatLivenessPressureFields,
+} from "../lib/liveness_guard.ts";
 
 const CONTAINER = "vibe-coder-5062";
 const NOW = Date.parse("2026-11-11T17:42:07.603Z");
@@ -727,5 +731,22 @@ Deno.test("hostile tick lines return promptly with a fixed result (Issue #4815)"
       }`,
     )),
     "MemAvailable 5 MiB (logged 2026-11-04 21:16:02Z)",
+  );
+});
+
+Deno.test("the tick line the liveness guard writes is read back (Issue #4815)", () => {
+  const fields = formatLivenessPressureFields({
+    memAvailableMib: 512,
+    pressureMemory: collapseProcPressureText(
+      "some avg10=12.50 avg60=3.00 avg300=1.00 total=42\nfull avg10=4.25 avg60=1.00 avg300=0.00 total=7\n",
+    ),
+    pressureCpu: collapseProcPressureText(
+      "some avg10=0.75 avg60=0.10 avg300=0.00 total=9\n",
+    ),
+  });
+  const ev = tailRecord(`${TICK_PREFIX} ${TICK_HEAD} hook_state=ok ${fields}`);
+  assertEquals(
+    hardKillLastLivenessTick(ev),
+    "MemAvailable 512 MiB, memory some avg10=12.50, memory full avg10=4.25, cpu some avg10=0.75 (logged 2026-11-04 21:16:02Z)",
   );
 });
