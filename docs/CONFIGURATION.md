@@ -5357,12 +5357,15 @@ committed (for example an interrupted recovery turn's rewrite of the PR summary)
 stays uncommitted and the completion phase publishes the copy committed at HEAD
 (Issue #4764). The pre-push gate judges the working tree, so the completion
 phase's own call also stashes that edit (`git stash push`, with a message that
-names Issue 5328): the file then holds exactly its committed copy, so it is
-formatted and committed like any other archive file, the gate checks that
-copy, no recovery commit can pick the edit up, and the stash keeps it
-recoverable. If the stash fails the edit stays in place, unformatted, a warning is logged and the gate reports what it finds. The other
+names Issue 5328): the file then holds exactly its committed copy, so the
+gate checks that copy, no recovery commit can pick the edit up, and the stash
+keeps it recoverable. That copy is formatted and committed like any other
+archive file where the repository tracks a Deno config. The stash happens
+whether or not it does (Issue #5393); with no Deno config nothing is formatted
+or committed. If the stash fails the edit stays in place, unformatted, a warning is logged and the gate reports what it finds. The other
 callers (the quality-gate loop and the PR-feedback, CI-fix and spelling
-processors) do not set the edit aside; they only leave it out of the formatting and the commit.
+processors) do not set the edit aside; they only leave it out of the formatting
+and the commit, and with no Deno config they leave the archive alone.
 Only archive files are left out this way: an uncommitted edit
 already in a formatted code file is still formatted and committed with it,
 because the gate judges that code as it stands. If that check itself fails, the
