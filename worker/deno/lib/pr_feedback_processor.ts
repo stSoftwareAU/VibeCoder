@@ -409,6 +409,18 @@ export interface PrFeedbackProcessorDeps {
 // Constants
 // ---------------------------------------------------------------------------
 
+/**
+ * Shell commands a `pr_review` feedback run may not run: the worker pushes and
+ * merges, and it verifies each earlier finding before it does. A provider
+ * enforces them as command-prefix denials; Gemini carries them in a policy
+ * file (`gemini_settings.ts`).
+ */
+export const PR_REVIEW_DISALLOWED_BASH_TOOLS: readonly string[] = [
+  "Bash(git push:*)",
+  "Bash(gh pr merge:*)",
+  "Bash(gh api:*)",
+];
+
 const DEFAULT_MAX_COMMENT_TOKENS = 50000;
 /**
  * Default hard timeout for the PR feedback phase (Issue #1824).
@@ -1450,9 +1462,7 @@ async function _processFeedbackWithHeartbeat(
             }\nDo not push or dismiss the review. Commit fixes locally; the worker independently verifies each earlier finding before pushing.`,
             disallowedTools: [
               ...(request.disallowedTools ?? []),
-              "Bash(git push:*)",
-              "Bash(gh pr merge:*)",
-              "Bash(gh api:*)",
+              ...PR_REVIEW_DISALLOWED_BASH_TOOLS,
             ],
           }
           : {}),
