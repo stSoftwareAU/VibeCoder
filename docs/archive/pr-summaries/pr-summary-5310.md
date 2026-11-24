@@ -741,8 +741,9 @@ flowchart LR
     reported 1 leak before the edit and none after it.
   - The test file's many synthetic `API_KEY=`/`ADMIN_TOKEN=` placeholder lines
     tripped `generic-api-key` in the range scan, so the test file is allowlisted
-    by path, as the other redaction fixtures are. The same placeholder in
-    `SECURITY.md` and this summary is now written as `<other value>`.
+    by path, as the other redaction fixtures are. The same example in
+    `SECURITY.md` and this summary is now described in prose as an assignment of
+    another value.
   - In a temp directory, a higher-entropy value on the same line shape is still
     reported under the edited config, so the exemption is exact.
   - `gitleaks_template_conformance_test.ts` and `gitleaks_check_test.ts`: 42
