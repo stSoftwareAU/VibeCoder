@@ -84,8 +84,8 @@ flowchart TD
     archive summary edit is still set aside (Issue #5393)". Its positive
     control: the bare gate blocks on the uncommitted markdownlint violation.
     Through `workOnIssueCompletion`, the push succeeds, HEAD is unchanged, the
-    committed copy is on disk, and the stash holds the rewrite. Red on base.
-    CI fix: the test returns early (with a `console.warn`) when no runnable
+    committed copy is on disk, and the stash holds the rewrite. Red on base. CI
+    fix: the test returns early (with a `console.warn`) when no runnable
     `markdownlint-cli2` is found, the same way the Rust tests skip without
     `cargo`. The validate-scripts runner has none installed, so the gate
     correctly blocked with "markdownlint-cli2 could not be found".
