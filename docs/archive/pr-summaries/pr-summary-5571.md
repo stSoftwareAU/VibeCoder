@@ -23,20 +23,19 @@ verifies, pushes and checks that the push landed. Closes #5571.
   and the Gemini policy file built from it, carries both forms. No new gate or
   check
 - The prompt is shared by every feedback comment type and has no comment-type
-  variable, so the reworded passages key on the system prompt line a review
-  pass already gets ("Do not push or dismiss the review…"). The push, fetch and
+  variable, so the reworded passages key on the system prompt line a review pass
+  already gets ("Do not push or dismiss the review…"). The push, fetch and
   `merge-base --is-ancestor` check is kept for every other pass
 
 ### Essential Design Decisions
 
-- The `rtk` forms are denied whether or not the hook is wired. They are
-  harmless when it is not, and they also stop an agent that types
-  `rtk git push` itself
+- The `rtk` forms are denied whether or not the hook is wired. They are harmless
+  when it is not, and they also stop an agent that types `rtk git push` itself
 - `PR_REVIEW_DISALLOWED_BASH_TOOLS` is derived from one list of three commands
   (plain forms first, then the `rtk` forms) and `RTK_REWRITE_PREFIX` in
   `worker/deno/lib/rtk_output.ts`, so the two forms cannot drift apart
-- Scope is the `pr_review` run only, as the issue asks. Other `git push`
-  denials (the pre-PR verifier, the idle scans) are unchanged
+- Scope is the `pr_review` run only, as the issue asks. Other `git push` denials
+  (the pre-PR verifier, the idle scans) are unchanged
 
 ### Undiscoverable Facts
 
@@ -83,21 +82,20 @@ flowchart LR
 ## Test Plan
 
 - New `worker/deno/tests/pr_review_rtk_denials_5571_test.ts`, 3 tests:
-  - the real `processPrFeedback`, with RTK wired through the healthy seam, on
-    a `pr_review`:
+  - the real `processPrFeedback`, with RTK wired through the healthy seam, on a
+    `pr_review`:
     - the spawn carries the RTK hook (positive control) and all six denials;
-    - the rewritten commands observed from the real hook, including the
-      compound commit-and-push, are denied, and so are the plain forms;
+    - the rewritten commands observed from the real hook, including the compound
+      commit-and-push, are denied, and so are the plain forms;
     - `rtk git status` and `rtk git commit -m x` stay allowed;
   - the same path on an ordinary `review` comment carries none of the six
   - the real `rtk hook claude` rewrites `git push`, `gh pr merge` and `gh api`
     into commands the list denies. Skipped where the `rtk` binary is not
     installed; it ran here
-- Red on base: before the library change, 1 passed and 2 failed. The
-  `pr_review` test failed with `missing denial Bash(rtk git push:*)` and the
-  real-hook test with
-  `git push origin b became rtk git push origin b, which is not denied`. The
-  ordinary-comment control passed. At the head: 3 passed
+- Red on base: before the library change, 1 passed and 2 failed. The `pr_review`
+  test failed with `missing denial Bash(rtk git push:*)` and the real-hook test
+  with `git push origin b became rtk git push origin b, which is not denied`.
+  The ordinary-comment control passed. At the head: 3 passed
 - Edited `worker/deno/tests/gemini_policy_denials_5524_test.ts`:
   - **Changed:** the `processPrFeedback`-on-Gemini test now expects
     `PR_REVIEW_RUN_POLICY`, which names six prefixes, because the issue asks
@@ -108,8 +106,8 @@ flowchart LR
   - `worker/deno/tests/pr_feedback_processor_rtk_test.ts`;
   - `worker/deno/tests/pr_feedback_verifier_3784_test.ts`;
   - `worker/deno/tests/earlier_findings_3784_test.ts`;
-  - `worker/deno/tests/pr_feedback_finding_resolution_2917_test.ts`, which
-    still requires the fix on the remote before "addressed";
+  - `worker/deno/tests/pr_feedback_finding_resolution_2917_test.ts`, which still
+    requires the fix on the remote before "addressed";
   - `worker/deno/tests/pr_feedback_no_hand_back_4304_docs_test.ts`;
   - `worker/deno/tests/pr_feedback_fix_branch_remote_test.ts`
 - No test reads the reworded prompt passages' review-pass wording. They are
