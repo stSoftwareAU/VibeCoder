@@ -32,6 +32,7 @@
 import { assertNever } from "./assert_never.ts";
 import { CODEX_SAFETY_REFUSAL_HEADLINE } from "./codex_output_adapter.ts";
 import { isHostDiskProtectiveStopText } from "./host_disk_protective_stop.ts";
+import { escapeRegExp } from "./regexp_escape.ts";
 import {
   type FailureCategory,
   isOutOfCreditMessage,
@@ -230,6 +231,19 @@ const PROVIDER_UNAVAILABLE: RunFailureClassification = {
  */
 const PROVIDER_UNAVAILABLE_RE =
   /\bexternal orchestration: [\w-]+ unavailable \(/;
+
+/**
+ * The worker's own text for a Codex safety refusal (Issue #5506), on both
+ * paths: the direct run (`Claude execution failed: <headline>`) and the
+ * orchestrated run, where the orchestrator puts
+ * `<role> call failed after N attempt(s): ` in front of the adapter's message.
+ * Anchored at the start, so the headline quoted later cannot trigger it.
+ */
+const CODEX_SAFETY_REFUSAL_RE = new RegExp(
+  "^Claude execution failed: " +
+    "(?:(?:manager|executor|reviewer) call failed after \\d{1,4} attempt\\(s\\): )?" +
+    escapeRegExp(CODEX_SAFETY_REFUSAL_HEADLINE),
+);
 
 /** The agent did not deliver — a property of the attempt, not a worker defect. */
 const AGENT_OUTCOME: RunFailureClassification = {
@@ -553,8 +567,8 @@ export function classifyRunFailure(
   // headline quoted in agent output cannot trigger it.
   if (
     category === "internal_error" &&
-    splitAgentNarration(failureMessage ?? "").worker.startsWith(
-      `Claude execution failed: ${CODEX_SAFETY_REFUSAL_HEADLINE}`,
+    CODEX_SAFETY_REFUSAL_RE.test(
+      splitAgentNarration(failureMessage ?? "").worker,
     )
   ) {
     return {

@@ -19,9 +19,15 @@ This PR fixes both. Closes #5506.
    outage, and the run's `internal_error` was then classed `worker-crash`. The
    adapter now checks the safety-flag text before the authentication match and
    returns `task-failure` with the headline
-   `Codex refused the content as a safety risk`. `classifyRunFailure` answers
-   `agent-outcome` (`not_code_fixable`) for an `internal_error` whose worker
-   text opens with `Claude execution failed:` plus that headline.
+   `Codex refused the content as a safety risk`. On the orchestrated path the
+   #5456 run took, the orchestrator maps that to an `error` call, retries it,
+   and ends the run with `<role> call failed after N attempt(s): <message>`. The
+   execute phase reason is therefore
+   `Claude execution failed: manager call failed after N attempt(s): Codex refused the content as a safety risk — evidence: …`.
+   `classifyRunFailure` answers `agent-outcome` (`not_code_fixable`) for an
+   `internal_error` whose worker text opens with `Claude execution failed:`,
+   then optionally that orchestrator prefix, then the headline. A direct run has
+   no prefix.
 
 ## Spec
 
@@ -38,11 +44,13 @@ This PR fixes both. Closes #5506.
 
 - The safety check runs **before** the authentication match. Moving it after
   would bring the false provider outage back.
-- The run-classifier rule is anchored to the start of the worker's own text
-  (`startsWith("Claude execution failed: " + CODEX_SAFETY_REFUSAL_HEADLINE)`).
-  The same headline quoted later in a message, or in agent output, cannot
-  trigger it. The headline is one exported constant, so the adapter and the
-  classifier cannot drift apart.
+- The run-classifier rule (`CODEX_SAFETY_REFUSAL_RE`) is anchored to the start
+  of the worker's own text:
+  `^Claude execution failed: (?:(?:manager|executor|reviewer) call failed after \d{1,4} attempt\(s\): )?`
+  followed by the escaped headline. The only text it allows before the headline
+  is the orchestrator's own prefix. The same headline quoted later in a message,
+  or in agent output, cannot trigger it. The headline is one exported constant,
+  so the adapter and the classifier cannot drift apart.
 - It reuses the existing `agent-outcome` slug. No new `RUN_FAILURE_CLASSES`
   entry was added, so no open run-failure issue is orphaned. The category stays
   `internal_error`.
@@ -70,7 +78,8 @@ flowchart LR
     B -- yes --> C[task-failure: refused the content as a safety risk]
     B -- no --> D{auth pattern / 401 / 403?}
     D -- yes --> E[authentication: provider outage]
-    C --> F[execute: internal_error 'Claude execution failed: …']
+    C --> H["orchestrator: error call, retried, then manager call failed after N attempt(s): …"]
+    H --> F["execute: internal_error Claude execution failed: manager call failed after N attempt(s): Codex refused the content as a safety risk …"]
     F --> G[classifyRunFailure: agent-outcome, not filed]
 ```
 
@@ -81,6 +90,13 @@ flowchart LR
 - `worker/deno/tests/run_outcome_classifier_test.ts::codex safety refusal - an internal_error opening with the safety headline is an agent-outcome (Issue #5506)`
 - `worker/deno/tests/run_outcome_classifier_test.ts::codex safety refusal - a credential refusal is still a worker-crash (Issue #5506)`
 - `worker/deno/tests/run_outcome_classifier_test.ts::codex safety refusal - the headline only later in a message does not trigger the rule (Issue #5506)`
+- `worker/deno/tests/codex_safety_refusal_5506_test.ts::codex safety refusal - the orchestrated execute-phase reason is an agent-outcome, not a worker-crash (Issue #5506)`.
+  This is the end-to-end test. It runs the Codex adapter's real classification
+  of the #5456 refusal through the real `runOrchestratedIssueRun` (Codex roles,
+  faked provider process only) and the real execute phase. It asserts the reason
+  opens `Claude execution failed: manager call failed after N attempt(s):` and
+  that `classifyRunFailure` returns `agent-outcome`.
+- `worker/deno/tests/codex_safety_refusal_5506_test.ts::codex safety refusal - the orchestrator's prefix around another failure is still a worker-crash (Issue #5506)`
 - Documentation: `docs/INTERNALS.md` has a new section, "A Codex safety refusal
   is a task failure, not a credential refusal or `worker-crash` (Issue #5506)".
 
@@ -98,20 +114,24 @@ flowchart LR
   - The shallow test collected `target/notes.md` and `target/debug/build.md`.
   - The adapter test got `authentication` (expected `task-failure`).
   - The classifier test got `worker-crash` (expected `agent-outcome`).
+  - The end-to-end orchestrated test, run against the previous `startsWith`-only
+    rule, got `worker-crash` (expected `agent-outcome`).
 - **regression test** —
-  `worker/deno/tests/mermaid_check_test.ts::collectMarkdownFiles - skips target/ even when its tree exceeds PATH_MAX (#5506)`
-  and
+  `worker/deno/tests/mermaid_check_test.ts::collectMarkdownFiles - skips target/ even when its tree exceeds PATH_MAX (#5506)`,
   `worker/deno/tests/codex_output_adapter_1695_test.ts::codex adapter - a safety-flag refusal is a task failure, never an authentication refusal (Issue #5506)`
+  and
+  `worker/deno/tests/codex_safety_refusal_5506_test.ts::codex safety refusal - the orchestrated execute-phase reason is an agent-outcome, not a worker-crash (Issue #5506)`
 
 ## Test Plan
 
-- Added the seven tests listed under Evidence. No existing test was edited or
-  removed; the new tests are appended.
+- Added the nine tests listed under Evidence. No existing test was edited or
+  removed. The new tests are appended, or sit in the new file
+  `tests/codex_safety_refusal_5506_test.ts`.
 - Controls:
   - The existing 401 → `authentication` test still passes.
   - A credential refusal still classes `worker-crash`.
   - The safety headline appearing only later in a message does not fire the
-    rule.
+    rule, with or without the orchestrator's prefix.
   - `docs/guide.md` is still collected next to a skipped `target/`.
 - Hostile input: a safety-flag prefix followed by 50,000 spaces and no `risk`
   word. The bounded `[a-z -]{0,40}` regex returns quickly and does not match it.
@@ -119,6 +139,11 @@ flowchart LR
   - `tests/mermaid_check_test.ts`: 23 passed.
   - `tests/codex_output_adapter_1695_test.ts` and
     `tests/run_outcome_classifier_test.ts`: 74 passed.
+  - After the orchestrated-path fix: `tests/codex_safety_refusal_5506_test.ts`,
+    `tests/run_outcome_classifier_test.ts`,
+    `tests/codex_output_adapter_1695_test.ts`,
+    `tests/orchestration_3642_gate_test.ts`, `tests/run_failure_issue_test.ts`
+    and `tests/failure_diagnosis_test.ts`: 244 passed.
   - `tests/claude_runner_test.ts`, `tests/run_failure_issue_test.ts`,
     `tests/failure_diagnosis_test.ts`, `tests/coding_failure_ladder_test.ts` and
     `tests/collect_self_diagnostic_candidates_test.ts`: all passed.
