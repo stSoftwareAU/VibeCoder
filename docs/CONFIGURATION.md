@@ -5341,7 +5341,11 @@ formatters over the same changed files and commits the result as one
 `repo_formatters.ts`, part of #2932). A formatting-only miss is fixed there
 rather than failing the gate, or reaching review and CI and costing another
 round. The formatters cover what the gate's format checks would flag, except an
-archive file with uncommitted changes (described below): `deno fmt` on the changed code files (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
+archive file with uncommitted changes (described below). A changed file git no
+longer tracks (removed from the index but still on disk) is left out of both: it
+is not in the push and `git add -u` cannot stage it, so the formatters skip it
+and the pre-push gate's format, lint and cspell checks skip it too
+(Issue #5410). The formatters run `deno fmt` on the changed code files (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
 `.cjs`, `.mts`, `.cts`, `.json`, `.jsonc`) that the deno root's own fmt
 `include`/`exclude` covers, and `cargo fmt --all` for a cargo root whose `.rs`
 files changed. Markdown outside `docs/archive/pr-summaries/` and
@@ -5360,12 +5364,15 @@ committed (for example an interrupted recovery turn's rewrite of the PR summary)
 stays uncommitted and the completion phase publishes the copy committed at HEAD
 (Issue #4764). The pre-push gate judges the working tree, so the completion
 phase's own call also stashes that edit (`git stash push`, with a message that
-names Issue 5328): the file then holds exactly its committed copy, so it is
-formatted and committed like any other archive file, the gate checks that
-copy, no recovery commit can pick the edit up, and the stash keeps it
-recoverable. If the stash fails the edit stays in place, unformatted, a warning is logged and the gate reports what it finds. The other
+names Issue 5328): the file then holds exactly its committed copy, so the
+gate checks that copy, no recovery commit can pick the edit up, and the stash
+keeps it recoverable. That copy is formatted and committed like any other
+archive file where the repository tracks a Deno config. The stash happens
+whether or not it does (Issue #5393); with no Deno config nothing is formatted
+or committed. If the stash fails the edit stays in place, unformatted, a warning is logged and the gate reports what it finds. The other
 callers (the quality-gate loop and the PR-feedback, CI-fix and spelling
-processors) do not set the edit aside; they only leave it out of the formatting and the commit.
+processors) do not set the edit aside; they only leave it out of the formatting
+and the commit, and with no Deno config they leave the archive alone.
 Only archive files are left out this way: an uncommitted edit
 already in a formatted code file is still formatted and committed with it,
 because the gate judges that code as it stands. If that check itself fails, the
