@@ -3233,7 +3233,6 @@ export async function runPrePushGate(opts: {
     opts.baseRef,
   );
   if (!fileSetChanges.ok) return infrastructureFail(fileSetChanges.error);
-  const formatterCandidates = contained.value;
   // The unfiltered touched list: it keeps deleted paths (Issue #5169) and files
   // under a symlinked crate directory (Issue #4630).
   const ciCargoPaths = touched.value;
@@ -3245,6 +3244,12 @@ export async function runPrePushGate(opts: {
     );
   }
   const tracked = lsFiles.stdout.split("\0").filter((p) => p !== "");
+  // A pushed path git no longer tracks (removed from the index with `git rm
+  // --cached`, still on disk) is left out, the same scope the repository
+  // formatters use: they no longer format it, so checking it would block on a
+  // file that is not in the push (Issue #5410).
+  const trackedSet = new Set(tracked);
+  const formatterCandidates = contained.value.filter((p) => trackedSet.has(p));
   // The selection the formatter, lint, cspell and Floci planner sees. In
   // `repairChecksWithCiCargo` mode just the Rust-relevant files and the files
   // `deno fmt --check` covers are selected (Issue #5169: CI's `deno fmt
