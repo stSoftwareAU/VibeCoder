@@ -116,7 +116,7 @@ a section without a marker, fails `deno test`.
 | [Model Fallback on Rate Limit](#model-fallback-on-rate-limit) | ✅ | ❌ | ❌ | ❌ | No `cheaperModel()` ladder: the attempt returns `no-ladder-for-provider` and warns once, naming the provider (#365). `deepseek-flash` is a different model, not a cheaper rung of `deepseek-v4-pro` |
 | [Two-stage planning self-critique flow](#two-stage-planning-self-critique-flow) | ✅ | ✅ | ✅ | ✅ | — |
 | [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection) | ✅ | ⚠️ | ⚠️ | ✅ | The comment still posts, and the expected model comes from the invocation's *own* provider routing ([#441](https://github.com/stSoftwareAU/VibeCoder/issues/441)), so DeepSeek is judged `deepseek-v4-pro` vs `deepseek-v4-pro`. Codex and Gemini expose no served model, so the verdict stays `❓ unknown` |
-| [Session ID — a UUID (Issue #204)](#session-id--a-uuid-issue-204) | ✅ | ❌ | ❌ | ✅ | Codex and Gemini name their own sessions; the worker supplies no id. DeepSeek runs the same CLI, so it takes the same worker-generated id |
+| [Session ID — a UUID (Issue #204)](#session-id--a-uuid-issue-204) | ✅ | ❌ | ✅ | ✅ | Codex names its own sessions; the worker supplies no id. Gemini and DeepSeek take the worker-generated id (Gemini through `--session-id`, DeepSeek because it runs the same CLI) |
 | [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal) | ✅ | ❌ | ❌ | ❌ | No Fable tier exists for them; the probe run on their CLI fails and is read optimistically as `available` |
 | [Pre-flight Fable reroute](#pre-flight-fable-reroute) | ✅ | ❌ | ❌ | ❌ | Nothing to reroute, and the chokepoint is **gated off** for them (#398): their invocations keep their own routing, are never flagged degraded, and the skipped reroute is logged once per provider. The gate matters most for DeepSeek, whose Anthropic CLI would accept `--model opus` and fail at the endpoint ([#417](https://github.com/stSoftwareAU/VibeCoder/issues/417)) |
 | **[Session Management](#session-management)** | ✅ | ⚠️ | ⚠️ | ⚠️ | The store holds `.claude/` only, so Codex's and Gemini's CLI state lives in their own home directories; DeepSeek writes that same `.claude/`, on its own `CLAUDE_CONFIG_DIR` |
@@ -124,7 +124,7 @@ a section without a marker, fails `deno test`.
 | [Session Persistence Allowlist](#session-persistence-allowlist) | ✅ | ❌ | ❌ | ✅ | Nothing of Codex's or Gemini's is copied, so there is nothing to filter |
 | [Milestone-Aware Session Branching](#milestone-aware-session-branching) | ✅ | ❌ | ❌ | ✅ | One CLI state per container for Codex and Gemini — no milestone branch, no copy-on-first-use |
 | [Session Compaction](#session-compaction) | ✅ | ❌ | ❌ | ✅ | Codex's and Gemini's state is outside `.claude-sessions/` and is bounded only by the container's lifetime |
-| [Session Resume](#session-resume) | ✅ | ⚠️ | ⚠️ | ⚠️ | Different mechanism: Codex captures the CLI thread and resumes with `codex exec resume <SESSION_ID>` (never `--last`). Gemini uses `--resume latest`. DeepSeek takes Claude's `--session-id` / `--resume <id>`, but out of its own `CLAUDE_CONFIG_DIR`, so the two transcripts never cross |
+| [Session Resume](#session-resume) | ✅ | ⚠️ | ⚠️ | ⚠️ | Different mechanism: Codex captures the CLI thread and resumes with `codex exec resume <SESSION_ID>` (never `--last`). Gemini starts under the worker-generated `--session-id <uuid>` and resumes with `--resume <id>` once it reported that id (never `latest`). DeepSeek takes Claude's `--session-id` / `--resume <id>`, but out of its own `CLAUDE_CONFIG_DIR`, so the two transcripts never cross |
 | [Issue Claiming](#issue-claiming) | ✅ | ✅ | ✅ | ✅ | — |
 | [Heartbeat Tracking](#heartbeat-tracking) | ✅ | ✅ | ✅ | ✅ | — |
 | [Processing Phases](#processing-phases) | ✅ | ⚠️ | ⚠️ | ✅ | The pipeline is shared; for Codex and Gemini the system prompt is folded into one prompt string and no `.claude/` session is restored |
@@ -148,7 +148,7 @@ a section without a marker, fails `deno test`.
 | **[Token Saving Strategies](#token-saving-strategies)** | ✅ | ⚠️ | ⚠️ | ⚠️ | Prompt-level strategies apply to everyone; the session-store ones reach DeepSeek but not Codex or Gemini, and the Anthropic-cache ones are Claude's alone |
 | [1. Prompt Caching (Two-Layer)](#1-prompt-caching-two-layer) | ✅ | ⚠️ | ⚠️ | ⚠️ | Layer 1 only |
 | [2. Session Persistence](#2-session-persistence) | ✅ | ❌ | ❌ | ✅ | No per-repo state is stored for Codex or Gemini |
-| [3. Session Resume](#3-session-resume) | ✅ | ⚠️ | ⚠️ | ⚠️ | Codex resumes the captured per-issue thread (`exec resume <SESSION_ID>`); Gemini resumes its own most recent session (`--resume latest`); DeepSeek resumes a worker-named one from its own config directory |
+| [3. Session Resume](#3-session-resume) | ✅ | ⚠️ | ⚠️ | ⚠️ | Codex resumes the captured per-issue thread (`exec resume <SESSION_ID>`); Gemini starts under the worker-generated `--session-id <uuid>` and resumes that id with `--resume <id>` (per issue, never `latest`); DeepSeek resumes a worker-named one from its own config directory |
 | [4. Session Compaction](#4-session-compaction) | ✅ | ❌ | ❌ | ✅ | No Codex or Gemini store to compact |
 | [5. Verbosity Configuration](#5-verbosity-configuration) | ✅ | ✅ | ✅ | ✅ | — |
 | [6. Batch API (considered, not wired)](#6-batch-api-considered-not-wired) | ➖ | ➖ | ➖ | ➖ | No provider submits batch work |
@@ -2373,7 +2373,7 @@ Implementation:
 
 ### Session Resume
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — one worker-level switch and phase count drives all four, but the mechanism differs: Claude starts a phase under `--session-id <uuid>` and continues it with `--resume <uuid>`, Codex captures the CLI thread and continues it with `codex exec resume <SESSION_ID>` (never `--last`), and Gemini with `--resume latest`. DeepSeek takes Claude's `--session-id <uuid>` / `--resume <uuid>` — the same mechanism, on its own `CLAUDE_CONFIG_DIR`, so a Claude transcript is never replayed into a DeepSeek run and back.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — one worker-level switch and phase count drives all four, but the mechanism differs: Claude starts a phase under `--session-id <uuid>` and continues it with `--resume <uuid>`, Codex captures the CLI thread and continues it with `codex exec resume <SESSION_ID>` (never `--last`), and Gemini starts under the worker-generated `--session-id <uuid>` and continues it with `--resume <id>` (never `latest`). DeepSeek takes Claude's `--session-id <uuid>` / `--resume <uuid>` — the same mechanism, on its own `CLAUDE_CONFIG_DIR`, so a Claude transcript is never replayed into a DeepSeek run and back.
 
 While [per-repository session persistence](#per-repository-session-persistence)
 preserves the `.claude/` directory between invocations (file-system-level
@@ -2408,9 +2408,26 @@ concurrent slots share a working directory and would otherwise resume each
 other's sessions (Issue #1699). A stored Claude UUID is never fed to Codex,
 and a Codex thread is never passed as Claude's `--resume`.
 
+Gemini takes the worker-generated UUID, the same one Claude does
+(Issue #5342). The first Gemini phase of an issue starts its session with
+`--session-id <uuid>`; a later phase sends `--resume <id>` only when the
+recorded state names `gemini` as its provider, using the id the Gemini CLI
+reported back (adopted by `adoptProviderSession`). State recorded by another
+provider starts a fresh Gemini session with `--session-id` — a non-UUID
+foreign id, such as a Codex thread, is replaced by a fresh UUID. The two flags
+are never sent together (the CLI rejects the pair) and `latest` is never sent,
+so concurrent slots never resume each other's session: continuity is per
+issue, not per container. When the CLI refuses the flags at start-up —
+`--session-id` naming a session that already exists, or `--resume` naming one
+missing from the Gemini home (a re-claim on a new container) — the run is
+retried once without session flags, as Claude's refusals are, so it loses
+continuity rather than failing. `geminiSessionFlags` in
+`worker/deno/lib/session_resume.ts` chooses the flags and `buildGeminiArgs` in
+`worker/deno/lib/gemini_executor.ts` emits them.
+
 #### Session ID — a UUID (Issue #204)
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the worker supplies a session id to Claude only; Codex and Gemini name their own sessions, so there is no id for the worker to generate, validate or have rejected. DeepSeek is handed the same worker-generated id: it is the same CLI.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ✅ · `deepseek` ✅ — the worker supplies a session id to Claude, Gemini and DeepSeek; Codex names its own sessions, so there is no id for the worker to generate, validate or have rejected. Gemini is handed the worker-generated UUID with `--session-id` (Issue #5342); DeepSeek is handed the same id because it is the same CLI as Claude.
 
 `generateSessionId()` returns a `crypto.randomUUID()`. The Claude CLI
 validates `--session-id` as a UUID and refuses anything else:
@@ -3696,7 +3713,7 @@ phase.
 
 ### 3. Session Resume
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — Codex resumes the captured per-issue thread (`codex exec resume <SESSION_ID>`, never `--last`); Gemini resumes its own most recent session (`--resume latest`) rather than one the worker names, so continuity is per-container rather than per-issue. DeepSeek resumes a worker-named session as Claude does, but out of its own `CLAUDE_CONFIG_DIR`, so the continuity never crosses the two.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — Codex resumes the captured per-issue thread (`codex exec resume <SESSION_ID>`, never `--last`); Gemini starts under the worker-generated `--session-id <uuid>` and resumes that id with `--resume <id>` (never `latest`), so continuity is per-issue rather than per-container. DeepSeek resumes a worker-named session as Claude does, but out of its own `CLAUDE_CONFIG_DIR`, so the continuity never crosses the two.
 
 CLI-level session continuity uses `--session-id` and `--resume` flags to
 carry conversation context across the phases of one issue, and across the

@@ -41,6 +41,8 @@
 #    `API_KEY=`, `ADMIN_TOKEN=`, `token=` and similar values on the line
 #    after a label-as-value assignment, asserting `redactSecrets()` masks
 #    both values.
+#    DEPLOY_TOKEN / API_KEY / ADMIN_TOKEN values asserting a label consumed
+#    as the value of an earlier credential cannot publish that value.
 #  - gh_body_redaction_input_escaping_5416_test.ts (Issue #5416): fake
 #    40-character credential values (`password:`, `DEPLOY_TOKEN =`,
 #    `API_TOKEN:` on the next line, and a JSON-quoted `"password": "…"`)
@@ -126,6 +128,13 @@ regexes = [
   # the commit that merged it. Match only a backtick-quoted mention of that
   # exact value.
   '''`[^`]*(API_KEY|ADMIN_TOKEN)=abcdefgh1234`''',
+  # Issue #5310: SECURITY.md and the PR summary quote the synthetic follow-on
+  # assignments (`API_KEY=...`, `ADMIN_TOKEN=...`) of the label-as-value
+  # fixtures. Match each quoted mention by its surrounding prose only.
+  '''then `API_KEY=[A-Za-z0-9]+`, or then''',
+  '''`ADMIN_TOKEN=[A-Za-z0-9]+` still publish''',
+  '''\\nAPI_KEY=[A-Za-z0-9]+` from the unmasked text''',
+  '''then `ADMIN_TOKEN=[A-Za-z0-9]+`\), the wrapped run''',
 ]
 paths = [
   '''worker/deno/tests/secret_redaction_test\.ts''',
@@ -194,6 +203,11 @@ paths = [
   # `redactSecrets()` to prove a label-as-value assignment and the line after
   # it are both masked (Issue #5310). The merge commit carries them literally,
   # and range scans cover it, so only a path allowlist clears it.
+  # Fake DEPLOY_TOKEN / API_KEY / ADMIN_TOKEN values (interpolated from
+  # fixtures at run time) fed to `redactSecrets()` to prove a label consumed
+  # as the value of an earlier credential cannot publish that value
+  # (Issue #5310). The commit that introduced them is scanned as one range, so
+  # only a path allowlist clears it.
   '''worker/deno/tests/secret_redaction_label_as_value_5310_test\.ts''',
   # Fake 40-character credential values (`password:`, `DEPLOY_TOKEN =`,
   # `API_TOKEN:` on the next line, and a JSON-quoted `"password": "…"`) fed

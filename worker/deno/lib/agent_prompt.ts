@@ -21,10 +21,10 @@ export interface AgentPromptParts {
   systemPrompt?: string;
   /**
    * Tool names included in the prompt as a request. Claude's adapter enforces
-   * them through `--disallowed-tools`; Codex and Gemini only receive this
-   * prompt wording. A caller relying on enforcement must check the adapter
-   * and every permitted fallback; this is not process, filesystem or network
-   * isolation.
+   * them through `--disallowed-tools`, and Gemini's through its per-run
+   * settings file (Issue #5341); Codex only receives this prompt wording. A
+   * caller relying on enforcement must check the adapter and every permitted
+   * fallback; this is not process, filesystem or network isolation.
    */
   disallowedTools?: readonly string[];
 }

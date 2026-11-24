@@ -30,11 +30,11 @@
  * ## Never fails the run
  *
  * The tools are an accelerator. A collection that did not reach `ok`, a run
- * that names no checkout, a provider that cannot be resolved and a provider
- * with no MCP transport all leave the run exactly as it was, and say so on
- * one log line. The tally is recorded only when the tools were actually
- * handed over: a Gemini-routed run reports no `queries` figure at all rather
- * than `0`, so "could not ask" never reads as "never asked".
+ * that names no checkout and a provider that cannot be resolved all leave the
+ * run exactly as it was, and say so on one log line. The tally is recorded
+ * only when the tools were actually handed over, so a run that was not wired
+ * reports no `queries` figure at all rather than `0`, and "could not ask"
+ * never reads as "never asked".
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -49,7 +49,6 @@ import {
 import type { AgentMcpServerRequest } from "./agent_mcp_config.ts";
 import {
   type AgentProviderSelector,
-  GEMINI_PROVIDER_ID,
   selectAgentProvider,
 } from "./agent_provider.ts";
 import type { EnvLookup } from "./env_lookup.ts";
@@ -169,11 +168,6 @@ export function bindGraftRun(options: BindGraftRunOptions): GraftRun {
       );
     } else if ((providerId = resolveProviderId(options, logger)) === "") {
       // Already reported by resolveProviderId.
-    } else if (providerId === GEMINI_PROVIDER_ID) {
-      logger.info(
-        `Graft tools: not handed to the agent — provider '${providerId}' ` +
-          `has no MCP transport (Issue #2314)`,
-      );
     } else if (!result.graphDir) {
       logger.warn(
         `${GRAFT_TOOLS_UNAVAILABLE_MARKER} the collection reported ok but ` +
