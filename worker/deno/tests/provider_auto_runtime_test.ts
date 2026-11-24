@@ -1,6 +1,11 @@
 /** Runtime wiring tests for automatic provider selection (Issue #1926). */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   activeAgentProvider,
   IMAGE_AGENT_PROVIDERS_ENV,
@@ -36,6 +41,14 @@ const NOW = 10_000_000;
 function statedEnv(values: Record<string, string> = {}): EnvLookup {
   return envFrom({
     [IMAGE_AGENT_PROVIDERS_ENV]: "claude,codex",
+    ...values,
+  });
+}
+
+/** An environment whose image installed Claude, Codex and Gemini (Issue #5344). */
+function geminiEnv(values: Record<string, string> = {}): EnvLookup {
+  return envFrom({
+    [IMAGE_AGENT_PROVIDERS_ENV]: "claude,codex,gemini",
     ...values,
   });
 }
@@ -607,4 +620,304 @@ Deno.test("Gemini counts as a subscription for the absent-mode default (Issue #5
   });
   assertEquals(pinned.mode, "pinned");
   assertEquals(pinned.reason, "default-pinned");
+});
+
+/** Run `fn` with a GEMINI_CLI_HOME holding a Google login (Issue #5344). */
+async function withGeminiLogin(
+  fn: (home: string) => Promise<void>,
+  credentials = '{"refresh_token":"fixture-refresh"}',
+): Promise<void> {
+  const home = await Deno.makeTempDir({ prefix: "vibe-gemini-home-" });
+  try {
+    await Deno.mkdir(`${home}/.gemini`, { recursive: true });
+    await Deno.writeTextFile(`${home}/.gemini/oauth_creds.json`, credentials);
+    await fn(home);
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+}
+
+const GEMINI_WORK_DIR = "/tmp/vibe-gemini-5344";
+
+Deno.test("a Google login reports Gemini as a passive-quota candidate (Issue #5344)", async () => {
+  await withProviderState(async () => {
+    await withGeminiLogin(async (home) => {
+      const status = await resolveAutomaticProviderStatus("gemini", {
+        workDir: GEMINI_WORK_DIR,
+        env: geminiEnv({ GEMINI_CLI_HOME: home }),
+        now: NOW,
+      });
+      assertEquals(status.availability, "available");
+      assertEquals(status.billingMode, "fixed-subscription");
+      assertEquals(status.windows, []);
+      assertEquals(status.observedAt, NOW);
+      assertEquals(status.reason, "gemini-google-login");
+      assertNotEquals(status.reason, "fixed-subscription-status-not-supported");
+    });
+  });
+});
+
+Deno.test("a Gemini API key is metered and never wins auto (Issue #5344)", async () => {
+  await withProviderState(async () => {
+    const env = geminiEnv({ GEMINI_API_KEY: "metered-key" });
+    const status = await resolveAutomaticProviderStatus("gemini", {
+      workDir: GEMINI_WORK_DIR,
+      env,
+      now: NOW,
+    });
+    assertEquals(status.availability, "unavailable");
+    assertEquals(status.billingMode, "metered");
+    assertEquals(status.reason, "api-key-account");
+
+    const alone = await refreshAutomaticProviderRouting({
+      workDir: GEMINI_WORK_DIR,
+      enabledProviderIds: ["gemini"],
+      now: NOW,
+      readTextFile: async () => JSON.stringify({ agent_provider_mode: "auto" }),
+      env,
+      resolveStatus: resolveAutomaticProviderStatus,
+      log: () => {},
+    });
+    assertEquals(alone.selection?.winner, null);
+    assertEquals(alone.shouldPause, true);
+    assertEquals(
+      alone.selection?.ranked.find((c) => c.provider === "gemini")?.excluded,
+      "metered-billing",
+    );
+
+    const withClaude = await refreshAutomaticProviderRouting({
+      workDir: GEMINI_WORK_DIR,
+      enabledProviderIds: ["claude", "gemini"],
+      now: NOW,
+      readTextFile: async () => JSON.stringify({ agent_provider_mode: "auto" }),
+      env,
+      resolveStatus: (id, context) =>
+        id === "claude"
+          ? available("claude", 50, 5)
+          : resolveAutomaticProviderStatus(id, context),
+      log: () => {},
+    });
+    assertEquals(withClaude.selection?.winner?.provider, "claude");
+  });
+});
+
+Deno.test("a logged-in Gemini ranks after a provider with a known window (Issue #5344)", async () => {
+  await withProviderState(async () => {
+    await withGeminiLogin(async (home) => {
+      const logs: string[] = [];
+      const result = await refreshAutomaticProviderRouting({
+        workDir: GEMINI_WORK_DIR,
+        enabledProviderIds: ["claude", "gemini"],
+        now: NOW,
+        readTextFile: async () =>
+          JSON.stringify({ agent_provider_mode: "auto" }),
+        env: geminiEnv({ GEMINI_CLI_HOME: home }),
+        resolveStatus: (id, context) =>
+          id === "claude"
+            ? available("claude", 5, 5)
+            : resolveAutomaticProviderStatus(id, context),
+        log: (message) => logs.push(message),
+      });
+      assertEquals(result.selection?.winner?.provider, "claude");
+      const ranked = result.selection?.ranked ?? [];
+      assertEquals(ranked.map((c) => c.provider), ["claude", "gemini"]);
+      assertEquals(ranked[0]?.band, "fresh-known");
+      assertEquals(ranked[1]?.band, "fresh-unknown-quota");
+      assertEquals(ranked[1]?.excluded, null);
+      assertStringIncludes(logs.join("\n"), "gemini");
+    });
+  });
+});
+
+Deno.test("a run-reported quota exhaustion makes a logged-in Gemini exhausted until retry (Issue #5344)", async () => {
+  await withProviderState(async () => {
+    await withGeminiLogin(async (home) => {
+      const context = {
+        workDir: GEMINI_WORK_DIR,
+        env: geminiEnv({ GEMINI_CLI_HOME: home }),
+      };
+      setAutomaticProviderRoutingActive(true);
+      recordAutomaticProviderOutage("gemini", "quota-exhausted", {
+        observedAt: NOW - 1,
+        retryAt: NOW + 60_000,
+      });
+      const during = await resolveAutomaticProviderStatus("gemini", {
+        ...context,
+        now: NOW,
+      });
+      assertEquals(during.availability, "exhausted");
+      const after = await resolveAutomaticProviderStatus("gemini", {
+        ...context,
+        now: NOW + 60_000,
+      });
+      assertEquals(after.availability, "available");
+    });
+  });
+});
+
+Deno.test("the default mode ignores providers proved metered (Issue #5344)", async () => {
+  await withProviderState(async () => {
+    await withGeminiLogin(async (home) => {
+      const providers = ["claude", "gemini"];
+      assertEquals(
+        resolveAutomaticProviderConfig({
+          configuredProviders: providers,
+          billingContext: {
+            workDir: GEMINI_WORK_DIR,
+            env: geminiEnv({ GEMINI_CLI_HOME: home }),
+          },
+        }),
+        { mode: "auto", preference: [], reason: "default-auto" },
+      );
+      assertEquals(
+        resolveAutomaticProviderConfig({
+          configuredProviders: providers,
+          billingContext: {
+            workDir: GEMINI_WORK_DIR,
+            env: geminiEnv({ GEMINI_API_KEY: "metered-key" }),
+          },
+        }),
+        { mode: "pinned", preference: [], reason: "default-pinned" },
+      );
+
+      const run = (env: EnvLookup) =>
+        refreshAutomaticProviderRouting({
+          workDir: GEMINI_WORK_DIR,
+          enabledProviderIds: providers,
+          now: NOW,
+          readTextFile: async () =>
+            JSON.stringify({
+              agent_provider: "claude",
+              agent_providers: providers,
+            }),
+          env,
+          resolveStatus: (id) => available(id, 50, 5),
+          log: () => {},
+        });
+      const login = await run(geminiEnv({ GEMINI_CLI_HOME: home }));
+      assertEquals(login.automatic, true);
+      const apiKey = await run(geminiEnv({ GEMINI_API_KEY: "metered-key" }));
+      assertEquals(apiKey.automatic, false);
+    });
+  });
+});
+
+Deno.test("a metered Codex does not count toward the default, an unknown one does (Issue #5344)", () => {
+  const providers = ["claude", "codex"];
+  assertEquals(
+    resolveAutomaticProviderConfig({
+      configuredProviders: providers,
+      billingContext: {
+        workDir: GEMINI_WORK_DIR,
+        env: statedEnv({ OPENAI_API_KEY: "metered-key" }),
+      },
+    }).reason,
+    "default-pinned",
+  );
+  assertEquals(
+    resolveAutomaticProviderConfig({
+      configuredProviders: providers,
+      billingContext: { workDir: GEMINI_WORK_DIR, env: statedEnv() },
+    }).reason,
+    "default-auto",
+  );
+});
+
+Deno.test("the preferred provider always counts toward the default (Issue #5344)", () => {
+  const resolve = (
+    configuredProvider: string | undefined,
+    providers: string[],
+    env: EnvLookup,
+  ) =>
+    resolveAutomaticProviderConfig({
+      configuredProvider,
+      configuredProviders: providers,
+      billingContext: { workDir: GEMINI_WORK_DIR, env },
+    });
+  // Metered preferred Claude still counts, so a Codex subscription keeps auto.
+  assertEquals(
+    resolve(
+      "claude",
+      ["claude", "codex"],
+      statedEnv({ ANTHROPIC_API_KEY: "metered-key" }),
+    ),
+    { mode: "auto", preference: [], reason: "default-auto" },
+  );
+  // A metered Gemini counts when it is the configured preferred provider.
+  assertEquals(
+    resolve(
+      "gemini",
+      ["claude", "gemini"],
+      geminiEnv({ GEMINI_API_KEY: "k" }),
+    ).mode,
+    "auto",
+  );
+  // With no configured provider the default (claude) is preferred, so a
+  // metered Gemini is dropped and the host stays pinned.
+  assertEquals(
+    resolve(
+      undefined,
+      ["claude", "gemini"],
+      geminiEnv({ GEMINI_API_KEY: "k" }),
+    ),
+    { mode: "pinned", preference: [], reason: "default-pinned" },
+  );
+});
+
+Deno.test("Gemini without a usable login is unknown billing (Issue #5344)", async () => {
+  await withProviderState(async () => {
+    const missing = await resolveAutomaticProviderStatus("gemini", {
+      workDir: GEMINI_WORK_DIR,
+      env: geminiEnv(),
+      now: NOW,
+    });
+    assertEquals(missing.availability, "unavailable");
+    assertEquals(missing.billingMode, "unknown");
+    assertEquals(missing.reason, "subscription-credential-missing");
+
+    await withGeminiLogin(async (home) => {
+      const broken = await resolveAutomaticProviderStatus("gemini", {
+        workDir: GEMINI_WORK_DIR,
+        env: geminiEnv({ GEMINI_CLI_HOME: home }),
+        now: NOW,
+      });
+      assertEquals(broken.availability, "unavailable");
+      assertEquals(broken.billingMode, "unknown");
+      assertStringIncludes(broken.reason ?? "", "gemini-login-unreadable (");
+    }, "not json");
+  });
+});
+
+Deno.test("Gemini status makes no network call or probe (Issue #5344)", async () => {
+  await withProviderState(async () => {
+    await withGeminiLogin(async (home) => {
+      const originalFetch = globalThis.fetch;
+      let calls = 0;
+      globalThis.fetch = (() => {
+        calls++;
+        throw new Error("network forbidden");
+      }) as typeof fetch;
+      try {
+        const envs = [
+          geminiEnv({ GEMINI_CLI_HOME: home }),
+          geminiEnv({ GEMINI_API_KEY: "metered-key" }),
+          geminiEnv(),
+        ];
+        const statuses = [];
+        for (const env of envs) {
+          statuses.push(
+            await resolveAutomaticProviderStatus("gemini", {
+              workDir: GEMINI_WORK_DIR,
+              env,
+              now: NOW,
+            }),
+          );
+        }
+        assertEquals(calls, 0);
+        assertEquals(statuses[0]?.availability, "available");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
 });
