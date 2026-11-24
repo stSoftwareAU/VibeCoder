@@ -300,13 +300,13 @@ by the creation call rather than a umask.
 
 The supervisor gate is the newest (Issue #1403) and the reason the other two
 exist: `loop` had no parity test, and the two supervisors drifted to 501 and 148
-lines before anyone noticed that `loop.ps1` never pulled its checkout (Issue
-#1401) or resolved its log directory (Issue #1402). It compares the never-exit
-loop, the delegated backoff, the resolved log directory, the per-cycle launch
-log and its pruning, the checkout refresh, the frozen lockfile, and the launcher
-exit statuses each supervisor tells apart — and it reports faults in one
-supervisor whatever the other does, because two supervisors that both stop
-pulling their checkout agree with each other and are both wrong.
+lines before anyone noticed that `loop.ps1` never pulled its checkout
+(Issue #1401) or resolved its log directory (Issue #1402). It compares the
+never-exit loop, the delegated backoff, the resolved log directory, the
+per-cycle launch log and its pruning, the checkout refresh, the frozen lockfile,
+and the launcher exit statuses each supervisor tells apart — and it reports
+faults in one supervisor whatever the other does, because two supervisors that
+both stop pulling their checkout agree with each other and are both wrong.
 
 Three asymmetries are intended, and each is **named with the condition that
 would end it** rather than tolerated silently:
@@ -379,8 +379,8 @@ Deno. Both launchers follow the same steps:
    — the only place a still-progressing agent is killed, and the worker stops
    itself before it so work in progress is committed and pushed.
 
-`run.sh upgrade` is the one invocation that runs none of those steps (Issue
-#691): it delegates straight to
+`run.sh upgrade` is the one invocation that runs none of those steps
+(Issue #691): it delegates straight to
 `deno run … mod.ts upgrade --base-dir
 <checkout>`, which rewrites `pinned_ref`
 and all three `pinned_tool_versions` in `.config.json` to what the newest
@@ -593,8 +593,8 @@ bounded by gzip-at-start plus age-based retention, not by size rotation —
 [log_rotation.ts](../worker/deno/lib/log_rotation.ts) size-rotates the worker's
 other logs (`run_core.log`, `pull.log`, `worker.log`, `cron.log`,
 `security.log`, `launch*.log`, `self-heal.jsonl`, `agent-*.jsonl`) and
-deliberately leaves `worker-<timestamp>.log` to the two modules below (Issue
-#1267).
+deliberately leaves `worker-<timestamp>.log` to the two modules below
+(Issue #1267).
 
 Worker-log lifecycle: the running process's `worker-<PID>.log` stays plain text;
 every prior run's log is gzipped at the next worker start
@@ -2413,13 +2413,13 @@ refuses the collision at load, so making custom labels reserved can never strip
 a label the worker needs. With no mappings configured the set is the same six
 labels as before.
 
-**A PR-producing label route also gets the `work-on` eligibility gates** (Issue
-#937). The operational dispatch labels above _answer_ an issue and remove their
-own label when they finish, so re-dispatch stops itself. A custom label does
-not: it stays on the issue, and `unassign_on_pr_created` hands the issue back
-unassigned, so the next cycle re-ran the whole implementation pipeline against
-the PR the previous cycle had just raised. `findIssuesByLabel` therefore takes
-an opt-in `gateNewWork`, which runs the sequence
+**A PR-producing label route also gets the `work-on` eligibility gates**
+(Issue #937). The operational dispatch labels above _answer_ an issue and remove
+their own label when they finish, so re-dispatch stops itself. A custom label
+does not: it stays on the issue, and `unassign_on_pr_created` hands the issue
+back unassigned, so the next cycle re-ran the whole implementation pipeline
+against the PR the previous cycle had just raised. `findIssuesByLabel` therefore
+takes an opt-in `gateNewWork`, which runs the sequence
 [collect_work_on_candidates.ts](../worker/deno/lib/collect_work_on_candidates.ts)
 runs, factored into
 [new_work_eligibility.ts](../worker/deno/lib/new_work_eligibility.ts) so both
@@ -2783,15 +2783,15 @@ no longer superseded by any commit (Issue #4510). The head moving, a base merge,
 a bot's formatting or version bump, and any fleet or CI-fix commit all leave it
 outstanding. Only two things retire it: its dismissal (the processed marker,
 which is what stops a handled review being processed twice), and the same
-reviewer's later `APPROVED`, `DISMISSED` or `CHANGES_REQUESTED` review (Issue
-#2697). A live, fleet-authored claim lease holds a review rather than retiring
-it (Issue #3383): the scan skips a review a live lease covers, and only a lapsed
-lease — the run timed out, crashed or went silent — makes it actionable again.
-The history explains the rule. Under the old `commit_id !== head` rule, a base
-merge and a version bump on GRQ#5032 moved the head after the owner's review and
-hid it. Issue #2702 then skipped a review once a fleet fix commit landed after
-its `submitted_at`, but on NEAT-AI-Discovery#2443 a CI-fix commit counted as
-answering the review when nothing had answered it. CI-fix pushes are
+reviewer's later `APPROVED`, `DISMISSED` or `CHANGES_REQUESTED` review
+(Issue #2697). A live, fleet-authored claim lease holds a review rather than
+retiring it (Issue #3383): the scan skips a review a live lease covers, and only
+a lapsed lease — the run timed out, crashed or went silent — makes it actionable
+again. The history explains the rule. Under the old `commit_id !== head` rule, a
+base merge and a version bump on GRQ#5032 moved the head after the owner's
+review and hid it. Issue #2702 then skipped a review once a fleet fix commit
+landed after its `submitted_at`, but on NEAT-AI-Discovery#2443 a CI-fix commit
+counted as answering the review when nothing had answered it. CI-fix pushes are
 single-parent fleet commits that never reply to a review, so no commit can
 retire one. No commit history is read for reviews any more: the scan makes no
 `pulls/{pr}/commits` call for them. `isFleetAnswerAfter` in
@@ -2846,19 +2846,19 @@ When a comment is found:
    lease instead.
 
 For an authorised `CHANGES_REQUESTED` review (`pr_review`), the worker also runs
-the disposable verifier after committing and formatting, before pushing (Issue
-#3784). It supplies the complete earlier problem/Fix pairs and requires one
-evidenced `fixed` verdict per numbered finding. Missing, duplicate, `partly` or
-`not fixed` verdicts become blocking findings. An unavailable verifier does not
-block this path: it is logged as not checked, the fix is pushed, and the fleet
-review of the pushed head decides (Issue #4509). One correction turn is allowed
-for a blocked verdict; a remaining block keeps the review outstanding and
-charges a failed attempt. The PR stays armed for auto-merge: GitHub holds the
-merge on the outstanding review, and PRs do not merge until they have a review
-approval and CI is green (Issue #4291). A push-recovery merge gets a fresh
-verdict before its retry push. Ordinary inline and issue comments retain their
-existing flow. The fleet reviewer applies the same verdict check before posting
-its review.
+the disposable verifier after committing and formatting, before pushing
+(Issue #3784). It supplies the complete earlier problem/Fix pairs and requires
+one evidenced `fixed` verdict per numbered finding. Missing, duplicate, `partly`
+or `not fixed` verdicts become blocking findings. An unavailable verifier does
+not block this path: it is logged as not checked, the fix is pushed, and the
+fleet review of the pushed head decides (Issue #4509). One correction turn is
+allowed for a blocked verdict; a remaining block keeps the review outstanding
+and charges a failed attempt. The PR stays armed for auto-merge: GitHub holds
+the merge on the outstanding review, and PRs do not merge until they have a
+review approval and CI is green (Issue #4291). A push-recovery merge gets a
+fresh verdict before its retry push. Ordinary inline and issue comments retain
+their existing flow. The fleet reviewer applies the same verdict check before
+posting its review.
 
 The verifier judges the rebuilt description from the branch's archived summary
 and facts, using the same ownership/adoption checks and body builder as
@@ -3704,10 +3704,10 @@ open (Issue #226) — but a milestone sync that would run the repository's own
 build or test defers that branch until the host recovers (Issue #3178, see
 [HOST_DISK_LOW defers maintenance builds](CONTAINER.md#host_disk_low-defers-maintenance-builds-issue-3178)).
 An agent, quality or discrimination build already in flight is held to the same
-floor (and to the cargo headroom where its checkout holds a cargo project, Issue
-#4413), and a trim-refused host that is below the floor ends the launch so the
-ephemeral layer is discarded, unless live babysitter reservations explain the
-dip, which is waited out instead (Issues #4360, #5105, see
+floor (and to the cargo headroom where its checkout holds a cargo project,
+Issue #4413), and a trim-refused host that is below the floor ends the launch so
+the ephemeral layer is discarded, unless live babysitter reservations explain
+the dip, which is waited out instead (Issues #4360, #5105, see
 [In-flight builds stop at the same floor](CONTAINER.md#in-flight-builds-stop-at-the-same-floor-issue-4360)).
 
 A build refused by the ephemeral cargo root's budget is a different case: with
@@ -4764,14 +4764,14 @@ branch (Issue #2125), so it is filtered before the branch probe.
 Divergence cost grows superlinearly: one day of drift is a fast-forward, three
 days is a merge, a week is an archaeology exercise because by then the two sides
 have solved the same problem twice. Two behaviours keep the window narrow — the
-cadence below (Issue #1776, which replaced the closure-driven trigger of Issue
-#1558) and the conflict triage after it.
+cadence below (Issue #1776, which replaced the closure-driven trigger of
+Issue #1558) and the conflict triage after it.
 
 **Cadence.** The sync runs on every scan cycle at priority 1.72, and syncs every
-open milestone branch on every cycle in which the **default tip moved** (Issue
-#1776). The hourly per-branch cooldown is gone: `main` takes ~27 commits a day,
-so a cooldown left a branch up to an hour behind for no reason other than the
-clock. The signal is one `git rev-parse origin/<default>` per repo — read by
+open milestone branch on every cycle in which the **default tip moved**
+(Issue #1776). The hourly per-branch cooldown is gone: `main` takes ~27 commits
+a day, so a cooldown left a branch up to an hour behind for no reason other than
+the clock. The signal is one `git rev-parse origin/<default>` per repo — read by
 [milestone_default_tip.ts](../worker/deno/lib/milestone_default_tip.ts) after
 the fetch `ensureDefaultBranchCurrent` performs anyway — compared against the
 `lastSyncedDefaultSha` in each branch's ledger entry. It costs nothing against
@@ -4893,8 +4893,8 @@ have lost real coverage by side-taking, one of them silently). For a Rust
 folded back into one overlapping-item union
 ([rust_use_union.ts](../worker/deno/lib/rust_use_union.ts)) before that check
 runs, because rustc rejects the same name imported twice (`error[E0252]`) and
-the gate would otherwise refuse the identical union every sync cycle (Issue
-#3007).
+the gate would otherwise refuse the identical union every sync cycle
+(Issue #3007).
 
 **Every automatic resolution is verified before it is pushed**
 ([milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)):
@@ -4914,9 +4914,10 @@ that script (Issue #2388): it is the fleet's own quality-gate convention and
 runs a superset of a unit suite. A tree that defines none of the three is still
 refused, as the next paragraph says.
 
-**A red tree goes back to the agent rung before it goes to a human** (Issue
-#1965, [milestone_gate_repair.ts](../worker/deno/lib/milestone_gate_repair.ts)).
-A verification failure after a resolution is rarely a bad resolution: it is a
+**A red tree goes back to the agent rung before it goes to a human**
+(Issue #1965,
+[milestone_gate_repair.ts](../worker/deno/lib/milestone_gate_repair.ts)). A
+verification failure after a resolution is rarely a bad resolution: it is a
 _semantic_ conflict git never reported, where the default branch changed an
 interface the milestone branch implements somewhere no hunk overlapped. On
 `GRQ-AutoTrader#292` git reported one conflicted paragraph of
@@ -4995,12 +4996,12 @@ target, so the retry resumes from them and can finish and verify a tree whose
 only check is cargo. Only a second timeout, or an offline run that still cannot
 reach the registry, is left to CI. A tree whose only checks are cargo and are
 all left to CI this way is `skipped` and refused outside a merge-only cycle: an
-automatic resolution requires a completed check (Issue #1559). The third (Issue
-#4422) covers a Deno task whose remote module host, or npm registry, this host
-cannot reach, in the resolution gate's tasks and, under the condition below, in
-the type check in `checkMergedTree` (Issue #4451). When a Deno task fails
-because this host cannot fetch a remote module or npm package, deno prints a
-failure header followed by a connection-class cause such as
+automatic resolution requires a completed check (Issue #1559). The third
+(Issue #4422) covers a Deno task whose remote module host, or npm registry, this
+host cannot reach, in the resolution gate's tasks and, under the condition
+below, in the type check in `checkMergedTree` (Issue #4451). When a Deno task
+fails because this host cannot fetch a remote module or npm package, deno prints
+a failure header followed by a connection-class cause such as
 `error sending request for
 url`, `unsuccessful tunnel` or `dns error`. The
 header is `error: Import
@@ -5400,35 +5401,36 @@ the sync does the same when its branch is the head of an open PR —
 reads the shared budget from that PR's own trusted markers, and the sync records
 each attempt there (`pass="sync"` plus its conclusion) exactly as the ladder
 does, so the PR-marker budget takes precedence over the local ledger whenever
-one exists — including the hand-off decision on a spent budget. There is no
-#2311-style re-arm for the PR budget; only a `resolved` marker resets the PR's
-tally. A milestone branch with **no** open PR still has nowhere to write one, so
-for it the ledger is persisted per branch in `milestone_sync_failures.json`
-beside the failure streak and survives worker restarts; a PR or its comments the
-sync could not read also falls back here, with a logged warning. The sync pass
-writes `lastSyncedDefaultSha` through it for the cadence gate (Issue #1776) and
-charges the conflict _attempts_ around every merge it makes (Issue #1778). Each
-entry carries `conflictAttempts` (concluded failures), `attemptOpenedAt` (an
-attempt that opened and has not concluded), `lastAttempt` (`at`, `outcome`,
-`reason`, `defaultSha`, and — since Issue #2311 — `host`, `timings` and
-`analysis`), `failedAttempts` (every charged run of the budget currently being
-spent, which is what the `merge-fallback` flag reports), `fallbackDefaultSha`
-(the default tip a roll-back that could not merge already answered for),
-`gateRefusal` (the resolution-gate verdict the branch is repeating —
-`conflictKey`, `reason`, both tips, the consecutive `count` and whether the
-worker diagnostic has been `reported`, Issue #2388), `lastSyncedDefaultSha` and
-`rollbacks`, plus three fields Issue #4328 adds: `refusedCycles` (consecutive
-not-charged refusals, zeroed by a charged conclusion or a landed sync; a
-cycle-budget deferral or cargo-budget withhold is not a refusal and leaves it
-unchanged, Issues #4517 and #4588), `rollbackFailures` (lifetime roll-backs that
-could not merge) and `rebuilds` (lifetime milestone rebuilds on the branch), and
-`resolverDeclines` (charged verdicts for which `climbsRecoveryLadder` holds;
-only the resolver recovery ladder reads it, Issue #4587). An older file without
-`resolverDeclines` reads it as 0. Every field is optional and every malformed
-field is dropped, so a file written before the ledger existed loads as a branch
-with an unspent budget rather than failing the whole load — and a `deferUntil`
-an older worker wrote is dropped on load, so a cooldown that no longer exists
-cannot pace a branch (Issue #2305).
+one exists — including the hand-off decision on a spent budget. There is
+no #2311-style re-arm for the PR budget; only a `resolved` marker resets the
+PR's tally. A milestone branch with **no** open PR still has nowhere to write
+one, so for it the ledger is persisted per branch in
+`milestone_sync_failures.json` beside the failure streak and survives worker
+restarts; a PR or its comments the sync could not read also falls back here,
+with a logged warning. The sync pass writes `lastSyncedDefaultSha` through it
+for the cadence gate (Issue #1776) and charges the conflict _attempts_ around
+every merge it makes (Issue #1778). Each entry carries `conflictAttempts`
+(concluded failures), `attemptOpenedAt` (an attempt that opened and has not
+concluded), `lastAttempt` (`at`, `outcome`, `reason`, `defaultSha`, and — since
+Issue #2311 — `host`, `timings` and `analysis`), `failedAttempts` (every charged
+run of the budget currently being spent, which is what the `merge-fallback` flag
+reports), `fallbackDefaultSha` (the default tip a roll-back that could not merge
+already answered for), `gateRefusal` (the resolution-gate verdict the branch is
+repeating — `conflictKey`, `reason`, both tips, the consecutive `count` and
+whether the worker diagnostic has been `reported`, Issue #2388),
+`lastSyncedDefaultSha` and `rollbacks`, plus three fields Issue #4328 adds:
+`refusedCycles` (consecutive not-charged refusals, zeroed by a charged
+conclusion or a landed sync; a cycle-budget deferral or cargo-budget withhold is
+not a refusal and leaves it unchanged, Issues #4517 and #4588),
+`rollbackFailures` (lifetime roll-backs that could not merge) and `rebuilds`
+(lifetime milestone rebuilds on the branch), and `resolverDeclines` (charged
+verdicts for which `climbsRecoveryLadder` holds; only the resolver recovery
+ladder reads it, Issue #4587). An older file without `resolverDeclines` reads it
+as 0. Every field is optional and every malformed field is dropped, so a file
+written before the ledger existed loads as a branch with an unspent budget
+rather than failing the whole load — and a `deferUntil` an older worker wrote is
+dropped on load, so a cooldown that no longer exists cannot pace a branch (see
+Issue #2305).
 
 Three rules decide what the ledger does, and each is a pure helper:
 
@@ -5544,9 +5546,9 @@ the tip answered for so a moved default branch re-arms the three runs. A
 spent budget on the branch a rebuild first. Without a clone git runner the
 default still logs `budget exhausted: roll-back not yet available`.
 
-**Every behind branch is offered the agent rung; the budget decides** (Issue
-#2309). `grantAgentRun` decides it, and it is the merge-conflict drain's rule
-with **both** halves:
+**Every behind branch is offered the agent rung; the budget decides**
+(Issue #2309). `grantAgentRun` decides it, and it is the merge-conflict drain's
+rule with **both** halves:
 
 - **A floor.** A rung is not started at all unless the handler's remaining
   budget, less the `DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS` a resolution spends
@@ -5975,11 +5977,11 @@ flowchart TD
 
 #### `clone_corrupt` is its own failure category
 
-A broken ref or a corrupt object store in the host's **shared** clone (Issues
-#2880, #1093, #2884) is a fault of the host, not of the issue: an in-process
-retry against the same damaged clone fails identically, and the same fault meets
-every other issue claimed against that repository. Charging the issue's
-`failed-once` / `failed` budget for it would park a healthy issue over
+A broken ref or a corrupt object store in the host's **shared** clone
+(Issues #2880, #1093, #2884) is a fault of the host, not of the issue: an
+in-process retry against the same damaged clone fails identically, and the same
+fault meets every other issue claimed against that repository. Charging the
+issue's `failed-once` / `failed` budget for it would park a healthy issue over
 infrastructure it cannot fix.
 
 `detectFailureCategory` (`failure_diagnosis.ts`) checks for the worker-authored
@@ -6195,8 +6197,8 @@ infrastructure, so `shouldRetryInfrastructureFailure` declines it.
 `non_transient`, `classifyRunFailure` answers it before the free-text rules and
 `detectHostFault` returns `null`, so a block always gets one normal attempt and
 a failure comment carrying the gate output. Before that classification applies,
-a verdict block on the first block of a run gets one in-run recovery turn (Issue
-#4128): the agent session resumes once with the gate output in the prompt
+a verdict block on the first block of a run gets one in-run recovery turn
+(Issue #4128): the agent session resumes once with the gate output in the prompt
 (`worker/deno/lib/pre_push_gate_retry.ts`, timeout
 `pre_push_retry_timeout_seconds`), the formatters and the same gate re-run, and
 the push happens only if the gate passes. A second block in the same run,
@@ -6223,23 +6225,24 @@ swallows). A command over 200 characters is named by the tokens before its first
 file argument plus a file count (`deno task test:unit (412 files)`), not quoted
 whole. The `deno test` check lists its failed tests (name and
 `./<file>:<line>:<col>`, plus `(uncaught error)` module lines, at most 20)
-between that line and Deno's output, so the head names each failing test (Issue
-#5113). Second, only a verdict on the branch's content carries the marker, a
-`PrePushGateBlockedError` from `gateUnpushedCommits`: a check, a plan, an unsafe
-base ref, or any other non-infrastructure error from `runPrePushGate` (such as
-malformed hook input), which `gateUnpushedCommits` wraps in one. A git or remote
-lookup that failed or timed out (a `describeUnpushedCommits` `ls-remote`, the
-`git log` or `ls-files` call in `runPrePushGate`, a `rev-list` of the base
-range) comes back as a `PrePushGateInfrastructureError` with no gate marker, and
-`gateBeforePush()` reports it as `PRE_PUSH_LOOKUP_FAILED_MARKER` ("Git push
-failed: the pre-push gate could not read the branch state") followed by the cut
-git text. `detectFailureCategory` retains that prefix as a legacy adapter. New
-results declare `push_failure` from the error kind, so the quoted git text
-(`TIMEOUT: git rev-list ... timed out after 30s`, `Connection timed
-out`) cannot
-make it a `timeout`: it is the `push_failure` infrastructure category, retried
-in-run, as the push path's own failures are (Issue #1550). With a `baseRef` the
-gate reads no remote head at all, because the base range is local.
+between that line and Deno's output, so the head names each failing test
+(Issue #5113). Second, only a verdict on the branch's content carries the
+marker, a `PrePushGateBlockedError` from `gateUnpushedCommits`: a check, a plan,
+an unsafe base ref, or any other non-infrastructure error from `runPrePushGate`
+(such as malformed hook input), which `gateUnpushedCommits` wraps in one. A git
+or remote lookup that failed or timed out (a `describeUnpushedCommits`
+`ls-remote`, the `git log` or `ls-files` call in `runPrePushGate`, a `rev-list`
+of the base range) comes back as a `PrePushGateInfrastructureError` with no gate
+marker, and `gateBeforePush()` reports it as `PRE_PUSH_LOOKUP_FAILED_MARKER`
+("Git push failed: the pre-push gate could not read the branch state") followed
+by the cut git text. `detectFailureCategory` retains that prefix as a legacy
+adapter. New results declare `push_failure` from the error kind, so the quoted
+git text (`TIMEOUT: git rev-list ... timed out after 30s`,
+`Connection timed
+out`) cannot make it a `timeout`: it is the `push_failure`
+infrastructure category, retried in-run, as the push path's own failures are
+(Issue #1550). With a `baseRef` the gate reads no remote head at all, because
+the base range is local.
 
 The existing failure results now require their source category. The completion
 phase distinguishes the pre-push error kinds exhaustively and forwards that
