@@ -154,7 +154,12 @@ Deno.test("repo formatters - deno.json and web/deno.jsonc runs deno fmt once at 
 });
 
 Deno.test("repo formatters - root Cargo.toml and web/deno.json run both", async () => {
-  const { deps, commandCalls } = makeDeps(["Cargo.toml", "web/deno.json"]);
+  const { deps, commandCalls } = makeDeps([
+    "Cargo.toml",
+    "web/deno.json",
+    "src/lib.rs",
+    "web/a.ts",
+  ]);
   await runRepoFormatters(REPO_PATH, ["src/lib.rs", "web/a.ts"], deps);
   const cargoCalls = commandCalls.filter((c) => c.cmd[0] === "cargo");
   const denoCalls = commandCalls.filter((c) => c.cmd[0] === "deno");
@@ -174,7 +179,7 @@ Deno.test("repo formatters - neither config present runs nothing and does not co
 });
 
 Deno.test("repo formatters - formatter that changes files commits once", async () => {
-  const { deps, gitCalls } = makeDeps(["Cargo.toml"], {
+  const { deps, gitCalls } = makeDeps(["Cargo.toml", "src/main.rs"], {
     "cargo fmt --all": { exitCode: 0, changesTree: true },
   });
   const result = await runRepoFormatters(REPO_PATH, ["src/main.rs"], deps);
@@ -201,7 +206,7 @@ Deno.test("repo formatters - formatter that changes files commits once", async (
 });
 
 Deno.test("repo formatters - formatter that changes nothing does not commit", async () => {
-  const { deps, gitCalls } = makeDeps(["Cargo.toml"], {
+  const { deps, gitCalls } = makeDeps(["Cargo.toml", "src/main.rs"], {
     "cargo fmt --all": { exitCode: 0 },
   });
   const result = await runRepoFormatters(REPO_PATH, ["src/main.rs"], deps);
@@ -212,7 +217,7 @@ Deno.test("repo formatters - formatter that changes nothing does not commit", as
 
 Deno.test("repo formatters - non-zero exit is recorded, redacted, logged, and never throws", async () => {
   const secret = "ghp_" + "a".repeat(36);
-  const { deps, logger } = makeDeps(["Cargo.toml"], {
+  const { deps, logger } = makeDeps(["Cargo.toml", "src/main.rs"], {
     "cargo fmt --all": {
       exitCode: 127,
       output: `NotFound: cargo: No such file or directory ${secret}`,
@@ -263,7 +268,7 @@ Deno.test("repo formatters - snapshot failure after a formatter fails loud with 
       if (args[0] === "ls-files") {
         return Promise.resolve({
           ok: true,
-          value: { code: 0, stdout: "Cargo.toml", stderr: "" },
+          value: { code: 0, stdout: "Cargo.toml\0src/main.rs", stderr: "" },
         });
       }
       if (args[0] === "diff") {
@@ -399,6 +404,48 @@ Deno.test("repo formatters - stages only the files it formatted", async () => {
   assertEquals(result.committed, true);
 });
 
+Deno.test("repo formatters - a changed path git no longer tracks is left out of deno fmt and staging, and logged (Issue #5410)", async () => {
+  const { deps, commandCalls, gitCalls, logger } = makeDeps(
+    ["deno.json", "src/kept.ts"],
+    {
+      "deno fmt --permit-no-files src/kept.ts": {
+        exitCode: 0,
+        changesTree: true,
+      },
+    },
+  );
+  const result = await runRepoFormatters(
+    REPO_PATH,
+    ["src/kept.ts", "src/gone.ts"],
+    deps,
+  );
+  const denoCalls = commandCalls.filter((c) => c.cmd[0] === "deno");
+  assertEquals(denoCalls.length, 1);
+  assertEquals(denoCalls[0]?.cmd, [
+    "deno",
+    "fmt",
+    "--permit-no-files",
+    "src/kept.ts",
+  ]);
+  assertEquals(denoCalls[0]?.cmd.includes("src/gone.ts"), false);
+  const addCalls = gitCalls.filter((c) => c.args[0] === "add");
+  assertEquals(addCalls.length, 1);
+  assertEquals(addCalls[0]?.args, [
+    "add",
+    "-u",
+    "--",
+    ":(literal)src/kept.ts",
+  ]);
+  assertEquals(result.committed, true);
+  assert(
+    logger.infos.some((line) =>
+      line.includes("src/gone.ts") &&
+      line.includes("no longer tracked by git")
+    ),
+    logger.infos.join("\n"),
+  );
+});
+
 Deno.test("repo formatters - a failing formatter's log keeps the error at the head (Issue #4113)", async () => {
   // `cargo fmt` prints its error, then a long usage text. A tail-only excerpt
   // keeps "Print help" and drops "Permission denied".
@@ -409,7 +456,7 @@ Deno.test("repo formatters - a failing formatter's log keeps the error at the he
     output.length > 500,
     "the usage text must push the error out of a 500-character tail",
   );
-  const { deps, logger } = makeDeps(["Cargo.toml"], {
+  const { deps, logger } = makeDeps(["Cargo.toml", "src/main.rs"], {
     "cargo fmt --all": { exitCode: 1, output },
   });
   const result = await runRepoFormatters(REPO_PATH, ["src/main.rs"], deps);
