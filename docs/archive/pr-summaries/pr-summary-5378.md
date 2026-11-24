@@ -59,11 +59,27 @@ This is a backend change with no UI. Reproduction on the base branch
   - `X=$((1 + 2)) …`
 - **True on the base branch:** `X="$(cat v)" …` and `X=$(date) …`.
 
-Red/green: the new `--filter 5378` tests were run against the base branch's
-production files, with the base `shell_command_words.ts` plus only a
-`commandPrefixWords` export stub (`words.slice(0, commandIndex(words))`). The
-result was 12 failed and 5 passed; the 5 that passed are the controls and the
-false rows. At the head, all of them pass.
+Red/green: the new `--filter 5378` tests in
+`worker/deno/tests/aws_emulator_in_ci_check_test.ts` and
+`worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts` were run in a
+detached checkout of the base branch. That checkout had the base production
+files, plus a `commandPrefixWords` export stub
+(`words.slice(0, commandIndex(words))`) so the test file compiles. Result: 15
+failed and 7 passed. The 7 that passed are the controls and the false rows. At
+the head, all 22 pass.
+
+Corpus run: `commandIndex` and `commandPrefixWords` were compared between base
+and head on every `shellSegments` segment of the `run:` bodies in
+`.github/workflows/*.yml` and of the `*.sh` files in `container/`,
+`container/toolchains/` and `infra/cloudformation/`. That was 104 bodies and
+3222 segments:
+
+- **`commandIndex`:** 39 results changed. Each change is a pure assignment with
+  no command, which now finds no command word where the base branch returned a
+  word from inside the value. Examples: `i=$((i + 1))` returned `+`, and
+  `COMMAND=(bash "$0" --smoke-client)` returned `"$0"`. That makes 0 false
+  positives and 39 false negatives removed.
+- **`commandPrefixWords`:** 0 changes.
 
 Issue numbers cited: #5378: shell_command_words: an assignment whose unquoted
 `$( ... )` value holds a space hides the command after it, so
@@ -116,4 +132,24 @@ flowchart LR
     with an `echo $(cat v)` control.
   - Tests through other callers: the `cargo test` embedded route, the
     `staticStatus` prefix and the `failureExits` prefix.
+  - A test that an `exec` inside `X=$( … )` does not count as `exec`-ing the
+    runner, with the plain `exec` and no-`exec` controls.
+- Added a test to `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`:
+  the toolchain step is still recognised after `X=$(cat v)`, and the control
+  `X=$(cat v) echo …` is refused with `[pinned-install]`.
+- At head, the four test files
+  `worker/deno/tests/aws_emulator_in_ci_check_test.ts`,
+  `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`,
+  `worker/deno/tests/aws_emulator_run_5109_test.ts` and
+  `worker/deno/tests/aws_emulator_cloudformation_5110_test.ts` passed with
+  `deno task test:unit … < /dev/null`: 563 passed, 0 failed.
+- `./quality.sh < /dev/null` at head: passed. `config integration` and `checkov`
+  were skipped by the gate itself.
+- Docs: I read the "AWS emulator in CI" command-word paragraph in
+  `docs/BEST-PRACTICES-SCAN.md` and the `commandIndex` doc comment, and amended
+  both.
 - Twinned-rule search: no second copy of the command-word rule was found.
+
+Not checked: the corpus run did not cover `docs/archive/pr-summaries/` or the
+test files, because the matcher reads shell bodies, not Markdown. The
+`;`/`|`/line-break limit above remains.
