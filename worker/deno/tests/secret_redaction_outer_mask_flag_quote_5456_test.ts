@@ -8,11 +8,12 @@
  * with the value. The `secret-cli-flag` rule then found no closing quote, fell
  * back to `\S+` and masked only `'alpha`, publishing `beta credentials:`. The fix
  * keeps the quote in front of the placeholder when the flag's opening quote lies
- * outside every assignment mask, so the flag rule pairs the two. That holds only
- * when no quote of the same kind survives in the output after the mask. When a
- * later quote of that kind survives, the flag rule pairs with it and masks
- * through it (the outcome the Issue #5310 round 13 tests pin). The base code
- * leaks `beta` on that shape, so it is a regression case, not a control.
+ * outside every assignment mask. An interior quote is kept when no later quote
+ * of that kind survives, or that quote lies past another flag whose value starts
+ * outside every mask. Otherwise the flag rule pairs with the later quote and
+ * masks through it (the outcome the Issue #5310 round 13 tests pin). The base
+ * code leaks `beta` on the simple later-quote shape too, so it is a regression
+ * case, not a control.
  * A bare value that starts at the quote is always kept, as in Issue #5363.
  *
  * These tests assert the exact output `redactSecrets` produces, that
@@ -22,26 +23,11 @@
  * output only, with no stopwatch, as in `secret_redaction_redos_test.ts`.
  */
 
-import { assert, assertEquals } from "@std/assert";
-import { containsSecret, redactSecrets } from "../lib/secret_redaction.ts";
+import { assertEquals } from "@std/assert";
+import { redactSecrets } from "../lib/secret_redaction.ts";
+import { assertRedacts } from "./support/secret_redaction_asserts.ts";
 
 const R = "***REDACTED***";
-
-/** Asserts the exact redaction, no surviving secret, idempotence and no leak. */
-function assertRedacts(
-  input: string,
-  expected: string,
-  leaked: string[],
-): void {
-  const output = redactSecrets(input);
-  assertEquals(output, expected);
-  assertEquals(containsSecret(input), true);
-  assertEquals(containsSecret(output), false);
-  assertEquals(redactSecrets(output), output);
-  for (const word of leaked) {
-    assert(!output.includes(word), `"${word}" survived in: ${output}`);
-  }
-}
 
 Deno.test("Issue #5456: outer label's masked value containing a flag's closing quote keeps that quote", () => {
   assertRedacts(
@@ -91,6 +77,14 @@ Deno.test("Issue #5456: newline before the outer label keeps the flag's closing 
   );
 });
 
+Deno.test("Issue #5456: CRLF before the outer label keeps the flag's closing quote", () => {
+  assertRedacts(
+    "--token 'alpha beta\r\ncredentials: TOKEN='tail",
+    `--token ${R}${R}`,
+    ["beta", "tail"],
+  );
+});
+
 Deno.test("Issue #5456: a later bare mask that masks the surviving quote away leaves the kept quote needed", () => {
   assertRedacts(
     "--token 'alpha beta credentials: TOKEN='tail x password: a'b",
@@ -104,6 +98,38 @@ Deno.test("Issue #5456: a later surviving quote of the same kind lets the flag r
     "--token 'alpha beta credentials: TOKEN='tail then it's done",
     `--token ${R}${R}${R}s done`,
     ["beta", "tail", "then"],
+  );
+});
+
+Deno.test("Issue #5456: consecutive flags retain both closing quotes", () => {
+  assertRedacts(
+    "--token 'alpha beta credentials: TOKEN='tail --token 'gamma delta credentials: TOKEN='rest",
+    `--token ${R}${R} --token ${R}${R}`,
+    ["beta", "delta", "tail", "rest"],
+  );
+});
+
+Deno.test("Issue #5456: a quote inside a later flag's value must not close the earlier flag", () => {
+  assertRedacts(
+    `--token 'alpha beta credentials: TOKEN='tail --password "gamma delta's tail"`,
+    `--token ${R}${R} --password ${R}`,
+    ["beta", "gamma", "delta", "tail"],
+  );
+});
+
+Deno.test("Issue #5456: a quote in a later bare flag value must not close the earlier flag", () => {
+  assertRedacts(
+    "--token 'alpha beta credentials: TOKEN='tail --password gamma'delta finish",
+    `--token ${R}${R} --password ${R} finish`,
+    ["beta", "gamma", "delta", "tail"],
+  );
+});
+
+Deno.test("Issue #5456: a later quote of the other kind does not replace the needed quote", () => {
+  assertRedacts(
+    `--token 'alpha beta credentials: TOKEN='tail then "public"`,
+    `--token ${R}${R} then "public"`,
+    ["beta", "tail"],
   );
 });
 
@@ -122,7 +148,23 @@ Deno.test("Issue #5456: control - a flag value that closed earlier leaves the la
   );
 });
 
-Deno.test("Issue #5456: a long run of flags keeps the closing quote in linear time (output only)", () => {
+Deno.test("Issue #5456: control - a later quoted assignment retains the quote the flag rule pairs with", () => {
+  assertRedacts(
+    "--token 'alpha beta credentials: TOKEN='tail password: 'private value' after",
+    `--token ${R}${R}' after`,
+    ["beta", "tail", "private", "value"],
+  );
+});
+
+Deno.test("Issue #5456: control - a flag opener inside a quoted assignment stays masked", () => {
+  assertRedacts(
+    `PASSWORD="--token 'alpha beta credentials: TOKEN='tail"`,
+    `PASSWORD="${R}"`,
+    ["alpha", "beta", "tail"],
+  );
+});
+
+Deno.test("Issue #5456: a long run of flags still masks the final credential (output only)", () => {
   const run = "--token 'a b' ".repeat(20_000);
   const output = redactSecrets(
     run + "--token 'alpha beta credentials: TOKEN='tail",
@@ -130,5 +172,14 @@ Deno.test("Issue #5456: a long run of flags keeps the closing quote in linear ti
   assertEquals(
     output,
     `--token ${R} `.repeat(20_000) + `--token ${R}${R}`,
+  );
+});
+
+Deno.test("Issue #5456: repeated outer masks retain each flag's closing quote (output only)", () => {
+  assertEquals(
+    redactSecrets(
+      "--token 'alpha beta credentials: TOKEN='tail\r\n".repeat(20_000),
+    ),
+    `--token ${R}${R}\r\n`.repeat(20_000),
   );
 });

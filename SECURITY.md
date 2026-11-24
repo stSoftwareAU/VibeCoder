@@ -557,20 +557,21 @@ escape-aware read covers at most 4,096 characters or escapes, and a value whose
 escape never closes (`"C:\dir\"`) falls back to ending at the first quote.
 
 A bare value that starts at, or contains, the closing quote of a credential
-flag's quoted value keeps that quote in front of the placeholder (Issues #5363
-and #5456). In `--password 'alpha beta TOKEN='tail` the `TOKEN=` value opens at
+flag's quoted value can keep that quote in front of the placeholder (Issues
+#5363 and #5456). In `--password 'alpha beta TOKEN='tail` the `TOKEN=` value opens at
 that quote; masking the quote with the value left the `secret-cli-flag` rule no
 closing quote, so it masked only `'alpha` and published `beta`. The quote is
-kept only when the flag's opening quote lies outside every assignment mask, so
-the flag rule really pairs the two. The same holds when the quote sits inside an
-outer label's value that is masked whole, provided no quote of that kind
-survives in the output after the mask: in
-`--token 'alpha beta credentials: TOKEN='tail` the outer value keeps its whole
-mask, the quote is kept in front of it, and the result is
+kept only when the flag's opening quote lies outside every assignment mask.
+When the quote sits inside an outer label's value that is masked whole, it is
+kept when no later quote of that kind survives, or when the first such quote
+lies past another credential flag whose value starts outside every assignment
+mask. For `--token 'alpha beta credentials: TOKEN='tail`, the outer value
+keeps its whole mask, the quote is kept in front of it, and the result is
 `--token ***REDACTED******REDACTED***` rather than publishing
-`beta credentials:`. When a later quote of that kind survives, the quote is
-masked with the value and the flag rule pairs with that later quote and masks
-through it (the Issue #5310 round 13 cases pin that outcome).
+`beta credentials:`. Otherwise the quote is masked with the value and the flag
+rule pairs with the later quote and masks through it (the Issue #5310 round 13
+cases pin that outcome). Keeping the quote before a later flag prevents that
+flag's name being swallowed and the remainder of its value being published.
 
 The label side stays deliberately blunt — it catches real secrets — apart from
 the prose-heading check below. The value is judged before the mask is applied,

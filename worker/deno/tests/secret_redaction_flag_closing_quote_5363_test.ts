@@ -16,26 +16,11 @@
  * output only, with no stopwatch, as in `secret_redaction_redos_test.ts`.
  */
 
-import { assert, assertEquals } from "@std/assert";
-import { containsSecret, redactSecrets } from "../lib/secret_redaction.ts";
+import { assertEquals } from "@std/assert";
+import { redactSecrets } from "../lib/secret_redaction.ts";
+import { assertRedacts } from "./support/secret_redaction_asserts.ts";
 
 const R = "***REDACTED***";
-
-/** Asserts the exact redaction, no surviving secret, idempotence and no leak. */
-function assertRedacts(
-  input: string,
-  expected: string,
-  leaked: string[],
-): void {
-  const output = redactSecrets(input);
-  assertEquals(output, expected);
-  assertEquals(containsSecret(input), true);
-  assertEquals(containsSecret(output), false);
-  assertEquals(redactSecrets(output), output);
-  for (const word of leaked) {
-    assert(!output.includes(word), `"${word}" survived in: ${output}`);
-  }
-}
 
 Deno.test("Issue #5363: bare value opening at a flag's closing quote keeps that quote", () => {
   assertRedacts(
