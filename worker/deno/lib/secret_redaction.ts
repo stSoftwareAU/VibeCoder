@@ -2120,7 +2120,8 @@ const CLI_FLAG_VALUE_AT = /"[^"]+"|'[^']+'|\S+/y;
  * quoted value whose closing quote is where the `secret-cli-flag` rule opens
  * that flag's value, else -1. The walk masks the value through the flag's
  * value, so the flag's name is not hidden from the rule. The read is bounded
- * by the flag rule's own value match, so the walk stays linear (Issue #3942).
+ * by the flag rule's own value match, so the walk stays linear (the linearity
+ * rule in the module header).
  */
 function flagValueThroughQuote(
   text: string,
