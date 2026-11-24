@@ -27,6 +27,8 @@ import {
 } from "../lib/aws_emulator_in_ci_check.ts";
 import { parse as parseYaml } from "@std/yaml/parse";
 import {
+  commandIndex,
+  commandPrefixWords,
   reachableCommands,
   removeQuotes,
   shellSegments,
@@ -944,6 +946,99 @@ for (
     assertEquals(removeQuotes(word), expected);
   });
 }
+
+// Issue #5378: a `VAR=value` word whose unquoted `$( … )` or backtick value
+// holds a blank is one assignment, not an assignment followed by a command.
+for (
+  const [run, expected] of [
+    ["X=$(cat v) aws-emulator-run -- ./test.sh", true],
+    [
+      "AWS_REGION=$(aws configure get region) aws-emulator-run -- ./test.sh",
+      true,
+    ],
+    ["X=`cat v` aws-emulator-run -- ./test.sh", true],
+    ["env X=$(cat v) aws-emulator-run -- ./test.sh", true],
+    ["X=$((1 + 2)) aws-emulator-run -- ./test.sh", true],
+    // A quoted `)` does not close the substitution.
+    ['X=$(echo "a )" b) aws-emulator-run -- ./test.sh', true],
+    // A `!` inside the substitution is not a status-inverting prefix.
+    ["X=$(test ! -f v) aws-emulator-run -- ./test.sh", true],
+    ["X=$(test ! v) aws-emulator-run -- ./test.sh", true],
+    ["X=$(cat v) Y=$(cat w) aws-emulator-run -- ./test.sh", true],
+    // Controls already true before the fix.
+    ['X="$(cat v)" aws-emulator-run -- ./test.sh', true],
+    ["X=$(date) aws-emulator-run -- ./test.sh", true],
+    // The command is echo.
+    ["X=$(cat v) echo aws-emulator-run -- ./test.sh", false],
+    // The runner is an argument of cat inside the substitution.
+    ["X=$(cat v aws-emulator-run -- ./test.sh)", false],
+    // Never closed: nothing after it is a command.
+    ["X=$(cat v aws-emulator-run -- ./test.sh", false],
+  ] as const
+) {
+  Deno.test(`workflowRunsAwsEmulator - ${run} is ${expected} (Issue #5378)`, () => {
+    const doc = parseYaml(
+      `on: pull_request
+jobs:
+  test:
+    steps:
+      - run: |
+          ${run}
+`,
+    );
+    assertEquals(workflowRunsAwsEmulator(doc), expected);
+  });
+}
+
+Deno.test("commandIndex - skips an assignment whose substitution holds blanks (Issue #5378)", () => {
+  for (
+    const [script, expected] of [
+      ["X=$(cat v) aws-emulator-run -- ./t.sh", 2],
+      ["X=$(cat v)", 2],
+      ["X=$(cat v", 2],
+      ["X=`a b` cmd", 2],
+      ['X=$(echo "a )" b) cmd', 3],
+      ["env X=$(cat v) cmd", 3],
+      ["X=1 cmd", 1],
+    ] as const
+  ) {
+    assertEquals(
+      commandIndex(shellSegments(script)[0] ?? []),
+      expected,
+      script,
+    );
+  }
+});
+
+Deno.test("commandPrefixWords - leaves out the words inside an assignment's substitution (Issue #5378)", () => {
+  assertEquals(
+    commandPrefixWords(shellSegments("X=$(test ! v) cmd")[0] ?? []),
+    ["X=$(test"],
+  );
+  assertEquals(commandPrefixWords(shellSegments("! X=1 cmd")[0] ?? []), [
+    "!",
+    "X=1",
+  ]);
+});
+
+Deno.test("checkAwsEmulatorInCI - a runner after X=$(cat v) counts in a step and a script; echo $(cat v) does not (Issue #5378)", async () => {
+  const body = `X=$(cat v) ${RUNNER_STEP}`;
+  const inWorkflow = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+  });
+  assertEquals(inWorkflow.wiring, "official-server", "workflow");
+  const inScript = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+  });
+  assertEquals(inScript.wiring, "official-server", "script");
+  const control = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`echo $(cat v) ${RUNNER_STEP}`),
+    ),
+  });
+  assertEquals(control.wiring, "missing", "control");
+});
 
 Deno.test("workflowRunsAwsEmulator - step runs aws-emulator-run wrapper", () => {
   const doc = parseYaml(

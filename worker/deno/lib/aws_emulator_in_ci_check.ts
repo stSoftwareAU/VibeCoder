@@ -36,6 +36,7 @@ import { triggersOn as workflowTriggersOn } from "./ci_mutation_contract.ts";
 import { parseCfnDocument } from "./cfn_cost_checks.ts";
 import {
   commandIndex,
+  commandPrefixWords,
   type ReachableCommand,
   reachableCommands,
   readShellOptions,
@@ -1111,7 +1112,7 @@ function keptCommands(body: string, initialErrexit: boolean): KeptCommand[] {
       errexit = saved.pop()!.errexit;
     }
     const at = commandIndex(cmd.words);
-    const viaExec = cmd.words.slice(0, at).includes("exec");
+    const viaExec = commandPrefixWords(cmd.words).includes("exec");
     // A command inside a `( )` subshell fails the body only when the
     // subshell's own failure does, whichever route fails the subshell (an
     // explicit exit, `exec`, or errexit inside it): errexit is on outside the

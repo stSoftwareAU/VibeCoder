@@ -462,9 +462,11 @@ The command word, once shell reserved words, `sudo`/`env`/`exec`, `VAR=value`
 are removed, so `env "X"=1 aws-emulator-run …` counts and
 `aws-emulator-run -- env "X"=./pytest` runs no test; an `env` option such as
 `-i` or `--split-string=echo` ends that scan and stays the command word, so it
-earns no credit) and the `time`/`nice`/`timeout`/`command` wrappers are skipped
-and quotes are stripped, must be `aws-emulator-run` or a path ending
-`/aws-emulator-run`. The invocation must also be able to run: a job or step
+earns no credit; a `VAR=value` whose unquoted `$( … )` or backtick value holds
+a blank, as in `X=$(cat v) aws-emulator-run …`, is skipped whole) and the
+`time`/`nice`/`timeout`/`command` wrappers are skipped and quotes are
+stripped, must be `aws-emulator-run` or a path ending `/aws-emulator-run`. The
+invocation must also be able to run: a job or step
 whose `if:` is statically false (`false`, `${{ false }}`, `0`) earns no credit,
 nor does a command after an unconditional `exit`, behind `false &&` or
 `true ||`, in an `if`/`elif`/`else` branch or `while`/`until` body whose

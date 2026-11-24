@@ -212,21 +212,71 @@ const TIMEOUT_VALUE_OPTIONS = new Set([
  * word) and `command`. A `VAR=value` word counts only with an unquoted name
  * (bash's rule, so `"X=1" cmd` runs a command named `X=1`). `env` is skipped
  * with each operand after it that contains `=` once quotes are removed
- * (`env "X"=1 cmd`), as GNU and BSD `env` read them. The scan stops at an
- * option word (`-i`, `--split-string=echo`): `env -S`/`--split-string` makes
- * its value the command, so the option stays the command word and fails
- * closed. `command -v`/`-V` only looks a command up, so it stops the scan at
- * `command` itself. Returns `words.length` when none is found.
+ * (`env "X"=1 cmd`), as GNU and BSD `env` read them. A `VAR=value` word (or
+ * `env` operand) whose value opens a `$( … )`, `$(( … ))` or backtick
+ * substitution split at blanks is skipped together with the words up to the
+ * one that closes it (quote-aware), so `X=$(cat v) cmd` finds `cmd`; one never
+ * closed in the command's words leaves no command word (`words.length`). A
+ * substitution holding a `;`, `|`, `&`, `&&`, `||` or newline is still split
+ * into separate commands by {@link shellCommands}, so `X=$(a; b) cmd` finds
+ * `b)`. The scan stops at an option word (`-i`, `--split-string=echo`):
+ * `env -S`/`--split-string` makes its value the command, so the option stays
+ * the command word and fails closed. `command -v`/`-V` only looks a command
+ * up, so it stops the scan at `command` itself. Returns `words.length` when
+ * none is found.
  */
 export function commandIndex(words: string[]): number {
+  return commandScan(words).index;
+}
+
+/**
+ * The words in front of the command word that the shell reads as reserved or
+ * prefix words, without the words inside an assignment's substitution (so
+ * `X=$(test ! -f v) cmd` has no `!` prefix).
+ */
+export function commandPrefixWords(words: string[]): string[] {
+  return commandScan(words).prefix;
+}
+
+/**
+ * Index past the assignment at `words[start]` and the following words its
+ * unclosed `$( … )`, `(` or backtick substitution spans. Each skipped
+ * following word's index is added to `inner`.
+ */
+function skipAssignment(
+  words: string[],
+  start: number,
+  inner: Set<number>,
+): number {
+  const first = words[start] ?? "";
+  let open = parenBalance(first).delta;
+  let ticks = backtickCount(first);
+  let i = start + 1;
+  while ((open > 0 || ticks % 2 === 1) && i < words.length) {
+    const word = words[i] ?? "";
+    open += parenBalance(word).delta;
+    ticks += backtickCount(word);
+    inner.add(i);
+    i++;
+  }
+  return i;
+}
+
+/** The {@link commandIndex} scan: the index and the prefix words before it. */
+function commandScan(words: string[]): { index: number; prefix: string[] } {
+  const inner = new Set<number>();
   let i = 0;
   while (i < words.length) {
     const w = words[i] ?? "";
-    if (SHELL_PREFIX_WORDS.has(w) || SHELL_ASSIGNMENT.test(w)) {
+    if (SHELL_PREFIX_WORDS.has(w)) {
       i++;
+    } else if (SHELL_ASSIGNMENT.test(w)) {
+      i = skipAssignment(words, i, inner);
     } else if (w === "env") {
       i++;
-      while (i < words.length && isEnvAssignment(words[i] ?? "")) i++;
+      while (i < words.length && isEnvAssignment(words[i] ?? "")) {
+        i = skipAssignment(words, i, inner);
+      }
     } else if (w === "time") {
       i++;
       if (words[i] === "-p") i++;
@@ -249,7 +299,10 @@ export function commandIndex(words: string[]): number {
       break;
     }
   }
-  return i;
+  return {
+    index: i,
+    prefix: words.slice(0, i).filter((_, k) => !inner.has(k)),
+  };
 }
 
 /**
@@ -276,10 +329,8 @@ const STATUS_ALTERING_PREFIX_WORDS = new Set([
  * must decide the step: `! ./test.sh` turns a failure into a pass.
  */
 export function statusPreservingCommandIndex(words: string[]): number {
-  const i = commandIndex(words);
-  return words.slice(0, i).some((w) => STATUS_ALTERING_PREFIX_WORDS.has(w))
-    ? -1
-    : i;
+  const { index, prefix } = commandScan(words);
+  return prefix.some((w) => STATUS_ALTERING_PREFIX_WORDS.has(w)) ? -1 : index;
 }
 
 /**
@@ -328,7 +379,7 @@ export function stripQuotes(word: string): string {
  * flipped by each `!`; null when a runtime value decides it.
  */
 function staticStatus(words: string[]): boolean | null {
-  const i = commandIndex(words);
+  const { index: i, prefix } = commandScan(words);
   const head = stripQuotes(words[i] ?? "");
   const base = head === "true" || head === ":"
     ? true
@@ -336,7 +387,7 @@ function staticStatus(words: string[]): boolean | null {
     ? false
     : null;
   if (base === null) return null;
-  const negations = words.slice(0, i).filter((w) => w === "!").length;
+  const negations = prefix.filter((w) => w === "!").length;
   return negations % 2 === 1 ? !base : base;
 }
 
@@ -665,7 +716,7 @@ function failureExits(
   if (after.sep === "||" && isFailingExit(after.words, true)) {
     // `! cmd || exit 1` inverts the status first: a failing cmd makes `!`
     // succeed, so the exit never runs.
-    if (here.words.slice(0, commandIndex(here.words)).includes("!")) {
+    if (commandPrefixWords(here.words).includes("!")) {
       return false;
     }
     const chained = listed[index + 2];
