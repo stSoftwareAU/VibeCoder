@@ -332,28 +332,16 @@ unless the issue explicitly asks for removal.
 
 ## A Code Change Owes a Docs Change
 
-When you rename a symbol, change a signature or a default, add or remove a flag,
-or change a documented command, grep the repo's docs for the old name and update
-every surface that mentions it — README, `docs/`, operator manuals, prompt
-templates, and agent instructions — in the same change. Do it before the commit,
-not after a reviewer finds it weeks later.
+When a change renames or removes something, or changes the behaviour, meaning,
+default or value of something a doc or comment describes, every other statement
+of the old version is now false. Before you commit, search for the old version:
+grep README, `docs/`, prompts and agent instructions, source doc comments and
+user-visible strings for the old name **and** for the stem of the old wording
+or value (`replac\w*`, not "replaces"). The old wording includes each doc line
+your own diff removed or rewrote. Read the sentence around every hit and fix
+each one the change makes false, including in a file the diff does not otherwise
+touch. Then re-run the grep on the final head.
 
-- Changing the **behaviour or meaning** of an existing function, field,
-  setting or endpoint while keeping its name also owes a docs change — the
-  rename rule alone misses it, because there is no old name to grep for.
-- Grep for the **unchanged name**, then re-read every hit — including the doc
-  comment directly above the changed code, the doc comments on the definitions
-  and callers of what changed, wherever they live, and the prose beside any
-  example you updated — and fix any that still describe the old behaviour.
-- **Doc comments outside the diff go stale too.** Grep source files, not only
-  the manuals: for each name the change removes or whose behaviour it changes,
-  and for the shared constants, types and helpers the changed code defines or
-  calls. Read every doc comment and module doc a hit lands in, and fix any
-  sentence the change makes false, including in a file the diff does not
-  otherwise touch. A constant's definition, a reader's safety argument and a
-  helper's list of callers are where these go stale.
-- Updating an example alone is not enough: if the surrounding prose still
-  describes the old contract, the doc is still stale.
 - When the change adds or changes a **rule** in a prompt template, coding
   standard or agent instruction (`prompts/*/prompt.md`,
   `CODING-STANDARDS.md`, a shared prompt constant under `worker/deno/lib/`,
@@ -397,16 +385,6 @@ not after a reviewer finds it weeks later.
   header, and every list you wrote or edited. For a named set listed in other
   files, grep for one or two **existing sibling members**, not the new one: the
   new name is in no doc yet.
-- When a change alters what an existing **state, enum variant, field or value**
-  means — even though its name stays — find every place that **renders or
-  explains** it: API response strings and labels, reason and stage sentences,
-  UI copy, and the docs prose for those fields. Make each one true for **every
-  case** the new behaviour produces, not only the common one. Grep for the
-  variant or field name **and** for the old wording.
-- Grep for the **stem** of a behavioural claim, not one inflection
-  (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
-  final head after editing. In a file you update, read every passage that
-  mentions the changed surface, not only the section you edited.
 - **Check where you insert.** Before adding a new function, item, test or
   paragraph, read the lines directly above and below the insertion point. A
   doc comment, attribute or decorator directly above belongs to the item
@@ -1623,7 +1601,7 @@ or is absent from it. A test that renders only the new rows stays green
 while an old message is wrong, so include existing messages whose meaning
 the new state changes. A pre-existing message left unchanged that is false
 or misleading in the new state is a blocking self-review finding. This is
-the rendered-screen counterpart of the bullet under **A Code Change Owes
+the rendered-screen counterpart of the paragraph under **A Code Change Owes
 a Docs Change** above on a change that alters what an existing state
 means. List the messages checked in the PR summary's Test Plan
 (Issue #3259).
