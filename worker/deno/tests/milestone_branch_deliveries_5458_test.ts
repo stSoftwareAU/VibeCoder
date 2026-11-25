@@ -246,8 +246,37 @@ Deno.test("classifyClosedIssues - a cached verdict for one milestone branch is n
       "B is classified live, not from A's verdict",
     );
 
-    await classifyClosedIssues(REPO, BRANCH_B, issues, ghFn, cache);
-    assertEquals(timelineReads, 1, "B's own verdict is served from cache");
+    // A reopen after the merge: classified live, B's verdict would now flip.
+    const reopenedGhFn = async (args: string[]): Promise<string> => {
+      if (args.join(" ").includes("/timeline")) {
+        return JSON.stringify([{
+          event: "reopened",
+          actor: { login: "owner" },
+          created_at: "2026-10-06T00:00:00Z",
+        }]);
+      }
+      return ghFn(args);
+    };
+    const live = await classifyClosedIssues(
+      REPO,
+      BRANCH_B,
+      issues,
+      reopenedGhFn,
+    );
+    assertEquals(live[0]?.claimProblem, "predates-reopen");
+
+    const cachedB = await classifyClosedIssues(
+      REPO,
+      BRANCH_B,
+      issues,
+      reopenedGhFn,
+      cache,
+    );
+    assertEquals(
+      cachedB[0]?.claimProblem,
+      undefined,
+      "B's own verdict is served from cache",
+    );
   });
 });
 
@@ -900,41 +929,48 @@ Deno.test("fetchIssuesMovedOffBranch - distinguishes a missing milestone from an
 
 Deno.test("fetchIssuesMovedOffBranch - serves the parsed merged-PR list from cache (Issue #5458)", async () => {
   await withTempCache(async (cache) => {
-    const first: string[][] = [];
-    await fetchIssuesMovedOffBranch(
+    const first = await fetchIssuesMovedOffBranch(
       REPO,
       BRANCH_A,
       7,
       new Set(),
-      movedOffGhFn(first),
+      movedOffGhFn([]),
       cache,
     );
-    const prListCalls = (calls: string[][]) =>
-      calls.filter((a) => a[0] === "pr" && a[1] === "list").length;
-    assertEquals(prListCalls(first), 1);
+    assertEquals(first.map((i) => i.number), [5326, 5331]);
+    assertEquals(
+      (await cache.read<{ number: number }[]>(
+        REPO,
+        `prs_base_merged_${BRANCH_A}`,
+      ))?.map((pr) => pr.number),
+      MOVED_PR_ROWS.map((pr) => pr.number),
+      "the parsed merged-PR list is stored under the branch name",
+    );
 
-    const second: string[][] = [];
-    await fetchIssuesMovedOffBranch(
+    // A live `--base` list would now be unreadable: the cached one answers.
+    const unreadableList = movedOffGhFn([]);
+    const second = await fetchIssuesMovedOffBranch(
       REPO,
       BRANCH_A,
       7,
       new Set(),
-      movedOffGhFn(second),
+      (args) =>
+        args[0] === "pr" && args[1] === "list"
+          ? Promise.reject(new Error("HTTP 502"))
+          : unreadableList(args),
       cache,
     );
-    assertEquals(prListCalls(second), 0, "the merged-PR list is cached");
+    assertEquals(second, first, "the merged-PR list is served from cache");
 
-    const otherBranchCalls: string[][] = [];
     const otherBranch = await fetchIssuesMovedOffBranch(
       REPO,
       BRANCH_B,
       99,
       new Set(),
-      movedOffGhFn(otherBranchCalls, { prList: "[]" }),
+      movedOffGhFn([], { prList: "[]" }),
       cache,
     );
     assertEquals(otherBranch, [], "A's deliveries must not leak into B's list");
-    assertEquals(prListCalls(otherBranchCalls), 1);
   });
 });
 

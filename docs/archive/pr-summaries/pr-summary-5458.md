@@ -99,6 +99,19 @@ Provenance titles checked with GitHub CLI in this run:
   against the checkpoint with two issue entries; the fix gives one entry with
   the live title and milestone note. Malformed-response regressions also went
   red against the checkpoint before the validation repair.
+- The two cache regressions in that file prove caching through their return
+  values, not gh call counts.
+  `fetchIssuesMovedOffBranch - serves the parsed
+  merged-PR list from cache`
+  asserts the stored `prs_base_merged_<branch>` record, then makes the live
+  `--base` list throw and asserts the second call still returns the first run's
+  moved issues.
+  `classifyClosedIssues - a cached
+  verdict for one milestone branch is not served for another`
+  supplies a timeline with a reopen after the merge, which gives
+  `predates-reopen` when classified live, and asserts the cached call still
+  returns B's claimed verdict. Each failed when its cache read was disabled in
+  production code, and passed with it restored.
 - Existing assertions in `worker/deno/tests/milestone_completion_test.ts` are
   retained. Calls supply the required branch argument; failure fakes distinguish
   the new base-branch discovery read from the search they exercise. Existing
@@ -127,9 +140,16 @@ Provenance titles checked with GitHub CLI in this run:
 
 ## Merge verification
 
-- **Passed:** `./quality.sh < /dev/null` on the final code head (`40667450f`):
+- **Passed:** `./quality.sh < /dev/null` on code head `40667450f`:
   `Result: PASSED (with skipped checks)`, including `deno tests`, `deno lint`,
-  `deno type check`, `deno fmt` and semgrep.
+  `deno type check`, `deno fmt` and semgrep. The later commit changes only the
+  two cache tests above. That test file passed (18 tests), as did its
+  formatting, lint and type check. A run of all 14 `tests/*milestone*_test.ts`
+  files gave 1,879 passed and 1 failed. The failure was
+  `milestone_sync_gate_repair_test.ts::syncMilestoneBranchWithDefault - a clean merge's compiler failure is repaired before delivery`
+  ("Found 1 not formatted file" in its temporary repository's push). That file
+  fails the same way on `origin/main` and is untouched here. The worker re-runs
+  the full gate on the new head.
 - An earlier full-gate attempt failed once in
   `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts::the production pass runs one repair container at a time`
   (`the second repair started beside the first`). This branch does not touch
