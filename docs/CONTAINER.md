@@ -1438,6 +1438,38 @@ stop reason says so instead and does not promise another recreate (Issue 4498).
 Above the floor, or where the trim is honoured, the build is parked
 where the park applies (Issue #4413), and the launch continues.
 
+### A running agent stops at the guest memory floor (Issue #4815)
+
+While an agent runs, the worker reads guest memory every 5 s through the
+memory-pressure probe (`Deno.systemMemoryInfo()` on Linux). This covers any
+agent invocation through `runClaudeWithTimeout`, so the execute turn and the
+pre-PR verifier alike. The floor is the larger of 512 MiB and 5% of total
+memory. Two readings in a row below it stop the agent's process tree, then the
+run's tagged leftovers are reaped. A reading without figures (unreadable, or
+macOS's level-only reading) never stops a run. The check is armed only in the
+worker process (`run-core`), beside the in-flight host-disk gate, so unit tests
+do not inherit the host's memory. Quality-gate and pre-flight commands are not
+watched, because they are not agent runs.
+
+Every hard kill on Issue #4815 had a guest that stopped answering its exec
+probe. The last in-run reading before the 2026-11-25 kill was MemAvailable
+2344 MiB. The guest has no swap, and running out of memory without an OOM kill
+stops it scheduling (the reason the entrypoint caps `CARGO_BUILD_JOBS`,
+Issue #4225). Stopping the agent runs keeps the guest answering.
+
+The reading is guest-wide and each agent run watches it on its own, so a low
+guest stops every agent run active in the worker within the same poll, not one
+run: another slot's execute turn or pre-PR verifier pass stops with it. Each
+stopped run is handled as below.
+
+The stop reason opens with `[GUEST_MEMORY_FLOOR]` and names both figures. In
+the execute phase the run is released as `interrupted`, logged at WARNING, and
+not retried in-process. Its work stays on the issue branch in a `wip:` commit
+("execute was stopped at the guest memory floor …") with a handover note. In
+the quality-fix loop the run is released as `interrupted` with the same reason,
+and no further quality pass, infrastructure retry or bump audit starts. In the
+pre-PR verifier the stop makes that pass `not checked`; it does not block.
+
 ### HOST_DISK_BUDGET merges without the build (Issue #4326)
 
 Above the floor, a build can still be refused by the ephemeral cargo root's

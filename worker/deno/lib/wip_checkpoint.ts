@@ -99,7 +99,12 @@ export type WipPreservationCause =
    * the issue: the work is checkpointed here so the next claim resumes from the
    * branch.
    */
-  | "host-disk-park";
+  | "host-disk-park"
+  /**
+   * The guest memory floor stopped the agent before the guest ran out of
+   * memory (Issue #4815). The work is checkpointed for the next claim.
+   */
+  | "guest-memory-floor";
 
 /** Subject phrase for each cause — the tail of the `wip:` commit subject. */
 const WIP_CAUSE_PHRASE: Record<WipPreservationCause, string> = {
@@ -112,6 +117,7 @@ const WIP_CAUSE_PHRASE: Record<WipPreservationCause, string> = {
   "turn-limit": "hit the agent turn limit",
   "executor-unfinished": "stopped with executor work unfinished",
   "host-disk-park": "was parked at the host disk floor",
+  "guest-memory-floor": "was stopped at the guest memory floor",
 };
 
 /**
