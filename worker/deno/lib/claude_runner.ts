@@ -2019,10 +2019,14 @@ async function runClaudeWithTimeoutBody(
         const reading = await readMemoryPressureAtKill(
           options.probeMemoryPressure,
         );
-        if (reading.level !== "high") return;
         const now = clock.now();
+        // The guard's absolute floor is checked on its own, not behind the
+        // telemetry level: on a small guest the probe can still read "ok"
+        // (over 10% available) once less than 256 MiB is left (PR #5611
+        // review). The pressure warning keeps its own level and window.
         const critical = isBelowMemoryGuardFloor(reading);
-        const warnDue = now - lastMemoryWarnMs >= memoryWatchMinIntervalMs;
+        const warnDue = reading.level === "high" &&
+          now - lastMemoryWarnMs >= memoryWatchMinIntervalMs;
         if (!critical && !warnDue) return;
         if (warnDue) lastMemoryWarnMs = now;
         let psText: string;

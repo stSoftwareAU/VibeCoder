@@ -31,7 +31,10 @@ import {
 } from "../lib/memory_guard.ts";
 import { parseProcessTable } from "../lib/kill_diagnostics.ts";
 import { getStartTime } from "../lib/pid_guard.ts";
-import type { MemoryPressureReading } from "../lib/memory_pressure.ts";
+import {
+  classifyPressure,
+  type MemoryPressureReading,
+} from "../lib/memory_pressure.ts";
 import {
   agentStubGate,
   createAgentStub,
@@ -626,6 +629,87 @@ Deno.test({
           w.includes("No such process")
         ),
         `the failed kill is logged, not swallowed: ${JSON.stringify(warns)}`,
+      );
+    } finally {
+      await stub.dispose();
+    }
+  },
+});
+
+/** A 2 GiB guest with 220 MiB available, classified as the real probe does. */
+const SMALL_GUEST_TOTAL = 2 * 1024 ** 3;
+const SMALL_GUEST_AVAILABLE = 220 * 1024 ** 2;
+const SMALL_GUEST_READING: MemoryPressureReading = {
+  level: classifyPressure(SMALL_GUEST_TOTAL, SMALL_GUEST_AVAILABLE),
+  totalBytes: SMALL_GUEST_TOTAL,
+  availableBytes: SMALL_GUEST_AVAILABLE,
+};
+
+Deno.test("memory_guard #5529 - a 2 GiB guest with 220 MiB left reads ok to the probe but is below the guard floor", () => {
+  assertEquals(SMALL_GUEST_READING.level, "ok");
+  assert(isBelowMemoryGuardFloor(SMALL_GUEST_READING));
+});
+
+Deno.test({
+  name:
+    "runClaudeWithRetry - the guard acts below its floor on a small guest whose probe level is still ok (Issue #5529)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await createAgentStub(guardStubBody(), {
+      prefix: "memory_guard_5529_small_",
+    });
+    try {
+      const { logger, warns } = capturingLogger();
+      const clock = fakeClock();
+      const signals = chunkSignals();
+      const killed: number[] = [];
+      const guardKilled = Promise.withResolvers<void>();
+      const childPidFile = `${stub.dir}/${CHILD_PID_FILE}`;
+      const run = runClaudeWithRetry(
+        {
+          ...COMMON_OPTS,
+          clock,
+          agentBinaryPath: stub.path,
+          logger,
+          descendantSnapshotIntervalMs: 100,
+          onActivity: signals.onActivity,
+          probeMemoryPressure: () => Promise.resolve(SMALL_GUEST_READING),
+          memoryWatchRunPs: async () =>
+            runnerPsTable(Number(await waitForFile(childPidFile))),
+          memoryGuardReadStartTime: guardStartTimes(),
+          memoryGuardKill: (pid) => {
+            killed.push(pid);
+            guardKilled.resolve();
+          },
+        },
+        NO_RETRY_WAIT,
+      );
+      await signals.chunk(1);
+      await clock.advance(100);
+      await within(guardKilled.promise, "the small-guest guard kill");
+      await releaseAgentStub(stub, "guard");
+      const result = await run;
+
+      assert(
+        result.ok,
+        `expected ok result, got ${!result.ok && result.error}`,
+      );
+      assertEquals(killed, [TREE_DESCENDANT_PID]);
+      const guardWarns = warns.filter((w) =>
+        w.startsWith("Guest memory critically low")
+      );
+      assertEquals(guardWarns.length, 1, JSON.stringify(warns));
+      assert(
+        guardWarns[0]!.includes(`pid=${TREE_DESCENDANT_PID}`),
+        guardWarns[0],
+      );
+      // An ok level logs no pressure warning: that keeps its own level.
+      assertEquals(
+        warns.filter((w) =>
+          w.startsWith("Memory pressure high during the agent run")
+        ),
+        [],
       );
     } finally {
       await stub.dispose();
