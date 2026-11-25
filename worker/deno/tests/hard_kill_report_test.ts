@@ -1598,6 +1598,9 @@ Deno.test("hardKillLastStep names each setup step from its start line, past the 
     "repository setup",
     "heartbeat start",
     "default branch sync",
+    "milestone branch",
+    "milestone pre-sync",
+    "session resume",
     "feature branch",
     "pre-setup command",
   ];
