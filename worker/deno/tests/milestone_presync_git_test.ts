@@ -113,6 +113,7 @@ Deno.test(
         workDir,
         config: { ...buildDefaultWorkerConfig(), workDir },
         logger: silentLogger,
+        env: NO_HOST_GIT_CONFIG,
       });
 
       assertEquals(result.status, "synced");
@@ -141,7 +142,7 @@ Deno.test(
       const created = await createFeatureBranchFromBase(
         "issue-1780-child",
         MILESTONE_BRANCH,
-        { cwd: clone },
+        { cwd: clone, env: NO_HOST_GIT_CONFIG },
       );
       assert(created.ok, created.ok ? "" : created.error.message);
       assertEquals(await git(["rev-parse", "HEAD"], clone), syncedTip);
@@ -191,6 +192,7 @@ Deno.test(
         workDir,
         config: { ...buildDefaultWorkerConfig(), workDir },
         logger,
+        env: NO_HOST_GIT_CONFIG,
       });
 
       assert(
@@ -237,6 +239,7 @@ Deno.test(
         workDir,
         config: { ...buildDefaultWorkerConfig(), workDir },
         logger: silentLogger,
+        env: NO_HOST_GIT_CONFIG,
       });
 
       assertEquals(result.status, "level");
@@ -253,3 +256,119 @@ Deno.test(
     }
   },
 );
+
+/** A local Git config accepted by git-operations, pointing only at this fixture. */
+async function refusingHook(root: string): Promise<Record<string, string>> {
+  const hooks = root + "/hooks";
+  await Deno.mkdir(hooks);
+  await Deno.writeTextFile(
+    hooks + "/pre-push",
+    '#!/bin/sh\necho refused > "$(dirname "$0")/ran"\nexit 1\n',
+    { mode: 0o755 },
+  );
+  const config = root + "/gitconfig";
+  await git(["config", "--file", config, "core.hooksPath", hooks], root);
+  return {
+    GIT_CONFIG_COUNT: "0",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: config,
+  };
+}
+
+Deno.test("pre-cut sync honours its caller's hook configuration at the remote", async () => {
+  for (const shield of [false, true]) {
+    const { root, clone } = await fixture();
+    try {
+      const host = await refusingHook(root);
+      const before = await git(
+        ["rev-parse", MILESTONE_BRANCH],
+        root + "/remote.git",
+      );
+      const result = await presyncMilestoneBranchForIssueRun({
+        repo: REPO,
+        milestoneTitle: "#1780 Presync",
+        milestoneBranch: MILESTONE_BRANCH,
+        defaultBranch: "main",
+        cwd: clone,
+        workDir: root,
+        config: { ...buildDefaultWorkerConfig(), workDir: root },
+        logger: silentLogger,
+        env: {
+          ...NO_HOST_GIT_CONFIG,
+          ...host,
+          ...(shield ? NO_HOST_GIT_CONFIG : {}),
+        },
+      });
+      const after = await git(
+        ["rev-parse", MILESTONE_BRANCH],
+        root + "/remote.git",
+      );
+      assertEquals(
+        result.status,
+        shield ? "synced" : "deferred",
+        result.detail,
+      );
+      assertEquals(after === before, !shield);
+      if (!shield) {
+        assertEquals(await Deno.readTextFile(root + "/hooks/ran"), "refused\n");
+      }
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("git-operations push honours an accepted caller config at the remote", async () => {
+  const { root, clone } = await fixture();
+  try {
+    const host = await refusingHook(root);
+    const branch = "issue-fixture";
+    await git(["checkout", "-b", branch], clone);
+    await git(["push", "-u", "origin", branch], clone);
+    const before = await git(["rev-parse", branch], root + "/remote.git");
+    await git(["commit", "--allow-empty", "-m", "fixture change"], clone);
+    for (const shield of [false, true]) {
+      const request = {
+        operation: "push-unpushed-commits",
+        "branch-name": branch,
+        cwd: clone,
+        env: {
+          ...host,
+          GIT_CONFIG_GLOBAL: shield ? "/dev/null" : host.GIT_CONFIG_GLOBAL,
+        },
+      };
+      // The command accepts only Git config keys. Disable the journal in a
+      // private process so neither half can append to the fleet work directory.
+      const worker = new URL("../", import.meta.url);
+      const output = await new Deno.Command(Deno.execPath(), {
+        cwd: worker,
+        env: { ...NO_HOST_GIT_CONFIG, WORK_DIR: root },
+        args: [
+          "eval",
+          "--cached-only",
+          `
+          import { gitOperationsCommand } from "./commands/git_operations.ts";
+          import { buildDefaultWorkerConfig } from "./lib/config_defaults.ts";
+          const result = await gitOperationsCommand.execute(JSON.parse(Deno.args[0]), buildDefaultWorkerConfig());
+          console.log(JSON.stringify(result));
+        `,
+          JSON.stringify(request),
+        ],
+      }).output();
+      assertEquals(output.code, 0, new TextDecoder().decode(output.stderr));
+      const result = JSON.parse(
+        new TextDecoder().decode(output.stdout).trim().split("\n").at(-1)!,
+      );
+      assertEquals(result.success, shield, result.message);
+      if (!shield) {
+        assertEquals(await Deno.readTextFile(root + "/hooks/ran"), "refused\n");
+      }
+      assertEquals(
+        await git(["rev-parse", branch], root + "/remote.git"),
+        shield ? await git(["rev-parse", "HEAD"], clone) : before,
+      );
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

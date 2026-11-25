@@ -99,7 +99,7 @@ Deno.test(
       const outcome = await syncMilestoneBranchWithDefault(
         BRANCH,
         "main",
-        { cwd: clone },
+        { cwd: clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         green,
         green,
