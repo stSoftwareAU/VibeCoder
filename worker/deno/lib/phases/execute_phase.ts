@@ -12,7 +12,10 @@ import { classifyRunFailure } from "../run_outcome_classifier.ts";
 import { AgentTurnLimitError } from "../claude_turn_limit.ts";
 import { billedResultOfError } from "../failed_invocation_result.ts";
 import { UnfinishedIssueExecutorError } from "../issue_executor_enforcement.ts";
-import { GuestMemoryFloorError } from "../guest_memory_floor.ts";
+import {
+  GUEST_MEMORY_FLOOR_MARKER,
+  GuestMemoryFloorError,
+} from "../guest_memory_floor.ts";
 import { HostDiskParkError } from "../heavy_build_gate.ts";
 /**
  * Phase 3 — Execute Claude.
@@ -430,6 +433,21 @@ export async function workOnIssueExecuteClaude(
     deps.logger.warn(
       "Not retrying the run in-process: the Claude turn cap is a policy stop " +
         "and the work is on the issue branch; the next claim resumes it (Issue #4949)",
+      { phase: "execute" },
+    );
+    return result;
+  }
+
+  // Issue #4815: a guest memory stop is not retried in-process for the same
+  // reason as #4374: the retry would start the workload into the memory that
+  // just fell below the floor. The work is preserved; the next claim resumes it.
+  if (
+    result.category === "interrupted" &&
+    result.reason?.startsWith(GUEST_MEMORY_FLOOR_MARKER)
+  ) {
+    deps.logger.warn(
+      "Not retrying the run in-process: the guest memory floor stopped it " +
+        "and the work is on the issue branch; the next claim resumes it (Issue #4815)",
       { phase: "execute" },
     );
     return result;

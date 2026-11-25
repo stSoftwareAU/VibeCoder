@@ -153,8 +153,8 @@ export const runCoreCommand: Command = {
         config: _config,
       });
       // Armed here, not inside the deps factory: unit tests build those deps
-      // and must not park every other test's agent (Issue #4360). The guest memory floor is armed
-      // the same way (Issue #4815).
+      // and must not park every other test's agent (Issue #4360). The guest
+      // memory floor is armed the same way (Issue #4815).
       enableInFlightHostDiskGate(true);
       armGuestMemoryFloor(true);
 
