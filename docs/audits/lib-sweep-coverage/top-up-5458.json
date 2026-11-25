@@ -1,0 +1,12 @@
+{
+  "issue": 5458,
+  "chunk": "top-up-5458",
+  "title": "top-up: milestone branch deliveries",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5458",
+  "definition": "module added so a milestone rollup's closed-issue list follows what merged into its branch: milestone_branch_deliveries.ts (#5458)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/milestone_branch_deliveries.ts"
+  ],
+  "sweptAt": "0d52315dacadaa56376feedf7ff834b277b7dec9"
+}

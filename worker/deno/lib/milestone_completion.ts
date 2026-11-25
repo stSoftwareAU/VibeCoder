@@ -18,6 +18,8 @@
 
 import type { Result } from "../types.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
+import { fetchIssuesMovedOffBranch } from "./milestone_branch_deliveries.ts";
+import { isMilestoneBranch } from "./milestone_branch_names.ts";
 import {
   isMilestoneHeadAlreadyMerged,
   readBranchCompare,
@@ -179,14 +181,22 @@ interface ClosedIssue {
    * rollup body (Issue #3476). Absent = claimed normally.
    */
   claimProblem?: ClaimProblem;
+  /**
+   * Where the issue sits now, set only for an issue added from the milestone
+   * branch's merged PRs (Issue #5458). Absent = the issue sits in this
+   * milestone; a string = the title of the milestone it now sits in; null =
+   * it now has no milestone.
+   */
+  movedToMilestone?: string | null;
 }
 
-/** Why a closed issue is flagged rather than claimed (Issue #3476). */
+/** Why a closed issue is flagged rather than claimed (Issue #3476, #5458). */
 type ClaimProblem =
   | "sync-pr-only"
   | "predates-reopen"
   | "timeline-unreadable"
-  | "merged-pr-search-unreadable";
+  | "merged-pr-search-unreadable"
+  | "merged-into-other-milestone";
 
 /**
  * Build a {@link DefaultBranchFn} that resolves via the injected
@@ -909,6 +919,8 @@ const CLAIM_PROBLEM_REASONS: Record<ClaimProblem, string> = {
     "issue timeline could not be read, so a later reopen cannot be ruled out",
   "merged-pr-search-unreadable":
     "merged PR search could not be read, so delivery is unconfirmed",
+  "merged-into-other-milestone":
+    "every merged PR went into another milestone's branch",
 };
 
 // Issue #4967: the most `Part of #N` child lines a rollup body carries lives in
@@ -927,6 +939,10 @@ export { MILESTONE_PROVENANCE_MAX_CHILDREN };
  * - `Part of #<child>` for each claimed delivered issue, ascending, deduplicated,
  *   excluding the parent and tracking issues, capped at
  *   {@link MILESTONE_PROVENANCE_MAX_CHILDREN}. Flagged issues never get a line.
+ * A claimed issue whose `movedToMilestone` is set (Issue #5458) is listed with
+ * a note of where it now sits: `(now in milestone "<title>")`, or
+ * `(no longer in a milestone)` when that is null. It still gets its `Part of`
+ * line. Absent `movedToMilestone` renders the plain line.
  * The numbers come only from the title and the worker's own closed-issue list.
  * With no leading `#N` in the title and no claimed children, the output is
  * byte-identical to the body without these lines.
@@ -969,8 +985,18 @@ export function buildMilestoneSummaryBody(
   // Closed-issue titles are attacker-writable text quoted into a PR body the
   // worker signs, so they are scrubbed before interpolation (Issue #1249,
   // finding 8).
+  // Issue #5458: a claimed issue that now sits in another milestone (or in
+  // none) says so. The milestone title is attacker-writable too, so it is
+  // scrubbed like the issue title.
   const issuesList = claimed
-    .map((issue) => `- #${issue.number}: ${scrubUntrustedText(issue.title)}`)
+    .map((issue) => {
+      const moved = issue.movedToMilestone === undefined
+        ? ""
+        : issue.movedToMilestone === null
+        ? " (no longer in a milestone)"
+        : ` (now in milestone "${scrubUntrustedText(issue.movedToMilestone)}")`;
+      return `- #${issue.number}: ${scrubUntrustedText(issue.title)}${moved}`;
+    })
     .join("\n");
 
   // Issue #3476: rendered only when at least one closed issue cannot be
@@ -1378,6 +1404,10 @@ function fingerprintMarker(fingerprint: string): string {
  * `Part of #N` provenance lines, so every fingerprint stamped before that
  * change mismatches and an existing open rollup is rewritten once to carry
  * them. Bump the tag whenever the rendered body's inputs or shape change.
+ *
+ * Issue #5458: the payload is `rollup-provenance-v3`. Each issue carries its
+ * `movedToMilestone`, so the "now in milestone" note refreshes an open rollup.
+ * An absent value (`false`) is kept apart from a null one (no milestone).
  */
 async function summaryPrFingerprint(
   milestoneTitle: string,
@@ -1386,11 +1416,16 @@ async function summaryPrFingerprint(
   closedIssues: ClosedIssue[],
 ): Promise<string> {
   const payload = JSON.stringify([
-    "rollup-provenance-v2",
+    "rollup-provenance-v3",
     milestoneTitle,
     defaultBranch,
     trackingIssueNumber,
-    closedIssues.map((i) => [i.number, i.title, i.claimProblem ?? null]),
+    closedIssues.map((i) => [
+      i.number,
+      i.title,
+      i.claimProblem ?? null,
+      i.movedToMilestone === undefined ? false : i.movedToMilestone,
+    ]),
   ]);
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -1831,22 +1866,43 @@ async function closeMilestoneTrackingIssue(
 // getClosedIssues (internal)
 // ---------------------------------------------------------------------------
 
-/** Cache-entry name prefix for a closed issue's claim verdict (PR #3640 review). */
-const CLAIM_VERDICT_ENTRY_PREFIX = "milestone_claim_verdict_v2_";
+/**
+ * Cache-entry name prefix for a closed issue's claim verdict (PR #3640 review).
+ * v3 (Issue #5458): the verdict depends on the asking milestone's branch.
+ */
+const CLAIM_VERDICT_ENTRY_PREFIX = "milestone_claim_verdict_v3_";
 
-/** A cached claim verdict: valid only for the `updatedAt` it was read at. */
+/**
+ * A cached claim verdict: valid only for the `updatedAt` it was read at and
+ * for the milestone branch it was read for (Issue #5458).
+ */
 interface CachedClaimVerdict {
   updatedAt: string;
   claimProblem: ClaimProblem | null;
+  milestoneBranch: string;
 }
 
 function isCachedClaimVerdict(value: unknown): value is CachedClaimVerdict {
   if (value === null || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   return typeof v.updatedAt === "string" &&
+    typeof v.milestoneBranch === "string" &&
     (v.claimProblem === null ||
       (typeof v.claimProblem === "string" &&
         Object.hasOwn(CLAIM_PROBLEM_REASONS, v.claimProblem)));
+}
+
+/**
+ * Whether a merged PR went into another milestone's branch (Issue #5458). A
+ * PR into the default branch, or into `milestoneBranch` itself, is not.
+ */
+function isMergedIntoOtherMilestone(
+  pr: { baseRefName?: string },
+  milestoneBranch: string,
+): boolean {
+  return typeof pr.baseRefName === "string" &&
+    isMilestoneBranch(pr.baseRefName) &&
+    pr.baseRefName !== milestoneBranch;
 }
 
 /**
@@ -1858,20 +1914,32 @@ function isCachedClaimVerdict(value: unknown): value is CachedClaimVerdict {
  * Anything else is flagged so the rollup lists it for review instead of
  * claiming its work is on the branch.
  *
- * With a `cache`, the verdict for an issue is kept under its number and
- * `updatedAt` (PR #3640 review), so a scan that finds the issue unchanged does
- * not re-page its timeline. A reopen or re-close bumps `updatedAt` and misses.
- * The v2 cache key avoids carrying forward a v1 `sync-pr-only` verdict from
- * before issue-branch recovery. The cache's own TTL bounds how long a verdict
- * survives a change that leaves `updatedAt` alone (a PR merged against the
- * issue by title or branch). Only a verdict
- * reached from a merged PR and a readable timeline is cached. A "sync-pr-only"
- * flag is not (both PR lists have their own caches), and unreadable PR searches
- * or timelines are not cached, so the next scan retries those reads. An issue
- * without an `updatedAt` (an older closed-batch cache entry) is classified live.
+ * Issue #5458: a merged PR based on another milestone's branch does not count
+ * as delivery to `milestoneBranch`. When every merged PR is on another
+ * milestone, the issue is flagged `merged-into-other-milestone` (or
+ * `merged-pr-search-unreadable` when a search was unreadable, since the hidden
+ * search could hold this branch's PR); otherwise the reopen check runs over
+ * the remaining PRs only. The same issue can be classified by two rollups, so
+ * the verdict depends on `milestoneBranch`.
+ *
+ * With a `cache`, the verdict for an issue is kept under its number, its
+ * `updatedAt` (PR #3640 review) and the `milestoneBranch` it was read for, so
+ * a scan that finds the issue unchanged does not re-page its timeline. A
+ * reopen or re-close bumps `updatedAt` and misses; a verdict for another
+ * milestone's branch is not served. The v3 cache key avoids carrying forward
+ * a v2 verdict, which predates the milestone-branch rule (Issue #5458), and a
+ * v1 `sync-pr-only` verdict from before issue-branch recovery. The cache's own
+ * TTL bounds how long a verdict survives a change that leaves `updatedAt`
+ * alone (a PR merged against the issue by title or branch). Only a verdict
+ * reached from a merged PR and a readable timeline is cached, and so is a
+ * `merged-into-other-milestone` verdict. A "sync-pr-only" flag is not (both PR
+ * lists have their own caches), and unreadable PR searches or timelines are not
+ * cached, so the next scan retries those reads. An issue without an `updatedAt`
+ * (an older closed-batch cache entry) is classified live.
  */
 export async function classifyClosedIssues(
   repo: string,
+  milestoneBranch: string,
   issues: ClosedIssue[],
   ghCommandFn: GhCommandFn,
   cache?: IssueCache,
@@ -1881,7 +1949,10 @@ export async function classifyClosedIssues(
     const key = `${CLAIM_VERDICT_ENTRY_PREFIX}${issue.number}`;
     if (cache) {
       const hit = await cache.read<unknown>(repo, key);
-      if (isCachedClaimVerdict(hit) && hit.updatedAt === issue.updatedAt) {
+      if (
+        isCachedClaimVerdict(hit) && hit.updatedAt === issue.updatedAt &&
+        hit.milestoneBranch === milestoneBranch
+      ) {
         classified.push(
           hit.claimProblem === null
             ? issue
@@ -1934,6 +2005,35 @@ export async function classifyClosedIssues(
       continue;
     }
 
+    // Issue #5458: a merged PR based on another milestone's branch is not
+    // delivery to this one. With none left, the issue is flagged without a
+    // timeline read. The verdict is cached only when both searches were
+    // readable: an unreadable search could hold this branch's own PR.
+    const deliveredHerePrs = mergedPrs.filter((pr) =>
+      !isMergedIntoOtherMilestone(pr, milestoneBranch)
+    );
+    if (deliveredHerePrs.length === 0) {
+      const searchesReadable = titleSearchReadable && branchPrs !== null;
+      if (searchesReadable && cache && issue.updatedAt !== undefined) {
+        await cache.write(
+          repo,
+          key,
+          {
+            updatedAt: issue.updatedAt,
+            claimProblem: "merged-into-other-milestone",
+            milestoneBranch,
+          } satisfies CachedClaimVerdict,
+        );
+      }
+      classified.push({
+        ...issue,
+        claimProblem: searchesReadable
+          ? "merged-into-other-milestone"
+          : "merged-pr-search-unreadable",
+      });
+      continue;
+    }
+
     const timeline = await fetchTimelineWithCache(
       repo,
       issue.number,
@@ -1948,7 +2048,7 @@ export async function classifyClosedIssues(
     }
     const reopenedAt = latestReopenedAtFromTimeline(timeline);
     const claimProblem: ClaimProblem | null = reopenedAt !== null &&
-        mergedPrs.every((pr) => !pr.mergedAt || pr.mergedAt < reopenedAt)
+        deliveredHerePrs.every((pr) => !pr.mergedAt || pr.mergedAt < reopenedAt)
       ? "predates-reopen"
       : null;
     if (
@@ -1961,6 +2061,7 @@ export async function classifyClosedIssues(
         {
           updatedAt: issue.updatedAt,
           claimProblem,
+          milestoneBranch,
         } satisfies CachedClaimVerdict,
       );
     }
@@ -1984,6 +2085,13 @@ export async function classifyClosedIssues(
  * they are not bounded by the 500-issue repo-wide batch that once hid an older
  * milestone's work. `null` means a read failed, which is kept apart from `[]`
  * (a genuinely empty milestone) so a failed read is never mistaken for empty.
+ *
+ * Issue #5458: the list also follows what merged into the milestone branch. An
+ * issue whose PR landed on the branch but which has since moved to another
+ * milestone (or to none) is added from the branch's merged PRs, with
+ * `movedToMilestone` set, so the rollup can list where it now sits. Those issues
+ * are classified against the branch like the rest. The branch read is part of
+ * the same try: a failed read is `null`, never a silently shorter list.
  */
 async function getClosedIssues(
   repo: string,
@@ -2019,9 +2127,35 @@ async function getClosedIssues(
       },
     );
     const trackerNumbers = new Set(trackers.map((t) => t.number));
+    // Issue #5458: the branch side. Members of the milestone (every state) and
+    // its trackers are excluded, so only issues that have left it are added.
+    const milestoneBranch = createMilestoneBranchName(milestone.title);
+    const excluded = new Set<number>([
+      ...allStates.map((issue) => issue.number),
+      ...trackerNumbers,
+    ]);
+    const movedIssues = await fetchIssuesMovedOffBranch(
+      repo,
+      milestoneBranch,
+      milestone.number,
+      excluded,
+      ghCommandFn,
+      cache,
+    );
+    // Prefer the live moved-issue row when cached membership still includes it.
+    const issuesByNumber = new Map<number, ClosedIssue>();
+    for (
+      const issue of [
+        ...closed.filter((issue) => !trackerNumbers.has(issue.number)),
+        ...movedIssues,
+      ]
+    ) {
+      issuesByNumber.set(issue.number, issue);
+    }
     return await classifyClosedIssues(
       repo,
-      closed.filter((issue) => !trackerNumbers.has(issue.number)),
+      milestoneBranch,
+      [...issuesByNumber.values()],
       ghCommandFn,
       cache,
     );
@@ -2817,7 +2951,8 @@ async function processRepoMilestones(
         }
         // An unreadable verdict cannot rule out a delivered child, so it is a
         // failed read (never a silent drop); a definitive verdict
-        // (`sync-pr-only`, `predates-reopen`) excludes the child.
+        // (`sync-pr-only`, `predates-reopen`, `merged-into-other-milestone`)
+        // excludes the child.
         const unreadable = closed.filter((issue) =>
           issue.claimProblem === "timeline-unreadable" ||
           issue.claimProblem === "merged-pr-search-unreadable"
