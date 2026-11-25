@@ -89,7 +89,13 @@ Deno.test("real aws-emulator.yml passes every check", () => {
 });
 
 Deno.test("pinned install inside a multiline argument after an ANSI-C escaped quote is refused", () => {
-  for (const quoted of ['"can\'t"', String.raw`$'can\'t'`]) {
+  for (
+    const quoted of [
+      '"can\'t"',
+      String.raw`$'can\'t'`,
+      "$\\\n          'can\\'t'",
+    ]
+  ) {
     expectFindings(
       mutate([
         TOOLCHAIN_ANCHOR,

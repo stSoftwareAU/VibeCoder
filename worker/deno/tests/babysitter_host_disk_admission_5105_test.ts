@@ -501,6 +501,11 @@ Deno.test("the production pass runs one repair container at a time", async () =>
       throw new Error("the pass ended before the expected repair started");
     });
     await Promise.race([repairs[0]!.started.promise, endedBeforeStart]);
+    // Keep the first repair held while a competing task can finish its
+    // asynchronous discovery-ledger writes (including a lock retry).
+    for (let i = 0; i < 50; i++) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
     assertEquals(started, 1, "the second repair started beside the first");
     repairs[0]!.release.resolve();
     await Promise.race([repairs[1]!.started.promise, endedBeforeStart]);

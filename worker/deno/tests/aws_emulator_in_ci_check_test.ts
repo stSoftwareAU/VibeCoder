@@ -1322,6 +1322,27 @@ Deno.test("workflowRunsAwsEmulator - ANSI-C escaped quotes keep multiline argume
   }
 });
 
+Deno.test("workflowRunsAwsEmulator - continued ANSI-C opener keeps multiline arguments out of command position", () => {
+  const quoted = "$\\\n'can\\'t'";
+  const command = "aws-emulator-run -- ./test.sh";
+  assertEquals(
+    workflowRunsAwsEmulator(
+      workflowRunBlock(`true ${quoted} '\n${command}\n'`),
+    ),
+    false,
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - command after a continued ANSI-C opener executes", () => {
+  const quoted = "$\\\n'can\\'t'";
+  assertEquals(
+    workflowRunsAwsEmulator(
+      workflowRunBlock(`true ${quoted}\naws-emulator-run -- ./test.sh`),
+    ),
+    true,
+  );
+});
+
 Deno.test("workflowRunsAwsEmulator - if/then before aws-emulator-run counts", () => {
   assert(
     workflowRunsAwsEmulator(
@@ -4521,6 +4542,21 @@ for (const [label, script, expected] of SHELL_CONTINUATION_CASES) {
 }
 
 const ANSI_C_QUOTE_CASES: [string, string, string[][]][] = [
+  [
+    "continued ANSI-C opener removes unquoted continuations",
+    "true $\\\n\\\n'can\\'t'; next",
+    [["true", String.raw`$'can\'t'`], ["next"]],
+  ],
+  [
+    "CRLF continuation in an ANSI-C opener",
+    "true $\\\r\n'can\\'t'; next",
+    [["true", String.raw`$'can\'t'`], ["next"]],
+  ],
+  [
+    "continued escaped dollar keeps ordinary single quoting",
+    "true \\$\\\n'literal\\'; next",
+    [["true", String.raw`\$'literal\'`], ["next"]],
+  ],
   [
     "escaped apostrophe keeps operators and comments in the word",
     String.raw`true $'can\'t; | & # text'; next`,

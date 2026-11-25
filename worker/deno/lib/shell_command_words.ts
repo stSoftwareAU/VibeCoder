@@ -42,7 +42,8 @@ const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * ends the command (`a \\` + newline + `b` is two commands). Inside double
  * quotes a backslash continues the line before a newline, escapes `\`, `"`,
  * `$` or a backtick, and is otherwise literal. ANSI-C `$'…'` quoting opens
- * outside other quotes, consumes backslash-escaped characters together and
+ * outside other quotes, including across unquoted line continuations,
+ * consumes backslash-escaped characters together and
  * closes only on an unescaped apostrophe. Its raw spelling (including escapes
  * and newlines) is kept, without decoding; adjacent quoted and plain fragments
  * remain one word. A `#` that starts a word outside quotes is a
@@ -139,12 +140,21 @@ function shellCommandList(script: string): {
       if (escaped !== "") i++;
       continue;
     }
-    if (ch === "$" && text.charAt(i + 1) === "'") {
-      quote = "$'";
-      word += "$'";
-      inWord = true;
-      i++;
-      continue;
+    if (ch === "$") {
+      // Unquoted continuations disappear before Bash recognises the opener.
+      let opener = i + 1;
+      while (text.charAt(opener) === "\\") {
+        const lineBreak = newlineLength(opener + 1);
+        if (lineBreak === 0) break;
+        opener += 1 + lineBreak;
+      }
+      if (text.charAt(opener) === "'") {
+        quote = "$'";
+        word += "$'";
+        inWord = true;
+        i = opener;
+        continue;
+      }
     }
     if (ch === '"' || ch === "'") {
       quote = ch;
