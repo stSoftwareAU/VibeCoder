@@ -139,7 +139,8 @@ function stubClient(label: string): GitHubClient {
 
 /**
  * Build the production deps for one route with a Claude dep that always
- * fails, run the route twice, and report what each call did.
+ * fails. Assert that the first scan records the failure and the second
+ * leaves the persisted cooldown state and published comments unchanged.
  */
 async function runRouteTwice(
   route: "planning" | "question",

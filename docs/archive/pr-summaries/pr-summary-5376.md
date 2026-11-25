@@ -73,16 +73,18 @@ comment ("failed-once/failed progression") is corrected, and the docs that said
 Backend-only change, with no UI files. These tests verify it:
 
 - `worker/deno/tests/label_route_failure_cooldown_wiring_5376_test.ts::production deps - a failed planning run posts the 2 h promise and is not re-run on the next scan (Issue #5376)`
-  calls the real `deps.findAndProcessPlanning()` twice, with one `planning`
-  issue and a Claude dep that always fails. The first call must post a comment
-  containing "once its cooldown ends (2 h, rising to 24 h after repeated
-  failures)". The second call must return `processed: false` without running the
-  agent again.
+  drives two scans through `deps.findAndProcessPlanning()`. The first returns
+  `processed: false`, persists one `non_transient` entry for issue 5376 and
+  publishes the 2 h cooldown comment. The second returns `processed: false`
+  and leaves both the persisted state and the published comments unchanged.
 - `…::production deps - a failed question run is not re-run on the next scan (Issue #5376)`
-  does the same through `deps.findAndProcessQuestion()`.
-- Red check, run here: with both opt-in `true` arguments changed to `false`,
-  both tests fail with "the second scan re-ran the agent on an issue in its
-  cooldown". With the change restored, both pass.
+  drives the same two scans through `deps.findAndProcessQuestion()`. It checks
+  both results, the single failure entry, and unchanged state and comments
+  after the second scan.
+- With both route opt-ins set to `false`, both regressions failed at the
+  first-scan state assertion. The entries array was empty where the test
+  expected one `non_transient` entry. Both claim-scan controls passed.
+  With both opt-ins enabled, all four tests passed.
 - `…::production deps - a planning failure past its 2 h window no longer holds the claim scan (Issue #5376)`
   seeds a 3 h-old `non_transient` entry and reads the claim scan's run-local
   hold through the production census. It expects `run_local_hold=0` and
@@ -153,7 +155,8 @@ each entry holds only for its own window). The doc comments in
 - Extended: `worker/deno/tests/cooldown_state_test.ts`, with 7 tests added and
   no existing assertion changed or removed.
 - No existing test was edited.
-- On this head, `deno task test:unit` passed in two runs, 0 failed in each:
+- During the original implementation, `deno task test:unit` passed in two
+  runs, with 0 failures in each:
   - 632 tests: the cooldown, label-route, `find_issues_by_label`, custom-label,
     census, idle-detect, lib-sweep and `run_core_production_deps` test files.
   - 640 tests: every `run_core_*` test file, plus the coding-ladder, idle-task
