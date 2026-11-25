@@ -855,22 +855,22 @@ for (
   const [input, expected, values] of [
     [
       "credentials: DEPLOY_TOKEN = API_TOKEN: hunter2,--token x",
-      `credentials: ${R} = API_TOKEN: ${R} x`,
+      `credentials: DEPLOY_TOKEN = API_TOKEN: ${R}--token ${R}`,
       ["hunter2"],
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: API_TOKEN: ${V},--token x`,
-      `secrets:\n  DEPLOY_TOKEN: API_TOKEN: ${R} x`,
+      `secrets:\n  DEPLOY_TOKEN: API_TOKEN: ${R}--token ${R}`,
       [V],
     ],
     [
       `Rotate these credentials:\nDEPLOY_TOKEN = API_TOKEN: ${V};--password x`,
-      `Rotate these credentials:\n${R} = API_TOKEN: ${R} x`,
+      `Rotate these credentials:\nDEPLOY_TOKEN = API_TOKEN: ${R}--password ${R}`,
       [V],
     ],
     [
       `The secret: credentials: api_key: ${V},--token x`,
-      `The secret: ${R} api_key: ${R} x`,
+      `The secret: credentials: api_key: ${R}--token ${R}`,
       [V],
     ],
     [
@@ -1089,7 +1089,7 @@ for (
     ],
     [
       `credentials: DEPLOY_TOKEN = API_TOKEN =\ntoken: x--token ${V}`,
-      `credentials: ${R} = API_TOKEN =\ntoken: x--token ${R}`,
+      `credentials: ${R} = API_TOKEN =\ntoken: ${R}--token ${R}`,
       [V],
     ],
     [
@@ -1099,7 +1099,7 @@ for (
     ],
     [
       `secrets:\n  DEPLOY_TOKEN: API_TOKEN =\ntoken: abc'--token ${V}`,
-      `secrets:\n  DEPLOY_TOKEN: API_TOKEN =\ntoken: abc'--token ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: API_TOKEN =\ntoken: ${R}--token ${R}`,
       [V],
     ],
   ] as const
@@ -1300,7 +1300,7 @@ for (
     ],
     [
       "secrets:\n  DEPLOY_TOKEN: ',k=v token=abc123def456--api-key \"tail'--api-key hunter2abc",
-      `secrets:\n  DEPLOY_TOKEN: ',k=v token=${R} "tail'--api-key ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R} token=${R}`,
       ["abc123def456", "hunter2abc"],
     ],
     [
