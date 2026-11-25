@@ -69,12 +69,10 @@ flowchart LR
   forms
 - The push-landed check the reworded prompt names is `verifyPushLanded`
   (`worker/deno/lib/pr_feedback_processor.ts`, the Issue #579 block)
-- Related rules checked: the system prompt line in `pr_feedback_processor.ts`,
-  and the push sentences in `prompts/pr_feedback/prompt.md`. Each `push` hit in
-  the prompt was read, and only the three above told a review pass to push.
-  `CODING-STANDARDS.md` has no rule on the agent pushing in a feedback pass. The
-  reworded rule was applied to this diff: nothing in it tells a review pass to
-  push
+- Related rules checked include the system and recovery prompts in
+  `pr_feedback_processor.ts`, the feedback prompt, and
+  `REVIEWER_NO_CHANGE_RETRY_NOTE`. The retry note and the operator guide in
+  `docs/workflows/pr-feedback.md` now describe the same worker-owned push.
 - Issue numbers this diff cites: #5571: Review-fix pass: the agent's own git
   push gets past the Bash(git push:*) denial once RTK rewrites it, so a head the
   verifier refuses is already published and reviewed (a private fleet PR)

@@ -287,14 +287,13 @@ keyword is already present; marking each unmet acceptance criterion
 `partial` or `missing` is the way to keep the PR open against the issue instead
 (Issue #3315).
 
-Before writing `.pr_response_message`, the agent pushes, runs `git fetch origin
-<branch>`, and confirms `origin/<branch>` contains every cited fix commit
-(`git merge-base --is-ancestor`). A fix that exists only in the local worktree
-is never reported as "addressed"; if the push fails, the reply says so and
-names the finding as still open rather than claiming a fix origin does not
-have. This complements the worker's own final-mile push verification described
-in **The final mile** below, which re-checks the push at the git level after
-the agent runs.
+On a `pr_review` pass, the agent commits each fix locally and cites its SHA in
+`.pr_response_message`. The worker verifies the findings, pushes the commits
+and checks that they reached the remote branch. On other passes, the agent
+pushes before writing its reply, fetches the branch and checks each cited SHA
+with `git merge-base --is-ancestor <fix-sha> origin/<branch>`. If the push
+fails, the reply identifies the findings still open. See **The final mile**
+below for the worker's remote check.
 
 #### A request-changes review is never answered with "no change" (Issue #3246)
 
