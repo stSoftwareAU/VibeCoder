@@ -341,13 +341,16 @@ in `worker/deno/lib/failure_detection_repair_label.ts`.
 The **loud failure path is unchanged for genuine planning failures** — a prompt
 failure, a timeout, or a publish failure still drives `handlePlanningFailure()`,
 which records the failure under `failed-once` through `handleIssueFailure` and
-unassigns the issue; the worker never applies `failed` (Issue #4158). This
-change narrows *when* the gate fails a run, not the failure machinery itself.
+unassigns the issue; the worker never applies `failed` (Issue #4158). The
+planning route also records the escalating re-claim cooldown (2 h → 6 h → 24 h)
+that failure record promises, and its scan skips the issue until that cooldown
+ends (Issue #5376). This change narrows *when* the gate fails a run, not the
+failure machinery itself.
 
 ```mermaid
 flowchart TD
     A[Planning run] --> B{Publish succeeded?}
-    B -->|no — prompt/publish failure| C["handlePlanningFailure()<br/>failed-once kept, never failed"]
+    B -->|no — prompt/publish failure| C["handlePlanningFailure()<br/>failed-once kept, never failed<br/>escalating cooldown recorded"]
     B -->|yes| D[Gate + self-repair]
     D --> E{Every sub-issue compliant?}
     E -->|yes| F[Close parent as completed]
@@ -1123,7 +1126,7 @@ When a question times out:
 1. **Partial output exists** → posted as a partial answer with a
    disclaimer. The `question` label is removed to prevent retry loops.
 2. **No useful output** → normal failure handling (comment, `failed-once`
-   label).
+   label) and the escalating re-claim cooldown (Issue #5376).
 
 This timeout was increased from 300s (5 minutes) to 600s (10 minutes) to allow
 sufficient time for complex questions requiring Claude to analyse external

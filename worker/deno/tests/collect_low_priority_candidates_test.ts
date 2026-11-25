@@ -805,6 +805,17 @@ for (const c of STILL_SUPPRESSING_CASES) {
 }
 
 Deno.test(
+  "collect_low_priority_candidates - a leftover failed label still suppresses idle tasks",
+  async () => {
+    const result = await collectSuppression([
+      suppressionFixture(["failed"], []),
+    ]);
+
+    assertEquals(result.hasSuppressingLowPriority, true);
+  },
+);
+
+Deno.test(
   "collect_low_priority_candidates - a PR-blocked issue is not a candidate but still suppresses idle tasks (Issue #2751)",
   async () => {
     const result = await collectSuppression([suppressionFixture([], [])], [{
