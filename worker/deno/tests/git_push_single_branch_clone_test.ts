@@ -137,7 +137,7 @@ Deno.test("commitAndPushPending - reports a clean post-condition on a single-bra
     const result = await commitAndPushPending(
       FEATURE_BRANCH,
       "Fix CI failure: Quality Checks\n\nAutomated final-mile commit.",
-      { cwd: workerPath },
+      { cwd: workerPath, env: NO_HOST_GIT_CONFIG },
       false,
       undefined,
       TEST_RUN_ID,
@@ -181,7 +181,7 @@ Deno.test("commitAndPushPending - still reports unpushed commits when the push g
     const result = await commitAndPushPending(
       FEATURE_BRANCH,
       "Fix CI failure: Quality Checks\n\nAutomated final-mile commit.",
-      { cwd: workerPath },
+      { cwd: workerPath, env: NO_HOST_GIT_CONFIG },
       false,
       undefined,
       TEST_RUN_ID,
@@ -203,6 +203,7 @@ Deno.test("pushUnpushedCommits - skips a redundant push when the remote already 
 
     const first = await pushUnpushedCommits(FEATURE_BRANCH, {
       cwd: workerPath,
+      env: NO_HOST_GIT_CONFIG,
     });
     if (!first.ok) throw first.error;
     assertEquals(first.value, 1);
@@ -211,6 +212,7 @@ Deno.test("pushUnpushedCommits - skips a redundant push when the remote already 
     // this clone has no remote-tracking ref for it.
     const second = await pushUnpushedCommits(FEATURE_BRANCH, {
       cwd: workerPath,
+      env: NO_HOST_GIT_CONFIG,
     });
     if (!second.ok) throw second.error;
     assertEquals(second.value, 0);

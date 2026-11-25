@@ -1363,7 +1363,7 @@ Deno.test("no sync PR is opened into a closed route (Issue #4175)", async () => 
     const result = await syncMilestoneBranchWithDefault(
       "milestone/1048",
       "main",
-      { cwd: clone },
+      { cwd: clone, env: NO_HOST_GIT_CONFIG },
       "owner/repo",
       passingGate,
     );
@@ -1459,7 +1459,7 @@ Deno.test("no sync PR is opened into a not-ahead route with an open child (Issue
     const openRoute = await syncMilestoneBranchWithDefault(
       "milestone/1048",
       "main",
-      { cwd: clone },
+      { cwd: clone, env: NO_HOST_GIT_CONFIG },
       "owner/repo",
       passingGate,
     );

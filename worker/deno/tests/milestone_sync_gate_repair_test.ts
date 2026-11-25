@@ -726,7 +726,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1965",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         traitGate,
         undefined,
@@ -809,7 +809,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1965",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         traitGate,
         undefined,
@@ -856,7 +856,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1965",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         traitGate,
         undefined,
@@ -923,7 +923,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1965",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         traitGate,
         undefined,
@@ -969,7 +969,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1965",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         skippingGate,
         undefined,
@@ -1004,7 +1004,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1965",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         traitGate,
       );
@@ -1046,7 +1046,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1965",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         traitGate,
         undefined,
@@ -1123,7 +1123,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1965",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         traitGate,
         undefined,

@@ -98,7 +98,7 @@ Deno.test("claimMilestoneSync - the first host claims; a sibling is told who hol
   try {
     const first = await claimMilestoneSync({
       milestoneBranch: BRANCH,
-      options: { cwd: fx.a },
+      options: { cwd: fx.a, env: NO_HOST_GIT_CONFIG },
       hostLabel: "host-a",
     });
     assertEquals(first.kind, "claimed");
@@ -106,7 +106,7 @@ Deno.test("claimMilestoneSync - the first host claims; a sibling is told who hol
 
     const second = await claimMilestoneSync({
       milestoneBranch: BRANCH,
-      options: { cwd: fx.b },
+      options: { cwd: fx.b, env: NO_HOST_GIT_CONFIG },
       hostLabel: "host-b",
     });
     assertEquals(second.kind, "held-elsewhere");
@@ -114,13 +114,16 @@ Deno.test("claimMilestoneSync - the first host claims; a sibling is told who hol
       assert(second.ageMs >= 0 && second.ageMs < 60_000);
     }
 
-    const released = await releaseMilestoneSyncClaim(BRANCH, { cwd: fx.a });
+    const released = await releaseMilestoneSyncClaim(BRANCH, {
+      cwd: fx.a,
+      env: NO_HOST_GIT_CONFIG,
+    });
     assertEquals(released, { ok: true });
     assertEquals(await remoteHasClaim(fx.origin), false);
 
     const third = await claimMilestoneSync({
       milestoneBranch: BRANCH,
-      options: { cwd: fx.b },
+      options: { cwd: fx.b, env: NO_HOST_GIT_CONFIG },
       hostLabel: "host-b",
     });
     assertEquals(third.kind, "claimed");
@@ -134,14 +137,14 @@ Deno.test("claimMilestoneSync - a claim older than the TTL is taken over, atomic
   try {
     const stale = await claimMilestoneSync({
       milestoneBranch: BRANCH,
-      options: { cwd: fx.a },
+      options: { cwd: fx.a, env: NO_HOST_GIT_CONFIG },
       hostLabel: "host-a",
     });
     assertEquals(stale.kind, "claimed");
     // Host B sees the claim as three hours old.
     const later = await claimMilestoneSync({
       milestoneBranch: BRANCH,
-      options: { cwd: fx.b },
+      options: { cwd: fx.b, env: NO_HOST_GIT_CONFIG },
       hostLabel: "host-b",
       nowMs: () => Date.now() + 3 * 60 * 60 * 1000,
     });
@@ -150,7 +153,7 @@ Deno.test("claimMilestoneSync - a claim older than the TTL is taken over, atomic
     // Host A, back from the dead, now finds B's fresh claim.
     const back = await claimMilestoneSync({
       milestoneBranch: BRANCH,
-      options: { cwd: fx.a },
+      options: { cwd: fx.a, env: NO_HOST_GIT_CONFIG },
       hostLabel: "host-a",
     });
     assertEquals(back.kind, "held-elsewhere");
@@ -164,7 +167,7 @@ Deno.test("claimMilestoneSync - a clone that cannot see the milestone tip report
   try {
     const outcome = await claimMilestoneSync({
       milestoneBranch: BRANCH,
-      options: { cwd: dir },
+      options: { cwd: dir, env: NO_HOST_GIT_CONFIG },
     });
     assertEquals(outcome.kind, "unknown");
     if (outcome.kind === "unknown") {
@@ -172,5 +175,50 @@ Deno.test("claimMilestoneSync - a clone that cannot see the milestone tip report
     }
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("claimMilestoneSync - the claim push honours request.options.env, so a host hook leak is shielded (Issue #5371)", async () => {
+  const hooksRoot = await Deno.makeTempDir({ prefix: "issue-5371-hooks-" });
+  const marker = `CLAIM-PRE-PUSH-MARKER-${crypto.randomUUID()}`;
+  const hooksDir = `${hooksRoot}/hooks`;
+  await Deno.mkdir(hooksDir);
+  await Deno.writeTextFile(
+    `${hooksDir}/pre-push`,
+    `#!/bin/sh\necho "${marker}" >&2\nexit 1\n`,
+  );
+  await Deno.chmod(`${hooksDir}/pre-push`, 0o755);
+  const hostLike = {
+    ...NO_HOST_GIT_CONFIG,
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "core.hooksPath",
+    GIT_CONFIG_VALUE_0: hooksDir,
+  };
+  const leaky = await fleet();
+  const shielded = await fleet();
+  try {
+    const refused = await claimMilestoneSync({
+      milestoneBranch: BRANCH,
+      options: { cwd: leaky.a, env: hostLike },
+      hostLabel: "host-a",
+    });
+    assertEquals(refused.kind, "unknown");
+    if (refused.kind === "unknown") {
+      assertStringIncludes(refused.reason, marker);
+    }
+
+    const claimed = await claimMilestoneSync({
+      milestoneBranch: BRANCH,
+      options: {
+        cwd: shielded.a,
+        env: { ...hostLike, ...NO_HOST_GIT_CONFIG },
+      },
+      hostLabel: "host-a",
+    });
+    assertEquals(claimed.kind, "claimed");
+  } finally {
+    await leaky.cleanup();
+    await shielded.cleanup();
+    await Deno.remove(hooksRoot, { recursive: true }).catch(() => {});
   }
 });

@@ -115,7 +115,7 @@ Deno.test("syncMilestoneBranchWithDefault - a refused resolution carries the gat
     const result = await syncMilestoneBranchWithDefault(
       "milestone/5162",
       "main",
-      { cwd: fx.clone },
+      { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       undefined,
       timedOutGate,
     );
