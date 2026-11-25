@@ -19,6 +19,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   captureProcessIdentity,
+  getStartTime,
   isRunning,
   isSameProcess,
   type ProcessIdentity,
@@ -28,6 +29,7 @@ import {
   type TerminateProcessTreeDeps,
 } from "../lib/pid_guard.ts";
 import { killClaudeProcessTree } from "../lib/claude_runner.ts";
+import { commandOutputWithTimeout } from "../lib/subprocess_timeout.ts";
 
 /** One signal sent through the fake seams. */
 interface SentSignal {
@@ -60,7 +62,7 @@ const FAKE_SELF_PID = 999_999;
 /**
  * Fake seams for {@link terminateProcessTree}.
  *
- * `startTimes` scripts what `ps -o lstart=` reports for each pid on
+ * `startTimes` scripts the start token reported for each pid on
  * successive lookups — the seam that lets a test replay a pid being reused
  * partway through a kill.
  */
@@ -212,7 +214,7 @@ Deno.test("pid_guard - terminateProcessTree fingerprints the target itself when 
 });
 
 Deno.test("pid_guard - terminateProcessTree sends nothing when the pid is already gone (Issue #501)", async () => {
-  // An empty `ps -o lstart=` means the pid holds no process we can identify.
+  // An empty start token means the pid holds no process we can identify.
   const { deps, sent } = makeTreeDeps({
     pgidOutput: "1234\n",
     startTimes: { 1234: [""] },
@@ -337,6 +339,66 @@ Deno.test("pid_guard - terminateDescendants escalation re-checks identity: a des
 // ---------------------------------------------------------------------------
 // Identity capture against the real process table
 // ---------------------------------------------------------------------------
+
+// Captured from `cat /proc/self/stat`; field 22 is the kernel start tick.
+const LINUX_STAT =
+  "37676 (cat) R 37675 37675 37675 0 -1 4194304 97 0 0 0 0 0 0 0 25 5 1 0 96806 3096576 354 18446744073709551615 187650832269312 187650832310344 281474502721392 0 0 0 0 0 0 0 0 0 17 6 0 0 0 0 0 187650832398768 187650832400656 187651105570816 281474502723464 281474502723484 281474502723484 281474502733803 0";
+
+for (const [name, stat, expected] of [
+  ["kernel ticks", LINUX_STAT, "linux:96806"],
+  ["parentheses and whitespace in comm", LINUX_STAT.replace("(cat)", "(a )(\nx)"), "linux:96806"],
+  ["a process started at tick zero", LINUX_STAT.replace("96806", "0"), "linux:0"],
+  ["a mismatched pid", LINUX_STAT.replace("37676 (", "37677 ("), ""],
+  ["a truncated stat", "37676 (cat) R 37675", ""],
+  ["a malformed start tick", LINUX_STAT.replace("96806", "unknown"), ""],
+] as const) {
+  Deno.test({
+    name: `pid_guard - Linux start token handles ${name}`,
+    ignore: Deno.build.os !== "linux",
+    async fn() {
+      assertEquals(await getStartTime(37676, 10_000, () => Promise.resolve({
+        success: true,
+        code: 0,
+        signal: null,
+        stdout: new TextEncoder().encode(stat),
+        stderr: new Uint8Array(),
+      })), expected);
+    },
+  });
+}
+
+Deno.test({
+  name: "pid_guard - a Linux process remains signalable after its calendar start time shifts (Issue #5572)",
+  ignore: Deno.build.os !== "linux",
+  async fn() {
+      let tz = "UTC0";
+      const readStartTime = (pid: number) => getStartTime(
+        pid,
+        10_000,
+        (executable, args, stdout, timeoutMs) => commandOutputWithTimeout(executable, {
+          args, stdout, stderr: "null", timeoutMs, env: { TZ: tz },
+        }),
+      );
+      const identity = await captureProcessIdentity(Deno.pid, readStartTime);
+      assert(identity);
+      assertEquals(await isSameProcess(identity, readStartTime), true);
+      const { deps, sent } = makeTreeDeps({
+        startTimes: {},
+        runningSequence: [false],
+      });
+      deps.getStartTime = readStartTime;
+      await terminateProcessTree(Deno.pid, 0, deps, { identity });
+      assertEquals(sent, [{ target: Deno.pid, signal: "TERM" }]);
+
+      // A display offset reproduces the unstable fingerprint without
+      // changing the host clock or sending any real signal.
+      tz = "UTC-2";
+      sent.length = 0;
+      await terminateProcessTree(Deno.pid, 0, deps, { identity });
+      assertEquals(sent, [{ target: Deno.pid, signal: "TERM" }]);
+      assertEquals(await isSameProcess(identity, readStartTime), true);
+  },
+});
 
 Deno.test("pid_guard - captureProcessIdentity fingerprints a live process and matches it back (Issue #501)", async () => {
   const identity = await captureProcessIdentity(Deno.pid);

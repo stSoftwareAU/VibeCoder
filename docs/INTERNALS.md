@@ -575,12 +575,18 @@ Every signal is also **identity-gated** (Issue #501). A pid is only a handle:
 the kernel re-issues it as soon as the process behind it is reaped, and a
 watchdog that fires in that window would signal — or sweep the children of — a
 stranger. `runClaudeWithTimeout` fingerprints the agent at spawn
-(`captureProcessIdentity`, the process's `ps -o lstart=` start time) and the
+(`captureProcessIdentity`: kernel start ticks on Linux, `ps -o lstart=` on
+other platforms) and the
 terminate helpers re-read that start time immediately before every signal: the
 parent before its descendants are swept, and each descendant before its TERM and
 again before its KILL. A pid that no longer matches its fingerprint is reported
 as skipped and never signalled, so the kill path cannot reach a process it
 cannot prove it started.
+
+Linux reads field 22 of `/proc/<pid>/stat` through a bounded `cat` command.
+That token survives calendar-clock and timezone adjustments; comparing
+calendar start times could refuse to terminate the same live agent after
+such a shift. An unreadable or malformed token still refuses signalling.
 
 ```mermaid
 flowchart LR
