@@ -68,7 +68,13 @@ hide commands after the closing quote. Closes #5525.
   `worker/deno/lib/aws_emulator_workflow_check.ts` already consumes escaped
   characters in its ANSI-C quote state. Both consumers retain the shared
   tokeniser; no separate command-tokeniser copy was found.
-- Full `./quality.sh < /dev/null`: still running; no final verdict recorded yet.
+- First full `./quality.sh < /dev/null`: **failed** in the unchanged
+  `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` test
+  `the production pass runs one repair container at a time`, during temporary
+  directory cleanup: `Directory not empty (os error 39)`. The parallel pass
+  reported 36,724 passed, 1 failed and 5 ignored; the serial pass did not run.
+  Running that file directly through `deno task test:unit` then passed all
+  **16** tests. Other completed gate checks passed, except the skips below.
 
 ## Merge verification
 
