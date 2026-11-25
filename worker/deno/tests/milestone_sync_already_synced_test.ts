@@ -103,7 +103,7 @@ Deno.test("syncMilestoneBranchWithDefault - a sync a sibling landed mid-rung is 
     const outcome = await syncMilestoneBranchWithDefault(
       BRANCH,
       "main",
-      { cwd: hostB },
+      { cwd: hostB, env: NO_HOST_GIT_CONFIG },
       undefined,
       green,
       green,

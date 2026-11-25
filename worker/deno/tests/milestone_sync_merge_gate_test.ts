@@ -124,7 +124,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/974",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         failingGate,
       );
@@ -163,7 +163,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/974",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         passingGate,
       );
@@ -198,7 +198,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/974",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       );
 
       assert(
@@ -243,7 +243,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/974",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         failingGate,
       );
@@ -272,6 +272,65 @@ Deno.test(
       );
     } finally {
       await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - the sync push honours options.env, so a host hook leak is shielded (Issue #5371)",
+  async () => {
+    const hooksRoot = await Deno.makeTempDir({ prefix: "issue-5371-hooks-" });
+    const marker = `SYNC-PRE-PUSH-MARKER-${crypto.randomUUID()}`;
+    const hooksDir = `${hooksRoot}/hooks`;
+    await Deno.mkdir(hooksDir);
+    await Deno.writeTextFile(
+      `${hooksDir}/pre-push`,
+      `#!/bin/sh\necho "${marker}" >&2\nexit 1\n`,
+    );
+    await Deno.chmod(`${hooksDir}/pre-push`, 0o755);
+    const hostLike = {
+      ...NO_HOST_GIT_CONFIG,
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.hooksPath",
+      GIT_CONFIG_VALUE_0: hooksDir,
+    };
+    const leaky = await setupBehindMilestone();
+    const shielded = await setupBehindMilestone();
+    try {
+      const refused = await syncMilestoneBranchWithDefault(
+        "milestone/974",
+        "main",
+        { cwd: leaky.clone, env: hostLike },
+        undefined,
+        passingGate,
+      );
+      assert(!refused.ok, "the host hook must refuse the push");
+      assertStringIncludes(refused.error.message, marker);
+      assertEquals(
+        await remoteSha(leaky, "milestone/974"),
+        leaky.milestoneSha,
+        "a refused push leaves the remote milestone branch alone",
+      );
+
+      const synced = await syncMilestoneBranchWithDefault(
+        "milestone/974",
+        "main",
+        { cwd: shielded.clone, env: { ...hostLike, ...NO_HOST_GIT_CONFIG } },
+        undefined,
+        passingGate,
+      );
+      assert(
+        synced.ok,
+        `expected a successful sync: ${!synced.ok && synced.error.message}`,
+      );
+      assert(
+        (await remoteSha(shielded, "milestone/974")) !== shielded.milestoneSha,
+        "the shielded sync moved the remote milestone branch",
+      );
+    } finally {
+      await leaky.cleanup();
+      await shielded.cleanup();
+      await Deno.remove(hooksRoot, { recursive: true }).catch(() => {});
     }
   },
 );
