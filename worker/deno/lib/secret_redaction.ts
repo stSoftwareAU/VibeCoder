@@ -1031,18 +1031,19 @@ function verdictOf(text: string, match: RegExpExecArray): AssignmentVerdict {
   const matchEnd = match.index + match[0].length;
   const key = match[1] ?? "";
   const sep = match[2] ?? "";
-  const valueStart = matchEnd - (match[3] ?? "").length;
+  const matchedValue = match[3] ?? "";
+  const valueStart = matchEnd - matchedValue.length;
   const end = flagSafeAssignmentEnd(text, valueStart, matchEnd);
-  const value = text.slice(valueStart, end);
   return {
     index: match.index,
     end,
     key,
     sep,
-    value,
+    value: text.slice(valueStart, end),
     // Issue #5330: a credential flag with a value is left to `secret-cli-flag`.
     masked: !credentialFlagTakesValueAt(text, valueStart) &&
-      assignmentIsMasked(key, sep, value, textAfter(text, end)),
+      // Shortening the mask must not reclassify a credential prefix as prose.
+      assignmentIsMasked(key, sep, matchedValue, textAfter(text, matchEnd)),
   };
 }
 

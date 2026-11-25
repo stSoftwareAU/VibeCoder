@@ -20,7 +20,7 @@ function assertFinal(input: string, expected: string): void {
 
 const CASES: [string, string][] = [
   [`password: token=--token ${V}`, `password: ${R}--token ${R}`],
-  [`password:\ntoken=--token ${V}`, `password:\ntoken=--token ${R}`],
+  [`password:\ntoken=--token ${V}`, `password:\n${R}--token ${R}`],
   [
     `credentials: DEPLOY_TOKEN=--api-token ${V}`,
     `credentials: ${R}--api-token ${R}`,
@@ -44,7 +44,7 @@ const CASES: [string, string][] = [
   ],
   [
     `password:\ntoken=--token '${V} with spaces'`,
-    `password:\ntoken=--token ${R}`,
+    `password:\n${R}--token ${R}`,
   ],
   [
     `password: token=--token ${V} --password second-value`,

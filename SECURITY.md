@@ -565,7 +565,9 @@ both values, extending through successive overlaps. Keeping the first flag
 would otherwise mask the second flag's name and publish its value. The name
 checks read at most 150 characters, and each overlap advances through the next
 value; the input is never truncated. Before this fix the assignment masked the
-first flag's name and published its value.
+first flag's name and published its value. Whether to mask is judged on the
+original assignment value, so shortening the mask cannot expose a prefix by
+reclassifying it as a short word or prose across a line break.
 
 A quoted value may hold an escaped quote of its own kind, and the whole literal
 is masked: `"abc\"def"`, `'abc\'def'`, the SQL `'abc''def'` and the shell
