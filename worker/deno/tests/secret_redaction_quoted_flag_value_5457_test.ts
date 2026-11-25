@@ -142,3 +142,22 @@ Deno.test("#5457 control: JSON output still parses", () => {
   const output = redactSecrets('{"api_token":"run --password ","next":"v"}');
   assertEquals(JSON.parse(output), { api_token: R, next: "v" });
 });
+
+for (const prefix of [" ", ",", ":", "]", "}"]) {
+  leak(
+    `flag value starts with ${JSON.stringify(prefix)}`,
+    `API_TOKEN='abc123def\nrun --password '${prefix}sample word'`,
+    `API_TOKEN=${R}`,
+    ["sample word"],
+  );
+}
+
+Deno.test("#5457 overlapping assignment masks the entire nested value", () => {
+  const nested = ["sample", "fixture", "words"].join(" ");
+  const input = `API_TOKEN='abc123def\nrun --password 'TOKEN='${nested}'`;
+  const output = redactSecrets(input);
+  assert(containsSecret(input));
+  for (const word of nested.split(" ")) assert(!output.includes(word));
+  assertEquals(containsSecret(output), false);
+  assertEquals(redactSecrets(output), output);
+});

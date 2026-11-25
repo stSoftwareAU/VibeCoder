@@ -30,17 +30,12 @@ double-quoted shapes from the issue comment. Closes #5457.
   reads that flag's value with the flag rule's own value alternatives
   (`CLI_FLAG_VALUE_AT`). Only credential flags extend the mask; a non-credential
   flag such as `--name` keeps the base behaviour
-- The flag's value must be glued to the closing quote: whitespace, `,`, `:`, `]`
-  or `}` after it (`OPENS_FLAG_VALUE_AT`) means the quote really closes the
-  value. Without this, a JSON string ending in a credential flag and a space,
-  `{"api_token":"run --password ","next":"v"}`, lost its quotes and the next
-  member's `","`, because the flag rule's raw reading takes `","` as a quoted
-  value. That broke the JSON-structure contract (Issue #4169). In every leak
-  shape the flag's value is glued to the quote
-- The extended mask is pushed into the walk's mask list and the walk resumes
-  after it, so nothing inside the flag's value is judged again. The mask holds
-  no quotes around the placeholder because the extended value is not a single
-  quoted literal, so the output is `API_TOKEN=***REDACTED***`
+- A double-quoted JSON member retains its closing quote before whitespace
+  or structural punctuation. Outside that member context a quoted flag value
+  may start with any of those characters.
+- The walk records the extended mask and resumes at the value start with the
+  mask end as its floor. A nested assignment that crosses that boundary can
+  extend the mask again.
 - The read is bounded by the flag rule's own value match, and each closing quote
   is read at most once, so the walk stays linear (the module header's linearity
   rule)
@@ -68,7 +63,7 @@ flowchart LR
 - Issue numbers this diff cites: #5457: An unclosed single-quoted
   secret-assignment value runs into the next line's credential flag and
   publishes that flag's quoted value; #4169: the JSON-structure contract the
-  glued-value check keeps
+  JSON member check keeps
 
 ## Test Plan
 
@@ -109,3 +104,8 @@ flowchart LR
   that check, `deno fmt`, `deno lint` and `deno check` on the changed files are
   clean and the suites above were re-run. The worker re-runs the gate
 - Not done or not checked: none beyond the two skipped gate stages
+
+## Review verification
+
+Six additional cases cover a nested assignment and five leading characters in
+quoted flag values. The secret-redaction test files passed all 583 tests.
