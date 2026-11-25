@@ -37,9 +37,14 @@ escalation.
    alone and post nothing. A PR whose only red checks are cancelled runs is
    infrastructure too (`ci-cancelled`): the fleet's CI-fix scan re-runs it
    once per head, and it is left alone exactly like `ci-failed`. A completed
-   GitHub Actions check suite that failed counts as `ci-failed` too, even with
-   no check run: a workflow that fails at startup (`startup_failure`) creates
-   one, and the rollup does not show it (Issue #4347). **One
+   GitHub Actions check suite that failed with no check run counts as
+   `ci-failed` too: a workflow that fails at startup (`startup_failure`)
+   creates one, and the rollup does not show it (Issue #4347). An unfinished
+   `github-actions` suite means `waiting-ci` even beside a `SUCCESS` rollup,
+   including a queued workflow with no check run and a rerun with earlier
+   green checks. Failures and cancellations take precedence. Suites from
+   other apps do not affect this suite gate, and age never makes an unfinished
+   Actions suite green. **One
    exception:** a red dependency-audit check (`audit` in its name) that
    CI-fix has already replied to at the current head, with a fleet
    `vibe-ci-fix-attempt` marker for that check, is sent back once with a

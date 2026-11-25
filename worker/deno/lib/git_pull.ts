@@ -77,6 +77,7 @@ import {
 import { verifyResolvedTree } from "./milestone_resolution_gate.ts";
 import {
   checkMergedTree,
+  MERGE_GATE_UNVERIFIED_CAUSES,
   mergeGateFailureCause,
   mergeGateFailureError,
   type MergeGateFn,
@@ -433,10 +434,11 @@ async function gateThenPushMilestoneBranch(
   repo: string | undefined,
   mergeGate: MergeGateFn,
   preMergeSha: string,
+  recordingFailure?: Error,
 ): Promise<Result<string>> {
   const outcome = await mergeGate(options.cwd ?? ".");
 
-  if (outcome.status === "failed") {
+  if (outcome.status === "failed" || recordingFailure) {
     // The caller refuses to merge at all without a pre-merge SHA, so there is
     // always one to roll back to here.
     let resetNote = "";
@@ -449,13 +451,10 @@ async function gateThenPushMilestoneBranch(
       resetNote = ` — and the local merge could NOT be reset to ` +
         `${preMergeSha}: ${describeGitFailure(reset)}`;
     }
-    return {
-      ok: false,
-      error: mergeGateFailureError(milestoneBranch, defaultBranch, {
-        ...outcome,
-        detail: `${outcome.detail}${resetNote}`,
-      }),
-    };
+    const error = recordingFailure ??
+      mergeGateFailureError(milestoneBranch, defaultBranch, outcome);
+    error.message += resetNote;
+    return { ok: false, error };
   }
 
   const pushNote = await pushSyncedMilestoneBranch(
@@ -822,6 +821,20 @@ async function syncMilestoneBranchWithDefaultBody(
     return formatStageTimings(stageTimings, host);
   };
 
+  // Repairs run inside verification, but their cost belongs to the agent stage.
+  const timedRepairAgent: MilestoneConflictAgentFn | undefined = agentFn
+    ? async (request) => {
+      timer.stop();
+      timer.start("agent");
+      try {
+        return await agentFn(request);
+      } finally {
+        timer.stop();
+        timer.start("gate");
+      }
+    }
+    : undefined;
+
   // Ensure enough history for range/merge ops on a shallow clone (Issue
   // #1502). A failure here is NOT a free pass to merge anyway (Issue #2896):
   // without a common ancestor locally, `git merge` refuses as "unrelated
@@ -896,23 +909,62 @@ async function syncMilestoneBranchWithDefaultBody(
     if (await alreadySyncedElsewhere(milestoneBranch, defaultBranch, options)) {
       return await adoptRemoteSync(milestoneBranch, defaultBranch, options);
     }
-    // Push the synced milestone branch (Issue #605), or raise a PR for it
-    // where a repository rule refuses the push (Issue #589) — but only once
-    // the merged tree has passed the repo's own gate (Issue #974).
+    timer.start("gate");
+    const firstGate = await mergeGate(options.cwd ?? ".");
+    const defaultSha = await readRef(defaultBranch, options);
+    const mergeSha = await readRef("HEAD", options);
+    // A clean textual merge can still break a contract across files. Reuse
+    // the resolution repair before the push path discards that tree (#5530).
+    // A fast-forward has no local merge commit to amend; leave it refused
+    // rather than rewriting the default branch's commit.
+    const verified = firstGate.status === "failed" &&
+        !(firstGate.cause &&
+          MERGE_GATE_UNVERIFIED_CAUSES.has(firstGate.cause)) &&
+        defaultSha && mergeSha && mergeSha !== defaultSha
+      ? await runGateWithRepair({
+        firstGate,
+        gate: () => resolutionGate(options.cwd ?? "."),
+        agentFn: timedRepairAgent,
+        options,
+        milestoneBranch,
+        defaultBranch,
+        preMergeSha,
+        defaultRef: defaultSha,
+        resolutionMessage: `Merge '${defaultBranch}' into '${milestoneBranch}'`,
+        logger,
+      })
+      : { gate: firstGate, firstGate };
+    timer.stop();
+    timer.start("push");
     const gated = await gateThenPushMilestoneBranch(
       milestoneBranch,
       defaultBranch,
       options,
       repo,
-      mergeGate,
+      () => Promise.resolve(verified.gate),
       preMergeSha,
+      verified.amendFailure ? new Error(verified.amendFailure) : undefined,
     );
-    if (!gated.ok) return gated;
+    timer.stop();
+    recordTimings();
+    if (!gated.ok) {
+      if (verified.repair) {
+        gated.error.message += `\n\n${
+          describeRepairEscalation(verified.firstGate, verified.repair)
+        }`;
+      }
+      return gated;
+    }
+    const repair = verified.repair;
     return {
       ok: true,
       value: {
         message:
-          `${selfHealNote}${gated.value}Successfully merged '${defaultBranch}' into '${milestoneBranch}' (${behindCount} commit(s) integrated)`,
+          `${selfHealNote}${gated.value}Successfully merged '${defaultBranch}' into '${milestoneBranch}' (${behindCount} commit(s) integrated)${
+            repair?.status === "repaired"
+              ? ` — ${summariseGateRepair(repair.record)}`
+              : ""
+          }`,
       },
     };
   }
@@ -1263,19 +1315,6 @@ async function syncMilestoneBranchWithDefaultBody(
   // sync. Its minutes belong to `agent`, not to `gate` — otherwise the line
   // attributes the time to the wrong stage, which is the one thing it exists
   // to get right. The gate's own slices either side of the repair accumulate.
-  const timedRepairAgent: MilestoneConflictAgentFn | undefined = agentFn
-    ? async (request) => {
-      timer.stop();
-      timer.start("agent");
-      try {
-        return await agentFn(request);
-      } finally {
-        timer.stop();
-        timer.start("gate");
-      }
-    }
-    : undefined;
-
   timer.start("gate");
   const verified = await runGateWithRepair({
     gate: runResolutionGate,
