@@ -556,10 +556,16 @@ the label's value as before.
 
 The same holds for a credential flag whose name ends a value after other text,
 as in `password: token=--token <value>` or `password: abc--token <value>`, with
-the label on the same line or the line before: the value ends before the flag's
-name, so the `secret-cli-flag` rule keeps the name and masks its value (Issue
-#5608). Before that fix the whole value was masked, the flag's name with it, and
-the flag's value was published.
+the label on the same line or the line before (Issue #5608). The
+assignment's value ends before the flag's name, so `secret-cli-flag` keeps the
+name and masks its value. An exception is a flag whose own value ends in
+another credential flag's name followed by a value, as in
+`password: token=--token first--password second`: the assignment masks through
+both values, extending through successive overlaps. Keeping the first flag
+would otherwise mask the second flag's name and publish its value. The name
+checks read at most 150 characters, and each overlap advances through the next
+value; the input is never truncated. Before this fix the assignment masked the
+first flag's name and published its value.
 
 A quoted value may hold an escaped quote of its own kind, and the whole literal
 is masked: `"abc\"def"`, `'abc\'def'`, the SQL `'abc''def'` and the shell
@@ -597,11 +603,11 @@ ending in `token:` with text glued to its closing quote. The mask now runs
 through the flag's value.
 
 The label side stays deliberately blunt — it catches real secrets — apart from
-the prose-heading check below. The value is judged before the mask is applied,
-and, apart from that check, **only when the separator crossed a line break**:
+the prose-heading check below. After the flag handling above, the value-shape
+checks apply **only when the separator crossed a line break**:
 
-- An **inline** assignment is masked exactly as it always was, with one
-  exception: a prose heading (Issue #5253, below). `secret_scanning: enabled`,
+- An **inline** assignment passes the value-shape check; a prose heading is
+  exempted separately (Issue #5253, below). `secret_scanning: enabled`,
   `PASSWORD=12345`, and a value wrapped in backticks or opening with `#`, `>`
   or `|` — all legitimate password characters — are untouched by the
   judgement. That boundary is load-bearing: an earlier cut judged inline values

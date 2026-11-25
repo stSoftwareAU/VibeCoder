@@ -1300,7 +1300,7 @@ for (
     ],
     [
       "secrets:\n  DEPLOY_TOKEN: ',k=v token=abc123def456--api-key \"tail'--api-key hunter2abc",
-      `secrets:\n  DEPLOY_TOKEN: ',k=v token=${R} "tail'--api-key ${R}`,
+      `secrets:\n  DEPLOY_TOKEN: ${R} token=${R}`,
       ["abc123def456", "hunter2abc"],
     ],
     [

@@ -879,8 +879,8 @@ const RULES: readonly RedactionRule[] = [
   // A credential flag with a value that an earlier label would capture as its
   // value (`token: --token <value>`, on the same line or the next) is left to
   // this rule by the assignment rule (Issue #5330). So is one whose name ends an
-  // earlier label's value after other text (`password: token=--token <value>`),
-  // as the assignment's value ends before the flag's name (Issue #5608).
+  // earlier label's value after other text (`password: token=--token <value>`).
+  // Overlapping nested flag values are masked together instead (Issue #5608).
   //
   // A quoted flag value may hold an escaped quote of its own kind and is masked
   // whole (Issue #5435): before, the value ended at that quote and the rest
@@ -1025,16 +1025,14 @@ function execAssignmentAt(
  * {@link credentialFlagTakesValueAt}. A value that ends in a credential flag's
  * name with a value after it (`password: token=--token <value>`,
  * `password: abc--token <value>`) ends before the flag's name, see
- * {@link flagNameEndingValueAt}.
+ * {@link flagSafeAssignmentEnd}, which masks through overlapping flag values.
  */
 function verdictOf(text: string, match: RegExpExecArray): AssignmentVerdict {
   const matchEnd = match.index + match[0].length;
   const key = match[1] ?? "";
   const sep = match[2] ?? "";
   const valueStart = matchEnd - (match[3] ?? "").length;
-  // Issue #5608: the value ends before a credential flag that ends it.
-  const flagAt = flagNameEndingValueAt(text, valueStart, matchEnd);
-  const end = flagAt === -1 ? matchEnd : flagAt;
+  const end = flagSafeAssignmentEnd(text, valueStart, matchEnd);
   const value = text.slice(valueStart, end);
   return {
     index: match.index,
@@ -2124,9 +2122,9 @@ function flagQuoteReaches(
 }
 
 /**
- * The longest a credential flag's name can be: `--`, up to 63 name characters
+ * An upper bound on a credential flag's name: `--`, up to 63 name characters
  * either side of the credential keyword, and the keyword itself. The tail of
- * the value {@link flagNameEndingValueAt} reads is capped at this, so the read
+ * the value {@link flagSafeAssignmentEnd} reads is capped at this, so the read
  * costs the same however long the value is (the linearity rule in the module
  * header).
  */
@@ -2137,8 +2135,8 @@ const FLAG_NAME_AT_END =
   /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}$/i;
 
 /**
- * Where a credential flag's name starts when it ends a `secret-assignment`
- * value after other text and a value follows it (Issue #5608), or -1:
+ * End a `secret-assignment` value before a credential flag's name when the
+ * name ends it after other text and a value follows the flag (Issue #5608):
  * `password: token=--token <value>`, `password: abc--token <value>`. The
  * value then ends before the flag's name, which is left for the
  * `secret-cli-flag` rule to keep while it masks the flag's value; masking the
@@ -2148,24 +2146,37 @@ const FLAG_NAME_AT_END =
  * read. A flag whose own value, as the `secret-cli-flag` rule reads it, ends
  * in another credential flag's name with a value after it is not cut: that
  * rule would mask the second flag's name with the first flag's value and
- * publish the second value, so the outer value keeps its mask as before. The
- * flag's value is read once, with {@link CLI_FLAG_AT}, bounded by the rule's
- * own value match.
+ * publish the second value. Instead, mask through both values, extending
+ * through successive overlapping flags. Each extension reads a bounded name
+ * tail and advances through the next value with {@link CLI_FLAG_AT}; the
+ * value reads are disjoint, so the work stays linear. Otherwise keep `end`.
  */
-function flagNameEndingValueAt(
+function flagSafeAssignmentEnd(
   text: string,
   valueStart: number,
   end: number,
 ): number {
   const at = flagNameEndingAt(text, valueStart, end);
-  if (at <= valueStart || !credentialFlagTakesValueAt(text, at)) return -1;
+  if (at <= valueStart || !credentialFlagTakesValueAt(text, at)) return end;
   CLI_FLAG_AT.lastIndex = at;
   const flag = CLI_FLAG_AT.exec(text);
   CLI_FLAG_AT.lastIndex = 0;
-  if (flag === null) return -1;
-  const flagEnd = at + flag[0].length;
-  const nested = flagNameEndingAt(text, end, flagEnd);
-  return nested !== -1 && credentialFlagTakesValueAt(text, nested) ? -1 : at;
+  if (flag === null) return end;
+  let through = at + flag[0].length;
+  let from = end;
+  let overlaps = false;
+  while (true) {
+    const nested = flagNameEndingAt(text, from, through);
+    if (nested === -1 || !credentialFlagTakesValueAt(text, nested)) break;
+    CLI_FLAG_AT.lastIndex = nested;
+    const next = CLI_FLAG_AT.exec(text);
+    CLI_FLAG_AT.lastIndex = 0;
+    if (next === null) break;
+    from = through;
+    through = nested + next[0].length;
+    overlaps = true;
+  }
+  return overlaps ? through : at;
 }
 
 /**
@@ -2231,12 +2242,8 @@ function throughFollowingFlag(
     let nameEnd = open;
     while (nameEnd > start && /\s/.test(text[nameEnd - 1]!)) nameEnd--;
     if (nameEnd === open) break;
-    const name = text.slice(Math.max(start, nameEnd - 150), nameEnd)
-      .match(
-        /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}$/i,
-      );
-    if (!name) break;
-    const flagStart = nameEnd - name[0].length;
+    const flagStart = flagNameEndingAt(text, start, nameEnd);
+    if (flagStart === -1) break;
     if (flagStart <= start || !/\s/.test(text[flagStart - 1]!)) break;
     CLI_FLAG_AT.lastIndex = flagStart;
     const flag = CLI_FLAG_AT.exec(text);
