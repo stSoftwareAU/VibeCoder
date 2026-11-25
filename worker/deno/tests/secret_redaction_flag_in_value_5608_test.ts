@@ -39,7 +39,8 @@ const CASES: [string, string][] = [
   [`password:\ttoken=--token\t${V}`, `password:\t${R}--token\t${R}`],
   [`API_KEY: token=--api-key ${V}`, `API_KEY: ${R}--api-key ${R}`],
   // A flag whose value is an unclosed quote running into a second flag name is
-  // not cut, so the outer value keeps its mask (fixture 7 shape).
+  // not cut, so the outer value keeps its mask, as a #5310 round 13 fixture
+  // pins.
   [
     `password: token=--token "tail'--api-key ${V}`,
     `password: ${R} "tail'--api-key ${R}`,

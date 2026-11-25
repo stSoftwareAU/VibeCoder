@@ -878,7 +878,9 @@ const RULES: readonly RedactionRule[] = [
   //
   // A credential flag with a value that an earlier label would capture as its
   // value (`token: --token <value>`, on the same line or the next) is left to
-  // this rule by the assignment rule (Issue #5330).
+  // this rule by the assignment rule (Issue #5330). So is one whose name ends an
+  // earlier label's value after other text (`password: token=--token <value>`),
+  // as the assignment's value ends before the flag's name (Issue #5608).
   //
   // A quoted flag value may hold an escaped quote of its own kind and is masked
   // whole (Issue #5435): before, the value ended at that quote and the rest
@@ -2125,7 +2127,8 @@ function flagQuoteReaches(
  * The longest a credential flag's name can be: `--`, up to 63 name characters
  * either side of the credential keyword, and the keyword itself. The tail of
  * the value {@link flagNameEndingValueAt} reads is capped at this, so the read
- * costs the same however long the value is (Issue #3942).
+ * costs the same however long the value is (the linearity rule in the module
+ * header).
  */
 const FLAG_NAME_SPAN = 150;
 
