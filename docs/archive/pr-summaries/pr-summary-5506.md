@@ -141,7 +141,7 @@ flowchart LR
     `tests/run_outcome_classifier_test.ts`,
     `tests/codex_output_adapter_1695_test.ts`,
     `tests/orchestration_3642_gate_test.ts`, `tests/run_failure_issue_test.ts`
-    and `tests/failure_diagnosis_test.ts`: 244 passed.
+    and `tests/failure_diagnosis_test.ts`: 246 passed.
   - `tests/claude_runner_test.ts`, `tests/run_failure_issue_test.ts`,
     `tests/failure_diagnosis_test.ts`, `tests/coding_failure_ladder_test.ts` and
     `tests/collect_self_diagnostic_candidates_test.ts`: all passed.
