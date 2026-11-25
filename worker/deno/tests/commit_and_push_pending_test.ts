@@ -50,7 +50,16 @@ function commitAndPush(
   return commitAndPushPending(
     branchName,
     commitMessage,
-    { cwd },
+    {
+      cwd,
+      env: {
+        GIT_AUTHOR_NAME: "test",
+        GIT_AUTHOR_EMAIL: "test@example.com",
+        GIT_COMMITTER_NAME: "test",
+        GIT_COMMITTER_EMAIL: "test@example.com",
+        ...NO_HOST_GIT_CONFIG,
+      },
+    },
     false,
     undefined,
     runId,

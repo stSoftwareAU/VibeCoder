@@ -46,7 +46,9 @@ function mutateText(base: string, ...pairs: [string, string][]): string {
         JSON.stringify(from)
       }`,
     );
-    text = text.replace(from, to);
+    // A function replacement keeps `to` literal: a string one would expand
+    // `$'` and friends (Issue #5353).
+    text = text.replace(from, () => to);
   }
   return text;
 }
@@ -73,6 +75,8 @@ function expectFindings(text: string, needles: string[]) {
 
 const TEST_STEP_ANCHOR =
   "\n          ./infra/cloudformation/test-aws-emulator.sh\n";
+/** The real test step's preamble plus the call, as one anchor. */
+const TEST_STEP_BLOCK = "\n          set -euo pipefail" + TEST_STEP_ANCHOR;
 const TEST_STEP_NAME =
   "      - name: Test CloudFormation templates against AWS Emulator\n";
 const TOOLCHAIN_ANCHOR = "bash container/toolchains/aws-emulator.sh";
@@ -98,6 +102,17 @@ Deno.test("(a) accepts the script invoked through bash", () => {
       "\n          bash infra/cloudformation/test-aws-emulator.sh\n",
     ]),
     [],
+  );
+});
+
+Deno.test("the toolchain step is recognised after an env operand X=$(cat v) and not as an argument (Issue #5378)", () => {
+  expectFindings(
+    mutate([TOOLCHAIN_ANCHOR, `X=$(cat v) ${TOOLCHAIN_ANCHOR}`]),
+    [],
+  );
+  expectFindings(
+    mutate([TOOLCHAIN_ANCHOR, `X=$(cat v) echo ${TOOLCHAIN_ANCHOR}`]),
+    ["[pinned-install]"],
   );
 });
 
@@ -174,7 +189,7 @@ for (
   Deno.test(`(a) refuses ${label}`, () => {
     expectFindings(
       mutate([
-        TEST_STEP_ANCHOR,
+        TEST_STEP_BLOCK,
         "\n          set -euo pipefail\n          " + prefix +
         "./infra/cloudformation/test-aws-emulator.sh\n",
       ]),
@@ -186,7 +201,7 @@ for (
 Deno.test("(a) accepts the normal call after set -euo pipefail (control for the negated cases)", () => {
   expectFindings(
     mutate([
-      TEST_STEP_ANCHOR,
+      TEST_STEP_BLOCK,
       "\n          set -euo pipefail\n          ./infra/cloudformation/test-aws-emulator.sh\n",
     ]),
     [],
@@ -197,6 +212,18 @@ Deno.test("(b) refuses a negated pinned install, which would swallow a checksum 
   expectFindings(
     mutate([TOOLCHAIN_ANCHOR, "! " + TOOLCHAIN_ANCHOR]),
     ["[pinned-install] no step runs"],
+  );
+});
+
+// Issue #5351: `env "X"=./script` runs no command (env takes it as an
+// assignment). #5350's exact match refuses it too; this pins it.
+Deno.test("(a) refuses env with a quoted-name assignment as the script (Issue #5351)", () => {
+  expectFindings(
+    mutate([
+      TEST_STEP_ANCHOR,
+      '\n          env "X"=./infra/cloudformation/test-aws-emulator.sh\n',
+    ]),
+    ["[test-step]"],
   );
 });
 
@@ -284,12 +311,26 @@ for (
   });
 }
 
-Deno.test("(a) accepts a real continuation from an assignment into true <script> (Issue #5304)", () => {
-  // `FOO=\` + newline + `true <script>` is `FOO=true <script>`: the script runs.
+Deno.test("(a) refuses a real continuation from an assignment into true <script> (Issue #5304)", () => {
+  // `FOO=\` + newline + `true <script>` is `FOO=true <script>`: the script is
+  // joined, but the exact allowlist (Issue #5350) refuses an assignment prefix.
+  expectFindings(
+    mutate([
+      TEST_STEP_ANCHOR,
+      "\n          FOO=\\\n          true " + SCRIPT_LINE + "\n",
+    ]),
+    [
+      "[test-step] the infra/cloudformation/test-aws-emulator.sh step must run only",
+    ],
+  );
+});
+
+Deno.test("(a) accepts a real continuation from bash into the script path (Issue #5304)", () => {
+  // `bash \` + newline + `<script>` is `bash <script>`: a real continuation.
   assertEquals(
     problemsOf(mutate([
       TEST_STEP_ANCHOR,
-      "\n          FOO=\\\n          true " + SCRIPT_LINE + "\n",
+      "\n          bash \\\n          infra/cloudformation/test-aws-emulator.sh\n",
     ])),
     [],
   );
@@ -333,6 +374,119 @@ for (
     );
   });
 }
+
+// Issue #5353: a `#` line inside a quoted word opened on an earlier line is part
+// of that word, not a comment, and text after the closing quote is live syntax.
+for (
+  const [label, replacement] of [
+    [
+      "a double-quoted word closed by a # line",
+      "\n          " + SCRIPT_LINE + ' "\n          # " || true\n',
+    ],
+    [
+      "a single-quoted word closed by a # line",
+      "\n          " + SCRIPT_LINE + " '\n          # ' || true\n",
+    ],
+    [
+      "an ANSI-C quote whose \\' does not close it",
+      "\n          " + SCRIPT_LINE + " $'a\\'\n          # ' || true\n",
+    ],
+    [
+      'a double quote with an escaped \\" before the newline',
+      "\n          " + SCRIPT_LINE + ' "a\\"\n          # " || true\n',
+    ],
+  ] as const
+) {
+  Deno.test(`(a) refuses ${label} (Issue #5353)`, () => {
+    expectFindings(mutate([TEST_STEP_ANCHOR, replacement]), [
+      "[test-step] no step runs",
+    ]);
+  });
+}
+
+Deno.test("(b) refuses a pinned install whose open quote hides a # line (Issue #5353)", () => {
+  expectFindings(
+    mutate([
+      TOOLCHAIN_ANCHOR,
+      TOOLCHAIN_ANCHOR + ' "\n            # " || true',
+    ]),
+    // The open quote also swallows the runner-install line in that step.
+    ["[pinned-install] no step runs", "[runner-install] no step installs"],
+  );
+});
+
+Deno.test("(b) refuses a pinned aws-cli install whose open quote hides a # line (Issue #5353)", () => {
+  expectFindings(
+    mutate([
+      CLI_TOOLCHAIN_ANCHOR,
+      CLI_TOOLCHAIN_ANCHOR + ' "\n            # " || true',
+    ]),
+    ["[pinned-cli] no step runs"],
+  );
+});
+
+Deno.test("(b) refuses a runner install whose open quote hides a # line (Issue #5353)", () => {
+  expectFindings(
+    mutate([
+      RUNNER_INSTALL_ANCHOR,
+      RUNNER_INSTALL_ANCHOR + ' "\n          # " || true',
+    ]),
+    // The runner install shares the pinned install's step, so both stop counting.
+    ["[pinned-install] no step runs", "[runner-install] no step installs"],
+  );
+});
+
+// Issue #5353 controls: quoting that closes, and apostrophes in comments, keep
+// their comment lines dropped.
+Deno.test("(a) accepts comment lines with apostrophes before the script (Issue #5353)", () => {
+  assertEquals(
+    problemsOf(
+      mutate([
+        TEST_STEP_ANCHOR,
+        "\n          # Don't skip the deploy.\n          # It's required.\n          " +
+        SCRIPT_LINE + "\n",
+      ]),
+    ),
+    [],
+  );
+});
+
+Deno.test("(b) accepts an apostrophe in a trailing comment before a comment line (Issue #5353)", () => {
+  assertEquals(
+    problemsOf(
+      mutate([
+        TOOLCHAIN_ANCHOR,
+        TOOLCHAIN_ANCHOR + " # it's pinned\n            # note || true",
+      ]),
+    ),
+    [],
+  );
+});
+
+Deno.test("(b) accepts a closed double-quoted word with an apostrophe before a comment line (Issue #5353)", () => {
+  assertEquals(
+    problemsOf(
+      mutate([
+        RUNNER_INSTALL_ANCHOR,
+        RUNNER_INSTALL_ANCHOR +
+        '\n          echo "it\'s installed"\n          # note || true',
+      ]),
+    ),
+    [],
+  );
+});
+
+Deno.test('(b) accepts a comment line after a closed "${GITHUB_WORKSPACE}" expansion (Issue #5353)', () => {
+  assertEquals(
+    problemsOf(
+      mutate([
+        CLI_TOOLCHAIN_ANCHOR,
+        CLI_TOOLCHAIN_ANCHOR + "\n          # done || true",
+      ]),
+    ),
+    [],
+  );
+});
 
 Deno.test("(a) accepts an explicit continue-on-error: false on the test step", () => {
   expectFindings(
@@ -444,6 +598,31 @@ Deno.test("(a) accepts shell: bash and the GitHub default bash form", () => {
       [],
     );
   }
+});
+
+// Issue #5316: under `shell: bash {0}` (no errexit) a step's status is its last
+// command's, so a `set -euo pipefail` after the script would replace a failure
+// with success. Only a leading preamble is allowed.
+Deno.test("(a) refuses a trailing set -euo pipefail under shell: bash {0} (Issue #5316)", () => {
+  expectFindings(
+    mutate(
+      [TEST_STEP_NAME, TEST_STEP_NAME + "        shell: bash {0}\n"],
+      [
+        "\n          set -euo pipefail\n          ./infra/cloudformation/test-aws-emulator.sh\n",
+        "\n          ./infra/cloudformation/test-aws-emulator.sh\n          set -euo pipefail\n",
+      ],
+    ),
+    [
+      "[test-step] the infra/cloudformation/test-aws-emulator.sh step must run only an optional leading `set -euo pipefail`",
+    ],
+  );
+});
+
+Deno.test("(a) accepts a leading set -euo pipefail under shell: bash {0} (Issue #5316 control)", () => {
+  expectFindings(
+    mutate([TEST_STEP_NAME, TEST_STEP_NAME + "        shell: bash {0}\n"]),
+    [],
+  );
 });
 
 // (b) the pinned install and the runner install precede the test step.
@@ -766,6 +945,20 @@ for (
   });
 }
 
+// Issue #5353: a `#` line inside a quoted word that a gate line opens is code.
+Deno.test("(gate-script) refuses a gate line whose open quote hides a # line (Issue #5353)", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_RUN,
+        'run: |\n          .github/scripts/gate.sh "\n          # " || true',
+      ),
+    ),
+    "[gate-script]",
+    "no gate step runs",
+  );
+});
+
 Deno.test("(gate-script) accepts a comment line that no continuation reaches", () => {
   assertEquals(
     checkQualityCallsAwsEmulator(
@@ -1037,6 +1230,26 @@ for (
         insertedStep("docker pull busybox && docker tag busybox vibe-coder:ci"),
       ]],
     ],
+    // Unknown quoting (a backtick) with a `#` in it: Bash still joins the
+    // continuation, so codeOf must too (Issue #5348).
+    [
+      "a later step retagging across a continuation after a backtick #",
+      [[
+        AGENT_STEP_NAME,
+        insertedStep(
+          "X=`echo #` docker \\\n          tag busybox vibe-coder:ci",
+        ),
+      ]],
+    ],
+    [
+      "a later step writing GITHUB_ENV across a continuation after a backtick #",
+      [[
+        AGENT_STEP_NAME,
+        insertedStep(
+          "X=`echo #` echo IMAGE=busybox >> $GITHUB_\\\n          ENV",
+        ),
+      ]],
+    ],
     [
       "a later step writing GITHUB_ENV",
       [[
@@ -1209,6 +1422,38 @@ Deno.test("(container-agent-run) refuses set -euo pipefail \\ continued onto # n
     `expected one finding, got: ${JSON.stringify(problems)}`,
   );
   assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+});
+
+// Issue #5316: under `shell: bash {0}` a trailing `set -euo pipefail` after the
+// docker run would replace its failure with success, so only a leading one counts.
+Deno.test("(container-agent-run) refuses a trailing set -euo pipefail under shell: bash {0} (Issue #5316)", () => {
+  const problems = checkContainerBuildRunsAwsEmulator(parseYaml(
+    mutateText(CONTAINER_BUILD, [
+      AGENT_STEP_IF,
+      AGENT_STEP_IF + "        shell: bash {0}\n",
+    ], [
+      "          set -euo pipefail\n" + AGENT_DOCKER_LINE,
+      AGENT_DOCKER_LINE + "          set -euo pipefail\n",
+    ]),
+  ));
+  assertEquals(
+    problems.length,
+    1,
+    `expected one finding, got: ${JSON.stringify(problems)}`,
+  );
+  assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+});
+
+Deno.test("(container-agent-run) accepts a leading set -euo pipefail under shell: bash {0} (Issue #5316 control)", () => {
+  assertEquals(
+    checkContainerBuildRunsAwsEmulator(parseYaml(
+      mutateText(CONTAINER_BUILD, [
+        AGENT_STEP_IF,
+        AGENT_STEP_IF + "        shell: bash {0}\n",
+      ]),
+    )),
+    [],
+  );
 });
 
 const AGENT_ONE_LINE_ARGS = [
@@ -1790,3 +2035,223 @@ for (
     ]);
   });
 }
+
+// Issue #5350: the test step runs the script by its exact path, in the
+// checked-out tree, with no working directory or checkout input that moves it.
+
+const WD_NEEDLE =
+  "[test-step] the infra/cloudformation/test-aws-emulator.sh step may have no working-directory";
+const EXACT_NEEDLE =
+  "[test-step] the infra/cloudformation/test-aws-emulator.sh step must run only";
+const CHECKOUT_NEEDLE =
+  "[test-step] every actions/checkout step in job cloudformation may set with: only persist-credentials and fetch-depth";
+const JOB_TIMEOUT = "    timeout-minutes: 25\n";
+
+for (
+  const [label, pairs] of [
+    ["working-directory on the test step", [[
+      TEST_STEP_NAME,
+      TEST_STEP_NAME + "        working-directory: infra\n",
+    ]]],
+    ["defaults.run.working-directory on job cloudformation", [[
+      JOB_TIMEOUT,
+      JOB_TIMEOUT +
+      "    defaults:\n      run:\n        working-directory: x\n",
+    ]]],
+    ["a workflow-level defaults.run.working-directory", [[
+      "\njobs:\n",
+      "\ndefaults:\n  run:\n    working-directory: x\n\njobs:\n",
+    ]]],
+  ] as [string, [string, string][]][]
+) {
+  Deno.test(`(a) refuses ${label} (Issue #5350)`, () => {
+    expectFindings(mutate(...pairs), [WD_NEEDLE]);
+  });
+}
+
+Deno.test("(a) accepts a job-level defaults.run.shell with no working-directory (Issue #5350)", () => {
+  expectFindings(
+    mutate([
+      JOB_TIMEOUT,
+      JOB_TIMEOUT + "    defaults:\n      run:\n        shell: bash\n",
+    ]),
+    [],
+  );
+});
+
+for (
+  const call of [
+    "./x/infra/cloudformation/test-aws-emulator.sh",
+    "/tmp/infra/cloudformation/test-aws-emulator.sh",
+    "bash ./x/infra/cloudformation/test-aws-emulator.sh",
+    "BASH_ENV=/tmp/x bash infra/cloudformation/test-aws-emulator.sh",
+  ]
+) {
+  Deno.test(`(a) refuses the call \`${call}\` (Issue #5350)`, () => {
+    expectFindings(
+      mutate([TEST_STEP_ANCHOR, `\n          ${call}\n`]),
+      [EXACT_NEEDLE],
+    );
+  });
+}
+
+for (
+  const call of [
+    "infra/cloudformation/test-aws-emulator.sh",
+    "./infra/cloudformation/test-aws-emulator.sh",
+    "bash ./infra/cloudformation/test-aws-emulator.sh",
+    "sh infra/cloudformation/test-aws-emulator.sh",
+  ]
+) {
+  Deno.test(`(a) accepts the call \`${call}\` (Issue #5350)`, () => {
+    expectFindings(mutate([TEST_STEP_ANCHOR, `\n          ${call}\n`]), []);
+  });
+}
+
+const CHECKOUT_PERSIST = "          persist-credentials: false\n";
+for (
+  const input of ["ref: other", "repository: someone/fork", "path: sub"]
+) {
+  Deno.test(`(a) refuses the test job checkout gaining ${input} (Issue #5350)`, () => {
+    expectFindings(
+      mutate([CHECKOUT_PERSIST, CHECKOUT_PERSIST + `          ${input}\n`]),
+      [CHECKOUT_NEEDLE],
+    );
+  });
+}
+
+Deno.test("(a) accepts the test job checkout gaining fetch-depth: 0 (Issue #5350)", () => {
+  expectFindings(
+    mutate([CHECKOUT_PERSIST, CHECKOUT_PERSIST + "          fetch-depth: 0\n"]),
+    [],
+  );
+});
+
+// The container job's checkout builds the image and is mounted for the agent run.
+const CONTAINER_CHECKOUT_PERSIST = CHECKOUT_PERSIST +
+  "\n      - name: Install Deno (strips";
+const CONTAINER_CHECKOUT_NEEDLE =
+  "[container-agent-run] every actions/checkout step in job container may set with: only persist-credentials and fetch-depth";
+
+for (
+  const input of ["ref: other", "repository: someone/fork", "path: sub"]
+) {
+  Deno.test(`(container-agent-run) refuses the container job checkout gaining ${input} (Issue #5350)`, () => {
+    const problems = checkContainerBuildRunsAwsEmulator(parseYaml(mutateText(
+      CONTAINER_BUILD,
+      [
+        CONTAINER_CHECKOUT_PERSIST,
+        CHECKOUT_PERSIST + `          ${input}\n` +
+        "\n      - name: Install Deno (strips",
+      ],
+    )));
+    assertEquals(problems.length, 1, JSON.stringify(problems));
+    assert(problems[0]?.includes(CONTAINER_CHECKOUT_NEEDLE), problems[0]);
+  });
+}
+
+Deno.test("(container-agent-run) accepts the container job checkout gaining fetch-depth: 0 (Issue #5350)", () => {
+  assertEquals(
+    checkContainerBuildRunsAwsEmulator(parseYaml(mutateText(
+      CONTAINER_BUILD,
+      [
+        CONTAINER_CHECKOUT_PERSIST,
+        CHECKOUT_PERSIST + "          fetch-depth: 0\n" +
+        "\n      - name: Install Deno (strips",
+      ],
+    ))),
+    [],
+  );
+});
+
+// Issue #5348: a `#` comment ends at its physical newline, so a backslash at the
+// end of a comment is comment text and the next line is its own command.
+const HIDDEN_TEST_STEP_FINDING =
+  "[test-step] the infra/cloudformation/test-aws-emulator.sh step must run only";
+for (
+  const [label, line] of [
+    ["# note \\ then exit 0", "set -euo pipefail # note \\\n          exit 0"],
+    [
+      "# note \\ then exec true",
+      "set -euo pipefail # note \\\n          exec true",
+    ],
+    ["a bare #\\ then exit 0", "set -euo pipefail #\\\n          exit 0"],
+  ] as const
+) {
+  Deno.test(`(a) refuses ${label} before the script (Issue #5348)`, () => {
+    expectFindings(
+      mutate([
+        TEST_STEP_BLOCK,
+        "\n          " + line + "\n          " + SCRIPT_LINE + "\n",
+      ]),
+      [HIDDEN_TEST_STEP_FINDING],
+    );
+  });
+}
+
+Deno.test("(a) accepts a # comment without a backslash before the script (Issue #5348)", () => {
+  assertEquals(
+    problemsOf(mutate([
+      TEST_STEP_BLOCK,
+      "\n          set -euo pipefail # note\n          " + SCRIPT_LINE + "\n",
+    ])),
+    [],
+  );
+});
+
+Deno.test("(container-agent-run) refuses a # comment ending in a backslash that hides exit 0 (Issue #5348)", () => {
+  const problems = checkContainerBuildRunsAwsEmulator(parseYaml(
+    mutateText(CONTAINER_BUILD, [
+      "          set -euo pipefail\n" + AGENT_DOCKER_LINE,
+      "          set -euo pipefail # note \\\n          exit 0\n" +
+      AGENT_DOCKER_LINE,
+    ]),
+  ));
+  assertEquals(
+    problems.length,
+    1,
+    `expected one finding, got: ${JSON.stringify(problems)}`,
+  );
+  assert(problems[0]?.startsWith("[container-agent-run]"), problems[0]);
+});
+
+Deno.test("(gate-script) refuses a gate line whose # comment ends in a backslash (Issue #5348)", () => {
+  assertOneFinding(
+    checkQualityCallsAwsEmulator(
+      qualityMutated(
+        GATE_RUN,
+        "run: |\n          .github/scripts/gate.sh # note \\\n          exit 0",
+      ),
+    ),
+    "[gate-script]",
+    "no gate step runs",
+  );
+});
+
+// Issue #5378 (pre-PR verifier): the runner install and the image build are
+// read after an `X=$(cat v)` assignment; an `echo` control leaves each an
+// argument.
+Deno.test("(b) accepts the runner install after X=$(cat v); echo control refused (Issue #5378)", () => {
+  expectFindings(
+    mutate([RUNNER_INSTALL_ANCHOR, `X=$(cat v) ${RUNNER_INSTALL_ANCHOR}`]),
+    [],
+  );
+  expectFindings(
+    mutate([RUNNER_INSTALL_ANCHOR, `X=$(cat v) echo ${RUNNER_INSTALL_ANCHOR}`]),
+    ["[runner-install] no step installs"],
+  );
+});
+
+Deno.test("(container-agent-run) accepts docker build after X=$(cat v); echo control refused (Issue #5378)", () => {
+  const problemsWith = (prefix: string) =>
+    checkContainerBuildRunsAwsEmulator(parseYaml(
+      mutateText(CONTAINER_BUILD, [
+        "          " + BUILD_TAG,
+        "          " + prefix + BUILD_TAG,
+      ]),
+    ));
+  assertEquals(problemsWith("X=$(cat v) "), []);
+  const control = problemsWith("X=$(cat v) echo ");
+  assertEquals(control.length, 1, JSON.stringify(control));
+  assert(control[0]?.startsWith("[container-agent-run]"), control[0]);
+});

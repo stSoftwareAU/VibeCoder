@@ -2995,7 +2995,16 @@ Deno.test("runPrePushGate: CI clippy runs exactly as the workflow wrote it, in i
 
 Deno.test("repoShellcheckPolicy: repository workflows distinguish execution from logging and script data", async () => {
   const repo = new URL("../../../", import.meta.url).pathname;
-  const tracked = (await git(repo, "ls-files", "-z")).split("\0").filter(
+  // Preserve host safe.directory settings when reading the real checkout.
+  const out = await new Deno.Command("git", {
+    args: ["ls-files", "-z"],
+    cwd: repo,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
+  const tracked = new TextDecoder().decode(out.stdout).split("\0").filter(
     Boolean,
   );
   const result = await repoShellcheckPolicy(repo, tracked);

@@ -373,7 +373,8 @@ Deno.test("#5310 control: an inner = 254 spaces away keeps the base behaviour", 
 // A double-quoted inner value matches only with its closing quote, which a
 // long value puts past the 256-character window (PR #5322 review round 4):
 // the value was published. It now counts when it opens inside the window and
-// closes within 4,096 characters.
+// closes within 4,096 characters. Since #5329 the 4,096 bound only matters for
+// a value the probe cannot read (see below).
 const longValue = (n: number) => "Ab3".repeat(Math.ceil(n / 3)).slice(0, n);
 for (
   const [name, at, expected] of [
@@ -409,13 +410,25 @@ for (
   }
 }
 
-Deno.test("#5310 control: a double-quoted inner value over 4,096 characters keeps the base behaviour", () => {
-  // The documented limit (SECURITY.md): the label is masked as the earlier
-  // label's value and the inner value is published, as on base.
+// Since #5329 the window probe reads the cut-off quoted value as unterminated,
+// so the full-text match masks it.
+Deno.test("#5310/#5329: a double-quoted inner value over 4,096 characters is masked whole", () => {
+  const once = redactSecrets(
+    `credentials: DEPLOY_TOKEN = "${longValue(4097)}"`,
+  );
+  assertEquals(once, `credentials: DEPLOY_TOKEN = "${R}"`);
+  assertEquals(redactSecrets(once), once);
+  assertEquals(containsSecret(once), false);
+});
+
+Deno.test("#5310 control: a line-broken double-quoted inner value over 4,096 characters keeps the base behaviour", () => {
+  // The documented limit (SECURITY.md) still applies: the window probe cannot
+  // read a value that opens with a line break, so the label is masked as the
+  // earlier label's value and the inner value is published, as on base.
   const value = longValue(4097);
   assertEquals(
-    redactSecrets(`credentials: DEPLOY_TOKEN = "${value}"`),
-    `credentials: ${R} = "${value}"`,
+    redactSecrets(`credentials: DEPLOY_TOKEN = "\n${value}"`),
+    `credentials: ${R} = "\n${value}"`,
   );
 });
 

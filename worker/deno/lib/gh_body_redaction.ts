@@ -453,14 +453,65 @@ function maskedInputFile(
 }
 
 /**
+ * Whether a top-level key/value pair is published text the key scan masks.
+ * One definition, so the masking loop and the remainder check agree.
+ */
+function isPublishedString(key: string, value: unknown): value is string {
+  return PUBLISHED_FIELD_KEYS.has(key.toLowerCase()) &&
+    typeof value === "string";
+}
+
+/** Collect every string reachable in `value`: object keys and string values. */
+function collectStrings(value: unknown, out: string[] = []): string[] {
+  if (typeof value === "string") {
+    out.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectStrings(item, out);
+  } else if (value !== null && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      out.push(key);
+      collectStrings(item, out);
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether a secret survives in a JSON object outside its published-text fields.
+ *
+ * The remainder is `obj` with each published string blanked. It is checked as
+ * serialised text, and every string reachable in it is checked raw, because
+ * escaping can hide a secret from the serialised scan that the parsed value
+ * still carries.
+ */
+function hasSecretOutsidePublishedFields(
+  obj: Record<string, unknown>,
+): boolean {
+  // fromEntries, not assignment: a `__proto__` key must stay an own property.
+  const remainder = Object.fromEntries(
+    Object.entries(obj).map(([key, value]) => [
+      key,
+      isPublishedString(key, value) ? "" : value,
+    ]),
+  );
+  const serialised = JSON.stringify(remainder);
+  if (maskBody(serialised) !== serialised) return true;
+  return collectStrings(remainder).some((s) => maskBody(s) !== s);
+}
+
+/**
  * Mask the published-text keys of a JSON request body.
  *
  * Redacts the string values of {@link PUBLISHED_FIELD_KEYS} on the top-level
  * object, mirroring the `-f body=…` field rules. Returns the re-serialised
- * JSON when a value changed, or undefined when nothing needed masking. Fails
+ * JSON to send instead, or undefined when the original can be sent as is. Fails
  * closed on a secret it cannot place structurally: a non-object body, or a
  * secret surviving in any field the key-scan does not cover — an unparseable
- * or off-field secret must never pass through unscanned.
+ * or off-field secret must never pass through unscanned. The check runs on the
+ * parsed object with its published strings blanked (see
+ * {@link hasSecretOutsidePublishedFields}), never on the JSON-escaped text. An
+ * unchanged body whose original text still trips the scan is sent as its
+ * canonical re-serialisation, so every byte sent has been checked.
  *
  * @throws UnredactableBodyError when the body hides a secret it cannot mask.
  */
@@ -478,9 +529,7 @@ function maskedJsonBody(text: string): string | undefined {
   let changed = false;
   for (const key of Object.keys(obj)) {
     const value = obj[key];
-    if (
-      PUBLISHED_FIELD_KEYS.has(key.toLowerCase()) && typeof value === "string"
-    ) {
+    if (isPublishedString(key, value)) {
       const redacted = maskBody(value);
       if (redacted !== value) {
         obj[key] = redacted;
@@ -488,10 +537,10 @@ function maskedJsonBody(text: string): string | undefined {
       }
     }
   }
-  const serialised = changed ? JSON.stringify(obj) : text;
-  // A secret the key-scan could not reach — a non-body field, a nested value —
-  // still survives here. Fail closed rather than publish it unscanned.
-  if (maskBody(serialised) !== serialised) {
+  // Check the parsed object structurally, never the escaped serialisation:
+  // JSON escaping (\n, \") made already-masked text read as a fresh secret
+  // (Issue #5416). Published strings were each scanned by the loop above.
+  if (hasSecretOutsidePublishedFields(obj)) {
     throw new UnredactableBodyError(
       "<input-body>",
       "the --input body carries a secret outside its redactable body " +
@@ -499,7 +548,11 @@ function maskedJsonBody(text: string): string | undefined {
         "inline with -f body=…",
     );
   }
-  return changed ? serialised : undefined;
+  if (changed) return JSON.stringify(obj);
+  // Unchanged and structurally clean. When the original text still trips the
+  // scan (escaping, or a duplicate key JSON.parse dropped), send the canonical
+  // copy: every byte of it was checked above, which is not true of the original.
+  return maskBody(text) !== text ? JSON.stringify(obj) : undefined;
 }
 
 /**

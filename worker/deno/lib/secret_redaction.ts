@@ -50,10 +50,26 @@ import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
  * means and why every quantifier is bounded.
  */
 const SECRET_ASSIGNMENT_PATTERN =
-  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?[*`>]{0,3}\s*(?::|(?<!>)=)(?:[*_]{1,3}(?=\s))?\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("(?:[^"\\]|\\[^]){1,4096}"|'(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|"[^"]+"|'[^']+'|[^\s"]+)/gi;
+  /\b([A-Za-z0-9_]{0,63}(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]{0,63})(["']?[*`>]{0,3}\s*(?::|(?<!>)=)(?:[*_]{1,3}(?=\s))?\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])((?=\S{0,63}[A-Za-z0-9])(?:"(?:[^"\\]|\\[^]){1,4096}"|'(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|"[^"]+"|'[^']+'|[^\s"]+)|"(?=[^"]{0,255}[A-Za-z0-9])(?:(?:[^"\\]|\\[^]){1,4096}"|[^"]+"|[^"\n\r\u2028\u2029]+)|'(?=[^']{0,255}[A-Za-z0-9])(?:(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|[^']+'))/gi;
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
+
+/**
+ * A credential flag's value as the `secret-cli-flag` rule reads it, shared by
+ * that rule, `CLI_FLAG_AT` and `CLI_FLAG_RULE_G` so the walk reads each flag's
+ * value exactly as the rule masks it (Issue #5435). The quoted branches accept
+ * an escaped quote of their own kind as `SECRET_ASSIGNMENT_PATTERN` does
+ * (Issue #5327): a backslash pair in either quote kind, and in single quotes a
+ * doubled `''` or the shell `'\''` idiom. Each escape-aware branch is bounded
+ * at 4,096 characters or escapes and the alternatives are told apart by their
+ * first two characters, so it stays linear (Issue #3942). A longer value, or
+ * one whose escape never closes (`"C:\dir\"`), falls back to the old branches
+ * that end at the first quote. If a later flag opens its quoted value at
+ * the apparent closing quote, throughFollowingFlag masks the overlap.
+ */
+const CLI_FLAG_VALUE = String
+  .raw`(?:"(?:[^"\\]|\\[^]){1,4096}"|'(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|"[^"]+"|'[^']+'|\S+)`;
 
 /**
  * A single redaction rule: a pattern and the replacement applied to each
@@ -693,6 +709,13 @@ const RULES: readonly RedactionRule[] = [
   // alphanumeric well inside its first 64 characters, so the bounded scan costs
   // constant time per candidate match.
   //
+  // A quoted value is judged inside its quotes (Issue #5329). A letter or
+  // digit within its first 256 characters makes it a credential, so a value
+  // opening with a space or a symbol-only word, such as `PASSWORD=" hunter2"`
+  // or `API_KEY='#! s3cr3t'`, is masked. A double-quoted value with no closing
+  // quote is masked to the end of its line. An unterminated single-quoted value
+  // is still read as a bare run, as before.
+  //
   // A value that opens a JSON object or array is structure, not a credential
   // (Issue #1254). `{"secret_scanning":{"status":"enabled"}}` — the body the
   // repo-hardening path PUTs to enable secret scanning — matched the `\S+`
@@ -766,12 +789,13 @@ const RULES: readonly RedactionRule[] = [
   // label, not masked as that value (Issue #5310). In
   // `credentials: DEPLOY_TOKEN = <value>` the bare-value branch stops at
   // whitespace, so the outer match masked only `DEPLOY_TOKEN`, the scan
-  // resumed after it, and the real value was published. The pattern itself is
-  // unchanged; `walkAssignments` makes the decision where the value is judged
-  // — see there. That holds within the limits `trailingLabel` and
+  // resumed after it, and the real value was published. Issue #5310 left the
+  // pattern unchanged; `walkAssignments` makes the decision where the value is
+  // judged — see there. That holds within the limits `trailingLabel` and
   // `innerAssignment` apply: the inner separator and value start within
   // `INNER_ASSIGNMENT_SPAN` (256) characters of the outer value's end, a
-  // double-quoted inner value closes within `INNER_QUOTED_MAX` (4,096)
+  // double-quoted inner value that opens with a line break, or holds no letter
+  // or digit inside the window, closes within `INNER_QUOTED_MAX` (4,096)
   // characters, the label is at most `INNER_LABEL_MAX` (128) characters, and
   // the embedded-quote case (`DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
   // Past them the base behaviour applies.
@@ -800,6 +824,13 @@ const RULES: readonly RedactionRule[] = [
   // masks whole, as in `--token 'alpha beta credentials: TOKEN='tail` (main's
   // result, see `flagQuoteReaches`). That keeps the base behaviour.
   //
+  // A quoted value whose closing quote is where `secret-cli-flag` opens a
+  // credential flag's value is masked through that flag's value (Issue #5457):
+  // an unclosed single-quoted value running onto the next line's
+  // `--password '...'`, a double-quoted Windows path ending in a backslash, or
+  // a quoted message ending in `token:` with text glued to its closing quote.
+  // Masking only up to that quote hid the flag's name and published its value.
+  //
   // JSON structure survives the mask (Issue #4169's transcript tee is the
   // sink that showed it). Every stream-json line the agent emits carries a
   // `"usage":{"input_tokens":50,...}` block — a key that merely *contains*
@@ -824,6 +855,14 @@ const RULES: readonly RedactionRule[] = [
   //     still parses. The already-redacted lookahead tolerates that opening
   //     quote, so the pass stays idempotent and `containsSecret` stays false
   //     on its own output.
+  //   - the key's runs of key characters either side of the credential keyword
+  //     are bounded at 63 characters each, as `secret-cli-flag` bounds its
+  //     flag-name runs (Issue #5373). Unbounded, the engine retried every
+  //     keyword position in a long run that no separator follows and rescanned
+  //     the rest of the run each time, which was quadratic (the linearity rule
+  //     in the module header), and the decode pass's joined lines reach the
+  //     same shape. The accepted limit: a key with more than 63 key characters
+  //     before or after its keyword is not matched.
   {
     name: "secret-assignment",
     apply: redactAssignments,
@@ -841,16 +880,18 @@ const RULES: readonly RedactionRule[] = [
   // value (`token: --token <value>`, on the same line or the next) is left to
   // this rule by the assignment rule (Issue #5330).
   //
+  // A quoted flag value may hold an escaped quote of its own kind and is masked
+  // whole (Issue #5435): before, the value ended at that quote and the rest
+  // was published. See `CLI_FLAG_VALUE`.
+  //
   // Both flag-name runs are bounded (Issue #3942): unbounded `[A-Za-z0-9-]*`
   // consumed the rest of the text from every `--` position and backtracked
   // looking for the keyword, which is quadratic on a long run of hyphens. No
   // CLI flag name approaches 64 characters either side of the keyword.
   {
     name: "secret-cli-flag",
-    pattern:
-      /(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63})(\s+)(?!-)(?!\*\*\*REDACTED)("[^"]+"|'[^']+'|\S+)/gi,
-    replace: (_m, flag: string, sep: string) =>
-      `${flag}${sep}${REDACTION_PLACEHOLDER}`,
+    apply: redactCliFlags,
+    detect: (text) => text.search(CLI_FLAG_RULE_G) !== -1,
   },
   // Bare 32-hex credential — the ImgBB API key shape (Issue #1387). The two
   // rules above catch that key only while it keeps its wrapper: an
@@ -956,7 +997,21 @@ function execAssignmentAt(
   const resume = pattern.lastIndex;
   pattern.lastIndex = from;
   try {
-    return pattern.exec(text);
+    const match = pattern.exec(text);
+    if (!match) return null;
+    const end = pattern.lastIndex;
+    const value = match[3]!;
+    // Only the quoted fallback that reads beyond the first word widened
+    // the assignment span. Keep the established inner-label walk for the
+    // original first-word matches.
+    const through = /^["']/.test(value) && !/^\S{0,63}[A-Za-z0-9]/.test(value)
+      ? throughFollowingFlag(text, end - value.length, end)
+      : end;
+    if (through > end) {
+      match[3] = text.slice(end - value.length, through);
+      match[0] = text.slice(match.index, through);
+    }
+    return match;
   } finally {
     pattern.lastIndex = resume;
   }
@@ -1063,6 +1118,26 @@ function walkAssignmentsMemoised(text: string): AssignmentVerdict[] {
     }
     const outer = verdictOf(text, match);
     const valueStart = outer.end - outer.value.length;
+    // Issue #5457: a quoted value whose closing quote opens a credential
+    // flag's value is masked through that value (see flagValueThroughQuote).
+    const flagEnd = outer.masked ? flagValueThroughQuote(text, outer) : -1;
+    if (flagEnd !== -1) {
+      const kept = pastFloor(text, {
+        ...outer,
+        end: flagEnd,
+        value: text.slice(valueStart, flagEnd),
+      }, floor);
+      if (kept) {
+        verdicts.push(kept);
+        INNER_MEMO.masks.push({
+          start: kept.end - kept.value.length,
+          end: flagEnd,
+        });
+      }
+      floor = Math.max(floor, flagEnd);
+      from = valueStart;
+      continue;
+    }
     const inner = innerAssignment(text, valueStart, outer.end, 0, outer.masked);
     if (
       inner && !inner.keepsOuter && !quotedRunOn(text, outer) &&
@@ -1561,11 +1636,14 @@ function innerAssignmentUncached(
 /**
  * Whether the inner value after the label ending at `labelEnd` opens with `"`
  * inside the window but closes past it, within {@link INNER_QUOTED_MAX}
- * (Issue #5310). The pattern matches a double-quoted value only with its
- * closing quote, so the window probe fails on a long one
- * (`DEPLOY_TOKEN = "<300 characters>"`) and the value would be published; the
- * full-text match then decides. The search for the closing quote is capped,
- * so each candidate costs bounded extra work (the Issue #3942 linearity rule).
+ * (Issue #5310). Since Issue #5329 the pattern also reads a double-quoted value
+ * with no closing quote to the end of its line, so the window probe reads a
+ * long value cut off by the window as unterminated and the full-text match
+ * masks it. The probe still fails on one that opens with a line break or holds
+ * no letter or digit inside the window (`DEPLOY_TOKEN = "\n<300 characters>"`),
+ * and that value would be published; the full-text match then decides. The
+ * search for the closing quote is capped, so each candidate costs bounded extra
+ * work (the Issue #3942 linearity rule).
  */
 function closesWithinReach(
   text: string,
@@ -1589,8 +1667,11 @@ function closesWithinReach(
  * (PR #5322 review round 8). The flag-name runs are bounded as in that rule
  * (Issue #3942).
  */
-const CLI_FLAG_AT =
-  /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+(?!-)(?:"[^"]+"|'[^']+'|\S+)/iy;
+const CLI_FLAG_AT = new RegExp(
+  String
+    .raw`--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+(?!-)${CLI_FLAG_VALUE}`,
+  "iy",
+);
 
 /**
  * Whether main's scan, resuming right after the inner label it masked as the
@@ -2065,8 +2146,66 @@ function credentialFlagTakesValueAt(text: string, at: number): boolean {
  * The `secret-cli-flag` rule's pattern, read once over the walk's text to
  * find where it opens each flag's value.
  */
-const CLI_FLAG_RULE_G =
-  /(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+)(?!-)(?!\*\*\*REDACTED)(?:"[^"]+"|'[^']+'|\S+)/gi;
+const CLI_FLAG_RULE_G = new RegExp(
+  String
+    .raw`(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+)(?!-)(?!\*\*\*REDACTED)${CLI_FLAG_VALUE}`,
+  "gi",
+);
+
+/** A quote can close one apparent value and open another credential flag's
+ * value. Mask their union, including successive overlaps. Each extension
+ * advances past the shared quote; only the bounded flag name and its own
+ * whitespace are read backwards.
+ */
+function throughFollowingFlag(
+  text: string,
+  start: number,
+  end: number,
+): number {
+  while (end < text.length) {
+    const open = end - 1;
+    if (text[open] !== '"' && text[open] !== "'") break;
+    let nameEnd = open;
+    while (nameEnd > start && /\s/.test(text[nameEnd - 1]!)) nameEnd--;
+    if (nameEnd === open) break;
+    const name = text.slice(Math.max(start, nameEnd - 150), nameEnd)
+      .match(
+        /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}$/i,
+      );
+    if (!name) break;
+    const flagStart = nameEnd - name[0].length;
+    if (flagStart <= start || !/\s/.test(text[flagStart - 1]!)) break;
+    CLI_FLAG_AT.lastIndex = flagStart;
+    const flag = CLI_FLAG_AT.exec(text);
+    if (!flag || CLI_FLAG_AT.lastIndex <= end) break;
+    start = open;
+    end = CLI_FLAG_AT.lastIndex;
+  }
+  return end;
+}
+
+function redactCliFlags(text: string): string {
+  const pattern = CLI_FLAG_RULE_G;
+  pattern.lastIndex = 0;
+  let out = "";
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    const prefix = match[1]!;
+    const start = match.index + prefix.length;
+    out += text.slice(last, start) + REDACTION_PLACEHOLDER;
+    const quote = text[start];
+    const end = pattern.lastIndex;
+    // The escape-aware reader widened the old first-quote match only
+    // when another quote of the same kind precedes its closing quote.
+    last = (quote === '"' || quote === "'") && text[end - 1] === quote &&
+        match[0].indexOf(quote, prefix.length + 1) < match[0].length - 1
+      ? throughFollowingFlag(text, start, end)
+      : end;
+    pattern.lastIndex = last;
+  }
+  return out + text.slice(last);
+}
 
 /**
  * Whether the `secret-cli-flag` rule, reading `text` from the start, opens a
@@ -2082,6 +2221,43 @@ function flagValueStartsAt(text: string, at: number): boolean {
     if (INNER_MEMO.text === text) INNER_MEMO.flagValueStarts = starts;
   }
   return starts.has(at);
+}
+
+/**
+ * The `secret-cli-flag` rule's value alternatives, read at one offset.
+ */
+const CLI_FLAG_VALUE_AT = /"[^"]+"|'[^']+'|\S+/y;
+
+/**
+ * Issue #5457: where a credential flag's value ends when `verdict` is a closed
+ * quoted value whose closing quote is where the `secret-cli-flag` rule opens
+ * that flag's value outside a JSON member boundary, else -1. The
+ * walk masks the value through the flag's value, so the flag's name is not
+ * hidden from the rule. The read is bounded
+ * by the flag rule's own value match, so the walk stays linear (the linearity
+ * rule in the module header).
+ */
+function flagValueThroughQuote(
+  text: string,
+  verdict: AssignmentVerdict,
+): number {
+  const value = verdict.value;
+  const quote = value[0];
+  if (
+    (quote !== "'" && quote !== '"') || value.length < 2 ||
+    !value.endsWith(quote) ||
+    verdict.end === text.length ||
+    (quote === '"' && text[verdict.index - 1] === '"' &&
+      /^"\s*:/.test(verdict.sep) && /^[\s,:\]}]/.test(text[verdict.end]!)) ||
+    !flagValueStartsAt(text, verdict.end - 1)
+  ) return -1;
+  try {
+    CLI_FLAG_VALUE_AT.lastIndex = verdict.end - 1;
+    const match = CLI_FLAG_VALUE_AT.exec(text);
+    return match ? verdict.end - 1 + match[0].length : -1;
+  } finally {
+    CLI_FLAG_VALUE_AT.lastIndex = 0;
+  }
 }
 
 /** Most earlier masks {@link flagQuoteReaches} skips back over. */
@@ -2148,8 +2324,9 @@ const OPEN_DOUBLE_QUOTE =
 /**
  * Longest double-quoted inner value, past the window, that
  * {@link closesWithinReach} looks for the end of (Issue #5310). A ReDoS
- * ceiling (Issue #3942), not a syntax rule: a longer value keeps the base
- * behaviour.
+ * ceiling (Issue #3942), not a syntax rule: a longer value that the probe
+ * cannot read (one that opens with a line break or holds no letter or digit
+ * inside the window) keeps the base behaviour (Issue #5329).
  */
 const INNER_QUOTED_MAX = 4096;
 

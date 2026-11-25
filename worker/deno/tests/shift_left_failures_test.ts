@@ -264,13 +264,24 @@ function fakeGh(opts: {
    * index-aligned with PRs 7, 8, 9; defaults to the run's actor.
    */
   rerunBy?: string[];
+  /** Head branch of each run, index-aligned with PRs 7, 8, 9 (Issue #5437). */
+  headBranches?: string[];
+  /** Check names that failed on each PR's merge base, keyed by PR (Issue #5437). */
+  baseFailing?: Record<number, string[]>;
+  /** The merge-base read fails with this error. */
+  mergeBaseError?: string;
+  /** The base check-runs read fails with this error. */
+  baseChecksError?: string;
 }): FakeGh {
   const calls: string[][] = [];
+  // Each PR's head, and the merge base the head inherits from main.
+  const headShaOf = (pr: number) => String(pr).repeat(40).slice(0, 40);
+  const mergeBaseOf = (pr: number) => String(pr + 50).repeat(20);
   const runs = [7, 8, 9].map((pr, i) => ({
     id: pr * 10,
     created_at: new Date(NOW - DAY).toISOString(),
-    head_sha: String(pr).repeat(40).slice(0, 40),
-    head_branch: `issue-${pr}`,
+    head_sha: headShaOf(pr),
+    head_branch: opts.headBranches?.[i] ?? `issue-${pr}`,
     actor: { login: opts.pushers?.[i] ?? "fleet-bot" },
     triggering_actor: {
       login: opts.rerunBy?.[i] ?? opts.pushers?.[i] ?? "fleet-bot",
@@ -306,8 +317,15 @@ function fakeGh(opts: {
     }
     const byBranch = /\/pulls\?state=all&head=[^:]+:issue-(\d+)&/.exec(path);
     if (byBranch) {
+      // The base is answered only when the jq filter asks for `.base.ref`.
+      const jqFilter = args[args.indexOf("--jq") + 1] ?? "";
+      const asksForBase = jqFilter.includes(".base.ref");
       return Promise.resolve(
-        JSON.stringify({ number: Number(byBranch[1]), login: "fleet-bot" }),
+        JSON.stringify({
+          number: Number(byBranch[1]),
+          login: "fleet-bot",
+          ...(asksForBase ? { base: "main" } : {}),
+        }),
       );
     }
     if (/\/actions\/jobs\/\d+\/logs/.test(path)) {
@@ -323,7 +341,47 @@ function fakeGh(opts: {
       );
     }
     if (/\/pulls\/\d+$/.test(path)) {
-      return Promise.resolve("fleet-bot");
+      // The base is answered only when the jq filter asks for `.base.ref`.
+      const jqFilter = args[args.indexOf("--jq") + 1] ?? "";
+      const asksForBase = jqFilter.includes(".base.ref");
+      return Promise.resolve(
+        JSON.stringify({
+          login: "fleet-bot",
+          ...(asksForBase ? { base: "main" } : {}),
+        }),
+      );
+    }
+    const compare = /\/compare\/[^/]+\.\.\.([0-9a-f]{40})$/.exec(path);
+    if (compare) {
+      if (opts.mergeBaseError) {
+        return Promise.reject(new Error(opts.mergeBaseError));
+      }
+      const pr = [7, 8, 9].find((p) => headShaOf(p) === compare[1]);
+      if (pr === undefined) {
+        return Promise.reject(new Error(`unexpected compare ${path}`));
+      }
+      return Promise.resolve(mergeBaseOf(pr));
+    }
+    const baseRuns = /\/commits\/([0-9a-f]{40})\/check-runs\?/.exec(path);
+    if (baseRuns) {
+      if (opts.baseChecksError) {
+        return Promise.reject(new Error(opts.baseChecksError));
+      }
+      const pr = [7, 8, 9].find((p) => mergeBaseOf(p) === baseRuns[1]);
+      if (pr === undefined) {
+        return Promise.reject(new Error(`unexpected check-runs ${path}`));
+      }
+      // The check runs as the jq filter of fetchFailedCheckRunsStrict shapes them.
+      return Promise.resolve(
+        JSON.stringify(
+          (opts.baseFailing?.[pr] ?? []).map((name, i) => ({
+            id: i + 1,
+            name,
+            status: "completed",
+            conclusion: "failure",
+          })),
+        ),
+      );
     }
     if (path.endsWith("/contents/quality.sh")) {
       return opts.gate === null
@@ -673,4 +731,114 @@ Deno.test("scan: several checks the local gate already runs, in one repository, 
   const body = create[create.indexOf("--body") + 1]!;
   assertStringIncludes(body, "cargo clippy");
   assertStringIncludes(body, "cargo fmt");
+});
+
+// Issue #5437: a PR inherits a red default branch, so its failures there are
+// not the PR's local-gate misses.
+Deno.test("scan: a run on a milestone sync branch is not observed, while an identical feature-branch run is (Issue #5437)", async () => {
+  const fake = fakeGh({
+    headBranches: ["sync/milestone-foo", "issue-8", "issue-9"],
+  });
+  const { ledger } = await scan(fake);
+  assertEquals(
+    ledger.observations.map((o) => o.prNumber).sort((a, b) => a - b),
+    [8, 9],
+  );
+});
+
+Deno.test("scan: a run on the red-default-branch repair branch is not observed, while the others are (Issue #5437)", async () => {
+  const fake = fakeGh({
+    headBranches: [
+      "fix/red-default-branch-abc123",
+      "issue-8",
+      "issue-9",
+    ],
+  });
+  const { ledger } = await scan(fake);
+  assertEquals(
+    ledger.observations.map((o) => o.prNumber).sort((a, b) => a - b),
+    [8, 9],
+  );
+});
+
+// Issue #5437: a check that already failed on a PR's base commit was red before
+// the PR, so the PR's failure of it is not a local-gate miss.
+Deno.test("scan: a check that failed on the base commit is not observed, while the same check on a green base is (Issue #5437)", async () => {
+  const fake = fakeGh({ baseFailing: { 7: ["rust-checks"] } });
+  const { ledger } = await scan(fake);
+  assertEquals(
+    ledger.observations.map((o) => o.prNumber).sort((a, b) => a - b),
+    [8, 9],
+  );
+});
+
+Deno.test("scan: an unlinked run whose merge base failed the same check is not observed, while an identical unlinked run on a green base is (Issue #5437)", async () => {
+  // The PR is found by head branch, so its base comes from the by-branch lookup.
+  const fake = fakeGh({
+    unlinkedRuns: true,
+    baseFailing: { 7: ["rust-checks"] },
+  });
+  const { ledger } = await scan(fake);
+  assertEquals(
+    ledger.observations.map((o) => o.prNumber).sort((a, b) => a - b),
+    [8, 9],
+  );
+});
+
+Deno.test("scan: a PR's job whose check is red on the base only for another check is still observed (Issue #5437)", async () => {
+  const fake = fakeGh({
+    twoTools: true,
+    baseFailing: { 7: ["rust-checks"] },
+  });
+  const { ledger } = await scan(fake);
+  assertEquals(
+    ledger.observations.filter((o) => o.prNumber === 7).map((o) => o.check),
+    ["lint"],
+  );
+  assertEquals(ledger.observations.length, 5);
+});
+
+Deno.test("scan: a merge-base read that fails keeps the job counted and logs the cause (Issue #5437)", async () => {
+  const fake = fakeGh({ mergeBaseError: "gh: HTTP 502 compare unavailable" });
+  const { ledger, logs } = await scan(fake);
+  assertEquals(ledger.observations.length, 3);
+  assert(
+    logs.some((l) =>
+      l.includes("run 70") && l.includes("HTTP 502 compare unavailable")
+    ),
+    `logs: ${logs}`,
+  );
+});
+
+Deno.test("scan: a linked PR whose response has no user.login fails loudly, naming the field (Issue #5437)", async () => {
+  const fake = fakeGh({});
+  const gh = (args: string[]): Promise<string> => {
+    const path = args.find((a) => a.startsWith("repos/")) ?? "";
+    if (/\/pulls\/\d+$/.test(path)) {
+      return Promise.resolve(JSON.stringify({ base: "main" }));
+    }
+    return fake.gh(args);
+  };
+  const { logs } = await scan({ calls: fake.calls, gh });
+  assert(
+    logs.some((l) =>
+      l.includes("shift-left scan of owner/product failed") &&
+      l.includes("pulls/7 response has no user.login")
+    ),
+    `logs: ${logs}`,
+  );
+});
+
+Deno.test("scan: a base check-runs read that fails keeps the job counted and logs the cause (Issue #5437)", async () => {
+  const fake = fakeGh({
+    baseChecksError: "gh: HTTP 500 check-runs unavailable",
+  });
+  const { ledger, logs } = await scan(fake);
+  assertEquals(ledger.observations.length, 3);
+  assert(
+    logs.some((l) =>
+      l.includes("run 70") && l.includes("HTTP 500 check-runs unavailable")
+    ),
+    `logs: ${logs}`,
+  );
 });
