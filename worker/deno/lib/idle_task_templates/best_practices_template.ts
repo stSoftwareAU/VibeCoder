@@ -744,7 +744,10 @@ export function buildAwsEmulatorFinding(
     "- Have the repository's own test command run its AWS integration tests " +
     "through `aws-emulator-run [--timeout N] -- <test command>` from a job " +
     "that runs on `pull_request`. Failures must propagate: no " +
-    "`continue-on-error`, `|| true`, `!` or pipe around the runner.",
+    "`continue-on-error`, `|| true`, `!` or pipe around the runner. The " +
+    "COMMAND must be the test itself (a test runner or test subcommand, or " +
+    "a repository script named for tests or that runs one); an echo, " +
+    "version or health probe does not count.",
     "- Tests drive the repository's own production AWS scripts, clients, " +
     "adapters and handlers with deterministic fixtures, unique per-run " +
     "resources, and supported error cases. New or changed AWS components " +

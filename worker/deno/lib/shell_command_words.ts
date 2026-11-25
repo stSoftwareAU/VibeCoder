@@ -7,7 +7,9 @@
  * finds a command's word, and `reachableCommands` drops commands that cannot
  * run (after an unconditional `exit` or `set -n`, behind `false &&`, in a branch or loop
  * whose condition is statically false, in any function body, or inside
- * a here-document). It also reports each reachable command's separators and
+ * a here-document), and strips a `case` arm's pattern (with its optional `(`
+ * and `|` alternatives) so the command word is the arm's first command (Issue
+ * #5382). It also reports each reachable command's separators and
  * whether it is an `if`/`elif`/`while`/`until` condition. A construct it cannot judge counts
  * as reachable only when a runtime value decides it, so an unknown condition
  * keeps its commands.
@@ -29,8 +31,18 @@ const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /**
  * Split a `run:` body into commands, each with its words and the separator
  * before it (`\n`, `;`, `|`, `&`, `&&` or `||`). Quotes keep a word together
- * (`X="a b"` is one word), a backslash-newline joins lines, a newline or
- * `;`/`|`/`&` starts a new command, and a `#` that starts a word ends the line.
+ * (`X="a b"` is one word), and a newline or `;`/`|`/`&` starts a new command.
+ *
+ * A backslash escapes the next character outside single quotes, and the word
+ * keeps the escape as written (`\\`, `\"`, `\;`). An odd run of backslashes
+ * before a newline is a continuation: the newline is removed with no blank
+ * inserted, so `ab\` + newline + `cd` is the word `abcd`, and leading blanks on
+ * the next line still split. An even run is escaped backslashes, so the newline
+ * ends the command (`a \\` + newline + `b` is two commands). Inside double
+ * quotes a backslash continues the line before a newline, escapes `\`, `"`,
+ * `$` or a backtick, and is otherwise literal. A `#` that starts a word is a
+ * comment that ends at its physical newline, so a backslash at its end is
+ * comment text and the next line is its own command.
  */
 export function shellCommands(script: string): ShellCommand[] {
   return shellCommandList(script).commands;
@@ -45,7 +57,10 @@ function shellCommandList(script: string): {
   commands: ShellCommand[];
   trailing: string;
 } {
-  const text = script.replace(/\\\r?\n/g, " ");
+  const text = script;
+  // The length of the line break at `at` (`\n` or `\r\n`), 0 when none is.
+  const newlineLength = (at: number): number =>
+    text.startsWith("\r\n", at) ? 2 : text.startsWith("\n", at) ? 1 : 0;
   const commands: ShellCommand[] = [];
   let words: string[] = [];
   let sep = "";
@@ -65,16 +80,49 @@ function shellCommandList(script: string): {
       commands.push({ words, sep });
       words = [];
       sep = next;
-    } else if (next !== "\n") {
+    } else if (next !== "\n" && !(sep === "&" && next === ";;")) {
       sep = next;
     }
   };
 
   for (let i = 0; i < text.length; i++) {
     const ch = text.charAt(i);
-    if (quote !== null) {
+    if (quote === "'") {
+      // Single quotes are literal, a backslash-newline included.
       word += ch;
-      if (ch === quote) quote = null;
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === "\\") {
+        const lineBreak = newlineLength(i + 1);
+        const escaped = text.charAt(i + 1);
+        if (lineBreak > 0) {
+          i += lineBreak; // a continuation inside double quotes is removed
+        } else if (["\\", '"', "$", "`"].includes(escaped)) {
+          word += ch + escaped;
+          i++;
+        } else {
+          word += ch;
+        }
+        continue;
+      }
+      word += ch;
+      if (ch === '"') quote = null;
+      continue;
+    }
+    // Outside quotes a backslash escapes the next character. A
+    // backslash-newline is a continuation: removed, with no blank inserted.
+    if (ch === "\\") {
+      const lineBreak = newlineLength(i + 1);
+      if (lineBreak > 0) {
+        i += lineBreak;
+        continue;
+      }
+      const escaped = text.charAt(i + 1);
+      word += ch + escaped; // a lone trailing backslash is appended alone
+      inWord = true;
+      if (escaped !== "") i++;
       continue;
     }
     if (ch === '"' || ch === "'") {
@@ -149,7 +197,6 @@ const SHELL_PREFIX_WORDS = new Set([
   "{",
   "(",
   "sudo",
-  "env",
   "exec",
 ]);
 /** `timeout` options that take a separate value word (`-k 5`, `-s KILL`). */
@@ -161,18 +208,96 @@ const TIMEOUT_VALUE_OPTIONS = new Set([
 ]);
 
 /**
- * Index of the command word. Skips shell reserved words, `sudo`, `env`,
- * `exec`, leading `VAR=value` words, and the wrappers `time` (with `-p`),
+ * Index of the command word. Skips shell reserved words, `sudo`, `exec`,
+ * leading `VAR=value` words and the wrappers `time` (with `-p`),
  * `nice` (with `-n N` or `-N`), `timeout` (with its options and its duration
- * word) and `command`. `command -v`/`-V` only looks a command up, so it stops
- * the scan at `command` itself. Returns `words.length` when none is found.
+ * word) and `command`. A `VAR=value` word counts only with an unquoted name
+ * (bash's rule, so `"X=1" cmd` runs a command named `X=1`). `env` is skipped
+ * with each operand after it that contains `=` once quotes are removed
+ * (`env "X"=1 cmd`), as GNU and BSD `env` read them. A `VAR=value` word (or
+ * `env` operand) whose value opens a `$( … )`, `$(( … ))` or backtick
+ * substitution split at blanks is skipped together with the words up to the
+ * one that closes it (quote-aware), so `X=$(cat v) cmd` finds `cmd`; one never
+ * closed in the command's words leaves no command word (`words.length`), and
+ * so does an unclosed `(` that opens no substitution (`X=${Y:-(} cmd`). A
+ * substitution holding a `;`, `|`, `&`, `&&`, `||` or newline is still split
+ * into separate commands by {@link shellCommands}, so `X=$(a; b) cmd` finds
+ * `b)`. The scan stops at an option word (`-i`, `--split-string=echo`):
+ * `env -S`/`--split-string` makes its value the command, so the option stays
+ * the command word and fails closed. `command -v`/`-V` only looks a command
+ * up, so it stops the scan at `command` itself. Returns `words.length` when
+ * none is found. It does not skip a `case` arm's pattern (`test) cmd`):
+ * {@link reachableCommands} removes the pattern before callers read the
+ * command word, because only the walk knows a `case` is open (Issue #5382).
  */
 export function commandIndex(words: string[]): number {
+  return commandScan(words).index;
+}
+
+/**
+ * The words in front of the command word that the shell reads as reserved or
+ * prefix words, without the words inside an assignment's substitution (so
+ * `X=$(test ! -f v) cmd` has no `!` prefix).
+ */
+export function commandPrefixWords(words: string[]): string[] {
+  return commandScan(words).prefix;
+}
+
+/** These shell constructs can contain a closing parenthesis that belongs to
+ * the construct itself. The word scan cannot locate the command after it.
+ */
+function ambiguousSubstitutionWord(word: string): boolean {
+  return word.includes("$'") || /\$\{[^{}]*[()]/.test(word) ||
+    /(?:^|\$\()case$/.test(word);
+}
+
+/**
+ * Index past the assignment at `words[start]` and the following words its
+ * unclosed `$( … )`, `(` or backtick substitution spans. Each skipped
+ * following word's index is added to `inner`.
+ */
+function skipAssignment(
+  words: string[],
+  start: number,
+  inner: Set<number>,
+): number {
+  const first = words[start] ?? "";
+  let open = parenBalance(first).delta;
+  // A `(` that opens no substitution (`${Y:-(}`) is not a span the shell
+  // closes later, so nothing after it is read as the command (Issue #5378).
+  if (
+    open > 0 && (hasPlainOpenParen(first) || ambiguousSubstitutionWord(first))
+  ) {
+    return words.length;
+  }
+  let ticks = backtickCount(first);
+  let i = start + 1;
+  while ((open > 0 || ticks % 2 === 1) && i < words.length) {
+    const word = words[i] ?? "";
+    if (ambiguousSubstitutionWord(word)) return words.length;
+    open += parenBalance(word).delta;
+    ticks += backtickCount(word);
+    inner.add(i);
+    i++;
+  }
+  return i;
+}
+
+/** The {@link commandIndex} scan: the index and the prefix words before it. */
+function commandScan(words: string[]): { index: number; prefix: string[] } {
+  const inner = new Set<number>();
   let i = 0;
   while (i < words.length) {
     const w = words[i] ?? "";
-    if (SHELL_PREFIX_WORDS.has(w) || SHELL_ASSIGNMENT.test(w)) {
+    if (SHELL_PREFIX_WORDS.has(w)) {
       i++;
+    } else if (SHELL_ASSIGNMENT.test(w)) {
+      i = skipAssignment(words, i, inner);
+    } else if (w === "env") {
+      i++;
+      while (i < words.length && isEnvAssignment(words[i] ?? "")) {
+        i = skipAssignment(words, i, inner);
+      }
     } else if (w === "time") {
       i++;
       if (words[i] === "-p") i++;
@@ -195,7 +320,10 @@ export function commandIndex(words: string[]): number {
       break;
     }
   }
-  return i;
+  return {
+    index: i,
+    prefix: words.slice(0, i).filter((_, k) => !inner.has(k)),
+  };
 }
 
 /**
@@ -222,10 +350,44 @@ const STATUS_ALTERING_PREFIX_WORDS = new Set([
  * must decide the step: `! ./test.sh` turns a failure into a pass.
  */
 export function statusPreservingCommandIndex(words: string[]): number {
-  const i = commandIndex(words);
-  return words.slice(0, i).some((w) => STATUS_ALTERING_PREFIX_WORDS.has(w))
-    ? -1
-    : i;
+  const { index, prefix } = commandScan(words);
+  return prefix.some((w) => STATUS_ALTERING_PREFIX_WORDS.has(w)) ? -1 : index;
+}
+
+/**
+ * True when `env` reads `word` as a `NAME=value` operand: it contains `=` once
+ * quotes are removed and is not an option (does not start with `-`).
+ */
+function isEnvAssignment(word: string): boolean {
+  const unquoted = removeQuotes(word);
+  return !unquoted.startsWith("-") && unquoted.includes("=");
+}
+
+/** Shell quote removal on a word as {@link shellCommands} returns it; `$…` is not expanded. */
+export function removeQuotes(word: string): string {
+  let out = "";
+  let quote = "";
+  for (let i = 0; i < word.length; i++) {
+    const ch = word.charAt(i);
+    if (quote === "'") {
+      if (ch === "'") quote = "";
+      else out += ch;
+    } else if (ch === "\\") {
+      const next = word.charAt(i + 1);
+      if (quote === '"' && !["\\", '"', "$", "`"].includes(next)) out += ch;
+      else {
+        out += next;
+        i++;
+      }
+    } else if (ch === quote) {
+      quote = "";
+    } else if (quote === "" && (ch === "'" || ch === '"')) {
+      quote = ch;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
 }
 
 /** Strip a matching pair of surrounding quotes from a word. */
@@ -238,7 +400,7 @@ export function stripQuotes(word: string): string {
  * flipped by each `!`; null when a runtime value decides it.
  */
 function staticStatus(words: string[]): boolean | null {
-  const i = commandIndex(words);
+  const { index: i, prefix } = commandScan(words);
   const head = stripQuotes(words[i] ?? "");
   const base = head === "true" || head === ":"
     ? true
@@ -246,7 +408,7 @@ function staticStatus(words: string[]): boolean | null {
     ? false
     : null;
   if (base === null) return null;
-  const negations = words.slice(0, i).filter((w) => w === "!").length;
+  const negations = prefix.filter((w) => w === "!").length;
   return negations % 2 === 1 ? !base : base;
 }
 
@@ -370,6 +532,11 @@ interface Frame {
   subst: boolean;
   /** A `case` statement, whose patterns end in `)`. */
   kase: boolean;
+  /**
+   * A `case` whose next command starts with an arm's pattern (its header ended
+   * in `in`, or an earlier pattern alternative was followed by `|`).
+   */
+  casePatternNext: boolean;
   /** Identity of this compound, for {@link ReachableCommand.groupSwallowed}. */
   id: number;
   /** A `for`, `select`, `while` or `until` loop. */
@@ -549,11 +716,16 @@ function isFailingExit(words: string[], bare: boolean): boolean {
  *   or a newline, with nothing chained after it).
  *
  * Any other form is false, so the caller falls back to its own rules.
+ *
+ * `hereWords` replaces the listed command's own words when the walk removed a
+ * `case` arm's pattern from them (`test) ! cmd || exit 1`), so the idioms are
+ * judged on the command and not on `test)` (Issue #5382).
  */
 function failureExits(
   listed: ShellCommand[],
   index: number,
   closePending: number | null,
+  hereWords?: string[],
 ): boolean {
   const listedHere = listed[index];
   const listedAfter = listed[index + 1];
@@ -565,7 +737,10 @@ function failureExits(
   // (`closePending` is the line's open-parenthesis count then, null when the
   // innermost frame is not such a subshell), so an exit that ends a nested
   // subshell or substitution is never read as the idiom (round 11).
-  const here = { ...listedHere, words: withoutSubshellOpen(listedHere.words) };
+  const here = {
+    ...listedHere,
+    words: withoutSubshellOpen(hereWords ?? listedHere.words),
+  };
   const after = {
     ...listedAfter,
     words: closePending === null
@@ -575,7 +750,7 @@ function failureExits(
   if (after.sep === "||" && isFailingExit(after.words, true)) {
     // `! cmd || exit 1` inverts the status first: a failing cmd makes `!`
     // succeed, so the exit never runs.
-    if (here.words.slice(0, commandIndex(here.words)).includes("!")) {
+    if (commandPrefixWords(here.words).includes("!")) {
       return false;
     }
     const chained = listed[index + 2];
@@ -678,6 +853,46 @@ function parenBalance(word: string): { delta: number; endsClose: boolean } {
   return { delta, endsClose: quote === "" && endsClose };
 }
 
+/**
+ * Whether an assignment word holds an unquoted, unescaped `(` that opens no
+ * substitution: not `$(`, `$((`, `<(`, `>(` or the `(` of an array value
+ * right after the first `=` (`X=(a b)`).
+ */
+function hasPlainOpenParen(word: string): boolean {
+  let quote = "";
+  let prev = "";
+  let prev2 = "";
+  let valueStart = -1;
+  for (let i = 0; i < word.length; i++) {
+    const ch = word[i] ?? "";
+    if (quote !== "") {
+      if (ch === "\\" && quote === '"') i++;
+      else if (ch === quote) quote = "";
+      prev2 = prev;
+      prev = "";
+      continue;
+    }
+    if (ch === "\\") {
+      i++;
+      prev2 = prev;
+      prev = "";
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === "=" && valueStart < 0) {
+      valueStart = i + 1;
+    } else if (ch === "(") {
+      const opens = prev === "$" || prev === "<" || prev === ">" ||
+        i === valueStart || (prev === "(" && prev2 === "$");
+      if (!opens) return true;
+    }
+    prev2 = prev;
+    prev = ch;
+  }
+  return false;
+}
+
 /** The backticks of a word outside single quotes and not backslash-escaped. */
 function backtickCount(word: string): number {
   let quote = "";
@@ -760,6 +975,37 @@ const UNTRACKED_HEAD_KEYWORDS = new Set([
 const UNTRACKED_HEADER_KEYWORDS = new Set(["for", "case", "select"]);
 
 /**
+ * Removes a `case` arm's pattern from the start of a command's words: an
+ * optional `(`, then the pattern word ending in `)` (`test)`) or followed by a
+ * lone `)` (`test )`). A pattern alternative followed by `|` (`nextSep`) has
+ * its `)` in the next listed command, so `more` is true and no words remain.
+ * `esac` and anything else that is not a pattern comes back unchanged (the same
+ * array) with `more` false (Issue #5382).
+ */
+function afterCasePattern(
+  words: string[],
+  nextSep: string,
+): { words: string[]; more: boolean } {
+  if (/^esac\)*$/.test(words[0] ?? "")) return { words, more: false };
+  let rest = words;
+  const lead = rest[0] ?? "";
+  if (lead === "(") rest = rest.slice(1);
+  else if (lead.length > 1 && lead.startsWith("(") && !lead.startsWith("((")) {
+    rest = [lead.slice(1), ...rest.slice(1)];
+  }
+  const first = rest[0] ?? "";
+  const balance = parenBalance(first);
+  if (first !== "" && balance.endsClose && balance.delta < 0) {
+    return { words: rest.slice(1), more: false };
+  }
+  if (first !== "" && rest[1] === ")") {
+    return { words: rest.slice(2), more: false };
+  }
+  if (rest.length === 1 && nextSep === "|") return { words: [], more: true };
+  return { words, more: false };
+}
+
+/**
  * The commands of a `run:` body that can run: it drops commands after an
  * unconditional `exit` or `set -n` / `set -o noexec`, behind `false &&` or `true ||`, in an `if`/`elif`/
  * `else` branch or a `while`/`until` body whose condition is statically false
@@ -772,7 +1018,10 @@ const UNTRACKED_HEADER_KEYWORDS = new Set(["for", "case", "select"]);
  * one a static chain always reaches (`true && exit 0`, `false || exit 0`)
  * does.
  * Returns each reachable command with its words (keywords such as `then`
- * stripped), the separators around it and whether it is a condition. The
+ * stripped, and a `case` arm's pattern with its optional `(` and `|`
+ * alternatives; a fall-through arm after `;&` or `;;&` keeps its pattern,
+ * because that separator cannot be told from a backgrounded command, so it
+ * stays uncredited: Issue #5382), the separators around it and whether it is a condition. The
  * separators and `condition` come from the same `shellCommands` list the
  * reachability walk reads, so a caller can tell `cmd || true` from `cmd`.
  */
@@ -813,6 +1062,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
       sub: false,
       subst: false,
       kase: false,
+      casePatternNext: false,
       iterates: false,
       ...partial,
       id: nextFrameId++,
@@ -859,9 +1109,31 @@ export function reachableCommands(script: string): ReachableCommand[] {
   // pattern (the header ended at `in`).
   let untrackedCases = 0;
   let patternNext = false;
-  for (const [index, { words: all, sep }] of listed.entries()) {
+  for (const [index, { words: all, sep: listedSep }] of listed.entries()) {
     let words = all;
+    let sep = listedSep;
     const pendingBefore = linePending;
+    const untrackedHere = pendingBefore > 0 || lineTicks % 2 === 1;
+    // The words the failure-exit idioms read, once a `case` pattern is removed.
+    let hereWords: string[] | undefined;
+    // The command after a `case` arm's `;;` (or the first after `in`) starts
+    // with that arm's pattern. Only `;;` marks an arm: `;&` and `;;&` read as
+    // `&`, which cannot be told from a backgrounded command, so those arms
+    // stay uncredited (fails closed).
+    const caseFrame = stack.at(-1);
+    if (
+      !untrackedHere && caseFrame?.kase &&
+      (caseFrame.casePatternNext || sep === ";;")
+    ) {
+      const result = afterCasePattern(words, listed[index + 1]?.sep ?? "");
+      caseFrame.casePatternNext = result.more;
+      if (result.words !== words) {
+        words = result.words;
+        hereWords = words;
+        // An alternative's command (`b) cmd` after `a|`) starts the arm.
+        if (sep === "|") sep = ";;";
+      }
+    }
     // Close the innermost compound, noting whether what follows its closing
     // word (`} || true`, `fi | tee`) can swallow its status.
     const pop = (): Frame | undefined => {
@@ -901,7 +1173,6 @@ export function reachableCommands(script: string): ReachableCommand[] {
     // substitution. Its openers and branch words are dropped with no effect on
     // the frame stack; a closer, `(` or `)` stays a plain word for the
     // parenthesis balance (round 14).
-    const untrackedHere = pendingBefore > 0 || lineTicks % 2 === 1;
     let droppedParens = 0;
     let droppedTicks = 0;
     // The first word of a `case` arm inside an untracked `$( … )` is a pattern
@@ -1011,10 +1282,31 @@ export function reachableCommands(script: string): ReachableCommand[] {
           top.earlierUnknown = top.earlierUnknown || top.truth === null;
           top.branch = "else";
         }
-      } else if (w === "for" || w === "case" || w === "select") {
-        push({ iterates: w !== "case", kase: w === "case" });
+      } else if (w === "for" || w === "select") {
+        push({ iterates: true });
         words = [];
         break;
+      } else if (w === "case") {
+        push({ kase: true });
+        const frame = stack.at(-1);
+        if (words[2] !== "in") {
+          words = [];
+          break;
+        }
+        if (words.length === 3) {
+          if (frame) frame.casePatternNext = true;
+          words = [];
+          break;
+        }
+        // The first arm shares the line (`case $1 in a) cmd ;; esac`).
+        const result = afterCasePattern(
+          words.slice(3),
+          listed[index + 1]?.sep ?? "",
+        );
+        if (frame) frame.casePatternNext = result.more;
+        words = result.words;
+        hereWords = words;
+        continue;
       } else if (w === "{") {
         if (top?.awaitBrace) top.awaitBrace = false;
         else push({ truth: true, brace: true });
@@ -1149,6 +1441,7 @@ export function reachableCommands(script: string): ReachableCommand[] {
           listed,
           index,
           stack.at(-1)?.sub && !stack.at(-1)?.subst ? linePending : null,
+          hereWords,
         ),
         groupSwallowed: false,
         errexitIgnored: false,
