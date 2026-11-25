@@ -31,7 +31,7 @@ None.
 
 - Backend redaction change; no visual surface changed.
 - The regression file copied into an isolated checkout of unfixed `main`
-  (`a0170265e`) had 19 failing cases and two passing controls, including failures
+  (`a0170265e`) had 19 failing tests and two passing controls, including failures
   on both same-line and consecutive-line inputs. The output exposed the
   credential value while `containsSecret` returned false
   on that output. Removing the outer label was an accepted control.
@@ -81,7 +81,7 @@ flowchart LR
   quote text. Those old preservation expectations conflict with the issue's
   value-redaction requirement. Every fixture and its detection, idempotence
   and original-secret-removal assertions remain.
-- `deno task test:unit tests/secret_redaction*_test.ts
+- From `worker/deno`, `deno task test:unit tests/secret_redaction*_test.ts
   tests/secret_transform_redaction_test.ts`: passed, 668 tests. Existing quoted
   flag regressions exercise the reused trailing-name matcher through the CLI
   rule as well as the changed assignment path.
@@ -101,7 +101,35 @@ flowchart LR
   its total false-negative count is unknown.
 - The trailing-name pattern previously embedded in `throughFollowingFlag`
   now shares `flagNameEndingAt` with the new assignment-boundary helper.
+- Full-gate attempts, each in the foreground with a 900-second timeout:
+
+  1. Passed with configuration integration and Checkov skipped, before the
+     final cross-line classifier correction.
+  2. Failed on the final production code: 36,746 parallel tests passed,
+     one fleet-experiment test failed with the assertion recorded above, and
+     five were ignored. The serial pass did not run. Lint, type checking,
+     formatting and the other available stages passed.
+  3. Timed out with exit status 124 while the test stage remained pending.
+     The last reported stage was `release-tag ruleset: PASSED`; no final test,
+     lint, type-check or format verdict was emitted by this attempt.
+
+- `deno task pr-summary-check`: passed with zero blocked and zero unchecked
+  gates. Acceptance-criteria closure, two-axis review and the bug-label
+  reproduction block are not applicable to this issue.
 
 ## Merge verification
 
+- A clean full quality run is outstanding. No PR was created in this executor
+  phase. Resume from the repository root with
+  `timeout 900 ./quality.sh < /dev/null`; investigate the recorded
+  fleet-experiment assertion if it recurs. The three-attempt recovery limit
+  prevented another full run in this phase.
 - CI and independent code review are pending.
+
+## Limitations
+
+Local configuration integration was skipped (`deno or .config.json not
+available`); Checkov was skipped because neither its pinned binary nor image
+was available.
+The parallel-only fleet-experiment failure remains undiagnosed, and the final
+full quality run did not finish.
