@@ -218,8 +218,8 @@ async function readIssueRow(
  * Up to 1,000 merged PRs based on the branch are read. Same-repository PRs,
  * other than fleet milestone sync PRs, name candidate issues from their head
  * branches and titles. Candidates in `excluded` (the milestone's own members)
- * are dropped, then each remaining candidate is read over REST. A candidate is returned
- * only when it is closed, is not a pull request, and does not sit in
+ * are dropped, then each remaining candidate is read over REST. A candidate is
+ * returned only when it is closed, is not a pull request, and does not sit in
  * `milestoneNumber`; `movedToMilestone` is its milestone's title, or null
  * when it has none.
  *

@@ -745,6 +745,19 @@ Deno.test("fetchIssuesMovedOffBranch - throws, and does not cache, an unreadable
       Error,
       `could not read the pull requests merged into ${BRANCH_A}`,
     );
+    await assertRejects(
+      () =>
+        fetchIssuesMovedOffBranch(
+          REPO,
+          BRANCH_A,
+          7,
+          new Set(),
+          movedOffGhFn(calls, { prList: "[null]" }),
+          cache,
+        ),
+      Error,
+      "malformed PR row",
+    );
 
     // The failed reads are not cached: a later healthy read is used.
     const healthy = await fetchIssuesMovedOffBranch(
@@ -764,6 +777,8 @@ Deno.test("fetchIssuesMovedOffBranch - rejects malformed PR rows without caching
   for (
     const [field, value] of [
       ["number", undefined],
+      ["number", -1],
+      ["number", 1.5],
       ["title", undefined],
       ["headRefName", undefined],
       ["isCrossRepository", undefined],
@@ -805,6 +820,9 @@ Deno.test("fetchIssuesMovedOffBranch - distinguishes a missing milestone from an
     const [field, value] of [
       ["milestone", undefined],
       ["milestone", { number: 99 }],
+      ["milestone", { number: -1, title: "Broken" }],
+      ["milestone", { number: "99", title: "Broken" }],
+      ["milestone", { number: 1.5, title: "Broken" }],
       ["state", "unknown"],
     ] as const
   ) {
