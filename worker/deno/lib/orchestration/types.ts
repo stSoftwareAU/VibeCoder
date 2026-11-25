@@ -10,7 +10,10 @@
  * Australian English spelling throughout (behaviour, honoured, recognised).
  */
 
-/** The role one call plays inside an orchestrated run. */
+/**
+ * Every role an orchestrated call can play; the run-outcome classifier builds
+ * its role-prefix match from this list.
+ */
 export const TARGET_ROLES = [
   "manager",
   "executor",
@@ -18,6 +21,8 @@ export const TARGET_ROLES = [
   "standards_reviewer",
   "explorer",
 ] as const;
+
+/** The role one call plays inside an orchestrated run. */
 export type TargetRole = typeof TARGET_ROLES[number];
 
 /** A provider the orchestrator can name as a handoff target. */

@@ -443,6 +443,12 @@ function transcriptShowsToolRuntimeFailure(
  * 1b. An unavailable external-orchestration provider (`internal_error`,
  *    worker's own words: `external orchestration: <provider> unavailable (`)
  *    — account state on the host, not a worker crash (Issue #4508).
+ * 1c. An `internal_error` whose worker text opens with the Codex
+ *    safety-refusal headline, with or without the orchestrator's role
+ *    prefix, is `agent-outcome` (`not_code_fixable`) — the agent CLI
+ *    declining the task content, not a worker crash (Issue #5506). Anchored
+ *    to the worker's own words, so the headline quoted in agent output does
+ *    not trigger it; it is answered before rule 5 so it is not read as a crash.
  * 2. A squash-lineage push refusal (Issue #534) — the base moved on; never
  *    a worker defect, and checked before the disk and crash rules so a
  *    branch name or a hint line in the refusal cannot be mistaken for
@@ -453,12 +459,12 @@ function transcriptShowsToolRuntimeFailure(
  *    cause is unproven, so `killed-unknown` (unknown). An OOM message that
  *    also mentions a timeout classifies as `oom` because the category was
  *    already `killed`, not `timeout`.
- * 5. Worker crashes: `internal_error`, or an unhandled exception / stack
+ * 5. Worker crashes: `internal_error` (other than rule 1b / 1c), or an unhandled exception / stack
  *    trace in the message with any other non-agent category.
  * 6. `missing_tools` — the image/PATH is the worker's to fix.
  * 7. `timeout` / `zero_output` — cause unproven → unknown.
  * 8. `quality_check` / `no_changes` /
- *    `evidence_missing` — the AGENT not
+ *    `evidence_missing` (and the rule 1c safety refusal) — the AGENT not
  *    delivering, not a worker defect: `not_code_fixable`, never auto-filed.
  *    Exception (Issue #4324): a transcript that shows the tool runtime
  *    failing is infrastructure (`tool-runtime`, code-fixable). An ordinary
