@@ -80,7 +80,7 @@ import {
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { syncWithMergeOnlyBindings } from "./milestone_merge_only.ts";
 import { runClaudeWithRetry } from "./claude_runner.ts";
-import { runGitCommand } from "./git_timeout.ts";
+import { type GitCommandOptions, runGitCommand } from "./git_timeout.ts";
 import { assertSafeGitRef } from "./git_ref_args.ts";
 import { bindLogger, logAt } from "./log_sink.ts";
 
@@ -620,6 +620,8 @@ export interface IssueRunPresyncArgs {
   workDir: string;
   config: WorkerConfig;
   logger: Logger;
+  /** Environment for the sync's git calls (Issue #5371); absent inherits the process's. */
+  env?: Record<string, string>;
   /** The cycle's watchdog deadline, when the run has one (Issue #1778). */
   cycleDeadlineEpochMs?: number;
   /** Injected for tests; production passes the real implementations. */
@@ -673,13 +675,13 @@ function serialisedPerRepo<T>(
 /** Read one ref's commit in a clone, naming what went wrong. */
 async function readRefSha(
   ref: string,
-  cwd: string,
+  options: GitCommandOptions,
   gitFn: typeof runGitCommand,
 ): Promise<Result<string>> {
   // `git rev-parse` prints `--end-of-options` back as a rev, so the guard is
   // the explicit ref check rather than the separator every other argv uses.
   assertSafeGitRef(ref, "milestone tip ref");
-  const parsed = await gitFn(["rev-parse", ref], { cwd });
+  const parsed = await gitFn(["rev-parse", ref], options);
   if (!parsed.ok) return { ok: false, error: parsed.error };
   if (parsed.value.code !== 0) {
     return {
@@ -797,6 +799,11 @@ export async function presyncMilestoneBranchForIssueRun(
   const gitFn = args.runGitCommandFn ?? runGitCommand;
   const ghFn = args.ghCommandFn;
   const nowMs = args.nowMs ?? Date.now();
+  // Issue #5371: every git call the sync makes carries the caller's env.
+  const gitOptions: GitCommandOptions = {
+    cwd,
+    ...(args.env ? { env: args.env } : {}),
+  };
 
   // The same grant the sweep computes (Issue #1778): the rung is offered only
   // while the run's deadline covers a whole agent run, and the timeout handed
@@ -827,7 +834,7 @@ export async function presyncMilestoneBranchForIssueRun(
         countCommitsAheadRepairingBrokenRef(
           `origin/${milestoneBranch}`,
           `origin/${defaultBranch}`,
-          { cwd },
+          gitOptions,
           {
             countFn: countBehindFn,
             gitFn,
@@ -838,7 +845,7 @@ export async function presyncMilestoneBranchForIssueRun(
       heavyBuildAdmission: args.heavyBuildAdmissionFn ??
         (() => heavyBuildAdmission(cwd)),
       milestoneTipSha: () =>
-        readRefSha(`origin/${milestoneBranch}`, cwd, gitFn),
+        readRefSha(`origin/${milestoneBranch}`, gitOptions, gitFn),
       ...(ghFn
         ? {
           reportConflict: (conflict: MilestoneSyncConflict) =>
@@ -885,7 +892,7 @@ export async function presyncMilestoneBranchForIssueRun(
           syncFn,
           milestoneBranch,
           defaultBranch,
-          options: { cwd },
+          options: gitOptions,
           repo,
           mergeOnly: syncGrant.mergeOnly,
           agentFn,

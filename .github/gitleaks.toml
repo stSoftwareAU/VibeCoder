@@ -43,6 +43,9 @@
 #    both values.
 #    DEPLOY_TOKEN / API_KEY / ADMIN_TOKEN values asserting a label consumed
 #    as the value of an earlier credential cannot publish that value.
+#    `*_TOKEN = value` / `API_KEY=value` strings fed to `redactSecrets()`
+#    asserting a credential label consumed as an earlier label's value
+#    never publishes the real value.
 #  - gh_body_redaction_input_escaping_5416_test.ts (Issue #5416): fake
 #    40-character credential values (`password:`, `DEPLOY_TOKEN =`,
 #    `API_TOKEN:` on the next line, and a JSON-quoted `"password": "…"`)
@@ -135,6 +138,9 @@ regexes = [
   '''`ADMIN_TOKEN=[A-Za-z0-9]+` still publish''',
   '''\\nAPI_KEY=[A-Za-z0-9]+` from the unmasked text''',
   '''then `ADMIN_TOKEN=[A-Za-z0-9]+`\), the wrapped run''',
+  # SECURITY.md and the PR summary quote the same synthetic `LABEL=abcdefgh1234`
+  # example values in prose; match only a backtick-quoted mention of that value.
+  '''`?(API_KEY|ADMIN_TOKEN)=abcdefgh1234`''',
 ]
 paths = [
   '''worker/deno/tests/secret_redaction_test\.ts''',
@@ -208,6 +214,11 @@ paths = [
   # as the value of an earlier credential cannot publish that value
   # (Issue #5310). The commit that introduced them is scanned as one range, so
   # only a path allowlist clears it.
+  # Fake `*_TOKEN = value` / `API_KEY=value` strings (Issue #5310) fed to
+  # `redactSecrets()` to prove a credential label consumed as the value of an
+  # earlier label never publishes the real value. The commit that introduced
+  # the table-driven fixtures carries the literals, and the range scan covers
+  # it, so only a path allowlist clears it.
   '''worker/deno/tests/secret_redaction_label_as_value_5310_test\.ts''',
   # Fake 40-character credential values (`password:`, `DEPLOY_TOKEN =`,
   # `API_TOKEN:` on the next line, and a JSON-quoted `"password": "…"`) fed

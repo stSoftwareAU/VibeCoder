@@ -66,7 +66,10 @@ import {
   pushUnpushedCommits,
   recoverExistingPr,
 } from "./git_push.ts";
-import { formatBranchChanges } from "./repo_formatters.ts";
+import {
+  formatBranchChanges,
+  type RepoFormatterDeps,
+} from "./repo_formatters.ts";
 import { resolveRebaseConflicts } from "./git_conflict_resolution.ts";
 import { recoverGitState } from "./git_state_recovery.ts";
 import {
@@ -297,6 +300,8 @@ export interface GitDeps {
    * result, before the quality and pre-push gates (part of #2932).
    */
   formatBranchChanges: typeof formatBranchChanges;
+  /** Runner for the archive commit; tests shield its git (Issue #5371). */
+  formatterDeps?: RepoFormatterDeps;
   commitAndPushPending: typeof commitAndPushPending;
   ensureDefaultBranchCurrent: typeof ensureDefaultBranchCurrent;
   getRepoDefaultBranch: typeof getRepoDefaultBranch;

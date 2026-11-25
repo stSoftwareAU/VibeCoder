@@ -16,6 +16,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { NO_HOST_GIT_CONFIG } from "./support/no_host_git_config.ts";
 import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import {
@@ -55,7 +56,7 @@ Deno.test(
       const result = await ensureMilestoneBranchExists(
         "milestone/69-stale",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       );
 
       assert(
@@ -102,7 +103,7 @@ Deno.test(
       const result = await ensureMilestoneBranchExists(
         "milestone/70-current",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       );
 
       assert(
@@ -160,7 +161,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/71-diverged",
         "main",
-        { cwd: worker },
+        { cwd: worker, env: NO_HOST_GIT_CONFIG },
       );
 
       assert(
@@ -208,7 +209,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/72-behind",
         "main",
-        { cwd: worker },
+        { cwd: worker, env: NO_HOST_GIT_CONFIG },
       );
 
       assert(
