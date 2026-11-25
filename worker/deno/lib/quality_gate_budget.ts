@@ -238,8 +238,11 @@ export function buildQualityGateBudgetLines(
   const cost = decision.measured
     ? `it took ${duration} on this repository this run (measured)`
     : `it takes about ${duration}`;
+  const skipAction = pushGuarantee === "pr-review-verifier"
+    ? "commit locally for the worker to verify and push"
+    : "push what you have";
   const recordCore =
-    `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and push what you have.`;
+    `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and ${skipAction}.`;
   const record = pushGuarantee === "pre-flight-only" ||
       pushGuarantee === "pr-review-verifier"
     ? `${recordCore} This PR already exists. The worker does not run the full gate before this push. Configured pre-flight commands enable changed-file checks and run before the worker push; with none configured, the worker still runs the ShellCheck policy, cargo deny for cargo inputs, the gitleaks scan of the PR's commit range (where the repository's CI runs \`gitleaks.yml\`), and the dependency-selected unit tests and markdownlint for the pushed paths. ${
@@ -270,7 +273,7 @@ export function buildQualityGateBudgetLines(
 
   return [
     `   - Before you finish, and only when the run budget covers it (next line), run ${command} < /dev/null once, in the foreground, and fix whatever it reports. Re-run it after a fix — never on a timer.`,
-    `   - The gate is not free: ${cost}, so it needs about ${decision.requiredSeconds}s of run budget including the time to fix, commit and push what it reports${share}. Read \`.vibe-run-budget.md\` before you start it — the worker writes that file once the runway can no longer cover the gate, and it says so explicitly. If it exists and refuses the gate, do NOT start it.`,
+    `   - The gate is not free: ${cost}, so it needs about ${decision.requiredSeconds}s of run budget including time for the fixes, commits and push${share}. Read \`.vibe-run-budget.md\` before you start it — the worker writes that file once the runway can no longer cover the gate, and it says so explicitly. If it exists and refuses the gate, do NOT start it.`,
     record,
   ];
 }

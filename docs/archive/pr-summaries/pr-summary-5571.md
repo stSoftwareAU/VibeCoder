@@ -73,6 +73,18 @@ flowchart LR
   `pr_feedback_processor.ts`, the feedback prompt, and
   `REVIEWER_NO_CHANGE_RETRY_NOTE`. The retry note and the operator guide in
   `docs/workflows/pr-feedback.md` now describe the same worker-owned push.
+- The deadline added by `finishDeadlinePromptLine`, both deadline rules in
+  `prompts/coding_guidelines/prompt.md` and their copy in `CODING-STANDARDS.md`
+  condition the push on the pass. The quality-budget record tells a review pass
+  to commit locally for the worker to verify and push. Other passes retain their
+  existing instruction to push.
+- On `bfc039682`, the revised deadline regression
+  (`worker/deno/tests/claude_runner_finish_deadline_4244_test.ts`) and the
+  review-pass budget regression
+  (`worker/deno/tests/quality_gate_budget_test.ts`) both failed. The budget test
+  covers a fitting and a refused gate and checks the other four push guarantees.
+  After the repair, 56 tests passed across the deadline, budget, PR-side
+  guarantee, retry, guideline-layer, docs-consistency and RTK denial suites.
 - Issue numbers this diff cites: #5571: Review-fix pass: the agent's own git
   push gets past the Bash(git push:*) denial once RTK rewrites it, so a head the
   verifier refuses is already published and reviewed (a private fleet PR)
