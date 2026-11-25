@@ -2470,9 +2470,10 @@ function maskLeads(
         lead = q;
       }
     }
-    const glued = lead !== quote &&
-      gluedName(text, close + 1, a.end, starts[f]) !== "";
-    const end = glued ? gluedValueEnd(text, a.end, from) : a.end;
+    const glued = lead !== quote
+      ? gluedName(text, close + 1, a.end, starts[f])
+      : null;
+    const end = glued ? gluedValueEnd(text, glued, a.end, from) : a.end;
     if (end !== a.end) {
       // The extended mask hides the quotes it now covers, so only those past
       // it survive for the earlier masks' pairing decisions.
@@ -2501,39 +2502,60 @@ interface MaskLead {
 }
 
 /**
- * The end of the value that a glued credential label or flag name ending at
- * `end` labels, or `end` when there is no such value to mask in place
- * (PR #5607 review). The value is the next word on the same line: a quoted word
- * through its closing quote, or a bare word through the next blank. A value
- * that would need another rule's reading (one starting with `-`, as a flag
- * name does, a bare word holding a quote, `:` or `=`, or a quote left open on
- * the line) is not taken, so the name stays masked and the text after it is
- * read exactly as before. A bare word is taken only up to a `-`, where a flag
- * name glued to it may start, so that flag's rule still masks its value. `limit` is the start of the next mask, which the
- * extension never passes. The scan reads one word, so the pass stays linear.
+ * The end of the value that a glued credential label or flag name labels, or
+ * `end` (the verdict's own end) when there is none to mask (PR #5607 review).
+ * The extent is read with the grammar that would read the name if it were not
+ * inside the mask: the assignment walk for a label (so punctuation, hyphens,
+ * escaped quotes and multiline quoted values are its own), and the
+ * `secret-cli-flag` pattern for a flag. Only a credential flag that starts
+ * inside that extent and whose own value runs past it ends the extension early,
+ * at the flag's `--`, so the flag rule still sees its name and masks its value.
+ * `limit` is the start of the next mask, which the extension never passes; the
+ * reads cover only the text up to it, so the pass stays linear.
  */
-function gluedValueEnd(text: string, end: number, limit: number): number {
-  let i = end;
-  while (i < limit && (text[i] === " " || text[i] === "\t")) i++;
-  if (i >= limit || i === end) return end;
-  const first = text[i] ?? "";
-  if (first === "-" || first === "\n" || first === "\r") return end;
-  if (first === "'" || first === '"') {
-    const close = text.indexOf(first, i + 1);
-    const lineEnd = text.slice(i, close === -1 ? text.length : close)
-      .search(/[\r\n]/);
-    if (close === -1 || lineEnd !== -1) return end;
-    return Math.min(close + 1, limit);
+function gluedValueEnd(
+  text: string,
+  name: GluedName,
+  end: number,
+  limit: number,
+): number {
+  const region = text.slice(name.start, limit);
+  let extent = 0;
+  if (name.kind === "flag") {
+    const m = execFlagRuleAt(region, 0);
+    if (m !== null && m.index === 0) extent = m[0].length;
+  } else {
+    const verdict = walkAssignments(region)[0];
+    if (verdict !== undefined && verdict.index === 0 && verdict.masked) {
+      extent = verdict.end;
+    }
   }
-  let j = i;
-  while (j < limit && !/\s/.test(text[j] ?? " ")) {
-    // A `-` may start a flag name glued to the value: stop before it, so the
-    // flag rule still sees the name and masks that flag's own value.
-    if (text[j] === "-") break;
-    if (/['":=]/.test(text[j] ?? "")) return end;
-    j++;
+  let valueEnd = name.start + extent;
+  if (valueEnd <= end) return end;
+  // A credential flag inside the extent whose value runs past it keeps its
+  // name visible, so its rule masks that value instead.
+  const tail = text.slice(end, limit);
+  for (let at = 0; at < valueEnd - end;) {
+    const m = execFlagRuleAt(tail, at);
+    if (m === null || end + m.index >= valueEnd) break;
+    if (end + m.index + m[0].length > valueEnd) {
+      valueEnd = end + m.index;
+      break;
+    }
+    at = m.index + m[0].length;
   }
-  return j;
+  return Math.max(end, Math.min(valueEnd, limit));
+}
+
+/** Run {@link CLI_FLAG_RULE_G} once from `from`, restoring `lastIndex`. */
+function execFlagRuleAt(text: string, from: number): RegExpExecArray | null {
+  const resume = CLI_FLAG_RULE_G.lastIndex;
+  CLI_FLAG_RULE_G.lastIndex = from;
+  try {
+    return CLI_FLAG_RULE_G.exec(text);
+  } finally {
+    CLI_FLAG_RULE_G.lastIndex = resume;
+  }
 }
 
 /**
@@ -2549,16 +2571,24 @@ function gluedName(
   from: number,
   end: number,
   flag: number | undefined,
-): string {
-  if (from >= end) return "";
+): GluedName | null {
+  if (from >= end) return null;
   if (flag !== undefined && flag >= from && flag < end) {
-    return text.slice(flag, end);
+    return { start: flag, kind: "flag" };
   }
   // Only a label with a separator has its value past `end`; a bare word that
   // merely ends in a key such as `password` is mask text and stays masked.
-  if (!/[:=]/.test(text.slice(Math.max(from, end - 2), end))) return "";
+  if (!/[:=]/.test(text.slice(Math.max(from, end - 2), end))) return null;
   const label = labelEndingAt(text, from, end);
-  return label ? text.slice(label.start, end) : "";
+  return label ? { start: label.start, kind: "label" } : null;
+}
+
+/** A credential name glued after a kept quote (see {@link gluedName}). */
+interface GluedName {
+  /** Where the label's key or the flag's `--` starts. */
+  readonly start: number;
+  /** A `key:`/`key=` label, read by the walk, or a flag, read by its rule. */
+  readonly kind: "label" | "flag";
 }
 
 /**

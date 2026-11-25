@@ -239,7 +239,7 @@ Deno.test("Issue #5456: a glued label with no value does not take the next line'
 Deno.test("Issue #5456: a glued label before a next-line assignment holding a flag masks that flag's value", () => {
   assertRedacts(
     "--password 'alpha beta TOKEN='password:\nTOKEN=--password w0q x",
-    `--password ${R}${R}\n${R} ${R} x`,
+    `--password ${R}${R}--password ${R} x`,
     ["w0q", "beta"],
   );
 });
@@ -257,6 +257,43 @@ Deno.test("Issue #5456: a glued label's bare value stops before a flag name glue
     "--token 'alpha beta credentials: TOKEN='credentials: abc--token def",
     `--token ${R}${R}--token ${R}`,
     ["abc", "def"],
+  );
+});
+
+// PR #5607 review round 2: the glued value's extent is read with the walk's
+// own grammar, so punctuation, hyphens, escaped quotes and multiline quoted
+// values stay masked, and only a real credential flag ends it early.
+
+for (
+  const [label, value] of [
+    ["equals", "abc=def"],
+    ["colon", "abc:def"],
+    ["internal hyphen", "mike-pass"],
+    ["leading hyphen", "-mike"],
+  ] as const
+) {
+  Deno.test(`Issue #5456: a glued label's bare value with a ${label} is masked whole`, () => {
+    assertRedacts(
+      `--token 'a b credentials: x'password: ${value} --token z it's`,
+      `--token ${R}${R} --token ${R} it's`,
+      [value, "def", "pass", "mike", "credentials"],
+    );
+  });
+}
+
+Deno.test("Issue #5456: a glued label's double-quoted value with an escaped quote is masked whole", () => {
+  assertRedacts(
+    `--token 'alpha beta credentials: TOKEN='password: "mike \\" secretword" --token z it's`,
+    `--token ${R}${R} --token ${R} it's`,
+    ["mike", "secretword", "beta"],
+  );
+});
+
+Deno.test("Issue #5456: a glued label's closed multiline quoted value is masked whole", () => {
+  assertRedacts(
+    `--token 'alpha beta credentials: TOKEN='password: "mike\nsecretword" --token z it's`,
+    `--token ${R}${R} --token ${R} it's`,
+    ["mike", "secretword", "beta"],
   );
 });
 

@@ -592,11 +592,13 @@ flag's name being swallowed and the remainder of its value being published. A
 kept quote ends the flag's value, so when the masked text after it ends in a
 credential label or flag name glued to the quote, as in
 `credentials: x'password: <value>` or `credentials: x'--password <value>`, that
-name stays inside the mask and the mask is extended through the value it labels
-on the same line. Nothing masked is written back, so the change only ever masks
-more than before. A value that needs another rule's reading (a flag name, a word
-holding a quote, `:` or `=`, or a quote left open on the line) is not taken: the
-name stays masked and the text after it is read as before.
+name stays inside the mask and the mask is extended through the value it labels.
+That value's extent is read with the grammar that would read the name outside a
+mask: the assignment walk for a label (punctuation, hyphens, escaped quotes and
+multiline quoted values included) and the `secret-cli-flag` pattern for a flag.
+Only a credential flag that starts inside the value and whose own value runs
+past it ends the extension early, at its `--`, so the flag rule masks that
+value. Nothing masked is written back.
 
 A quoted value whose closing quote is where the `secret-cli-flag` rule opens a
 credential flag's value is masked through that flag's value (Issue #5457). Given
