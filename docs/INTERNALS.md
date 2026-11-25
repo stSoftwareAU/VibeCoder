@@ -3879,7 +3879,10 @@ An issue named by a remaining PR's `issue-N` head or trailing `(#N)` /
 over REST (`gh api repos/<repo>/issues/<N>`), and when it is closed, not a pull
 request and now in another milestone or none, it is added and classified like the
 rest. A claimed one is listed under "Issues addressed" with `(now in milestone
-"<title>")` or `(no longer in a milestone)`. A failed `--base` list or issue read
+"<title>")` or `(no longer in a milestone)`. The combined list is deduplicated
+by issue number; a live moved-issue row supersedes an overlapping cached
+milestone member, preserving its current title and milestone note.
+A failed `--base` list or issue read
 makes the whole closed-issue read fail (`null`), never a shorter list. Missing
 selected PR fields or a missing issue `milestone` field are malformed; only an
 explicit `milestone: null` means no milestone. The

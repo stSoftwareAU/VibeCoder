@@ -24,6 +24,7 @@ import {
 import { fetchIssuesMovedOffBranch } from "../lib/milestone_branch_deliveries.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { redactGhBodyText } from "../lib/gh_body_redaction.ts";
+import { fetchClosedIssuesByMilestoneNumber } from "../lib/issue_query.ts";
 
 const REPO = "owner/repo";
 const BRANCH_A = "milestone/secret-assignment-rule-hardening";
@@ -428,6 +429,45 @@ Deno.test("checkAndHandleMilestoneCompletions - retries a malformed branch deliv
   assertEquals(created.length, 1);
   assertStringIncludes(created[0]!.body, "Part of #5326");
   assertStringIncludes(created[0]!.body, "Part of #5327");
+});
+
+Deno.test("checkAndHandleMilestoneCompletions - deduplicates a moved issue still present in cached milestone membership (Issue #5458)", async () => {
+  await withTempCache(async (cache) => {
+    // Seed the old membership through its production reader, before the issue
+    // moves and the branch discovery reads its newer REST row.
+    await fetchClosedIssuesByMilestoneNumber(
+      REPO,
+      7,
+      cache,
+      async () =>
+        JSON.stringify([
+          {
+            number: 5326,
+            title: "Cached title before move",
+            updated_at: "2026-10-06T00:00:00Z",
+          },
+          {
+            number: 5327,
+            title: "Redact tokens",
+            updated_at: "2026-10-06T00:00:00Z",
+          },
+        ]),
+    );
+    const created: { head: string; body: string }[] = [];
+    await checkAndHandleMilestoneCompletions(createMockDeps({
+      cache,
+      ghCommandFn: scenarioGhFn(created),
+    }));
+    const body = created.find((pr) => pr.head === BRANCH_A)!.body;
+    assertEquals(body.split("- #5326:").length - 1, 1);
+    assertStringIncludes(
+      body,
+      '- #5326: Redact secret assignments (now in milestone "secret redaction follow-ups")',
+    );
+    assertFalse(body.includes("Cached title before move"));
+    assertStringIncludes(body, "Part of #5326");
+    assertStringIncludes(body, "Part of #5327");
+  });
 });
 
 for (const incomplete of [false, true]) {

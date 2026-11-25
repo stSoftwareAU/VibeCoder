@@ -2142,13 +2142,20 @@ async function getClosedIssues(
       ghCommandFn,
       cache,
     );
+    // Prefer the live moved-issue row when cached membership still includes it.
+    const issuesByNumber = new Map<number, ClosedIssue>();
+    for (
+      const issue of [
+        ...closed.filter((issue) => !trackerNumbers.has(issue.number)),
+        ...movedIssues,
+      ]
+    ) {
+      issuesByNumber.set(issue.number, issue);
+    }
     return await classifyClosedIssues(
       repo,
       milestoneBranch,
-      [
-        ...closed.filter((issue) => !trackerNumbers.has(issue.number)),
-        ...movedIssues,
-      ],
+      [...issuesByNumber.values()],
       ghCommandFn,
       cache,
     );
