@@ -144,7 +144,7 @@ Provenance titles checked with GitHub CLI in this run:
   `Result: PASSED (with skipped checks)`, including `deno tests`, `deno lint`,
   `deno type check`, `deno fmt` and semgrep. The later commit changes only the
   two cache tests above. That test file passed (18 tests), as did its
-  formatting, lint and type check. A run of all 14 `tests/*milestone*_test.ts`
+  formatting, lint and type check. A run of all 123 `tests/*milestone*_test.ts`
   files gave 1,879 passed and 1 failed. The failure was
   `milestone_sync_gate_repair_test.ts::syncMilestoneBranchWithDefault - a clean merge's compiler failure is repaired before delivery`
   ("Found 1 not formatted file" in its temporary repository's push). That file
