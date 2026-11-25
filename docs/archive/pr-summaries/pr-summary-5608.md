@@ -14,6 +14,8 @@ redacted. Mask overlapping nested flag values together. Closes #5608.
 ### Essential Design Decisions
 
 - Detection and replacement share `verdictOf` and the assignment walk.
+- Classify the original value before changing its mask boundary, so a shortened
+  cross-line prefix cannot become exempt as a short word or prose.
 - When a flag's value ends in another credential flag taking a value, extend
   the assignment mask through successive overlaps instead of hiding a flag's
   name while leaving its value visible.
@@ -29,14 +31,15 @@ None.
 
 - Backend redaction change; no visual surface changed.
 - The regression file copied into an isolated checkout of unfixed `main`
-  (`a0170265e`) failed on both same-line and consecutive-line inputs. The
+  (`a0170265e`) had 19 failing cases and two passing controls, including failures
+  on both same-line and consecutive-line inputs. The
   output exposed the credential value while `containsSecret` returned false
   on that output. Removing the outer label was an accepted control.
 - The nested-value regression also failed against checkpoint `eaf8bc0fb`:
   preserving the old outer mask exposed the first flag's value. The final
   implementation masks both overlapping values.
 - `worker/deno/tests/secret_redaction_flag_in_value_5608_test.ts` and the
-  existing redaction suites passed: 667 tests, zero failures.
+  existing redaction suites passed: 668 tests, zero failures.
 - Security review: this fix adds no sink, dependency, filesystem, network or
   process operation. It applies `capsec-secret-logging` in the existing shared
   redactor. SECURITY.md describes the nested-value exception; the threat
@@ -61,6 +64,9 @@ flowchart LR
   `#5608: overlapping nested flags keep every value masked` checks two and
   three overlapping flags on both line layouts. These cases assert exact
   output, input detection, output detection, secret removal and idempotence.
+- `#5608: shortening a cross-line mask keeps credential prefixes masked` in
+  that file failed against the shortened-value classifier and passes with the
+  original-value classifier, covering both short and prose-shaped prefixes.
 - The same file's missing-value controls cover absent values, following
   options, bare assignment separators, equals-attached values and
   non-credential flags. Controls pin existing behaviour and may pass on base.
@@ -76,13 +82,20 @@ flowchart LR
   value-redaction requirement. Every fixture and its detection, idempotence
   and original-secret-removal assertions remain.
 - `deno task test:unit tests/secret_redaction*_test.ts
-  tests/secret_transform_redaction_test.ts`: passed, 667 tests. Existing quoted
+  tests/secret_transform_redaction_test.ts`: passed, 668 tests. Existing quoted
   flag regressions exercise the reused trailing-name matcher through the CLI
   rule as well as the changed assignment path.
 - Targeted `deno fmt --check`, `deno lint` and frozen `deno check` on the
   production module and both changed test files: passed.
-- No twinned implementation was found. The trailing-name pattern previously
-  embedded in `throughFollowingFlag` now calls the shared matcher.
+- Compared both redactors over 1,852 base and 1,854 head files: README,
+  SECURITY.md, Markdown under docs and prompts, and redaction test sources.
+  Three base files and five head files changed output, all containing the
+  affected credential examples; no unexpected masking change was found.
+  Labelled regression fixtures have zero false positives and zero false
+  negatives at head. The prose corpus is not a labelled secret inventory, so
+  its total false-negative count is unknown.
+- The trailing-name pattern previously embedded in `throughFollowingFlag`
+  now shares `flagNameEndingAt` with the new assignment-boundary helper.
 
 ## Merge verification
 
