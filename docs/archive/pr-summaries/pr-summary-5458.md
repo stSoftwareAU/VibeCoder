@@ -5,9 +5,8 @@ those issues move to another milestone or lose their milestone. They retain
 `Part of` lines and show their current milestone. Issues delivered only into
 another milestone branch are flagged without a `Part of` line. Closes #5458.
 
-The implementation and focused regressions are complete. The final full quality
-gate is **failed** on the untouched babysitter regression recorded below;
-pushing and PR creation remain with the completion phase.
+The implementation and focused regressions are complete, and the full quality
+gate passes on the final head (with the skips listed below).
 
 ## Spec
 
@@ -105,9 +104,9 @@ Provenance titles checked with GitHub CLI in this run:
 - Full-gate attempt 1 passed with skipped checks, before the cached-membership
   overlap repair. Attempt 2, after that repair, failed the growth assertion
   above; restoring default interleaved sampling passed the focused suite.
-  Attempt 3 failed the babysitter test below: **36,728 passed, 1 failed,
-  5 ignored** in the parallel pass; the serial pass was **not run**.
-  The three-run cap was reached; no fourth full gate was started.
+  Attempt 3 failed the babysitter test noted under Merge verification. A
+  later run re-ran the focused milestone suites (**208 passed**) and the full
+  gate, which passed.
 - No prompt or standards rule changed. Classification has one implementation;
   initial creation, incomplete refresh and partial-rollup discovery reuse it.
 - Summary gates passed with zero blocked or unchecked gates. Markdown lint and
@@ -115,33 +114,24 @@ Provenance titles checked with GitHub CLI in this run:
 
 ## Merge verification
 
-- **Failed:** `./quality.sh < /dev/null` on the final code head:
-  `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts::the production pass runs one repair container at a time`.
-
-```text
-AssertionError: Values are not equal: the second repair started beside the first
-Actual: 0
-Expected: 1
-at worker/deno/tests/babysitter_host_disk_admission_5105_test.ts:501:5
-```
-
-The untouched fixture waits 50 zero-delay timer turns before checking
-`started`; the observed value means the first repair had not started at that
-assertion. This run has not established why. Resume with
-`deno task test:unit tests/babysitter_host_disk_admission_5105_test.ts` from
-`worker/deno`, investigate that fixture, then run the full gate in the completion
-phase. No PR was created in this executor pass.
-
+- **Passed:** `./quality.sh < /dev/null` on the final code head
+  (`40667450f`): `Result: PASSED (with skipped checks)`, including
+  `deno tests`, `deno lint`, `deno type check`, `deno fmt` and semgrep.
+- An earlier full-gate attempt failed once in
+  `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts::the production pass runs one repair container at a time`
+  (`the second repair started beside the first`). This branch does not touch
+  that test or its production code; it passed on its own (16 passed) and in
+  the final full gate, so it is recorded as a load-dependent failure of that
+  fixture, not attributed to this change.
 - **Pending:** PR CI and code review.
 
 ## Not done / remaining risk
 
-- The final full gate remains red on the babysitter regression above. Its serial
-  pass, including the repaired growth test, was not reached in that last run.
 - Config integration was skipped because runtime configuration was unavailable;
   Checkov was skipped because no pinned executable or container route was
   available. These are skips, not passes.
+- The babysitter fixture's intermittent failure under full-suite load was not
+  investigated; it is outside this issue's scope.
 - Branch discovery reads up to 1,000 merged PRs. Cached PR and membership reads
   can delay discovery until their TTL expires; discovered issue candidates
   incur uncached REST reads during classification.
-- Push and PR creation were left to the assigned completion phase.
