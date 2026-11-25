@@ -85,6 +85,18 @@ Deno.test("#5608: overlapping nested flags keep every value masked", () => {
   }
 });
 
+Deno.test("#5608: shortening a cross-line mask keeps credential prefixes masked", () => {
+  for (const prefix of ["hunter2", "longlowerword"]) {
+    const input = `password:\n${prefix}--token ${V}`;
+    const once = redactSecrets(input);
+    assertEquals(once, `password:\n${R}--token ${R}`);
+    assertEquals(once.includes(prefix), false);
+    assertEquals(containsSecret(input), true);
+    assertEquals(containsSecret(once), false);
+    assertEquals(redactSecrets(once), once);
+  }
+});
+
 Deno.test(
   "#5608: a flag name with no value after it is still masked as the label's value",
   () => {
