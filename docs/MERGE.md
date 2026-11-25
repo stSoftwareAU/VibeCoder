@@ -468,8 +468,18 @@ already judged through the latest check run, so an earlier failed or cancelled
 run of the same workflow does not fail the commit again. The suites come from
 GraphQL `checkSuites` (including `checkRuns.totalCount`) on the batched read,
 and from `repos/{repo}/commits/{sha}/check-suites`
-(`latest_check_runs_count`) on the REST fallback. Suites from other apps, and
-suites that have not finished, change nothing. The CI-fix scan reads the same
+(`latest_check_runs_count`) on the REST fallback. Suites from other apps
+do not affect the verdict.
+
+An unfinished `github-actions` suite makes an otherwise passing verdict
+`pending`, regardless of its check-run count. A workflow waiting to start may
+have no check run yet, leaving the rollup `SUCCESS` while CI is still queued;
+a rerun may leave earlier green checks visible too. Failed check runs, commit
+statuses, rollups and zero-run suites retain precedence. The review gate
+likewise returns `waiting-ci` after checking failures and cancellations. No
+age threshold turns an unfinished suite green.
+
+The CI-fix scan reads the same
 zero-run suites: a completed `github-actions` suite with conclusion
 `startup_failure` becomes a CI-fix candidate keyed by the suite id and named
 after the workflow and file path. The run URL is carried in its annotations,
@@ -555,7 +565,8 @@ A head commit with **no check runs and no commit statuses** has been verified by
 nothing. `checkCiStatus()` reports it as `no_checks` — a status distinct from
 `passed` — and the gate blocks the merge with the `no_checks` reason. A failed
 `github-actions` check suite with no check run of its own on such a head makes
-it `failed` instead, because a suite can exist with no check run
+it `failed` instead; an unfinished Actions suite makes it `pending` instead,
+even before its first check run exists
 ([the allowlist](#the-ci-verdict-is-an-allowlist)). The
 direct-merge path is the one that bypasses branch protection, so it must fail
 closed here exactly as its neighbouring guards do.
@@ -572,7 +583,8 @@ override** on the CLI:
 deno run ... merge-if-checks-passed --repo owner/repo --pr 42 --allow-no-checks
 ```
 
-The override relaxes the "no checks" refusal only. Every other requirement —
+The override relaxes the "no checks" refusal only; unfinished Actions suites
+still block it as `checks_pending`. Every other requirement —
 non-default target branch, branch freshness, repo allowlist, PR authorship —
 still applies.
 

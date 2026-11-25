@@ -524,7 +524,7 @@ Deno.test("direct_merge - checkCiStatus falls back to REST pair when GraphQL fai
 // A workflow that fails at startup is recorded as a completed `github-actions`
 // check suite with conclusion `startup_failure`, and may create no check run at
 // all, so a green check-run rollup does not show it. The verdict must read the
-// suite. Suites from other apps, and suites not yet finished, change nothing.
+// suite. Unfinished Actions suites wait; suites from other apps change nothing.
 // =============================================================================
 
 const GREEN_CHECK_RUN: FakeCheckContext = {
@@ -611,11 +611,11 @@ for (const conclusion of ["SUCCESS", "SKIPPED", "NEUTRAL"]) {
 }
 
 for (const status of ["IN_PROGRESS", "QUEUED"]) {
-  Deno.test(`direct_merge - checkCiStatus leaves an unfinished github-actions suite (${status}) unchanged (Issue #4347)`, async () => {
+  Deno.test(`direct_merge - checkCiStatus waits for an unfinished github-actions suite (${status})`, async () => {
     const verdict = await graphqlVerdict([
       { appSlug: "github-actions", status, conclusion: null },
     ]);
-    assertEquals(verdict, "passed");
+    assertEquals(verdict, "pending");
   });
 }
 
@@ -711,6 +711,100 @@ Deno.test("direct_merge - checkCiStatus REST fallback fails a github-actions sta
   );
 });
 
+Deno.test("direct_merge - REST fallback waits for unfinished Actions suites", async () => {
+  for (const status of ["queued", "in_progress"]) {
+    const result = await checkCiStatus(
+      "owner/repo",
+      42,
+      restFallbackMock(JSON.stringify({
+        check_suites: [{
+          app_slug: "github-actions",
+          status,
+          conclusion: null,
+          check_run_count: 0,
+        }],
+      })),
+    );
+    assertEquals(result.ok && result.value.status, "pending");
+  }
+});
+
+Deno.test("direct_merge - pending suites cannot mask red rollups, runs, statuses or suites", () => {
+  const pending = {
+    ...FAILED_ACTIONS_SUITE,
+    status: "queued",
+    conclusion: null,
+  };
+  const runs = withSuite(pending);
+  assertEquals(determineCiStatus(runs, CLEAN_STATUS, "FAILURE"), "failed");
+  assertEquals(
+    determineCiStatus({
+      ...runs,
+      check_runs: [
+        { id: 1, name: "build", status: "completed", conclusion: "failure" },
+      ],
+    }, CLEAN_STATUS),
+    "failed",
+  );
+  assertEquals(
+    determineCiStatus(runs, {
+      state: "failure",
+      statuses: [
+        { id: 2, context: "deploy", state: "failure", description: "failed" },
+      ],
+    }),
+    "failed",
+  );
+  assertEquals(
+    determineCiStatus({
+      ...runs,
+      check_suites: [pending, FAILED_ACTIONS_SUITE],
+    }, CLEAN_STATUS),
+    "failed",
+  );
+  assertEquals(determineCiStatus(runs, CLEAN_STATUS, "SUCCESS"), "pending");
+});
+
+Deno.test("direct_merge - no-checks override cannot bypass unfinished Actions CI", async () => {
+  for (const status of ["QUEUED", "IN_PROGRESS", "COMPLETED"]) {
+    const fake = fakeGithubGraphQL({
+      owner: "owner",
+      name: "repo",
+      pullRequests: {
+        42: {
+          headOid: FAKE_SHA,
+          rollupState: "SUCCESS",
+          contexts: [],
+          checkSuites: [{
+            appSlug: "github-actions",
+            status,
+            conclusion: status === "COMPLETED" ? "SUCCESS" : null,
+          }],
+        },
+      },
+    });
+    const result = await enforcePreMergeRequirements(
+      "owner/repo",
+      42,
+      (args) => args[1] === "graphql" ? fake.gh(args) : baseRefMock(args),
+      {
+        allowNoChecks: true,
+        fetchHeadRecency: async () => ({ headSha: FAKE_SHA, committedAtMs: 0 }),
+      },
+      checkCiStatus,
+      branchStub(0),
+    );
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.allowed, status === "COMPLETED");
+      assertEquals(
+        result.value.reason,
+        status === "COMPLETED" ? undefined : "checks_pending",
+      );
+    }
+  }
+});
+
 Deno.test("direct_merge - checkCiStatus REST fallback errors when the check-suites read fails (Issue #4347)", async () => {
   const result = await checkCiStatus(
     "owner/repo",
@@ -777,7 +871,7 @@ Deno.test("direct_merge - checkCiStatus REST fallback errors on a check-suites r
 
 // determineCiStatus — each operand of the suite rule, flipped in turn (Issue
 // #4347). The base fixture is a green check run plus a failed github-actions
-// suite; with any one operand flipped, the verdict must be "passed".
+// suite; other apps and passing conclusions pass, while unfinished suites wait.
 
 const GREEN_RUN_RESPONSE: CheckRunsResponse = {
   total_count: 1,
@@ -820,13 +914,13 @@ Deno.test("direct_merge - determineCiStatus: a suite from another app (app_slug 
   }
 });
 
-Deno.test("direct_merge - determineCiStatus: an unfinished suite status flipped stays passed (Issue #4347)", () => {
+Deno.test("direct_merge - determineCiStatus: an unfinished suite with a stale failure conclusion stays pending", () => {
   assertEquals(
     determineCiStatus(
       withSuite({ ...FAILED_ACTIONS_SUITE, status: "in_progress" }),
       CLEAN_STATUS,
     ),
-    "passed",
+    "pending",
   );
 });
 
