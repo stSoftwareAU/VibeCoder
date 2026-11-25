@@ -85,6 +85,9 @@ export const RTK_HOOK_MATCHER = "Bash";
 /** RTK's own hook command — no wrapper script (`src/hooks/constants.rs`). */
 export const RTK_HOOK_COMMAND = "rtk hook claude";
 
+/** What RTK's hook puts in front of a command it rewrites (`git push` runs as `rtk git push`). */
+export const RTK_REWRITE_PREFIX = "rtk ";
+
 /**
  * The line the agent is told when the hook is installed.
  *

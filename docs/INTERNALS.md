@@ -2859,8 +2859,12 @@ When a comment is found:
 
 For an authorised `CHANGES_REQUESTED` review (`pr_review`), the worker also
 runs the disposable verifier after committing and formatting, before pushing
-(Issue #3784). It supplies the complete earlier problem/Fix pairs and requires
-one evidenced `fixed` verdict per numbered finding. Missing, duplicate,
+(Issue #3784). The agent of that pass does not push: its spawn denies
+`git push`, `gh pr merge` and `gh api` both as typed and in the `rtk`-prefixed
+form RTK's hook rewrites them to (`rtk git push`), and the feedback prompt
+tells it to commit and cite each fix instead (Issue #5571). The verifier
+supplies the complete earlier problem/Fix pairs and requires one evidenced
+`fixed` verdict per numbered finding. Missing, duplicate,
 `partly` or `not fixed` verdicts become blocking findings. An unavailable
 verifier does not block this path: it is logged as not checked, the fix is
 pushed, and the fleet review of the pushed head decides (Issue #4509). One

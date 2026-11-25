@@ -109,7 +109,7 @@ Deno.test({
         stdin.endsWith(
           `Finish deadline: ${new Date(finishMs).toISOString()} (${
             Math.floor((finishMs - now) / 1000)
-          } seconds remaining). Commit and push your work before then.`,
+          } seconds remaining). Commit your work before then. Push only if this pass assigns the push to you.`,
         ),
         stdin,
       );
