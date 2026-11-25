@@ -65,7 +65,8 @@ export const REDACTION_PLACEHOLDER = "***REDACTED***";
  * at 4,096 characters or escapes and the alternatives are told apart by their
  * first two characters, so it stays linear (Issue #3942). A longer value, or
  * one whose escape never closes (`"C:\dir\"`), falls back to the old branches
- * that end at the first quote.
+ * that end at the first quote. If a later flag opens its quoted value at
+ * the apparent closing quote, throughFollowingFlag masks the overlap.
  */
 const CLI_FLAG_VALUE = String
   .raw`(?:"(?:[^"\\]|\\[^]){1,4096}"|'(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|"[^"]+"|'[^']+'|\S+)`;
@@ -882,13 +883,8 @@ const RULES: readonly RedactionRule[] = [
   // CLI flag name approaches 64 characters either side of the keyword.
   {
     name: "secret-cli-flag",
-    pattern: new RegExp(
-      String
-        .raw`(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63})(\s+)(?!-)(?!\*\*\*REDACTED)(${CLI_FLAG_VALUE})`,
-      "gi",
-    ),
-    replace: (_m, flag: string, sep: string) =>
-      `${flag}${sep}${REDACTION_PLACEHOLDER}`,
+    apply: redactCliFlags,
+    detect: (text) => text.search(CLI_FLAG_RULE_G) !== -1,
   },
   // Bare 32-hex credential — the ImgBB API key shape (Issue #1387). The two
   // rules above catch that key only while it keeps its wrapper: an
@@ -994,7 +990,21 @@ function execAssignmentAt(
   const resume = pattern.lastIndex;
   pattern.lastIndex = from;
   try {
-    return pattern.exec(text);
+    const match = pattern.exec(text);
+    if (!match) return null;
+    const end = pattern.lastIndex;
+    const value = match[3]!;
+    // Only the quoted fallback that reads beyond the first word widened
+    // the assignment span. Keep the established inner-label walk for the
+    // original first-word matches.
+    const through = /^["']/.test(value) && !/^\S{0,63}[A-Za-z0-9]/.test(value)
+      ? throughFollowingFlag(text, end - value.length, end)
+      : end;
+    if (through > end) {
+      match[3] = text.slice(end - value.length, through);
+      match[0] = text.slice(match.index, through);
+    }
+    return match;
   } finally {
     pattern.lastIndex = resume;
   }
@@ -2114,6 +2124,61 @@ const CLI_FLAG_RULE_G = new RegExp(
     .raw`(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+)(?!-)(?!\*\*\*REDACTED)${CLI_FLAG_VALUE}`,
   "gi",
 );
+
+/** A quote can close one apparent value and open another credential flag's
+ * value. Mask their union, including successive overlaps. Each extension
+ * advances past the shared quote; only the bounded flag name and its own
+ * whitespace are read backwards.
+ */
+function throughFollowingFlag(
+  text: string,
+  start: number,
+  end: number,
+): number {
+  while (end < text.length) {
+    const open = end - 1;
+    if (text[open] !== '"' && text[open] !== "'") break;
+    let nameEnd = open;
+    while (nameEnd > start && /\s/.test(text[nameEnd - 1]!)) nameEnd--;
+    if (nameEnd === open) break;
+    const name = text.slice(Math.max(start, nameEnd - 150), nameEnd)
+      .match(
+        /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}$/i,
+      );
+    if (!name) break;
+    const flagStart = nameEnd - name[0].length;
+    if (flagStart <= start || !/\s/.test(text[flagStart - 1]!)) break;
+    CLI_FLAG_AT.lastIndex = flagStart;
+    const flag = CLI_FLAG_AT.exec(text);
+    if (!flag || CLI_FLAG_AT.lastIndex <= end) break;
+    start = open;
+    end = CLI_FLAG_AT.lastIndex;
+  }
+  return end;
+}
+
+function redactCliFlags(text: string): string {
+  const pattern = CLI_FLAG_RULE_G;
+  pattern.lastIndex = 0;
+  let out = "";
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    const prefix = match[1]!;
+    const start = match.index + prefix.length;
+    out += text.slice(last, start) + REDACTION_PLACEHOLDER;
+    const quote = text[start];
+    const end = pattern.lastIndex;
+    // The escape-aware reader widened the old first-quote match only
+    // when another quote of the same kind precedes its closing quote.
+    last = (quote === '"' || quote === "'") && text[end - 1] === quote &&
+        match[0].indexOf(quote, prefix.length + 1) < match[0].length - 1
+      ? throughFollowingFlag(text, start, end)
+      : end;
+    pattern.lastIndex = last;
+  }
+  return out + text.slice(last);
+}
 
 /**
  * Whether the `secret-cli-flag` rule, reading `text` from the start, opens a

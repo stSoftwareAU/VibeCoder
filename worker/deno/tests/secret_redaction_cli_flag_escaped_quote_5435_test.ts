@@ -144,3 +144,30 @@ Deno.test("Issue #5435: linearity, a long run of doubled single quotes", () => {
   // a closing quote (8,194 characters); the rest of the run and the final `x` stay as they were.
   assertEquals(output, `--password ***REDACTED***` + "'".repeat(31807) + "x");
 });
+
+Deno.test("a quote shared with a following flag protects both values", () => {
+  const sentinel = "fixture".repeat(5);
+  for (const q of ["'", '"']) {
+    for (const gap of [" ", "\n"]) {
+      for (
+        const before of [
+          `echo ${q}missing token:${q}`,
+          `--secret-dir ${q}private-path\\${q}`,
+          ...(q === "'"
+            ? [
+              "--secret-dir 'private-path''",
+              "--secret-dir 'private-path'\\''",
+            ]
+            : []),
+        ]
+      ) {
+        const input = `${before}${gap}--token ${q}${sentinel}${q}`;
+        const once = redactSecrets(input);
+        assertEquals(once.includes(sentinel), false, before);
+        assertEquals(once.includes("private-path"), false, before);
+        assertEquals(redactSecrets(once), once, before);
+        assertEquals(containsSecret(once), false, before);
+      }
+    }
+  }
+});

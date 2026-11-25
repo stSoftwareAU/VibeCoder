@@ -563,7 +563,9 @@ escape never closes (`"C:\dir\"`) falls back to ending at the first quote.
 
 The same holds for a credential command-line flag's quoted value:
 `--token "abc\"def"`, `--password 'abc''def'` and `--password 'it'\''s'` are
-masked in full by the `secret-cli-flag` rule, with the same two limits. Before
+masked in full by the `secret-cli-flag` rule. When a later credential flag
+opens its quoted value at the apparent closing quote of a flag or assignment,
+the mask extends through the later value. Before
 Issue #5435 the flag value ended at the escaped quote and the rest of the
 credential was published.
 

@@ -43,12 +43,17 @@ kind is masked whole. Closes #5435.
 
 ## Evidence
 
+The overlapping-flag regression failed on `4720c419f` and passed after the
+repair. It checks the redacted text and a second redaction across both quote
+kinds and across a line break. All 610 tests in the secret-redaction files
+passed with the frozen lockfile.
+
 This is a backend-only change (`worker/deno/lib/secret_redaction.ts`).
 
 - **Failing first:** the new test file was run against the unfixed rule. The six
   escaped-quote cases, the three walk cases and the many-flags linearity case
   failed. For example, the issue's own input left `cdSECRETtail"` unmasked.
-  After the fix, all 15 tests pass.
+  All 15 original cases passed after the initial fix.
 - **Walk stays in step:** on the unfixed code, a `--password` flag whose value
   is `'al\'pha beta`, followed by a `TOKEN=` label, published `pha beta`. With
   the fix, every copy reads the same value, so the whole value is masked.
@@ -72,7 +77,7 @@ This is a backend-only change (`worker/deno/lib/secret_redaction.ts`).
 
 - Added
   `worker/deno/tests/secret_redaction_cli_flag_escaped_quote_5435_test.ts`, with
-  15 tests that go through `redactSecrets` and `containsSecret`:
+  15 original tests and the overlapping-flag regression, all going through `redactSecrets` and `containsSecret`:
   - **Escaped quotes:** a backslash-escaped `"` and `'`, a doubled `''`, and the
     `'\''` idiom (the following flag is kept).
   - **Whitespace:** an escaped quote followed by whitespace. This is the issue's
