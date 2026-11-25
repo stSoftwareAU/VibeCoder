@@ -1051,6 +1051,7 @@ Deno.test("classifyClosedIssues - flags sync-pr-only and predates-reopen, claims
 
   const result = await classifyClosedIssues(
     "org/repo",
+    "milestone/rollup",
     [
       { number: 1, title: "Sync only" },
       { number: 2, title: "Clean merge" },
@@ -1089,6 +1090,7 @@ Deno.test("classifyClosedIssues - flags an issue whose timeline cannot be read r
 
   const result = await classifyClosedIssues(
     "org/repo",
+    "milestone/rollup",
     [{ number: 1, title: "Unreadable timeline" }],
     ghFn,
   );
@@ -1240,6 +1242,7 @@ Deno.test("classifyClosedIssues - recovers merged same-repo issue-branch PRs and
 
   const result = await classifyClosedIssues(
     "org/repo",
+    "milestone/rollup",
     [
       { number: 42, title: "Recovered delivery" },
       { number: 43, title: "Reopened after delivery" },
@@ -1292,6 +1295,7 @@ Deno.test("classifyClosedIssues - ignores the persisted v1 verdict after branch 
 
     const result = await classifyClosedIssues(
       "org/repo",
+      "milestone/recovery",
       [{
         number: 42,
         title: "Recovered delivery",
@@ -3788,7 +3792,13 @@ Deno.test("classifyClosedIssues - serves an unchanged issue's verdict from cache
       ...(updatedAt !== undefined ? { updatedAt } : {}),
     }];
     const run = (updatedAt?: string) =>
-      classifyClosedIssues("org/repo", issue(updatedAt), ghFn, cache);
+      classifyClosedIssues(
+        "org/repo",
+        "milestone/rollup",
+        issue(updatedAt),
+        ghFn,
+        cache,
+      );
 
     assertEquals(
       (await run("2026-10-05T00:00:00Z"))[0]?.claimProblem,
@@ -3828,7 +3838,13 @@ Deno.test("classifyClosedIssues - serves a cached predates-reopen verdict for th
       updatedAt: "2026-10-07T00:00:00Z",
     }];
     for (let i = 0; i < 2; i++) {
-      const out = await classifyClosedIssues("org/repo", issues, ghFn, cache);
+      const out = await classifyClosedIssues(
+        "org/repo",
+        "milestone/rollup",
+        issues,
+        ghFn,
+        cache,
+      );
       assertEquals(out[0]?.claimProblem, "predates-reopen");
     }
     assertEquals(timelineReads, 1);
@@ -3847,6 +3863,7 @@ Deno.test("classifyClosedIssues - an issue with no merged PR is flagged without 
     };
     const out = await classifyClosedIssues(
       "org/repo",
+      "milestone/rollup",
       [{ number: 1, title: "Sync", updatedAt: "2026-10-05T00:00:00Z" }],
       ghFn,
       cache,
@@ -3873,6 +3890,7 @@ Deno.test("classifyClosedIssues - caches empty title and branch searches across 
     for (let scan = 0; scan < 2; scan++) {
       const result = await classifyClosedIssues(
         "org/repo",
+        "milestone/rollup",
         issues,
         ghFn,
         cache,
@@ -3910,9 +3928,21 @@ Deno.test("classifyClosedIssues - unreadable branch PR search retries instead of
       title: "T",
       updatedAt: "2026-10-05T00:00:00Z",
     }];
-    const bad = await classifyClosedIssues("org/repo", issues, ghFn, cache);
+    const bad = await classifyClosedIssues(
+      "org/repo",
+      "milestone/rollup",
+      issues,
+      ghFn,
+      cache,
+    );
     assertEquals(bad[0]?.claimProblem, "merged-pr-search-unreadable");
-    const good = await classifyClosedIssues("org/repo", issues, ghFn, cache);
+    const good = await classifyClosedIssues(
+      "org/repo",
+      "milestone/rollup",
+      issues,
+      ghFn,
+      cache,
+    );
     assertEquals(good[0]?.claimProblem, undefined);
     assertEquals(branchReads, 2);
     assertEquals(
@@ -3961,6 +3991,7 @@ for (const failedSearch of ["title", "branch"] as const) {
         };
         const first = await classifyClosedIssues(
           "org/repo",
+          "milestone/rollup",
           issues,
           ghFn,
           cache,
@@ -3968,6 +3999,7 @@ for (const failedSearch of ["title", "branch"] as const) {
         assertEquals(first[0]?.claimProblem, "predates-reopen");
         const second = await classifyClosedIssues(
           "org/repo",
+          "milestone/rollup",
           issues,
           ghFn,
           cache,
@@ -3992,6 +4024,11 @@ for (const failedSearch of ["title", "branch"] as const) {
             actor: { login: "owner" },
             created_at: "2026-10-06T00:00:00Z",
           }]);
+        }
+        // Issue #5458: the milestone branch's merged-PR list (`--base`) is not
+        // one of the searches under test, so it answers empty.
+        if (args[0] === "pr" && args[1] === "list" && args.includes("--base")) {
+          return "[]";
         }
         if (args[0] === "pr" && args[1] === "list" && args.includes("merged")) {
           const search = args.includes("head:issue-20") ? "branch" : "title";
@@ -4043,9 +4080,21 @@ Deno.test("classifyClosedIssues - never caches an unreadable timeline (PR #3640 
       title: "T",
       updatedAt: "2026-10-05T00:00:00Z",
     }];
-    const first = await classifyClosedIssues("org/repo", issues, ghFn, cache);
+    const first = await classifyClosedIssues(
+      "org/repo",
+      "milestone/rollup",
+      issues,
+      ghFn,
+      cache,
+    );
     assertEquals(first[0]?.claimProblem, "timeline-unreadable");
-    await classifyClosedIssues("org/repo", issues, ghFn, cache);
+    await classifyClosedIssues(
+      "org/repo",
+      "milestone/rollup",
+      issues,
+      ghFn,
+      cache,
+    );
     assertEquals(timelineReads, 2);
   });
 });
@@ -6305,6 +6354,12 @@ function scriptDeadlockGh(
     }
     if (options.timelineReadFails && key.includes("/issues/1456/timeline")) {
       return Promise.reject(new Error("gh: HTTP 502"));
+    }
+    // Issue #5458: the milestone branch's own merged-PR list (`--base`) is not
+    // a search of a closed child, so it answers empty and the search fault
+    // below stays the only failing read.
+    if (key.includes("pr list") && key.includes("--base ")) {
+      return Promise.resolve("[]");
     }
     if (
       options.mergedPrSearchFails && key.includes("pr list") &&

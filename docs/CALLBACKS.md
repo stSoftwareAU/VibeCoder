@@ -474,8 +474,12 @@ flowchart TD
   `quality gate`, `agent turn`, a setup step (`setup: issue claim`,
   `setup: claim churn check`, `setup: repository setup`,
   `setup: heartbeat start`, `setup: default branch sync`,
-  `setup: feature branch` or `setup: pre-setup command`, each logged as the step
-  starts, Issue #5128) or `unknown` (`mutation check` appears only for logs
+  `setup: milestone branch`, `setup: milestone pre-sync`,
+  `setup: session resume`, `setup: feature branch` or
+  `setup: pre-setup command`, each logged as the step starts, Issue #5128; the
+  three labels after `default branch sync` were added by Issue #5529, and the
+  milestone branch and milestone pre-sync steps run only for a milestone issue)
+  or `unknown` (`mutation check` appears only for logs
   written before Issue #5095 retired that step), matched from a fixed table of
   log patterns; no log text is posted with it. It is not part of the dedup
   signature. Posted facts must match the launcher shapes: hostname,

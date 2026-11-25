@@ -97,6 +97,33 @@ function formatMib(rssKb: number): string {
   return `${Math.round(rssKb / 1024)} MiB`;
 }
 
+/**
+ * Whether a row belongs to the agent run's tree (Issue #5529 extracted this
+ * from {@link formatProcessTable}, which the memory guard shares). A row is in
+ * the tree when it is the agent, a known descendant, or when walking up its
+ * parents (at most 32 hops) reaches one of those. Returns a membership test
+ * over `rows`, so the parent map is built once.
+ */
+export function agentTreeMembership(
+  rows: readonly ProcessRow[],
+  agentPid: number,
+  knownDescendants: readonly number[],
+): (row: ProcessRow) => boolean {
+  const known = new Set(knownDescendants);
+  // Anything whose parent is a known member is part of the tree too.
+  const byPid = new Map(rows.map((r) => [r.pid, r]));
+  return (row: ProcessRow): boolean => {
+    let cursor: ProcessRow | undefined = row;
+    for (let hops = 0; cursor && hops < 32; hops++) {
+      if (known.has(cursor.pid)) return true;
+      if (cursor.pid === agentPid) return true;
+      cursor = byPid.get(cursor.ppid);
+      if (cursor && cursor.pid === cursor.ppid) break;
+    }
+    return false;
+  };
+}
+
 /** Top rows by RSS, one line each, bounded. */
 export function formatProcessTable(
   rows: ProcessRow[],
@@ -104,19 +131,11 @@ export function formatProcessTable(
 ): string {
   const limit = options.limit ?? 8;
   const maxCommandChars = options.maxCommandChars ?? 90;
-  const known = new Set(options.knownDescendants);
-  // Anything whose parent is a known member is part of the tree too.
-  const byPid = new Map(rows.map((r) => [r.pid, r]));
-  const inTree = (row: ProcessRow): boolean => {
-    let cursor: ProcessRow | undefined = row;
-    for (let hops = 0; cursor && hops < 32; hops++) {
-      if (known.has(cursor.pid)) return true;
-      if (cursor.pid === options.agentPid) return true;
-      cursor = byPid.get(cursor.ppid);
-      if (cursor && cursor.pid === cursor.ppid) break;
-    }
-    return false;
-  };
+  const inTree = agentTreeMembership(
+    rows,
+    options.agentPid,
+    options.knownDescendants,
+  );
   const top = [...rows]
     .sort((a, b) => b.rssKb - a.rssKb)
     .slice(0, limit);
@@ -159,7 +178,8 @@ export const CGROUP_MEMORY_FILES = {
   events: "/sys/fs/cgroup/memory.events",
 } as const;
 
-function formatBytesShort(bytes: number): string {
+/** A byte count as GiB to one decimal, else MiB (Issue #4384 wording). */
+export function formatBytesShort(bytes: number): string {
   const gib = bytes / 1024 ** 3;
   if (gib >= 1) return `${gib.toFixed(1)} GiB`;
   return `${Math.round(bytes / 1024 ** 2)} MiB`;
