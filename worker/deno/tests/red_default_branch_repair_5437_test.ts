@@ -111,7 +111,22 @@ interface Fixture {
    * Open repair PRs the direct `--search head:` lookup returns, which the
    * scan's own listing may not carry (Issue #5437).
    */
-  openRepairPrs?: Array<{ number: number; headRefName: string; body?: string }>;
+  openRepairPrs?: Array<
+    {
+      number: number;
+      headRefName: string;
+      body?: string;
+      labels?: { name: string }[];
+    }
+  >;
+  refs?: Record<string, string>;
+  commits?: Record<
+    string,
+    {
+      commit: { message: string; tree: { sha: string } };
+      parents: { sha: string }[];
+    }
+  >;
   /** The message the repair-PR lookup fails with, when set. */
   repairListError?: string;
   /** Names of the checks that succeeded, keyed by the ref read. */
@@ -222,7 +237,11 @@ function ghStub(
         if (fx.repairListError !== undefined) {
           return Promise.reject(new Error(fx.repairListError));
         }
-        return Promise.resolve(JSON.stringify(fx.openRepairPrs ?? []));
+        return Promise.resolve(
+          JSON.stringify(
+            (fx.openRepairPrs ?? []).map((pr) => ({ labels: [], ...pr })),
+          ),
+        );
       }
       // The fix search names its base branch.
       if (args.includes("--base")) {
@@ -237,18 +256,41 @@ function ghStub(
       if (fx.prCreateError !== undefined) {
         return Promise.reject(new Error(fx.prCreateError));
       }
+      const branch = argAfter(args, "--head")!;
+      if (
+        !fx.refs?.[branch] || argAfter(args, "--base") !== DEFAULT_BRANCH ||
+        fx.openRepairPrs?.some((pr) => pr.headRefName === branch)
+      ) {
+        return Promise.reject(new Error("invalid repair PR"));
+      }
+      (fx.openRepairPrs ??= []).push({
+        number: CREATED_PR,
+        headRefName: branch,
+        body: argAfter(args, "--body"),
+      });
       return Promise.resolve(`https://github.com/${REPO}/pull/${CREATED_PR}\n`);
     }
     if (args[0] === "pr" && args[1] === "edit") {
       if (fx.editError !== undefined) {
         return Promise.reject(new Error(fx.editError));
       }
+      const pr = [...fx.prs, ...(fx.openRepairPrs ?? [])].find((pr) =>
+        pr.number === Number(args[2])
+      );
+      if (pr) pr.body = argAfter(args, "--body");
       return Promise.resolve("");
     }
     if (args[0] === "pr" && args[1] === "comment") {
       if (fx.commentPostError !== undefined) {
         return Promise.reject(new Error(fx.commentPostError));
       }
+      const comments = (fx.comments ??= {});
+      const list = (comments[Number(args[2])] ??= []);
+      list.push({
+        id: 8000 + list.length,
+        login: "testbot",
+        body: argAfter(args, "--body")!,
+      });
       return Promise.resolve("");
     }
     if (args[1] === `repos/${REPO}/commits/${DEFAULT_BRANCH}`) {
@@ -264,13 +306,32 @@ function ghStub(
       if (fx.commitError !== undefined) {
         return Promise.reject(new Error(fx.commitError));
       }
+      const field = (key: string) =>
+        args.find((a) => a.startsWith(key + "="))!.slice(key.length + 1);
+      (fx.commits ??= {})[NEW_COMMIT] = {
+        commit: { message: field("message"), tree: { sha: field("tree") } },
+        parents: [{ sha: field("parents[]") }],
+      };
       return Promise.resolve(`${NEW_COMMIT}\n`);
     }
     if (args.includes("POST") && args[3] === `repos/${REPO}/git/refs`) {
       if (fx.refError !== undefined) {
         return Promise.reject(new Error(fx.refError));
       }
+      const branch = args.find((a) => a.startsWith("ref=refs/heads/"))!.slice(
+        "ref=refs/heads/".length,
+      );
+      if (fx.refs?.[branch]) {
+        return Promise.reject(new Error("HTTP 422: Reference already exists"));
+      }
+      (fx.refs ??= {})[branch] = args.find((a) => a.startsWith("sha="))!.slice(
+        4,
+      );
       return Promise.resolve("{}");
+    }
+    const ref = args[1]?.split(`repos/${REPO}/commits/`)[1];
+    if (ref && fx.refs?.[ref]) {
+      return Promise.resolve(JSON.stringify(fx.commits?.[fx.refs[ref]]));
     }
     if (args.includes("POST") && args[3] === `repos/${REPO}/merges`) {
       if (fx.mergeError !== undefined) {
@@ -293,6 +354,23 @@ function ghStub(
     if (args.includes("PATCH")) {
       if (fx.patchError !== undefined) {
         return Promise.reject(new Error(fx.patchError));
+      }
+      const path = args[3] ?? "";
+      if (path.includes("/issues/comments/")) {
+        const id = Number(path.split("/").pop());
+        const comment = Object.values(fx.comments ?? {}).flat().find((c) =>
+          c.id === id
+        );
+        if (!comment) return Promise.reject(new Error("unknown comment"));
+        comment.body = argAfter(args, "-f")!.slice("body=".length);
+      } else if (path.includes("/git/refs/heads/")) {
+        const branch = path.split("/git/refs/heads/")[1]!;
+        const pr = fx.prs.find((pr) => pr.headRefName === branch);
+        if (
+          !pr || fx.compare[pr.headRefOid] !== "behind" ||
+          !args.includes("force=false")
+        ) return Promise.reject(new Error("not a fast-forward"));
+        (fx.refs ??= {})[branch] = argAfter(args, "-f")!.slice("sha=".length);
       }
       return Promise.resolve("{}");
     }
@@ -448,13 +526,9 @@ Deno.test("findFailedCiChecks - red main with three identical sync PRs hands non
   const { value, calls, logger } = await scan(fx);
 
   assertEquals(value, null);
-  const creates = prCreateCalls(calls);
-  assertEquals(creates.length, 1);
-  assertEquals(argAfter(creates[0] ?? [], "--base"), DEFAULT_BRANCH);
-  assertEquals(
-    argAfter(creates[0] ?? [], "--head"),
+  assertEquals(fx.openRepairPrs?.map((pr) => pr.headRefName), [
     `${RED_DEFAULT_BRANCH_REPAIR_PREFIX}${TIP.slice(0, 12)}`,
-  );
+  ]);
   // The heads already sit on the tip, so no sync branch is moved.
   assertEquals(
     callsTo(calls, "api").filter((args) =>
@@ -679,20 +753,49 @@ Deno.test("findFailedCiChecks - a needs-human repair PR missing from the scan's 
   // to one PR, so the open repair PR is absent from fx.prs.
   const fx = redMainFixture(THREE_SYNC_PRS, {
     checks: THREE_SYNC_CHECKS,
-    openRepairPrs: [{ number: 20, headRefName: REPAIR_BRANCH, body: "" }],
+    openRepairPrs: [{
+      number: 20,
+      headRefName: REPAIR_BRANCH,
+      body: "held",
+      labels: [{ name: "needs-human" }],
+    }],
   });
   const { value, calls } = await scan(fx);
+  assertEquals(value, null);
+  assertEquals(fx.openRepairPrs?.map((pr) => pr.body), ["held"]);
+  assertEquals(callsTo(calls, "pr", "edit"), []);
+});
 
-  assertEquals(prCreateCalls(calls).length, 0);
-  const lookups = callsTo(calls, "pr", "list").filter((args) =>
-    args.includes("--search")
-  );
-  assertEquals(lookups.length, 1);
-  assertEquals(
-    argAfter(lookups[0] ?? [], "--search"),
-    "head:fix/red-default-branch-",
-  );
-  assertEquals(value?.prNumber, 20);
+Deno.test("a scan resumes an orphaned repair seed after transient PR creation failure", async () => {
+  const fx = redMainFixture(THREE_SYNC_PRS, {
+    checks: THREE_SYNC_CHECKS,
+    prCreateError: "HTTP 502",
+  });
+  await scan(fx);
+  const branch = `${RED_DEFAULT_BRANCH_REPAIR_PREFIX}${TIP.slice(0, 12)}`;
+  assertEquals(fx.refs?.[branch], NEW_COMMIT);
+  assertEquals(fx.openRepairPrs, undefined);
+  delete fx.prCreateError;
+  await scan(fx);
+  await scan(fx);
+  assertEquals(fx.openRepairPrs?.map((pr) => pr.headRefName), [branch]);
+});
+
+Deno.test("a different existing repair head is preserved for its owner", async () => {
+  const branch = `${RED_DEFAULT_BRANCH_REPAIR_PREFIX}${TIP.slice(0, 12)}`;
+  const fx = redMainFixture(THREE_SYNC_PRS, {
+    checks: THREE_SYNC_CHECKS,
+    refs: { [branch]: OLD_HEAD },
+    commits: {
+      [OLD_HEAD]: {
+        commit: { message: "work in progress", tree: { sha: TREE } },
+        parents: [{ sha: TIP }],
+      },
+    },
+  });
+  await scan(fx);
+  assertEquals(fx.refs?.[branch], OLD_HEAD);
+  assertEquals(fx.openRepairPrs, undefined);
 });
 
 Deno.test("findFailedCiChecks - an unreadable repair-PR lookup opens no repair PR and warns with the gh error (Issue #5437)", async () => {
@@ -731,17 +834,7 @@ Deno.test("findFailedCiChecks - a held sync head behind the tip is fast-forwarde
   const { value, calls, logger } = await scan(fx);
 
   assertEquals(value, null);
-  const patches = calls.filter((args) =>
-    args[0] === "api" && args.includes("PATCH")
-  );
-  assertEquals(patches.length, 1);
-  const patch = patches[0] ?? [];
-  assertEquals(
-    patch[3],
-    `repos/${REPO}/git/refs/heads/sync/milestone-d`,
-  );
-  assertEquals(argAfter(patch, "-f"), `sha=${TIP}`);
-  assertStringIncludes(patch.join(" "), "force=false");
+  assertEquals(fx.refs?.["sync/milestone-d"], TIP);
   // The tip is not red, so no repair PR is raised for a green default branch.
   assertEquals(prCreateCalls(calls).length, 0);
   assertEquals(logger.skips.length, 1);
@@ -1431,16 +1524,13 @@ Deno.test("findFailedCiChecks - a changed held set edits the one fleet status co
       body: statusCommentHolding(5434, [1, 2]),
     }],
   };
-  const { value, calls, logger } = await scan(fx);
+  const { value, logger } = await scan(fx);
 
   assertEquals(value, null);
-  assertEquals(prCreateCalls(calls).length, 0);
-  assertEquals(callsTo(calls, "pr", "comment").length, 0);
-  assertEquals(patchCalls(calls).length, 1);
-  const patches = patchesTo(calls, "repos/org/repo/issues/comments/7001");
-  assertEquals(patches.length, 1);
+  await scan(fx);
+  assertEquals(fx.comments[5434]?.map((c) => c.id), [7001]);
   assertStringIncludes(
-    argAfter(patches[0] ?? [], "-f") ?? "",
+    fx.comments[5434]![0]!.body,
     "holding sync PRs #1, #2, #3, fix in #5434.",
   );
   assertEquals(logger.warns, []);
@@ -1697,7 +1787,7 @@ Deno.test("findFailedCiChecks - a failed empty-commit create warns naming the st
 
 Deno.test("findFailedCiChecks - a failed repair branch create warns naming the branch and leaves the sync PRs held (Issue #5437)", async () => {
   const fx = redMainFixture(THREE_SYNC_PRS, { checks: THREE_SYNC_CHECKS });
-  fx.refError = "HTTP 422: Reference already exists";
+  fx.refError = "HTTP 503: Service Unavailable";
   const { value, calls, logger } = await scan(fx);
 
   assertEquals(value, null);
@@ -1709,7 +1799,7 @@ Deno.test("findFailedCiChecks - a failed repair branch create warns naming the b
       warn.includes(
         `creating branch ${RED_DEFAULT_BRANCH_REPAIR_PREFIX}${
           TIP.slice(0, 12)
-        } failed: HTTP 422: Reference already exists`,
+        } failed: HTTP 503: Service Unavailable`,
       )
     ),
   );

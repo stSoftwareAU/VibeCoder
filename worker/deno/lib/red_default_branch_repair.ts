@@ -79,6 +79,7 @@ export interface RepairPrCandidate {
   headRefName: string;
   baseRefName?: string;
   body?: string | null;
+  needsHuman?: boolean;
 }
 
 /** The repair PR an ensure call settled on. */
@@ -308,7 +309,7 @@ export async function ensureRedDefaultBranchRepairPr(
   const heldPrNumbers = request.heldPrNumbers;
   const checkNames = request.checkNames.map(oneLine);
 
-  let existing = request.prs
+  let existing: RepairPrCandidate | undefined = request.prs
     .filter((pr) => isRedDefaultBranchRepairPr(pr, defaultBranch))
     .sort((a, b) => a.number - b.number)[0];
 
@@ -329,6 +330,7 @@ export async function ensureRedDefaultBranchRepairPr(
     }
   }
 
+  if (existing?.needsHuman) return null;
   if (existing !== undefined) {
     if (
       !bodyCarriesRedDefaultBranchMarker(existing.body, tipSha, heldPrNumbers)
@@ -400,7 +402,7 @@ async function findOpenRepairPr(
     "--search",
     `head:${RED_DEFAULT_BRANCH_REPAIR_PREFIX}`,
     "--json",
-    "number,headRefName,body",
+    "number,headRefName,body,labels",
     "--limit",
     "30",
   ]);
@@ -427,7 +429,14 @@ async function findOpenRepairPr(
     if (!fields.headRefName.startsWith(RED_DEFAULT_BRANCH_REPAIR_PREFIX)) {
       continue;
     }
+    if (!Array.isArray(fields.labels)) {
+      throw new Error(`PR #${fields.number} has no labels array`);
+    }
     found.push({
+      needsHuman: fields.labels.some((label) =>
+        typeof label?.name === "string" &&
+        label.name.toLowerCase() === "needs-human"
+      ),
       number: fields.number,
       headRefName: fields.headRefName,
       baseRefName: defaultBranch,
@@ -497,6 +506,7 @@ async function openRepairPr(input: {
     return fail("reading the tip's tree", `unexpected tree "${tree}"`);
   }
 
+  const message = `Repair red ${defaultBranch} at ${shortSha} (Issue #5437)`;
   let commit: string;
   try {
     commit = (await ghCommandFn([
@@ -505,7 +515,7 @@ async function openRepairPr(input: {
       "POST",
       `repos/${repo}/git/commits`,
       "-f",
-      `message=Repair red ${defaultBranch} at ${shortSha} (Issue #5437)`,
+      `message=${message}`,
       "-f",
       `tree=${tree}`,
       "-f",
@@ -532,7 +542,27 @@ async function openRepairPr(input: {
       `sha=${commit}`,
     ]);
   } catch (error) {
-    return fail(`creating branch ${branch}`, error);
+    if (!/reference already exists/i.test(errorText(error))) {
+      return fail(`creating branch ${branch}`, error);
+    }
+    // A previous scan may have created the ref before PR creation failed.
+    // Only adopt our empty seed on this exact tip. Never reset a live ref.
+    try {
+      const head = JSON.parse(
+        await ghCommandFn(["api", `repos/${repo}/commits/${branch}`]),
+      );
+      if (
+        head.commit?.message !== message || head.commit?.tree?.sha !== tree ||
+        head.parents?.length !== 1 || head.parents[0]?.sha !== tipSha
+      ) {
+        return fail(
+          `adopting branch ${branch}`,
+          "existing head differs from the repair seed",
+        );
+      }
+    } catch (readError) {
+      return fail(`reading branch ${branch}`, readError);
+    }
   }
 
   const body = formatRedDefaultBranchStatus({

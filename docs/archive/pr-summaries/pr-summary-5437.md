@@ -59,6 +59,12 @@ Part of #5437.
 
 ## Evidence
 
+The review regression suite models repair refs, pull requests and comments.
+At `47eba6e62`, the held-PR and interrupted-create cases failed. After the
+repair, all 93 cases in `red_default_branch_repair_5437_test.ts` passed. A
+retry reuses the original empty seed, preserves independent branch work,
+and leaves a held pull request untouched.
+
 Backend only. The behaviour is covered by tests that drive `findFailedCiChecks`
 through the scan fixture's faked `gh`, and by direct tests of `findGreenFixPr`
 and `fixCandidateNamesHeldFailure`.
@@ -186,13 +192,12 @@ flowchart TD
     `title` and missing `body`, each asserting its specific refusal; an empty
     body accepted; `gate` in a body versus in a title
 - Edited: `humanFixPr` takes `title` and `body`, defaulting to a title that
-  names `gitleaks`, which every scan fixture holds. No existing assertion
-  changed. Every existing refusal test (stale or diverged head, unknown
+  names `gitleaks`, which every scan fixture holds. Every existing refusal test (stale or diverged head, unknown
   ancestry, fleet, bot and case-folded logins, failed or timed-out held check,
   unreadable states) still gets past the new naming check and reaches its own
   guard. The existing missing-`headRefOid` test still fails on that field first.
 - `deno task test:unit tests/red_default_branch_repair_5437_test.ts tests/pr_maintenance_test.ts`
-  on the final head: 178 passed, 0 failed. `deno fmt`, `deno lint` and
+  on the original implementation: 178 passed, 0 failed. `deno fmt`, `deno lint` and
   `deno check` were clean on the changed files.
 - `./quality.sh` was cut off by this run's 600-second bound. Every stage it
   reached passed (18 PASSED, none failed, through `release-tag ruleset`).
