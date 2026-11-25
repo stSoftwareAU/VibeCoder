@@ -729,7 +729,7 @@ export interface RunClaudeOptions {
   /**
    * The memory guard's kill (Issue #5529): SIGKILLs the largest process in
    * the agent run's tree when the guest is below its floor. Defaults to
-   * `Deno.kill(pid, "SIGKILL")`. Tests only.
+   * `Deno.kill(pid, "SIGKILL")`. Injectable for tests.
    */
   memoryGuardKill?: (pid: number) => void;
   /**

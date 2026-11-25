@@ -30,12 +30,16 @@ import {
 } from "../lib/memory_guard.ts";
 import { parseProcessTable } from "../lib/kill_diagnostics.ts";
 import type { MemoryPressureReading } from "../lib/memory_pressure.ts";
-import type { Logger } from "../types.ts";
 import {
   agentStubGate,
   createAgentStub,
   releaseAgentStub,
 } from "./support/agent_stub.ts";
+import {
+  capturingLogger,
+  chunkSignals,
+  waitForFile,
+} from "./support/claude_runner_harness.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
 const MIB = 1024 ** 2;
@@ -275,53 +279,6 @@ const COMMON_OPTS = {
   timeoutSeconds: 30,
   killAfterSeconds: 2,
 } as const;
-
-function capturingLogger(onWarn?: (message: string) => void): {
-  logger: Logger;
-  warns: string[];
-} {
-  const warns: string[] = [];
-  const logger: Logger = {
-    info: () => {},
-    warn: (message) => {
-      warns.push(message);
-      onWarn?.(message);
-    },
-    error: () => {},
-    debug: () => {},
-    security: () => {},
-    skipReason: () => {},
-    timing: () => {},
-    scanSummary: () => {},
-    workerSummary: () => {},
-  };
-  return { logger, warns };
-}
-
-/** Resolves when the runner has folded the agent's nth stdout chunk in. */
-function chunkSignals() {
-  const chunks: ReturnType<typeof Promise.withResolvers<void>>[] = [];
-  let seen = 0;
-  const at = (index: number) => (chunks[index] ??= Promise.withResolvers());
-  return {
-    onActivity: () => at(seen++).resolve(),
-    chunk: (n: number) => at(n - 1).promise,
-  };
-}
-
-/** Wait for a file the stub writes, so the child's pid is known. */
-async function waitForFile(path: string): Promise<string> {
-  for (let attempt = 0; attempt < 600; attempt++) {
-    try {
-      const text = (await Deno.readTextFile(path)).trim();
-      if (text.length > 0) return text;
-    } catch {
-      // not written yet
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`the stub never wrote ${path}`);
-}
 
 /**
  * A stub that records its own pid, prints one result line, then waits at a
