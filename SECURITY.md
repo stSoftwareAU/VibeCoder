@@ -554,6 +554,13 @@ it, another flag after it (`password: --token --verbose`), or a bare `=` or `:`
 after it (`credentials: --token = <value>`, an Issue #5310 shape) is masked as
 the label's value as before.
 
+The same holds for a credential flag whose name ends a value after other text,
+as in `password: token=--token <value>` or `password: abc--token <value>`, with
+the label on the same line or the line before: the value ends before the flag's
+name, so the `secret-cli-flag` rule keeps the name and masks its value (Issue
+#5608). Before that fix the whole value was masked, the flag's name with it, and
+the flag's value was published.
+
 A quoted value may hold an escaped quote of its own kind, and the whole literal
 is masked: `"abc\"def"`, `'abc\'def'`, the SQL `'abc''def'` and the shell
 `'it'\''s'` are each masked in full. Before Issue #5327 the mask stopped at that

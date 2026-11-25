@@ -1020,14 +1020,20 @@ function execAssignmentAt(
 /**
  * Judge one pattern match with {@link assignmentIsMasked}. A value that is a
  * credential flag with a value after it is not masked; see
- * {@link credentialFlagTakesValueAt}.
+ * {@link credentialFlagTakesValueAt}. A value that ends in a credential flag's
+ * name with a value after it (`password: token=--token <value>`,
+ * `password: abc--token <value>`) ends before the flag's name, see
+ * {@link flagNameEndingValueAt}.
  */
 function verdictOf(text: string, match: RegExpExecArray): AssignmentVerdict {
-  const end = match.index + match[0].length;
+  const matchEnd = match.index + match[0].length;
   const key = match[1] ?? "";
   const sep = match[2] ?? "";
-  const value = match[3] ?? "";
-  const valueStart = end - value.length;
+  const valueStart = matchEnd - (match[3] ?? "").length;
+  // Issue #5608: the value ends before a credential flag that ends it.
+  const flagAt = flagNameEndingValueAt(text, valueStart, matchEnd);
+  const end = flagAt === -1 ? matchEnd : flagAt;
+  const value = text.slice(valueStart, end);
   return {
     index: match.index,
     end,
@@ -2113,6 +2119,60 @@ function flagQuoteReaches(
     }
   }
   return false;
+}
+
+/**
+ * The longest a credential flag's name can be: `--`, up to 63 name characters
+ * either side of the credential keyword, and the keyword itself. The tail of
+ * the value {@link flagNameEndingValueAt} reads is capped at this, so the read
+ * costs the same however long the value is (Issue #3942).
+ */
+const FLAG_NAME_SPAN = 150;
+
+/** A credential flag's name ending the text it is tested on (Issue #5608). */
+const FLAG_NAME_AT_END =
+  /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}$/i;
+
+/**
+ * Where a credential flag's name starts when it ends a `secret-assignment`
+ * value after other text and a value follows it (Issue #5608), or -1:
+ * `password: token=--token <value>`, `password: abc--token <value>`. The
+ * value then ends before the flag's name, which is left for the
+ * `secret-cli-flag` rule to keep while it masks the flag's value; masking the
+ * name with the outer value hid the flag from that rule and published the
+ * value. A flag at the value's start is {@link credentialFlagTakesValueAt}'s
+ * (Issue #5330). Only the value's last {@link FLAG_NAME_SPAN} characters are
+ * read. A flag whose own value, as the `secret-cli-flag` rule reads it, ends
+ * in another credential flag's name with a value after it is not cut: that
+ * rule would mask the second flag's name with the first flag's value and
+ * publish the second value, so the outer value keeps its mask as before. The
+ * flag's value is read once, with {@link CLI_FLAG_AT}, bounded by the rule's
+ * own value match.
+ */
+function flagNameEndingValueAt(
+  text: string,
+  valueStart: number,
+  end: number,
+): number {
+  const at = flagNameEndingAt(text, valueStart, end);
+  if (at <= valueStart || !credentialFlagTakesValueAt(text, at)) return -1;
+  CLI_FLAG_AT.lastIndex = at;
+  const flag = CLI_FLAG_AT.exec(text);
+  CLI_FLAG_AT.lastIndex = 0;
+  if (flag === null) return -1;
+  const flagEnd = at + flag[0].length;
+  const nested = flagNameEndingAt(text, end, flagEnd);
+  return nested !== -1 && credentialFlagTakesValueAt(text, nested) ? -1 : at;
+}
+
+/**
+ * Where a credential flag's name ending `text` at `end` starts, no earlier than
+ * `start`, or -1 if none. Reads at most {@link FLAG_NAME_SPAN} characters.
+ */
+function flagNameEndingAt(text: string, start: number, end: number): number {
+  const from = Math.max(start, end - FLAG_NAME_SPAN);
+  const name = text.slice(from, end).match(FLAG_NAME_AT_END);
+  return name ? from + name.index! : -1;
 }
 
 /**
