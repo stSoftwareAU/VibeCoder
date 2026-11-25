@@ -1214,7 +1214,8 @@ for (const named of [false, true]) {
             ),
         ),
       scanDummyTests,
-      { baseChars: named ? 16000 : 20000, repeats: 1 },
+      // Use the helper's interleaved sampling default under shared-host load.
+      { baseChars: named ? 16000 : 20000 },
     );
     assertEquals(scan.findings, []);
     assertEquals(scan.notes, []);
