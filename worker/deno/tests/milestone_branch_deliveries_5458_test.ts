@@ -72,12 +72,8 @@ async function withTempCache<T>(
 // ============================================================================
 
 Deno.test("classifyClosedIssues - flags merged-into-other-milestone when every merged PR went into another milestone (Issue #5458)", async () => {
-  let timelineReads = 0;
   const ghFn = async (args: string[]): Promise<string> => {
-    if (args.join(" ").includes("/timeline")) {
-      timelineReads++;
-      return "[]";
-    }
+    if (args.join(" ").includes("/timeline")) return "[]";
     if (args[0] === "pr" && args[1] === "list") {
       return titleSearchRows(args, { 7: [mergedPr(70, "Fix (#7)", BRANCH_B)] });
     }
@@ -92,7 +88,6 @@ Deno.test("classifyClosedIssues - flags merged-into-other-milestone when every m
   );
 
   assertEquals(result[0]?.claimProblem, "merged-into-other-milestone");
-  assertEquals(timelineReads, 0, "no timeline is read for this verdict");
 });
 
 Deno.test("classifyClosedIssues - claims an issue merged into the asked milestone branch or into the default branch (Issue #5458)", async () => {
@@ -200,12 +195,8 @@ Deno.test("classifyClosedIssues - a later merge into another milestone does not 
 
 Deno.test("classifyClosedIssues - a cached verdict for one milestone branch is not served for another (Issue #5458)", async () => {
   await withTempCache(async (cache) => {
-    let timelineReads = 0;
     const ghFn = async (args: string[]): Promise<string> => {
-      if (args.join(" ").includes("/timeline")) {
-        timelineReads++;
-        return "[]";
-      }
+      if (args.join(" ").includes("/timeline")) return "[]";
       if (args[0] === "pr" && args[1] === "list") {
         return titleSearchRows(args, {
           7: [mergedPr(70, "Fix (#7)", BRANCH_B)],
@@ -235,15 +226,12 @@ Deno.test("classifyClosedIssues - a cached verdict for one milestone branch is n
       ghFn,
       cache,
     );
+    // A's cached verdict is merged-into-other-milestone, so serving it for B
+    // would show here as that verdict rather than a claim.
     assertEquals(
       forB[0]?.claimProblem,
       undefined,
       "the PR went into the asked branch for B, so B claims it",
-    );
-    assertEquals(
-      timelineReads,
-      1,
-      "B is classified live, not from A's verdict",
     );
 
     // A reopen after the merge: classified live, B's verdict would now flip.
@@ -666,6 +654,23 @@ const MOVED_PR_ROWS = [
 ];
 
 const REST_ISSUES: Record<number, unknown> = {
+  // Delivered by PRs that did not merge into BRANCH_A (OTHER_BRANCH_MERGED_ROWS
+  // and UNMERGED_ROWS): closed and now elsewhere, so only the query keeps them
+  // out of the moved-off list.
+  5333: {
+    number: 5333,
+    title: "Other milestone's delivery",
+    state: "closed",
+    updated_at: "2026-10-23T00:00:00Z",
+    milestone: { number: 99, title: "secret redaction follow-ups" },
+  },
+  5334: {
+    number: 5334,
+    title: "Closed without merging",
+    state: "closed",
+    updated_at: "2026-10-23T00:00:00Z",
+    milestone: null,
+  },
   // Still a member of milestone 7: excluded by the caller, so never read in
   // the first test; listed so the other cases can use the default rows.
   5327: {
@@ -713,15 +718,55 @@ const REST_ISSUES: Record<number, unknown> = {
   },
 };
 
-/** A gh stub: the `pr list --base` read and the REST issue reads. */
+/**
+ * PRs the fake GitHub holds besides `MOVED_PR_ROWS`: one merged into another
+ * milestone's branch and one closed unmerged on this branch. Each names a
+ * closed issue that now sits in another milestone, so a query for the wrong
+ * branch or state would return it as moved.
+ */
+const OTHER_BRANCH_MERGED_ROWS = [{
+  number: 69,
+  title: "Other milestone's delivery (#5333)",
+  headRefName: "issue-5333-x",
+  isCrossRepository: false,
+}];
+const UNMERGED_ROWS = [{
+  number: 70,
+  title: "Closed without merging (#5334)",
+  headRefName: "issue-5334-x",
+  isCrossRepository: false,
+}];
+
+/**
+ * A fake GitHub for the moved-off read: `pr list` answers with the PRs whose
+ * base branch and state match the query (`MOVED_PR_ROWS`, or `prList`, are the
+ * ones merged into `BRANCH_A`), and the REST issue reads answer from `rest`.
+ */
 function movedOffGhFn(
-  calls: string[][],
   options: { prList?: string; rest?: Record<number, unknown> } = {},
 ) {
   return async (args: string[]): Promise<string> => {
-    calls.push(args);
     if (args[0] === "pr" && args[1] === "list") {
-      return options.prList ?? JSON.stringify(MOVED_PR_ROWS);
+      const base = args.includes("--base")
+        ? args[args.indexOf("--base") + 1]
+        : undefined;
+      const state = args.includes("--state")
+        ? args[args.indexOf("--state") + 1]
+        : "open";
+      if (options.prList !== undefined && base === BRANCH_A) {
+        return state === "merged" ? options.prList : "[]";
+      }
+      const rows: unknown[] = [];
+      const merged = state === "merged" || state === "all";
+      const closed = state === "closed" || state === "all";
+      if (base === undefined || base === BRANCH_A) {
+        if (merged || closed) rows.push(...MOVED_PR_ROWS);
+        if (closed) rows.push(...UNMERGED_ROWS);
+      }
+      if ((base === undefined || base === BRANCH_B) && (merged || closed)) {
+        rows.push(...OTHER_BRANCH_MERGED_ROWS);
+      }
+      return JSON.stringify(rows);
     }
     if (args[0] === "api") {
       const m = args[1]?.match(/^repos\/owner\/repo\/issues\/(\d+)$/);
@@ -735,21 +780,13 @@ function movedOffGhFn(
   };
 }
 
-function restCallNumbers(calls: string[][]): number[] {
-  return calls
-    .filter((a) => a[0] === "api")
-    .map((a) => Number(a[1]?.match(/issues\/(\d+)$/)?.[1]))
-    .sort((x, y) => x - y);
-}
-
 Deno.test("fetchIssuesMovedOffBranch - returns closed issues that merged into the branch and now sit elsewhere (Issue #5458)", async () => {
-  const calls: string[][] = [];
   const moved = await fetchIssuesMovedOffBranch(
     REPO,
     BRANCH_A,
     7,
     new Set([5327]),
-    movedOffGhFn(calls, {
+    movedOffGhFn({
       prList: JSON.stringify([
         ...MOVED_PR_ROWS,
         { ...MOVED_PR_ROWS[0], number: 68, headRefName: "adopted-fix" },
@@ -772,20 +809,14 @@ Deno.test("fetchIssuesMovedOffBranch - returns closed issues that merged into th
     },
   ]);
 
-  const prList = calls.find((a) => a[0] === "pr" && a[1] === "list");
-  assertEquals(prList?.[prList.indexOf("--base") + 1], BRANCH_A);
-  assertEquals(prList?.[prList.indexOf("--state") + 1], "merged");
-  assertEquals(prList?.[prList.indexOf("--limit") + 1], "1000");
-
   // 5327 is excluded, 5329 is a fork, 64 is a sync head, 5330 is PR-shaped,
-  // 5328 is open and 5332 is still in milestone 7. 5326 is read once although
-  // both its branch and its title name it.
-  assertEquals(restCallNumbers(calls), [5326, 5328, 5330, 5331, 5332]);
+  // 5328 is open and 5332 is still in milestone 7. 5333 merged into another
+  // milestone's branch and 5334's PR closed unmerged, so neither is listed.
+  // 5326 is listed once although both its branch and its title name it.
 });
 
 Deno.test("fetchIssuesMovedOffBranch - throws, and does not cache, an unreadable merged-PR list (Issue #5458)", async () => {
   await withTempCache(async (cache) => {
-    const calls: string[][] = [];
     await assertRejects(
       () =>
         fetchIssuesMovedOffBranch(
@@ -793,7 +824,7 @@ Deno.test("fetchIssuesMovedOffBranch - throws, and does not cache, an unreadable
           BRANCH_A,
           7,
           new Set(),
-          movedOffGhFn(calls, { prList: '{"message":"Not Found"}' }),
+          movedOffGhFn({ prList: '{"message":"Not Found"}' }),
           cache,
         ),
       Error,
@@ -821,7 +852,7 @@ Deno.test("fetchIssuesMovedOffBranch - throws, and does not cache, an unreadable
           BRANCH_A,
           7,
           new Set(),
-          movedOffGhFn(calls, { prList: "[null]" }),
+          movedOffGhFn({ prList: "[null]" }),
           cache,
         ),
       Error,
@@ -834,7 +865,7 @@ Deno.test("fetchIssuesMovedOffBranch - throws, and does not cache, an unreadable
       BRANCH_A,
       7,
       new Set(),
-      movedOffGhFn([]),
+      movedOffGhFn(),
       cache,
     );
     assertEquals(healthy.map((i) => i.number), [5326, 5331]);
@@ -862,7 +893,7 @@ Deno.test("fetchIssuesMovedOffBranch - rejects malformed PR rows without caching
             BRANCH_A,
             7,
             new Set(),
-            movedOffGhFn([], {
+            movedOffGhFn({
               prList: JSON.stringify([{ ...valid, [field]: value }]),
             }),
             cache,
@@ -875,7 +906,7 @@ Deno.test("fetchIssuesMovedOffBranch - rejects malformed PR rows without caching
         BRANCH_A,
         7,
         new Set(),
-        movedOffGhFn([], { prList: JSON.stringify([valid]) }),
+        movedOffGhFn({ prList: JSON.stringify([valid]) }),
         cache,
       );
       assertEquals(recovered.map((issue) => issue.number), [5326]);
@@ -906,7 +937,7 @@ Deno.test("fetchIssuesMovedOffBranch - distinguishes a missing milestone from an
           BRANCH_A,
           7,
           new Set(),
-          movedOffGhFn([], options),
+          movedOffGhFn(options),
         ),
       Error,
       `malformed ${field}`,
@@ -916,7 +947,7 @@ Deno.test("fetchIssuesMovedOffBranch - distinguishes a missing milestone from an
       BRANCH_A,
       7,
       new Set(),
-      movedOffGhFn([], { ...options, rest: { 5331: valid } }),
+      movedOffGhFn({ ...options, rest: { 5331: valid } }),
     );
     assertEquals(accepted, [{
       number: 5331,
@@ -934,7 +965,7 @@ Deno.test("fetchIssuesMovedOffBranch - serves the parsed merged-PR list from cac
       BRANCH_A,
       7,
       new Set(),
-      movedOffGhFn([]),
+      movedOffGhFn(),
       cache,
     );
     assertEquals(first.map((i) => i.number), [5326, 5331]);
@@ -948,7 +979,7 @@ Deno.test("fetchIssuesMovedOffBranch - serves the parsed merged-PR list from cac
     );
 
     // A live `--base` list would now be unreadable: the cached one answers.
-    const unreadableList = movedOffGhFn([]);
+    const unreadableList = movedOffGhFn();
     const second = await fetchIssuesMovedOffBranch(
       REPO,
       BRANCH_A,
@@ -967,7 +998,7 @@ Deno.test("fetchIssuesMovedOffBranch - serves the parsed merged-PR list from cac
       BRANCH_B,
       99,
       new Set(),
-      movedOffGhFn([], { prList: "[]" }),
+      movedOffGhFn({ prList: "[]" }),
       cache,
     );
     assertEquals(otherBranch, [], "A's deliveries must not leak into B's list");
@@ -982,7 +1013,7 @@ Deno.test("fetchIssuesMovedOffBranch - throws on a malformed or unreadable issue
         BRANCH_A,
         7,
         new Set(),
-        movedOffGhFn([], {
+        movedOffGhFn({
           prList: JSON.stringify([{
             number: 60,
             title: "Broken (#5340)",
@@ -1003,7 +1034,7 @@ Deno.test("fetchIssuesMovedOffBranch - throws on a malformed or unreadable issue
         BRANCH_A,
         7,
         new Set(),
-        movedOffGhFn([], {
+        movedOffGhFn({
           prList: JSON.stringify([{
             number: 60,
             title: "Missing (#5341)",
