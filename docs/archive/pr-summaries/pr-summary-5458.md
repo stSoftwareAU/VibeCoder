@@ -110,6 +110,8 @@ Provenance titles checked with GitHub CLI in this run:
   The three-run cap was reached; no fourth full gate was started.
 - No prompt or standards rule changed. Classification has one implementation;
   initial creation, incomplete refresh and partial-rollup discovery reuse it.
+- Summary gates passed with zero blocked or unchecked gates. Markdown lint and
+  Mermaid validation passed for the replacement summary.
 
 ## Merge verification
 
