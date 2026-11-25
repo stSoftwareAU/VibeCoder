@@ -35,7 +35,12 @@ no longer blocks the push on its lint violations or makes the gate refuse when
 
 ### Undiscoverable Facts
 
-None.
+- An earlier attempt on this branch was blocked by the worker's pre-push full
+  unit run on another host. The one failing test was
+  `gh-guard-shim - a mid-run registerWriteRepo does not widen the spawned child`
+  in `worker/deno/tests/gh_guard_shim_test.ts`, which this diff does not touch.
+  It passed on this host in its own file and on three filtered re-runs, and in
+  the full `./quality.sh` run below.
 
 ## Evidence
 
@@ -84,12 +89,14 @@ flowchart LR
   tests failed and the three controls passed. The markdownlint command named
   `notes/scratch.md` and blocked, the no-binary case was refused, and the unit
   command named `tests/gen_test.ts`. All six pass at the head.
-- No existing test was edited. The new file with
-  `worker/deno/tests/repo_formatters_5410_test.ts` and
+- No existing test was edited. `deno task test:unit` over the 26 test files
+  that name `runPrePushGate`, `planChangedFileChecks` or `pre_push_gate`,
+  including the new file, `worker/deno/tests/repo_formatters_5410_test.ts` and
   `worker/deno/tests/pre_push_gate_test.ts` (from `worker/deno`, stdin from
-  `/dev/null`): 222 passed, 0 failed.
-- `./quality.sh < /dev/null` on the code commit: `Result: PASSED (with skipped
-  checks)`. Config integration and checkov were skipped, and every other stage
-  passed.
+  `/dev/null`): 664 passed, 0 failed.
+- `./quality.sh < /dev/null` at `acc4b9d60` (later commits edit only this
+  summary): `Result: PASSED (with skipped
+  checks)`. Config integration and checkov were skipped, and every other stage,
+  `deno tests` included, passed.
 
 Not checked: none beyond the two gate stages `./quality.sh` itself skipped.
