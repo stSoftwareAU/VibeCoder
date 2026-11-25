@@ -1116,6 +1116,16 @@ phase, it is logged at WARNING and the run is released as `host_disk` (outcome
 branch in a `wip:` commit with a handover note, so the next claim resumes it
 (Issue #5077).
 
+A reason that opens with `[GUEST_MEMORY_FLOOR]` means the worker stopped the
+agent because the guest's available memory stayed below its floor for two
+readings in a row, before the guest stopped answering (Issue #4815). The
+reading is guest-wide, so every agent run active in the worker at the time
+stops with the same reason, including another slot's verifier pass. Nothing is
+required: the work is kept on the issue branch in a `wip:` commit and the next
+claim resumes it. If the stops recur on one repository, its builds or tests
+need more memory than the guest has; give the guest more with
+`VIBE_CONTAINER_MEMORY`.
+
 A `clone-corrupt` fault is usually self-healing: `setupRepo` moves the broken
 clone aside to `<repoPath>.corrupt-<UTC timestamp>` (kept for inspection, not
 deleted — any older `.corrupt-*` sibling for that repo is removed first) and
