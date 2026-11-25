@@ -22,7 +22,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
-import { runFixtureGit } from "./support/no_host_git_config.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  runFixtureGit,
+} from "./support/no_host_git_config.ts";
 
 /** A clone carrying `main` and a milestone branch, both pushed. */
 async function setupCloneWithMilestone(): Promise<{
@@ -76,6 +79,7 @@ Deno.test("syncMilestoneBranchWithDefault - a dirty shared clone is reset rather
 
     const result = await syncMilestoneBranchWithDefault(milestone, "main", {
       cwd: localPath,
+      env: NO_HOST_GIT_CONFIG,
     });
 
     assert(
@@ -112,6 +116,7 @@ Deno.test("syncMilestoneBranchWithDefault - an untracked file does not block the
 
     const result = await syncMilestoneBranchWithDefault(milestone, "main", {
       cwd: localPath,
+      env: NO_HOST_GIT_CONFIG,
     });
 
     assert(result.ok);
@@ -133,6 +138,7 @@ Deno.test("syncMilestoneBranchWithDefault - a clean clone reports no self-healin
   try {
     const result = await syncMilestoneBranchWithDefault(milestone, "main", {
       cwd: localPath,
+      env: NO_HOST_GIT_CONFIG,
     });
 
     assert(result.ok);

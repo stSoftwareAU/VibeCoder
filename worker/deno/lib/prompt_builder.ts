@@ -2332,7 +2332,24 @@ export interface CiFixPromptOptions {
    * empty.
    */
   prFailureActions?: string;
+  /**
+   * The PR is the repair PR for a red default branch (Issue #5437): its
+   * failure is the default branch's own, so it is fixed here, never deferred.
+   */
+  repairsDefaultBranch?: boolean;
 }
+
+/**
+ * The note a repair PR's CI-fix prompt carries (Issue #5437). The prompt's
+ * rule to defer a check already red on the base branch does not apply: this
+ * PR exists to make the base branch green.
+ */
+export const RED_DEFAULT_BRANCH_REPAIR_NOTE =
+  "- **Repair PR for a red default branch:** this PR exists to repair its " +
+  "base branch. The failing check is red on the base branch too, and that is " +
+  "the failure to fix here. Do NOT defer it to the base branch or end with a " +
+  "`Depends on` line; the worker refuses that deferral. The failing check run " +
+  "may be the base branch's own run rather than one on this PR's head.";
 
 /**
  * Render a CI failure classification as a human-readable block for the
@@ -2427,8 +2444,11 @@ export async function buildCiFixPrompt(
   // The classification block echoes the GitHub-sourced check name and
   // matched annotation signals, so sanitise delimiter-like patterns in the
   // rendered block before substituting it into the template (Issue #2606).
+  const classificationText = formatCiFailureClassification(classification);
   const failureClassificationBlock = sanitiseDelimiterPatterns(
-    formatCiFailureClassification(classification),
+    options.repairsDefaultBranch === true
+      ? `${RED_DEFAULT_BRANCH_REPAIR_NOTE}\n${classificationText}`
+      : classificationText,
   );
 
   // The PR-failure-action excerpt embeds attacker-influenceable CI

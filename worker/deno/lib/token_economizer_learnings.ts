@@ -40,7 +40,7 @@
  */
 
 import { dirname, join } from "node:path";
-import { runGitCommand } from "./git_timeout.ts";
+import { type GitCommandOptions, runGitCommand } from "./git_timeout.ts";
 import { runGhCommandRaw } from "./github.ts";
 import { defaultLogger } from "./logger.ts";
 import { parseReport, type ReportFinding } from "./gitleaks_check.ts";
@@ -142,6 +142,8 @@ export interface PullLearningsOptions {
   checkVisibility?: VisibilityCheck;
   /** The #4956 latch: `tokenEconomizerMaySync(workDir)` in production. */
   mayTransfer: () => Promise<boolean>;
+  /** Env overlaid on every git call this makes (Issue #5371). Absent: the inherited environment. */
+  gitEnv?: Record<string, string>;
   logger?: LearningsLogger;
 }
 
@@ -159,6 +161,8 @@ export interface PushLearningsOptions {
   stop: (finding: TokenEconomizerFinding) => Promise<unknown>;
   /** Default: the real gitleaks over the staged files. */
   scanStaged?: (cwd: string) => Promise<StagedScan>;
+  /** Env overlaid on every git call this makes (Issue #5371). Absent: the inherited environment. */
+  gitEnv?: Record<string, string>;
   logger?: LearningsLogger;
 }
 
@@ -351,11 +355,11 @@ async function verifyPrivate(
 }
 
 /** Run one git command. A spawn failure is reported as code -1, never thrown. */
-async function git(args: string[], timeoutSeconds?: number): Promise<GitRun> {
-  const result = await runGitCommand(
-    args,
-    timeoutSeconds === undefined ? {} : { timeoutSeconds },
-  );
+async function git(
+  args: string[],
+  options: GitCommandOptions = {},
+): Promise<GitRun> {
+  const result = await runGitCommand(args, options);
   if (!result.ok) {
     return { code: -1, stdout: "", stderr: result.error.message };
   }
@@ -559,7 +563,7 @@ export async function pullLearnings(
         storeUrl,
         scratchDir,
       ],
-      LEARNINGS_GIT_TIMEOUT_SECONDS,
+      { timeoutSeconds: LEARNINGS_GIT_TIMEOUT_SECONDS, env: opts.gitEnv },
     );
     if (clone.code !== 0) {
       throw new LearningsFault(`clone failed: ${causeOf(clone)}`);
@@ -573,7 +577,7 @@ export async function pullLearnings(
       "--no-cone",
       `/${LEARNINGS_STORE_ROOT}/${repoKey}/`,
       `/${LEARNINGS_STORE_ROOT}/${CONFIG_FILE}`,
-    ]);
+    ], { env: opts.gitEnv });
     if (sparse.code !== 0) {
       throw new LearningsFault(`sparse checkout failed: ${causeOf(sparse)}`);
     }
@@ -586,7 +590,7 @@ export async function pullLearnings(
       "--verify",
       "-q",
       "HEAD",
-    ]);
+    ], { env: opts.gitEnv });
     if (head.code === 1) {
       logger.info(`token-economizer learnings: store is empty for ${repoKey}`);
       return {
@@ -601,7 +605,7 @@ export async function pullLearnings(
     }
     const checkout = await git(
       ["-C", scratchDir, "checkout", "--quiet"],
-      LEARNINGS_GIT_TIMEOUT_SECONDS,
+      { timeoutSeconds: LEARNINGS_GIT_TIMEOUT_SECONDS, env: opts.gitEnv },
     );
     if (checkout.code !== 0) {
       throw new LearningsFault(`checkout failed: ${causeOf(checkout)}`);
@@ -749,14 +753,19 @@ async function foreignRepos(home: string, key: string): Promise<string[]> {
  * removed clone would resolve to an enclosing repository. Anything that cannot
  * be verified is not a clone.
  */
-async function isOwnClone(storeDir: string): Promise<boolean> {
+async function isOwnClone(
+  storeDir: string,
+  env?: Record<string, string>,
+): Promise<boolean> {
   try {
     const info = await Deno.lstat(join(storeDir, ".git"));
     if (info.isSymlink || !info.isDirectory) return false;
   } catch {
     return false;
   }
-  const top = await git(["-C", storeDir, "rev-parse", "--show-toplevel"]);
+  const top = await git(["-C", storeDir, "rev-parse", "--show-toplevel"], {
+    env,
+  });
   if (top.code !== 0) return false;
   try {
     const [fromGit, own] = await Promise.all([
@@ -846,7 +855,9 @@ async function commitStaged(
   ctx: PushContext,
 ): Promise<{ kind: "committed"; commit: string } | PushLearningsOutcome> {
   const { opts, logger, storeDir, repoKey } = ctx;
-  const diff = await git(["-C", storeDir, "diff", "--cached", "--quiet"]);
+  const diff = await git(["-C", storeDir, "diff", "--cached", "--quiet"], {
+    env: opts.gitEnv,
+  });
   if (diff.code === 0) return { kind: "unchanged" };
   if (diff.code !== 1) {
     return skip(logger, `git diff failed: ${causeOf(diff)}`);
@@ -889,11 +900,13 @@ async function commitStaged(
     "--quiet",
     "-m",
     message,
-  ]);
+  ], { env: opts.gitEnv });
   if (commit.code !== 0) {
     return skip(logger, `git commit failed: ${causeOf(commit)}`);
   }
-  const head = await git(["-C", storeDir, "rev-parse", "HEAD"]);
+  const head = await git(["-C", storeDir, "rev-parse", "HEAD"], {
+    env: opts.gitEnv,
+  });
   if (head.code !== 0) {
     return skip(logger, `git rev-parse failed: ${causeOf(head)}`);
   }
@@ -987,12 +1000,14 @@ async function replayOnTip(
   const { opts, logger, storeDir, repoKey } = ctx;
   const fetched = await git(
     ["-C", storeDir, "fetch", "--depth=1", "origin", branch],
-    LEARNINGS_GIT_TIMEOUT_SECONDS,
+    { timeoutSeconds: LEARNINGS_GIT_TIMEOUT_SECONDS, env: opts.gitEnv },
   );
   if (fetched.code !== 0) {
     return drop(logger, `fetch for replay failed: ${causeOf(fetched)}`);
   }
-  const reset = await git(["-C", storeDir, "reset", "--hard", "FETCH_HEAD"]);
+  const reset = await git(["-C", storeDir, "reset", "--hard", "FETCH_HEAD"], {
+    env: opts.gitEnv,
+  });
   if (reset.code !== 0) {
     return drop(logger, `reset to the tip failed: ${causeOf(reset)}`);
   }
@@ -1002,9 +1017,9 @@ async function replayOnTip(
     "cherry-pick",
     "--no-commit",
     ours,
-  ]);
+  ], { env: opts.gitEnv });
   if (pick.code !== 0) {
-    await git(["-C", storeDir, "reset", "--hard"]);
+    await git(["-C", storeDir, "reset", "--hard"], { env: opts.gitEnv });
     const conflicted = /CONFLICT/.test(`${pick.stdout}\n${pick.stderr}`);
     return drop(
       logger,
@@ -1034,7 +1049,7 @@ async function replayOnTip(
   if (blocked !== null) return blocked;
   const second = await git(
     ["-C", storeDir, "push", "origin", `HEAD:refs/heads/${branch}`],
-    LEARNINGS_GIT_TIMEOUT_SECONDS,
+    { timeoutSeconds: LEARNINGS_GIT_TIMEOUT_SECONDS, env: opts.gitEnv },
   );
   if (second.code === 0) {
     await refreshReplayedHome(ctx);
@@ -1094,7 +1109,7 @@ async function pushVerified(
   }
 
   // The clone must be its own repository before anything is written under it.
-  if (!(await isOwnClone(storeDir))) {
+  if (!(await isOwnClone(storeDir, opts.gitEnv))) {
     return skip(
       logger,
       "store clone is gone; this spawn's learnings are discarded",
@@ -1117,7 +1132,7 @@ async function pushVerified(
     "-A",
     "--",
     `${LEARNINGS_STORE_ROOT}/${repoKey}`,
-  ]);
+  ], { env: opts.gitEnv });
   // `add` matches nothing when neither the store nor the home has the key; that is no change.
   if (add.code !== 0 && await exists(storeKey)) {
     return skip(logger, `git add failed: ${causeOf(add)}`);
@@ -1133,7 +1148,7 @@ async function pushVerified(
     "symbolic-ref",
     "--short",
     "HEAD",
-  ]);
+  ], { env: opts.gitEnv });
   if (branchRun.code !== 0) {
     return drop(logger, `no branch to push: ${causeOf(branchRun)}`);
   }
@@ -1143,7 +1158,7 @@ async function pushVerified(
   if (blocked !== null) return blocked;
   const first = await git(
     ["-C", storeDir, "push", "origin", `HEAD:refs/heads/${branch}`],
-    LEARNINGS_GIT_TIMEOUT_SECONDS,
+    { timeoutSeconds: LEARNINGS_GIT_TIMEOUT_SECONDS, env: opts.gitEnv },
   );
   if (first.code === 0) return { kind: "pushed", commit: committed.commit };
   if (!isRejectedNonFastForward(first)) {

@@ -481,8 +481,10 @@ Alongside the per-candidate filters above there is one **per-repo** gate. A repo
 
 The `low-priority` → `idle-task` gate follows the same idea (Issue #2751). [`collect_low_priority_candidates.ts`](../../worker/deno/lib/collect_low_priority_candidates.ts) reports `hasSuppressingLowPriority` from the raw open list — taken before `cleanStaleLabels` and the per-issue skips — counting only issues **not waiting on a human**. A `low-priority` issue is waiting on a human, and so leaves the repo's `idle-task` issues selectable, when it carries any of:
 
-- a handoff label — `failed`, `refine-issue`, `planning`, `question`, `needs-revision` or `needs-human` (the configured names), or
+- a handoff label — `refine-issue`, `planning`, `question`, `needs-revision` or `needs-human` (the configured names), or
 - an assignee outside the fleet-identity set (`resolveFleetMaintenanceAuthorSet`), i.e. a human has taken it.
+
+A leftover `failed` label alone does not count as waiting on a human and still suppresses idle tasks; stale-label cleanup runs after this census.
 
 Every other open `low-priority` issue still suppresses the repo's `idle-task` tier — including one blocked by an open dependency or an open PR, or assigned to a fleet account — because that work clears by itself. A claimable `low-priority` issue (a `Finish #N:` follow-up included) is still selected ahead of any `idle-task` issue by the tier ladder.
 

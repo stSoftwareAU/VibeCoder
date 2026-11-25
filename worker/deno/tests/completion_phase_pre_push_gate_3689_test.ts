@@ -465,7 +465,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           return await commitAndPushPending(
             _branchName,
             _message,
-            _opts,
+            { ..._opts, env: { ..._opts?.env, ...NO_HOST_GIT_CONFIG } },
             _allowDefault,
             _preFlight,
             _runId,

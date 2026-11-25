@@ -256,7 +256,10 @@ Deno.test(
       // Exercise the real function. Before the fix this returned ok with
       // value 0 and never pushed, leaving the remote branch missing and
       // `gh pr create` failing with "No commits between …".
-      const result = await pushUnpushedCommits(branchName, { cwd: downstream });
+      const result = await pushUnpushedCommits(branchName, {
+        cwd: downstream,
+        env: NO_HOST_GIT_CONFIG,
+      });
       assert(
         result.ok,
         `pushUnpushedCommits should succeed, got: ${
@@ -289,6 +292,101 @@ Deno.test(
       const remote = await runGit(
         ["rev-parse", `refs/remotes/origin/${branchName}`],
         downstream,
+      );
+      assertEquals(head.code, 0);
+      assertEquals(remote.code, 0);
+      assertEquals(remote.stdout.trim(), head.stdout.trim());
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "pushUnpushedCommits - honours the caller's env, so the shield cancels an injected pre-push hook (Issue #5371)",
+  async () => {
+    const tmp = await Deno.makeTempDir({ prefix: "push_unpushed_env_5371_" });
+    const upstream = `${tmp}/upstream.git`;
+    const downstream = `${tmp}/downstream`;
+    const hooksDir = `${tmp}/hooks`;
+    const marker = "ISSUE-5371-INJECTED-PRE-PUSH-HOOK-RAN";
+
+    try {
+      // A refusing pre-push hook, injected the way the fleet injects
+      // `core.hooksPath`: through GIT_CONFIG_COUNT in the child's environment.
+      await Deno.mkdir(hooksDir);
+      await Deno.writeTextFile(
+        `${hooksDir}/pre-push`,
+        `#!/bin/sh\necho ${marker} >&2\nexit 1\n`,
+        { mode: 0o755 },
+      );
+      const hostLike = {
+        ...NO_HOST_GIT_CONFIG,
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "core.hooksPath",
+        GIT_CONFIG_VALUE_0: hooksDir,
+      };
+
+      assertEquals(
+        (await runGit(["init", "--bare", "-b", "main", upstream], tmp)).code,
+        0,
+      );
+      const seed = `${tmp}/seed`;
+      assertEquals((await runGit(["clone", upstream, seed], tmp)).code, 0);
+      await runGit(["config", "user.email", "t@t"], seed);
+      await runGit(["config", "user.name", "t"], seed);
+      await Deno.writeTextFile(`${seed}/README.md`, "seed\n");
+      await runGit(["add", "."], seed);
+      await runGit(["commit", "-m", "seed"], seed);
+      await runGit(["push", "origin", "main"], seed);
+
+      assertEquals(
+        (await runGit(["clone", upstream, downstream], tmp)).code,
+        0,
+      );
+      await runGit(["config", "user.email", "t@t"], downstream);
+      await runGit(["config", "user.name", "t"], downstream);
+
+      const branchName = "issue-5371-env-reaches-push";
+      assertEquals(
+        (await runGit(["checkout", "-b", branchName], downstream)).code,
+        0,
+      );
+      await Deno.writeTextFile(`${downstream}/feature.txt`, "feature work\n");
+      await runGit(["add", "."], downstream);
+      assertEquals(
+        (await runGit(["commit", "-m", "implement feature"], downstream)).code,
+        0,
+      );
+
+      // (a) The host-like env reaches the push child, so the hook runs and
+      // refuses the push.
+      const leaked = await pushUnpushedCommits(branchName, {
+        cwd: downstream,
+        env: hostLike,
+      });
+      assert(!leaked.ok, "the injected pre-push hook should refuse the push");
+      if (!leaked.ok) {
+        assertStringIncludes(leaked.error.message, marker);
+      }
+
+      // (b) The shield, spread last, cancels the injected hook on the same
+      // production path, so the push lands.
+      const shielded = await pushUnpushedCommits(branchName, {
+        cwd: downstream,
+        env: { ...hostLike, ...NO_HOST_GIT_CONFIG },
+      });
+      assert(
+        shielded.ok,
+        `shielded push should succeed, got: ${
+          !shielded.ok ? shielded.error.message : ""
+        }`,
+      );
+
+      const head = await runGit(["rev-parse", "HEAD"], downstream);
+      const remote = await runGit(
+        ["rev-parse", `refs/heads/${branchName}`],
+        upstream,
       );
       assertEquals(head.code, 0);
       assertEquals(remote.code, 0);
@@ -341,6 +439,7 @@ Deno.test(
       // Local feature branch is already at origin/<branch> — nothing to push.
       const result = await pushUnpushedCommits(branchName, {
         cwd: downstream,
+        env: NO_HOST_GIT_CONFIG,
       });
       assert(result.ok);
       if (result.ok) assertEquals(result.value, 0);
@@ -389,7 +488,10 @@ Deno.test(
     const tmp = await Deno.makeTempDir({ prefix: "resolve_default_" });
     try {
       const downstream = await buildClonePair(tmp);
-      const branch = await resolveLocalDefaultBranch({ cwd: downstream });
+      const branch = await resolveLocalDefaultBranch({
+        cwd: downstream,
+        env: NO_HOST_GIT_CONFIG,
+      });
       assertEquals(branch, "main");
     } finally {
       await Deno.remove(tmp, { recursive: true });
@@ -403,7 +505,10 @@ Deno.test(
     const tmp = await Deno.makeTempDir({ prefix: "guard_reject_" });
     try {
       const downstream = await buildClonePair(tmp);
-      const guard = await assertPushTargetAllowed("main", { cwd: downstream });
+      const guard = await assertPushTargetAllowed("main", {
+        cwd: downstream,
+        env: NO_HOST_GIT_CONFIG,
+      });
       assert(!guard.ok, "guard must reject a push to the default branch");
       if (!guard.ok) {
         assertStringIncludes(guard.error.message, "default branch");
@@ -423,6 +528,7 @@ Deno.test(
       const downstream = await buildClonePair(tmp);
       const guard = await assertPushTargetAllowed("issue-2584-feature", {
         cwd: downstream,
+        env: NO_HOST_GIT_CONFIG,
       });
       assert(guard.ok, "guard must allow a push to a feature branch");
     } finally {
@@ -439,7 +545,7 @@ Deno.test(
       const downstream = await buildClonePair(tmp);
       const guard = await assertPushTargetAllowed(
         "main",
-        { cwd: downstream },
+        { cwd: downstream, env: NO_HOST_GIT_CONFIG },
         true, // allowDefaultBranch opt-out for legitimate merge machinery
       );
       assert(guard.ok, "opt-out must permit a default-branch push");
@@ -459,7 +565,10 @@ Deno.test(
       // unknown — the guard must fail open and allow the push.
       await Deno.mkdir(repo);
       assertEquals((await runGit(["init", "-b", "main", repo], tmp)).code, 0);
-      const guard = await assertPushTargetAllowed("main", { cwd: repo });
+      const guard = await assertPushTargetAllowed("main", {
+        cwd: repo,
+        env: NO_HOST_GIT_CONFIG,
+      });
       assert(guard.ok, "guard must fail open when the default cannot resolve");
     } finally {
       await Deno.remove(tmp, { recursive: true });
@@ -473,7 +582,10 @@ Deno.test(
     const tmp = await Deno.makeTempDir({ prefix: "push_default_reject_" });
     try {
       const downstream = await buildClonePair(tmp);
-      const result = await pushUnpushedCommits("main", { cwd: downstream });
+      const result = await pushUnpushedCommits("main", {
+        cwd: downstream,
+        env: NO_HOST_GIT_CONFIG,
+      });
       assert(!result.ok, "must refuse to push the default branch");
       if (!result.ok) {
         assertStringIncludes(result.error.message, "default branch");
@@ -507,7 +619,7 @@ Deno.test(
       const result = await commitAndPushPending(
         "main",
         "chore: bump dependencies",
-        { cwd: downstream },
+        { cwd: downstream, env: NO_HOST_GIT_CONFIG },
       );
       assert(!result.ok, "commitAndPushPending must refuse the default branch");
       if (!result.ok) {
@@ -541,7 +653,7 @@ Deno.test(
       const result = await commitAndPushPending(
         "main",
         "merge: legitimate default-branch update",
-        { cwd: downstream },
+        { cwd: downstream, env: NO_HOST_GIT_CONFIG },
         true, // allowDefaultBranch opt-out
       );
       assert(
@@ -578,7 +690,7 @@ Deno.test(
       // must fail with a named error rather than run.
       const result = await pushUnpushedCommits(
         "--receive-pack=touch /tmp/pwned",
-        { cwd: tmp },
+        { cwd: tmp, env: NO_HOST_GIT_CONFIG },
       );
       assert(!result.ok, "a dash-leading branch must not be pushed");
       if (!result.ok) {

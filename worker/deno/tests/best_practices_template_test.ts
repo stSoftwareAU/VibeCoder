@@ -1687,6 +1687,10 @@ Deno.test(
         created!.body,
         "`aws-emulator-run [--timeout N] -- <test command>`",
       );
+      assertStringIncludes(
+        created!.body,
+        "The COMMAND must be the test itself",
+      );
       assert(!created!.body.includes("::warning::"));
       assert(!created!.body.includes("SKIPPED (needs Docker)"));
       assert(!/floci\/floci@sha256:/.test(created!.body));

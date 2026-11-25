@@ -514,7 +514,12 @@ attacker-influenced text — model stdout, subprocess output — so a pattern th
 backtracks super-linearly stalls the whole event loop, and with it the
 single-instance worker. Bound or anchor every quantifier over a broad character
 class: `[a-z][a-z0-9+.-]*://` was quadratic on a long alphanumeric run until the
-scheme was capped at 64 characters. The answer is a bounded *pattern*, never a
+scheme was capped at 64 characters. The `*_TOKEN=` rule's key was quadratic on
+a long run of key characters holding many credential keywords, such as a list of
+variable names the decode pass joins into one run, until the key-character runs
+either side of the keyword were capped at 63 characters each (Issue #5373); a
+key with more than 63 key characters before or after its keyword is no longer
+matched. The answer is a bounded *pattern*, never a
 bounded *input* — capping the text would silently leave its tail unmasked, in
 direct conflict with "redact before you truncate" above.
 
@@ -556,6 +561,14 @@ quote and the rest of the credential was published. Two limits: the
 escape-aware read covers at most 4,096 characters or escapes, and a value whose
 escape never closes (`"C:\dir\"`) falls back to ending at the first quote.
 
+The same holds for a credential command-line flag's quoted value:
+`--token "abc\"def"`, `--password 'abc''def'` and `--password 'it'\''s'` are
+masked in full by the `secret-cli-flag` rule. When a later credential flag
+opens its quoted value at the apparent closing quote of a flag or assignment,
+the mask extends through the later value. Before
+Issue #5435 the flag value ended at the escaped quote and the rest of the
+credential was published.
+
 A bare value that starts at the closing quote of a credential flag's quoted
 value keeps that quote in front of the placeholder (Issue #5363). In
 `--password 'alpha beta TOKEN='tail` the `TOKEN=` value opens at that quote;
@@ -566,6 +579,15 @@ rule really pairs the two. One form is not covered: when the quote sits inside
 an outer label's value that is masked whole, as in
 `--token 'alpha beta credentials: TOKEN='tail`, the base behaviour applies and
 `beta credentials:` is still published.
+
+A quoted value whose closing quote is where the `secret-cli-flag` rule opens a
+credential flag's value is masked through that flag's value (Issue #5457).
+Given `API_TOKEN='abc` and, on the next line, `run --password '<value>'`, the
+first value closed at the flag's opening quote, so the mask covered the flag's
+name, the flag rule never saw it, and `<value>` was published. The same held
+for a double-quoted Windows path ending in a backslash and a quoted message
+ending in `token:` with text glued to its closing quote. The mask now runs
+through the flag's value.
 
 The label side stays deliberately blunt — it catches real secrets — apart from
 the prose-heading check below. The value is judged before the mask is applied,
@@ -687,10 +709,18 @@ and, apart from that check, **only when the separator crossed a line break**:
 - That handling has limits, past which the base behaviour applies (the label
   is masked as the earlier label's value and the inner value is published):
   the inner label's separator and value must start within 256 characters of
-  the outer value's end, a double-quoted inner value must close within 4,096
-  characters of its opening quote, the label must be at most 128 characters,
-  and a single-quoted inner value whose first word itself holds two `'` (as in
-  `DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
+  the outer value's end, a double-quoted inner value that opens with a line
+  break, or holds no letter or digit within the 256-character window, must
+  close within 4,096 characters of its opening quote (since Issue #5329 any
+  other is read as unterminated and masked whole), the label must be at most
+  128 characters, and a single-quoted inner value whose first word itself
+  holds two `'` (as in `DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
+
+Issue #5329 judges a quoted value inside its quotes: a letter or digit within
+its first 256 characters makes it a credential, so `PASSWORD=" hunter2"` and
+`API_KEY='#! s3cr3t'` are masked. A quoted value whose first letter or digit
+lies further in is not masked by this rule, and a double-quoted value with no
+closing quote is masked to the end of its line.
 
 `containsSecret()` asks the value predicate the same question the replacement
 does, so detection and redaction cannot drift apart — a body that redacts to
@@ -725,6 +755,15 @@ after a PascalCase heading that does not end in a credential word, on the same
 line after `: `, with a further word after it on that line; or, under Markdown
 markers, after a plural credential noun (`**Tokens:** sunshine and more`) with
 any further text after it on that line.
+
+One false positive is accepted as well (Issue #5399). Prose that quotes a
+credential word before a colon has the word after the colon masked: the title
+`… a word containing "Token": PR #5251's title …` is published with `PR`
+replaced by the placeholder, and a plural (`"Tokens": counts are shown below`)
+is masked the same way. That shape cannot be told apart from a JSON or YAML
+field with a bare value (`"Token": hunter2value`), so the product-heading
+exemption is not extended to it: a missed credential costs more than a
+corrupted word in a title.
 
 ### Transformed secrets are decoded, then re-scanned
 
@@ -1903,23 +1942,24 @@ label the worker may apply, and it is narrowed five ways:
   who adds `planning`, or who re-adds `work-on`, gets no trust from the
   exception, so they still cannot trigger planning.
 - **Once per issue.** The hand-off comment carries `<!-- vibe-planning-handoff -->`.
-  If that marker is already present, a second request falls back to
-  `needs-human`. The marker is looked up across the issue's full comment
-  thread — every author — rather than the budgeted prompt comments (20
-  comments / 12,000 characters), which could drop it on a busy issue
-  (Issue #2942); the prompt comments are only a logged-warning fallback if
-  that fetch fails. A forged marker can only make the fallback fire, which is
-  the safe direction. Untrusted issue text reaches the prompt through
-  `issue_content_trust_filter.ts` (delimiter sanitising and nonce-boundary
-  wrapping). Even if an injection did make the run emit
-  `vibe-needs-planning`, the result is only planning an issue that a trusted
-  human already scheduled with `work-on`. The posted hand-off comment passes
-  the run's reason and output through `neutraliseAgentMarkers`, so agent text
-  cannot forge a fleet marker in a worker-authored comment.
-- **`work-on` issues only.** `handle_no_changes_phase.ts` attempts the
-  hand-off only when the issue carries `work-on` (`PLANNING_HANDOFF_ANCHOR`).
-  On any other pickup tier the label would never be trusted, so the run goes
-  to `needs-human` instead of leaving an untrusted `planning` label behind.
+  If that marker is already present, a second request makes no hand-off and
+  the issue is retried as not finished (Issue #4227). The marker is looked up
+  across the issue's full comment thread — every author — rather than the
+  budgeted prompt comments (20 comments / 12,000 characters), which could drop
+  it on a busy issue (Issue #2942); the prompt comments are only a
+  logged-warning fallback if that fetch fails. A forged marker can only make
+  the fallback fire, which is the safe direction. Untrusted issue text
+  reaches the prompt through `issue_content_trust_filter.ts` (delimiter
+  sanitising and nonce-boundary wrapping). Even if an injection did make the
+  run emit `vibe-needs-planning`, the result is only planning an issue that a
+  trusted human already scheduled with `work-on`. The posted hand-off comment
+  passes the run's reason and output through `neutraliseAgentMarkers`, so
+  agent text cannot forge a fleet marker in a worker-authored comment.
+- **`work-on` issues only.** `declared_handoff.ts` (shared by both phases)
+  attempts the hand-off only when the issue carries `work-on`
+  (`PLANNING_HANDOFF_ANCHOR`). On any other pickup tier the label would never
+  be trusted, so no hand-off is made and the issue is retried as not finished
+  (Issue #4227) instead of leaving an untrusted `planning` label behind.
 - **Untrusted-image gate.** The hand-off retires the issue into sub-issues with
   no human step, so, like the already-resolved close, it is withheld when an
   untrusted author's body carried an image. `gatePlanningHandoff`
@@ -1931,7 +1971,7 @@ label the worker may apply, and it is narrowed five ways:
 ```mermaid
 flowchart TD
     R["Run emits vibe-needs-planning"] --> P{"vibe-planning-handoff<br/>already on the issue?"}
-    P -->|yes| H["needs-human"]
+    P -->|yes| H["No hand-off:<br/>retried as not finished"]
     P -->|no| W{"work-on on the issue<br/>and no untrusted image?"}
     W -->|no| H
     W -->|yes| G{"Guard: label is planning?"}
