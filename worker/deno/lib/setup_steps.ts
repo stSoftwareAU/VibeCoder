@@ -17,6 +17,11 @@ import { isFleetAuthor } from "./fleet_authors.ts";
 /**
  * The setup steps, in run order. The names are fixed words, never log or issue
  * text, because the hard-kill report publishes the label on a public issue.
+ *
+ * "milestone branch" and "milestone pre-sync" run only for a milestone issue.
+ * "session resume" covers the pushed-checkpoint lookup (`loadResumeState`,
+ * `resumeIssueBranch`) and the stream-session priming and compaction, up to
+ * the feature branch (Issue #5529).
  */
 export const SETUP_STEPS = [
   "issue claim",
@@ -24,6 +29,9 @@ export const SETUP_STEPS = [
   "repository setup",
   "heartbeat start",
   "default branch sync",
+  "milestone branch",
+  "milestone pre-sync",
+  "session resume",
   "feature branch",
   "pre-setup command",
 ] as const;

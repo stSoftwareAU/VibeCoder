@@ -30,7 +30,11 @@
 import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { TIMEOUT_EXIT_CODE } from "../lib/claude_executor.ts";
-import type { Logger } from "../types.ts";
+import {
+  capturingLogger,
+  chunkSignals,
+  waitForFile,
+} from "./support/claude_runner_harness.ts";
 import {
   agentStubGate,
   createAgentStub,
@@ -90,33 +94,6 @@ function withStub<T>(
     (stub) => fn({ path: stub.path, runLog: `${stub.dir}/${RUN_LOG}`, stub }),
     { prefix: "claude_killed_stub_" },
   );
-}
-
-/** Resolves when the runner has folded the agent's nth stdout chunk in. */
-function chunkSignals() {
-  const chunks: ReturnType<typeof Promise.withResolvers<void>>[] = [];
-  let seen = 0;
-  const at = (index: number) => (chunks[index] ??= Promise.withResolvers());
-  return {
-    onActivity: () => at(seen++).resolve(),
-    chunk: (n: number) => at(n - 1).promise,
-  };
-}
-
-/** Wait for a file the stub writes, so "the child got that far" is provable. */
-async function waitForFile(path: string): Promise<string> {
-  // Bounded so a stub that never writes fails the case rather than hanging
-  // the suite; the poll is real time, which a busy host only lengthens.
-  for (let attempt = 0; attempt < 600; attempt++) {
-    try {
-      const text = (await Deno.readTextFile(path)).trim();
-      if (text.length > 0) return text;
-    } catch {
-      // not written yet
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`the stub never wrote ${path}`);
 }
 
 async function readRunCount(runLog: string): Promise<number> {
@@ -342,36 +319,6 @@ Deno.test({
 // ---------------------------------------------------------------------------
 // (e) The kill carries the memory-pressure reading (Issue #4374)
 // ---------------------------------------------------------------------------
-
-function capturingLogger(onWarn?: (message: string) => void): {
-  logger: Logger;
-  security: Array<{ event: string; details: string }>;
-  warns: string[];
-  errors: string[];
-} {
-  const security: Array<{ event: string; details: string }> = [];
-  const warns: string[] = [];
-  const errors: string[] = [];
-  const logger: Logger = {
-    info: () => {},
-    warn: (message) => {
-      warns.push(message);
-      onWarn?.(message);
-    },
-    error: (message) => {
-      errors.push(message);
-    },
-    debug: () => {},
-    security: (event, details) => {
-      security.push({ event, details });
-    },
-    skipReason: () => {},
-    timing: () => {},
-    scanSummary: () => {},
-    workerSummary: () => {},
-  };
-  return { logger, security, warns, errors };
-}
 
 Deno.test({
   name:

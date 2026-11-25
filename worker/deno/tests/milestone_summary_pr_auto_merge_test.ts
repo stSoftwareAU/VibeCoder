@@ -50,10 +50,21 @@ interface ScriptOptions {
  * Build a fake `gh` runner for a repository with one complete milestone whose
  * summary PR does not yet exist, recording every call it is asked to make.
  */
+/** A pull request the fake GitHub holds after a `pr create`. */
+interface CreatedPr {
+  head: string;
+  base: string;
+}
+
 function scriptGh(
   options: ScriptOptions = {},
-): { gh: (args: string[]) => Promise<string>; calls: GhCall[] } {
+): {
+  gh: (args: string[]) => Promise<string>;
+  calls: GhCall[];
+  created: CreatedPr[];
+} {
   const calls: GhCall[] = [];
+  const created: CreatedPr[] = [];
   const openChildPrs = options.openChildPrs ?? [];
   const baseProtected = options.baseProtected ?? true;
 
@@ -102,6 +113,10 @@ function scriptGh(
       return Promise.resolve(baseProtected ? "required_status_checks" : "");
     }
     if (key.includes("pr create")) {
+      created.push({
+        head: args[args.indexOf("--head") + 1] ?? "",
+        base: args[args.indexOf("--base") + 1] ?? "",
+      });
       return Promise.resolve(
         options.prCreateOutput ??
           `https://github.com/${REPO}/pull/${PR_NUMBER}`,
@@ -122,6 +137,13 @@ function scriptGh(
     if (key.includes("pr view") && key.includes("baseRefName")) {
       return Promise.resolve("main");
     }
+    // Branch-delivery discovery reads merged PRs, independently of open children.
+    if (
+      key.includes("pr list") && key.includes("--base") &&
+      args.includes("merged")
+    ) {
+      return Promise.resolve("[]");
+    }
     // Open PRs targeting the milestone branch (the gate's second read).
     if (key.includes("pr list") && key.includes("--base")) {
       return Promise.resolve(JSON.stringify(openChildPrs));
@@ -129,7 +151,7 @@ function scriptGh(
     return Promise.resolve("[]");
   };
 
-  return { gh, calls };
+  return { gh, calls, created };
 }
 
 function deps(
@@ -181,7 +203,7 @@ Deno.test("summary PR arming - a created summary PR is armed before the function
 
 Deno.test("summary PR arming - open children withhold arming with no second comment", async () => {
   _resetBaseProtectionMemo();
-  const { gh, calls } = scriptGh({
+  const { gh, calls, created } = scriptGh({
     openChildPrs: [{ number: 42, title: "Still open" }],
   });
   const logs: LoggedLine[] = [];
@@ -189,7 +211,9 @@ Deno.test("summary PR arming - open children withhold arming with no second comm
   const result = await checkAndHandleMilestoneCompletions(deps(gh, logs));
   assertEquals(result.ok, true);
 
-  // The #3909 gate refuses, so `--auto` is never issued …
+  // The summary PR is still created (the fake service holds it) …
+  assertEquals(created.map((pr) => pr.head), [MILESTONE_BRANCH]);
+  // … the #3909 gate refuses, so `--auto` is never issued …
   assertEquals(armingCalls(calls).length, 0);
   // … and the gate's own reason comment is the only one posted.
   const comments = commentCalls(calls);
