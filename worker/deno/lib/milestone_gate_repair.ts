@@ -127,7 +127,7 @@ export function judgeResolutionVerdict(
 export interface GateRepairInput {
   /** The gate verdict that refused the resolution. */
   firstFailure: MergeGateOutcome;
-  /** Re-runs the same verification over the merged tree. */
+  /** Verification over the merged tree, repeated after repairs. */
   gate: () => Promise<MergeGateOutcome>;
   /** The agent rung; absent means no repair is attempted. */
   agentFn?: MilestoneConflictAgentFn;
@@ -521,6 +521,12 @@ export interface GateWithRepairInput extends
     GateRepairInput,
     "firstFailure" | "mergeSha" | "mergedCommitSubjects"
   > {
+  /**
+   * A check already taken on this tree; subsequent checks run through `gate`.
+   * A clean merge can supply its type check before repairs require the fuller
+   * conflict-resolution verification.
+   */
+  firstGate?: MergeGateOutcome;
   /** Where the milestone branch stood before the merge. */
   preMergeSha: string;
   /** The default branch's tip that was merged in. */
@@ -552,7 +558,7 @@ export async function runGateWithRepair(
     logger,
   } = input;
 
-  const verdict = await gate();
+  const verdict = input.firstGate ?? await gate();
   // A pass needs nothing, and a `skipped` verification is a refusal no agent
   // can answer — only a genuine check failure buys a repair run.
   if (verdict.status !== "failed") {
