@@ -576,8 +576,8 @@ the kernel re-issues it as soon as the process behind it is reaped, and a
 watchdog that fires in that window would signal — or sweep the children of — a
 stranger. `runClaudeWithTimeout` fingerprints the agent at spawn
 (`captureProcessIdentity`: kernel start ticks on Linux, `ps -o lstart=` on
-other platforms) and the
-terminate helpers re-read that start time immediately before every signal: the
+other platforms) and the terminate helpers re-read that token immediately
+before every signal: the
 parent before its descendants are swept, and each descendant before its TERM and
 again before its KILL. A pid that no longer matches its fingerprint is reported
 as skipped and never signalled, so the kill path cannot reach a process it
