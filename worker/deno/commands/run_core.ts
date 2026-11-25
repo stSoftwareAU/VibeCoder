@@ -12,6 +12,7 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { setRunProviderOverride } from "../lib/agent_provider.ts";
 import { createDefaultRunCoreConfig, runCoreLoop } from "../lib/run_core.ts";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
+import { armGuestMemoryFloor } from "../lib/guest_memory_floor.ts";
 import { enableInFlightHostDiskGate } from "../lib/heavy_build_gate.ts";
 import type { RootFilesystemFault } from "../lib/root_filesystem_fault.ts";
 import { formatStartupBuildLines } from "../lib/repair_base_merge_4943.ts";
@@ -152,8 +153,10 @@ export const runCoreCommand: Command = {
         config: _config,
       });
       // Armed here, not inside the deps factory: unit tests build those deps
-      // and must not park every other test's agent (Issue #4360).
+      // and must not park every other test's agent (Issue #4360). The guest
+      // memory floor is armed the same way (Issue #4815).
       enableInFlightHostDiskGate(true);
+      armGuestMemoryFloor(true);
 
       const result = await runCoreLoop(coreConfig, deps);
 

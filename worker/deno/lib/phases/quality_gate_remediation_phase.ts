@@ -53,6 +53,10 @@ import { alreadyLandedPhaseResult } from "../claim_freshness.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
 import { AgentTurnLimitError } from "../claude_turn_limit.ts";
 import { hostDiskInfrastructureFailure } from "../host_fault.ts";
+import {
+  GUEST_MEMORY_FLOOR_MARKER,
+  GuestMemoryFloorError,
+} from "../guest_memory_floor.ts";
 import { releaseRunAtFinishDeadline } from "./run_wip_preservation.ts";
 
 /**
@@ -184,7 +188,12 @@ export async function workOnIssueQualityGate(
     return phaseResult;
   }
 
-  if (phaseResult.status === "failure" && !agentTurnLimit) {
+  // A guest-memory stop is never retried in-process: another quality run
+  // would start the same workload in the guest that just fell below its
+  // floor (Issue #4815).
+  const guestMemoryStop = phaseResult.status === "failure" &&
+    phaseResult.reason.startsWith(GUEST_MEMORY_FLOOR_MARKER);
+  if (phaseResult.status === "failure" && !agentTurnLimit && !guestMemoryStop) {
     // Only infrastructure-category quality failures qualify for the extra
     // in-process retry — real quality-check failures are not retried.
     // A host-disk stop is infrastructure, but another quality run would
@@ -226,6 +235,7 @@ export async function workOnIssueQualityGate(
   if (
     phaseResult.status === "failure" &&
     !agentTurnLimit &&
+    !guestMemoryStop &&
     hostDiskInfrastructureFailure(phaseResult.reason) === null &&
     state.bumpInfo?.status === "applied"
   ) {
@@ -784,6 +794,18 @@ async function runQualityGateBody(
             reason: fixResult.error.message,
           },
           agentTurnLimit: true,
+        };
+      }
+      // The fix agent was stopped at the guest memory floor. Release the run
+      // as interrupted, keeping the work: the loop's next pass would start
+      // another quality run in the guest that just ran low (Issue #4815).
+      if (fixResult.error instanceof GuestMemoryFloorError) {
+        return {
+          phaseResult: {
+            category: "interrupted",
+            status: "failure",
+            reason: fixResult.error.message,
+          },
         };
       }
       // The fix agent was stopped because the host is out of disk. Return
