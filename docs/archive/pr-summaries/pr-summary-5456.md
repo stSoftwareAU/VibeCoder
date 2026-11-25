@@ -12,8 +12,9 @@ when the flag's opening quote lies outside every assignment mask, so the flag
 rule pairs the quotes and masks the whole value. When the masked text after a
 kept quote ends in a credential label or flag name glued to the quote, as in
 `credentials: x'password: mike` or `credentials: x'--password mike`, that name
-is written back after the placeholder. The next walk pass, or the flag rule,
-then masks the value that the outer mask left outside. Closes #5456.
+stays inside the mask and the mask is extended through the value it labels, so
+the value the outer mask left outside is masked in place. Nothing masked is
+written back. Closes #5456.
 
 ## Spec
 
@@ -37,15 +38,21 @@ then masks the value that the outer mask left outside. Closes #5456.
 - A kept quote ends the flag's value, so the mask's text after it is no longer
   that value. If that text ends in a credential flag name whose value starts
   outside every mask, or in a credential label ending in `:` or `=`, `gluedName`
-  returns the name and `redactAssignmentsOnce` writes it after the placeholder.
-  Without this, `--token 'a b credentials: x'password: mike --token z it's`
-  published `mike`, which the base masked because its flag rule ran through to
-  the later quote. A label with no separator, as in `x'Hunter2password`, is not
-  written back: its text stays inside the mask.
+  returns the name and `gluedValueEnd` extends the mask through the value it
+  labels: a quoted word through its closing quote on the same line, or a bare
+  word up to a blank or a `-` (where a glued flag name may start). Without this,
+  `--token 'a b credentials: x'password: mike --token z it's` published `mike`,
+  which the base masked because its flag rule ran through to the later quote.
+  The name is never written back (PR #5607 review): an earlier version did, and
+  published keyword runs such as `mypassword=` that the base masked, and let the
+  written-back label take the next line's text as its value. A value that needs
+  another rule's reading (one starting with `-`, a bare word holding a quote,
+  `:` or `=`, or a quote left open on the line) is not taken, so the name stays
+  masked and the text after it is read as before.
 - `maskLeads` walks the masks, closes and flag starts once, backwards, and scans
   each unmasked gap once. `gluedName` reads at most one bounded label per mask
-  through `labelEndingAt`. The pass stays linear, as the module header requires.
-  No regex quantifier was added.
+  through `labelEndingAt`, and `gluedValueEnd` reads one word. The pass stays
+  linear, as the module header requires. No regex quantifier was added.
 - The shared `assertRedacts` helper moved from the #5363 test into
   `worker/deno/tests/support/secret_redaction_asserts.ts` so both suites call
   one copy.
@@ -74,16 +81,16 @@ flowchart LR
 
 Before and after, for the issue's shape and the glued-name shapes:
 
-| Input                                                       | Base (main)                           | This PR                                          |
-| ----------------------------------------------------------- | ------------------------------------- | ------------------------------------------------ |
-| `--token 'alpha beta credentials: TOKEN='tail`              | `beta credentials:` published         | `--token ***REDACTED******REDACTED***`           |
-| `--token 'a b credentials: x'password: mike --token z it's` | masked                                | `mike` masked after the written-back `password:` |
-| `--token 'a b credentials: x'password: mike --token 'z y'`  | `z y` published                       | `mike` and `z y` masked                          |
-| `--token 'a b credentials: x'password: mike`                | `b credentials:` and `mike` published | all masked                                       |
+| Input                                                       | Base (main)                           | This PR                                |
+| ----------------------------------------------------------- | ------------------------------------- | -------------------------------------- |
+| `--token 'alpha beta credentials: TOKEN='tail`              | `beta credentials:` published         | `--token ***REDACTED******REDACTED***` |
+| `--token 'a b credentials: x'password: mike --token z it's` | masked                                | `password: mike` masked in place       |
+| `--token 'a b credentials: x'password: mike --token 'z y'`  | `z y` published                       | `mike` and `z y` masked                |
+| `--token 'a b credentials: x'password: mike`                | `b credentials:` and `mike` published | all masked                             |
 
-Code read for the doc claims: `maskLeads`, `gluedName` and `flagClosingQuotes`
-in `worker/deno/lib/secret_redaction.ts`. `SECURITY.md` and the rule comment now
-describe the case as covered.
+Code read for the doc claims: `maskLeads`, `gluedName`, `gluedValueEnd` and
+`flagClosingQuotes` in `worker/deno/lib/secret_redaction.ts`. `SECURITY.md` and
+the rule comment now describe the case as covered.
 
 Issue numbers cited:
 
@@ -100,7 +107,7 @@ Issue numbers cited:
 ## Test Plan
 
 - Added `worker/deno/tests/secret_redaction_outer_mask_flag_quote_5456_test.ts`
-  with 26 tests. Each one asserts the exact `redactSecrets` output, that
+  with 33 tests. Each one asserts the exact `redactSecrets` output, that
   `containsSecret` is false on the output, that a second pass changes nothing,
   and that the named leaked words are gone. The cases cover:
   - the issue's shape, mid-line, after a command word, with no inner label, and
@@ -112,14 +119,18 @@ Issue numbers cited:
     quoted value, a glued flag name, a glued label before a later quoted flag,
     text before a glued label, and a glued label after a quote kept with no
     later quote or at the start of a bare value (Issue #5363);
+  - the PR #5607 review regressions: a glued keyword run with no value, with a
+    value, and at the bare value's opening quote (Issue #5363 shape), a glued
+    label with no value before a next-line flag or assignment, a glued label
+    whose value is a flag name, and a bare value glued to a flag name;
   - four controls (a non-flag quote, an earlier-closed flag, a later quoted
     assignment, a flag opener inside a quoted assignment);
   - two output-only size cases of 20,000 repetitions, with no stopwatch.
 - Red on base: with `worker/deno/lib/secret_redaction.ts` restored from
-  `origin/main` and the new test file kept, 22 of the 26 tests failed and the 4
-  controls passed. With the module from the commit before the glued-name fix,
-  the 7 glued-name tests failed and the other 19 passed. On the head all 26
-  pass.
+  `origin/main` and the new test file kept, 25 of the 33 tests failed. With the
+  module from the commit before the glued-name fix, 9 failed; with the
+  write-back version the review saw, 14 failed (the glued-name tests and the
+  seven PR #5607 review regressions). On the head all 33 pass.
 - Edited `worker/deno/tests/secret_redaction_flag_closing_quote_5363_test.ts`.
   Its local `assertRedacts` moved unchanged to
   `worker/deno/tests/support/secret_redaction_asserts.ts` and is now imported.
@@ -127,12 +138,21 @@ Issue numbers cited:
 - Regression: `deno test -A tests/secret_redaction*_test.ts` at the head gave
   658 passed and 0 failed. That run includes the Issue #5310 round 13 cases in
   `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`.
-- A differential fuzz of 40,000 random inputs built from flag, label, quote and
-  word fragments compared the head with the base and with the commit before the
-  glued-name fix. It found no glued-label shape where the head publishes a word
-  that the previous commit masked. The words it did flag are fuzz words glued
-  onto a flag name, such as `--passwordw0q`, and the flag rule always publishes
-  a flag's name. One shape found by the fuzz is listed under Not checked.
+- PR #5607 review: the earlier fuzz claim did not hold. The write-back version
+  published keyword runs (`mypassword=` after a kept quote) that the base
+  masked, and the review's differential run found 7,376 such inputs in 120,000.
+  After replacing the write-back with in-place extension, a differential fuzz of
+  150,000 random inputs (a kept-quote prefix such as
+  `--token 'alpha beta credentials: TOKEN='` followed by random flag, label,
+  quote, keyword and word fragments) found no input where the head publishes a
+  generated word that both the base and the commit before the glued-name fix
+  masked. The same fuzz finds 10,103 in 80,000 against the write-back version.
+  Against the base alone, about 1 in 5,000 inputs publish a word the base
+  masked; every one is a word outside any label or flag value, after the kept
+  quote, that the base masked only because its flag rule paired the opening
+  quote with a distant one (such as the apostrophe in `it's`). The commit before
+  the glued-name fix publishes the same words, so they come from keeping the
+  quote, which is the shell's own reading of where the flag value ends.
 - `./quality.sh < /dev/null` on the merged head, before the glued-name fix,
   passed. `config integration` was skipped because there was no `.config.json`,
   and `checkov` was skipped because it is not installed.
@@ -142,8 +162,7 @@ re-run after the glued-name fix. `deno fmt`, `deno lint` and `deno check` on the
 changed files passed. The redaction suite gave 658 passed, and the 1,046 other
 tests in files that use `redactSecrets` passed. The worker re-runs the gate.
 
-Known gap, separate from this issue: on the base, `password:` followed by a
-newline and `TOKEN=--password w0q x` publishes `w0q` on its own. When a kept
-quote is followed by a glued `password:` and that text, the written-back label
-now reaches the same base leak and `w0q` is published. The commit before this
-fix masked it there only because the label stayed inside the mask.
+The shape the earlier version listed as a known gap (a kept quote, a glued
+`password:`, then a newline and `TOKEN=--password w0q x`) is now masked: the
+label is not written back, so it cannot take the next line as its value. A
+regression test pins it.

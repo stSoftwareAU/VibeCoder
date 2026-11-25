@@ -830,8 +830,8 @@ const RULES: readonly RedactionRule[] = [
   // Issue #5310 round 13 cases pin that outcome). The quote is kept only when
   // the flag's opening quote lies outside every mask of the walk. A credential
   // label or flag name glued after a kept quote, as in
-  // `credentials: x'password: <value>`, is written back after the placeholder
-  // so the next pass or the flag rule masks its value (see `maskLeads`).
+  // `credentials: x'password: <value>`, stays inside the mask, which is
+  // extended through the value it labels (see `maskLeads`).
   //
   // A quoted value whose closing quote is where `secret-cli-flag` opens a
   // credential flag's value is masked through that flag's value (Issue #5457):
@@ -2404,10 +2404,10 @@ function redactAssignmentsOnce(text: string): string {
   let last = 0;
   masked.forEach((a, i) => {
     const quote = QUOTED_VALUE.test(a.value) ? a.value.charAt(0) : "";
-    const { lead, trail } = leads[i] as MaskLead;
+    const { lead, end } = leads[i] as MaskLead;
     out += text.slice(last, a.index) +
-      `${a.key}${a.sep}${lead}${REDACTION_PLACEHOLDER}${quote}${trail}`;
-    last = a.end;
+      `${a.key}${a.sep}${lead}${REDACTION_PLACEHOLDER}${quote}`;
+    last = end;
   });
   return out + text.slice(last);
 }
@@ -2424,9 +2424,10 @@ function redactAssignmentsOnce(text: string): string {
  * A kept quote ends the flag's value, so the mask's text after it is no longer
  * that value. When that text ends in a credential label or flag name glued
  * after the quote, as in `credentials: x'password: <value>` or
- * `credentials: x'--password <value>`, the name is written back after the
- * placeholder as `trail`. The next walk pass, or the flag rule, then masks the
- * value after it, which the outer mask left outside (Issue #5456).
+ * `credentials: x'--password <value>`, the mask is extended through the value
+ * that name labels, so the name stays masked and its value is masked in place
+ * (Issue #5456). Nothing masked is ever written back: the result only masks
+ * more than a mask ending at the verdict's own end (PR #5607 review).
  */
 function maskLeads(
   text: string,
@@ -2450,6 +2451,7 @@ function maskLeads(
   let nextFlag = Infinity;
   for (let i = masked.length - 1; i >= 0; i--) {
     const a = masked[i] as AssignmentVerdict;
+    const before = { ...later };
     note(text.slice(a.end, from), a.end);
     while (f >= 0 && (starts[f] ?? -1) >= a.end) {
       nextFlag = starts[f--] as number;
@@ -2468,12 +2470,18 @@ function maskLeads(
         lead = q;
       }
     }
-    const trail = lead !== quote
-      ? gluedName(text, close + 1, a.end, starts[f])
-      : "";
-    leads[i] = { lead, trail };
+    const glued = lead !== quote &&
+      gluedName(text, close + 1, a.end, starts[f]) !== "";
+    const end = glued ? gluedValueEnd(text, a.end, from) : a.end;
+    if (end !== a.end) {
+      // The extended mask hides the quotes it now covers, so only those past
+      // it survive for the earlier masks' pairing decisions.
+      later["'"] = before["'"];
+      later['"'] = before['"'];
+      note(text.slice(end, from), end);
+    }
+    leads[i] = { lead, end };
     // Emitted quotes lie within this mask, before any later unmasked flag.
-    note(trail, a.end - trail.length);
     note(`${lead}${quote}`, start);
     note(`${a.key}${a.sep}`, a.index);
     from = a.index;
@@ -2485,8 +2493,47 @@ function maskLeads(
 interface MaskLead {
   /** The quote written in front of the placeholder, or `""`. */
   readonly lead: string;
-  /** A credential label or flag name written back after the placeholder. */
-  readonly trail: string;
+  /**
+   * Where the mask ends: the verdict's own end, or past the value of a
+   * credential label or flag name glued after a kept quote (Issue #5456).
+   */
+  readonly end: number;
+}
+
+/**
+ * The end of the value that a glued credential label or flag name ending at
+ * `end` labels, or `end` when there is no such value to mask in place
+ * (PR #5607 review). The value is the next word on the same line: a quoted word
+ * through its closing quote, or a bare word through the next blank. A value
+ * that would need another rule's reading (one starting with `-`, as a flag
+ * name does, a bare word holding a quote, `:` or `=`, or a quote left open on
+ * the line) is not taken, so the name stays masked and the text after it is
+ * read exactly as before. A bare word is taken only up to a `-`, where a flag
+ * name glued to it may start, so that flag's rule still masks its value. `limit` is the start of the next mask, which the
+ * extension never passes. The scan reads one word, so the pass stays linear.
+ */
+function gluedValueEnd(text: string, end: number, limit: number): number {
+  let i = end;
+  while (i < limit && (text[i] === " " || text[i] === "\t")) i++;
+  if (i >= limit || i === end) return end;
+  const first = text[i] ?? "";
+  if (first === "-" || first === "\n" || first === "\r") return end;
+  if (first === "'" || first === '"') {
+    const close = text.indexOf(first, i + 1);
+    const lineEnd = text.slice(i, close === -1 ? text.length : close)
+      .search(/[\r\n]/);
+    if (close === -1 || lineEnd !== -1) return end;
+    return Math.min(close + 1, limit);
+  }
+  let j = i;
+  while (j < limit && !/\s/.test(text[j] ?? " ")) {
+    // A `-` may start a flag name glued to the value: stop before it, so the
+    // flag rule still sees the name and masks that flag's own value.
+    if (text[j] === "-") break;
+    if (/['":=]/.test(text[j] ?? "")) return end;
+    j++;
+  }
+  return j;
 }
 
 /**

@@ -137,15 +137,15 @@ Deno.test("Issue #5456: a later quote of the other kind does not replace the nee
 Deno.test("Issue #5456: a label glued after the kept quote has its bare value masked", () => {
   assertRedacts(
     "--token 'a b credentials: x'password: mike --token z it's",
-    `--token ${R}${R}password: ${R} --token ${R} it's`,
-    ["mike", "credentials", "z it"],
+    `--token ${R}${R} --token ${R} it's`,
+    ["mike", "credentials", "password", "z it"],
   );
 });
 
 Deno.test("Issue #5456: a label glued after the kept quote has its quoted value masked", () => {
   assertRedacts(
     `--token 'alpha beta credentials: TOKEN='password: "mike pass" --token z it's`,
-    `--token ${R}${R}password: "${R}" --token ${R} it's`,
+    `--token ${R}${R} --token ${R} it's`,
     ["mike pass", "beta", "z it"],
   );
 });
@@ -153,40 +153,110 @@ Deno.test("Issue #5456: a label glued after the kept quote has its quoted value 
 Deno.test("Issue #5456: a flag name glued after the kept quote has its value masked", () => {
   assertRedacts(
     "--token 'a b credentials: x'--password mike --token z it's",
-    `--token ${R}${R}--password ${R} --token ${R} it's`,
-    ["mike", "credentials", "z it"],
+    `--token ${R}${R} --token ${R} it's`,
+    ["mike", "credentials", "--password", "z it"],
   );
 });
 
 Deno.test("Issue #5456: a glued label before a later quoted flag masks both values", () => {
   assertRedacts(
     "--token 'a b credentials: x'password: mike --token 'z y'",
-    `--token ${R}${R}password: ${R} --token ${R}`,
-    ["mike", "z y"],
+    `--token ${R}${R} --token ${R}`,
+    ["mike", "password", "z y"],
   );
 });
 
 Deno.test("Issue #5456: text before a glued label stays inside the mask", () => {
   assertRedacts(
     "--token 'a b credentials: x'foo,password: mike --token z it's",
-    `--token ${R}${R}password: ${R} --token ${R} it's`,
-    ["mike", "foo"],
+    `--token ${R}${R} --token ${R} it's`,
+    ["mike", "foo", "password"],
   );
 });
 
 Deno.test("Issue #5456: a label glued after a quote kept with no later quote has its value masked", () => {
   assertRedacts(
     "--token 'a b credentials: x'password: mike",
-    `--token ${R}${R}password: ${R}`,
-    ["mike", "credentials"],
+    `--token ${R}${R}`,
+    ["mike", "credentials", "password"],
   );
 });
 
 Deno.test("Issue #5456: a label glued after a quote a bare value opens at has its value masked", () => {
   assertRedacts(
     "--password 'alpha beta TOKEN='password: mike",
-    `--password ${R}${R}password: ${R}`,
-    ["mike", "beta"],
+    `--password ${R}${R}`,
+    ["mike", "beta", "password:"],
+  );
+});
+
+// PR #5607 review: the glued name is never written back. It stays inside the
+// mask, which is extended through the value it labels, so nothing the
+// unfixed walk masked is published. These fail on the write-back version.
+
+Deno.test("Issue #5456: a glued keyword run with no value after it stays masked", () => {
+  assertRedacts(
+    "--password 'alpha beta TOKEN='mypassword=",
+    `--password ${R}${R}`,
+    ["beta", "mypassword"],
+  );
+  assertRedacts(
+    "--token 'a b credentials: x'apikeyfoo=",
+    `--token ${R}${R}`,
+    ["apikeyfoo"],
+  );
+});
+
+Deno.test("Issue #5456: a glued keyword run with a value after it masks both in place", () => {
+  assertRedacts(
+    "--token 'a b credentials: x'mypassword= hunter2 done",
+    `--token ${R}${R} done`,
+    ["mypassword", "hunter2"],
+  );
+});
+
+Deno.test("Issue #5363 shape: a glued keyword run at the bare value's opening quote stays masked", () => {
+  assertRedacts(
+    "--password 'alpha beta TOKEN='secretkey:",
+    `--password ${R}${R}`,
+    ["beta", "secretkey"],
+  );
+});
+
+Deno.test("Issue #5456: a glued label with no value does not take the next line's flag value", () => {
+  assertRedacts(
+    "--password 'alpha beta TOKEN='password:\nkey: --password hunter2",
+    `--password ${R}${R}\nkey: --password ${R}`,
+    ["hunter2", "beta"],
+  );
+  assertRedacts(
+    "--password 'alpha beta TOKEN='password:\napi_key: --token s3cr3t",
+    `--password ${R}${R}\napi_key: --token ${R}`,
+    ["s3cr3t", "beta"],
+  );
+});
+
+Deno.test("Issue #5456: a glued label before a next-line assignment holding a flag masks that flag's value", () => {
+  assertRedacts(
+    "--password 'alpha beta TOKEN='password:\nTOKEN=--password w0q x",
+    `--password ${R}${R}\n${R} ${R} x`,
+    ["w0q", "beta"],
+  );
+});
+
+Deno.test("Issue #5456: a glued label whose value is a flag name leaves that flag to its rule", () => {
+  assertRedacts(
+    "--password 'alpha beta TOKEN='password: --token hunter2",
+    `--password ${R}${R} --token ${R}`,
+    ["hunter2", "beta"],
+  );
+});
+
+Deno.test("Issue #5456: a glued label's bare value stops before a flag name glued to it", () => {
+  assertRedacts(
+    "--token 'alpha beta credentials: TOKEN='credentials: abc--token def",
+    `--token ${R}${R}--token ${R}`,
+    ["abc", "def"],
   );
 });
 
