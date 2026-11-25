@@ -71,6 +71,42 @@ export function detectEscapeHatch(
   };
 }
 
+/** Full `owner/repo#NNN` match tried at one start position. */
+const FULL_REF_AT = /([A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+)#(\d+)/y;
+/** Next possible start of a reference. */
+const ALNUM = /[A-Za-z0-9]/g;
+/** Maximal run of name characters starting at a failed start. */
+const NAME_RUN = /[A-Za-z0-9._-]*/y;
+
+/**
+ * Yield each `owner/repo#NNN` reference as `${slug}#${number}`, in order.
+ *
+ * Same matches as the global `FULL_REF_AT` regex under `matchAll`, but
+ * linear. The old regex was quadratic in the length of a name-character
+ * run and blocked the worker's event loop (Issue #5544).
+ */
+function* fullReferences(message: string): Generator<string> {
+  let i = 0;
+  while (i < message.length) {
+    ALNUM.lastIndex = i;
+    const alnum = ALNUM.exec(message);
+    if (!alnum) return;
+    i = alnum.index;
+    FULL_REF_AT.lastIndex = i;
+    const m = FULL_REF_AT.exec(message);
+    if (m) {
+      const end = FULL_REF_AT.lastIndex;
+      yield `${m[1]}#${m[2]}`;
+      i = end;
+      continue;
+    }
+    // Every start inside this run meets the same `/` and fails the same way.
+    NAME_RUN.lastIndex = i;
+    const run = NAME_RUN.exec(message);
+    i = Math.max(i + 1, i + (run ? run[0].length : 0));
+  }
+}
+
 /**
  * Find the first plausible follow-up issue reference in a message.
  *
@@ -83,15 +119,10 @@ function findIssueReference(
   message: string,
   repo: string,
 ): string | undefined {
-  // Match owner/repo#NNN (case-insensitive owner/repo)
-  const fullPattern = /([A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+)#(\d+)/g;
   const repoLower = repo.toLowerCase();
   let firstFull: string | undefined;
-  for (const m of message.matchAll(fullPattern)) {
-    const slug = m[1];
-    const number = m[2];
-    if (!slug || !number) continue;
-    const ref = `${slug}#${number}`;
+  for (const ref of fullReferences(message)) {
+    const slug = ref.slice(0, ref.indexOf("#"));
     if (slug.toLowerCase() === repoLower) {
       return ref;
     }
