@@ -30,6 +30,7 @@ import {
 import type { BranchUpdateLockResult } from "../lib/pr_branch_lock.ts";
 import type { Logger, Result } from "../types.ts";
 import { BASE_REFRESH_COUNTERS_FILE } from "../lib/repair_base_merge_4943.ts";
+import { NO_HOST_GIT_CONFIG } from "./support/no_host_git_config.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1455,7 +1456,10 @@ Deno.test("scanPrBranchUpdates + executePrBranchUpdates - a green PR awaiting ap
           updatePrBranch(
             params.branchName,
             params.baseBranch,
-            { cwd: params.repoPath, env: trace.env },
+            {
+              cwd: params.repoPath,
+              env: { ...trace.env, ...NO_HOST_GIT_CONFIG },
+            },
             params.reason,
           ),
       }),
@@ -1480,5 +1484,81 @@ Deno.test("scanPrBranchUpdates + executePrBranchUpdates - a green PR awaiting ap
   } finally {
     await trace.dispose();
     await fixture.cleanup();
+  }
+});
+
+// =============================================================================
+// updatePrBranch — the push honours options.env (Issue #5371)
+// =============================================================================
+
+Deno.test("updatePrBranch - its push honours options.env, so the host pre-push hook runs only when the env lets it (Issue #5371)", async () => {
+  const marker = `PRE-PUSH-MARKER-${crypto.randomUUID()}`;
+  const hooksDir = await Deno.makeTempDir({ prefix: "issue-5371-hooks-" });
+  await Deno.writeTextFile(
+    `${hooksDir}/pre-push`,
+    `#!/bin/sh\necho "${marker}" >&2\nexit 1\n`,
+  );
+  await Deno.chmod(`${hooksDir}/pre-push`, 0o755);
+  const hostLike = {
+    ...NO_HOST_GIT_CONFIG,
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "core.hooksPath",
+    GIT_CONFIG_VALUE_0: hooksDir,
+  };
+
+  // A PR branch that is behind its base, so a merge and a push both happen.
+  const behindFixture = async () => {
+    const fixture = await setupGitRepoFixture("issue-5371-");
+    const { clone } = fixture;
+    const branch = "issue-55-hook";
+    await gitOk(["checkout", "-b", branch], clone);
+    await Deno.writeTextFile(`${clone}/feature.txt`, "feature\n");
+    await gitOk(["add", "feature.txt"], clone);
+    await gitOk(["commit", "-m", "Feature"], clone);
+    await gitOk(["push", "-u", "origin", branch], clone);
+    await gitOk(["checkout", "main"], clone);
+    await Deno.writeTextFile(`${clone}/base.txt`, "base\n");
+    await gitOk(["add", "base.txt"], clone);
+    await gitOk(["commit", "-m", "Base moves"], clone);
+    await gitOk(["push", "origin", "main"], clone);
+    const baseSha = (await gitOk(["rev-parse", "HEAD"], clone)).trim();
+    return { fixture, clone, branch, baseSha };
+  };
+
+  try {
+    const blocked = await behindFixture();
+    try {
+      const result = await updatePrBranch(blocked.branch, "main", {
+        cwd: blocked.clone,
+        env: hostLike,
+      }, "behind");
+      assertEquals(result.ok, false);
+      if (!result.ok) assertStringIncludes(result.error.message, marker);
+    } finally {
+      await blocked.fixture.cleanup();
+    }
+
+    const shielded = await behindFixture();
+    try {
+      const result = await updatePrBranch(shielded.branch, "main", {
+        cwd: shielded.clone,
+        env: { ...hostLike, ...NO_HOST_GIT_CONFIG },
+      }, "behind");
+      assertEquals(result.ok, true);
+      await gitOk(["fetch", "origin"], shielded.clone);
+      await gitOk(
+        [
+          "merge-base",
+          "--is-ancestor",
+          shielded.baseSha,
+          `origin/${shielded.branch}`,
+        ],
+        shielded.clone,
+      );
+    } finally {
+      await shielded.fixture.cleanup();
+    }
+  } finally {
+    await Deno.remove(hooksDir, { recursive: true }).catch(() => {});
   }
 });

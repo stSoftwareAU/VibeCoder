@@ -2016,7 +2016,7 @@ async function completionBody(
       // afterwards. A formatter that fails or throws is logged and the gate
       // below still reports it.
       await formatBeforeGate(
-        deps,
+        { ...deps, formatterDeps: deps.git.formatterDeps },
         state.repoPath,
         comparableBase.ok ? comparableBase.value : undefined,
         // The gate judges the working tree but the push carries commits only,

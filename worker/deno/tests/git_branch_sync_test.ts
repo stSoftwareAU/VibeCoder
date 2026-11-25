@@ -28,7 +28,10 @@ import {
   recordedRebase,
   startGitTrace,
 } from "./support/git_trace.ts";
-import { runFixtureGit } from "./support/no_host_git_config.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  runFixtureGit,
+} from "./support/no_host_git_config.ts";
 
 const DEFAULT_BRANCH = "Develop";
 const FEATURE_BRANCH = "issue-556-sync";
@@ -206,7 +209,7 @@ Deno.test("updatePrBranch - does not report a conflict from a stale local branch
     const result = await updatePrBranch(
       FEATURE_BRANCH,
       DEFAULT_BRANCH,
-      { cwd: workerPath },
+      { cwd: workerPath, env: NO_HOST_GIT_CONFIG },
       "conflicting",
     );
 
@@ -245,7 +248,7 @@ Deno.test("updatePrBranch - judges the branch after aligning with the remote hea
     const result = await updatePrBranch(
       FEATURE_BRANCH,
       DEFAULT_BRANCH,
-      { cwd: workerPath },
+      { cwd: workerPath, env: NO_HOST_GIT_CONFIG },
     );
 
     if (!result.ok) throw result.error;
@@ -284,7 +287,7 @@ Deno.test("syncFeatureBranchWithDefault - merges the base in and keeps the PR's 
     const result = await syncFeatureBranchWithDefault(
       FEATURE_BRANCH,
       DEFAULT_BRANCH,
-      { cwd: workerPath, env: trace.env },
+      { cwd: workerPath, env: { ...trace.env, ...NO_HOST_GIT_CONFIG } },
     );
 
     if (!result.ok) throw result.error;
@@ -315,7 +318,7 @@ Deno.test("syncFeatureBranchWithDefault - a conflicting merge is aborted and rep
     const result = await syncFeatureBranchWithDefault(
       FEATURE_BRANCH,
       DEFAULT_BRANCH,
-      { cwd: workerPath, env: trace.env },
+      { cwd: workerPath, env: { ...trace.env, ...NO_HOST_GIT_CONFIG } },
     );
 
     assertEquals(result.ok, false);

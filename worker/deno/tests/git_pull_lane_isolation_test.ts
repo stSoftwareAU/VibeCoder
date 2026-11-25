@@ -23,7 +23,10 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { updatePrBranch } from "../lib/git_pull.ts";
 import { classifyCloneContention } from "../lib/clone_contention.ts";
 import { ensureLaneWorktree } from "../lib/lane_worktree.ts";
-import { runFixtureGit } from "./support/no_host_git_config.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  runFixtureGit,
+} from "./support/no_host_git_config.ts";
 
 interface Fixture {
   tmpDir: string;
@@ -91,6 +94,7 @@ Deno.test("updatePrBranch - a PR branch that exists only on origin is updated, n
 
     const result = await updatePrBranch("issue-373-fix", "main", {
       cwd: clonePath,
+      env: NO_HOST_GIT_CONFIG,
     }, "behind");
 
     assert(
@@ -133,6 +137,7 @@ Deno.test("updatePrBranch - runs in a lane worktree while the shared clone holds
 
     const result = await updatePrBranch("issue-373-fix", "main", {
       cwd: worktree.value,
+      env: NO_HOST_GIT_CONFIG,
     }, "behind");
 
     assert(
@@ -185,6 +190,7 @@ Deno.test("updatePrBranch - unpushed commits another lane left are refused as co
 
     const result = await updatePrBranch("issue-373-fix", "main", {
       cwd: clonePath,
+      env: NO_HOST_GIT_CONFIG,
     }, "behind");
 
     assertEquals(result.ok, false);
