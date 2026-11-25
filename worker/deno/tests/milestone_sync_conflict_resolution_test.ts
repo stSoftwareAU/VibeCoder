@@ -141,7 +141,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1559",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         passingGate,
       );
@@ -204,7 +204,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1559",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         passingGate,
       );
@@ -256,7 +256,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1559",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         passingGate,
       );
@@ -301,7 +301,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1559",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         passingGate,
       );
@@ -357,7 +357,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1559",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         passingGate,
       );
@@ -406,7 +406,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1559",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         passingGate,
       );
@@ -454,7 +454,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1559",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         passingGate,
       );
@@ -520,7 +520,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1559",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
       );
 
       assert(!result.ok, "an unverified resolution must not be pushed");
@@ -587,7 +587,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1559",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         passingGate,
         undefined,
@@ -659,7 +659,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1559",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         passingGate,
         undefined,
@@ -740,7 +740,7 @@ Deno.test(
         const result = await syncMilestoneBranchWithDefault(
           "milestone/1559",
           "main",
-          { cwd: fx.clone },
+          { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
           undefined,
           passingGate,
           undefined,
@@ -812,7 +812,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1559",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         leftToCi,
       );
@@ -868,7 +868,7 @@ Deno.test(
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1559",
         "main",
-        { cwd: fx.clone },
+        { cwd: fx.clone, env: NO_HOST_GIT_CONFIG },
         undefined,
         leftToCi,
       );

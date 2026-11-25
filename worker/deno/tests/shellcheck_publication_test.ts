@@ -133,7 +133,7 @@ Deno.test(
       const result = await commitAndPushPending(
         "repair",
         "Fix #4631",
-        { cwd: dir, env: { GIT_CONFIG_COUNT: "0" } },
+        { cwd: dir, env: NO_HOST_GIT_CONFIG },
         false,
         resolveRepairPreFlightSpec(undefined, "org/repo"),
       );
@@ -159,7 +159,7 @@ Deno.test(
       const result = await commitAndPushPending(
         "repair",
         "Fix #4631",
-        { cwd: dir, env: { GIT_CONFIG_COUNT: "0" } },
+        { cwd: dir, env: NO_HOST_GIT_CONFIG },
         false,
         resolveRepairPreFlightSpec(undefined, "org/repo"),
       );
@@ -185,7 +185,7 @@ Deno.test(
       const result = await commitAndPushPending(
         "repair",
         "Fix #4631",
-        { cwd: dir, env: { GIT_CONFIG_COUNT: "0" } },
+        { cwd: dir, env: NO_HOST_GIT_CONFIG },
         false,
         REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
       );
@@ -215,7 +215,7 @@ Deno.test(
       const blocked = await commitAndPushPending(
         "repair",
         "Fix #5169",
-        { cwd: dir, env: { GIT_CONFIG_COUNT: "0" } },
+        { cwd: dir, env: NO_HOST_GIT_CONFIG },
         false,
         spec,
       );
@@ -231,7 +231,7 @@ Deno.test(
       const pushed = await commitAndPushPending(
         "repair",
         "Fix #5169",
-        { cwd: dir, env: { GIT_CONFIG_COUNT: "0" } },
+        { cwd: dir, env: NO_HOST_GIT_CONFIG },
         false,
         spec,
       );
@@ -255,7 +255,7 @@ Deno.test(
       // The WIP checkpoint, timeout-preservation and hand-off call shape: no spec.
       const result = await commitAndPushPending("repair", "wip: checkpoint", {
         cwd: dir,
-        env: { GIT_CONFIG_COUNT: "0" },
+        env: NO_HOST_GIT_CONFIG,
       });
       assert(result.ok, result.ok ? "" : result.error.message);
       assertEquals(result.value.finalUnpushedCount, 0);

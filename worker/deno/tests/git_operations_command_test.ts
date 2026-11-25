@@ -174,3 +174,17 @@ Deno.test("git operations command - validate-repo-state on clean feature branch"
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("git operations command refuses a non-object env before dispatch", async () => {
+  const result = await gitOperationsCommand.execute(
+    {
+      operation: "create-branch-name",
+      "issue-number": 42,
+      "issue-title": "fixture",
+      env: "invalid",
+    },
+    config,
+  );
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "Refused env: expected an object");
+});

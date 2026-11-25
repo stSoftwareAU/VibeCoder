@@ -451,7 +451,7 @@ Deno.test("merge-only e2e - a conflict-free merge lands unverified: UNGATED, and
     const result = await syncMilestoneBranchWithDefault(
       MILESTONE,
       "main",
-      { cwd: f.clone },
+      { cwd: f.clone, env: NO_HOST_GIT_CONFIG },
       undefined,
       bindings.mergeGate,
       bindings.resolutionGate,
@@ -496,7 +496,7 @@ Deno.test("merge-only e2e - a Deno-only tree keeps its own gate: a clean merge t
     const result = await syncMilestoneBranchWithDefault(
       MILESTONE,
       "main",
-      { cwd: f.clone },
+      { cwd: f.clone, env: NO_HOST_GIT_CONFIG },
       undefined,
       bindings.mergeGate,
       bindings.resolutionGate,
@@ -542,7 +542,7 @@ Deno.test("merge-only e2e - a Deno-only tree whose own gate refuses the clean me
     const result = await syncMilestoneBranchWithDefault(
       MILESTONE,
       "main",
-      { cwd: f.clone },
+      { cwd: f.clone, env: NO_HOST_GIT_CONFIG },
       undefined,
       bindings.mergeGate,
       bindings.resolutionGate,
@@ -568,7 +568,7 @@ Deno.test("merge-only e2e - control: the same clean merge is refused by a failin
     const result = await syncMilestoneBranchWithDefault(
       MILESTONE,
       "main",
-      { cwd: f.clone },
+      { cwd: f.clone, env: NO_HOST_GIT_CONFIG },
       undefined,
       refusingGate,
       refusingGate,
@@ -598,7 +598,7 @@ Deno.test("merge-only e2e - a conflict the agent would have to resolve is not pu
     const result = await syncMilestoneBranchWithDefault(
       MILESTONE,
       "main",
-      { cwd: f.clone },
+      { cwd: f.clone, env: NO_HOST_GIT_CONFIG },
       undefined,
       bindings.mergeGate,
       bindings.resolutionGate,
@@ -653,7 +653,7 @@ Deno.test("merge-only e2e - a conflict the worker resolves lands unverified: UNG
     const result = await syncMilestoneBranchWithDefault(
       MILESTONE,
       "main",
-      { cwd: f.clone },
+      { cwd: f.clone, env: NO_HOST_GIT_CONFIG },
       undefined,
       bindings.mergeGate,
       bindings.resolutionGate,
@@ -697,7 +697,7 @@ Deno.test("merge-only e2e - control: the same resolved conflict is refused by a 
     const result = await syncMilestoneBranchWithDefault(
       MILESTONE,
       "main",
-      { cwd: f.clone },
+      { cwd: f.clone, env: NO_HOST_GIT_CONFIG },
       undefined,
       bindings.mergeGate,
       () =>
@@ -797,7 +797,7 @@ Deno.test("merge-only e2e - a failing Deno check in a mixed tree refuses the pus
     const result = await syncMilestoneBranchWithDefault(
       MILESTONE,
       "main",
-      { cwd: f.clone },
+      { cwd: f.clone, env: NO_HOST_GIT_CONFIG },
       undefined,
       bindings.mergeGate,
       bindings.resolutionGate,
@@ -854,7 +854,7 @@ Deno.test("merge-only e2e - root Cargo cannot hide a failing nested Deno resolut
     const result = await syncMilestoneBranchWithDefault(
       MILESTONE,
       "main",
-      { cwd: f.clone },
+      { cwd: f.clone, env: NO_HOST_GIT_CONFIG },
       undefined,
       bindings.mergeGate,
       bindings.resolutionGate,
