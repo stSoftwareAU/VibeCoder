@@ -6306,6 +6306,41 @@ flat transient decision and the issue takes no `failed-once` mark. The other
 preflight refusals (CLI not runnable, fixed-price subscription, metered
 credentials) are not covered and stay `worker-crash`.
 
+#### A Codex safety refusal is a task failure, not a credential refusal or `worker-crash` (Issue #5506)
+
+Codex refuses content it flags as a cybersecurity risk with an `error` /
+`turn.failed` event reading "This content was flagged for possible cybersecurity
+risk … If you're doing authorized security work …". `classifyCodexFailure`
+(`worker/deno/lib/codex_output_adapter.ts`) matched "authorized" against its
+authentication pattern, so the run was read as a rejected credential ("Codex
+refused the credential"). That records an automatic provider outage, and the
+execute phase's `internal_error` reason was classed `worker-crash` and
+auto-filed. The adapter now checks the safety-flag text
+(`content was flagged for possible … risk`) before the authentication match and
+returns `task-failure` with the headline
+`Codex refused the content as a safety
+risk` (`CODEX_SAFETY_REFUSAL_HEADLINE`).
+
+On the orchestrated path (the one the #5456 run took), `toAgentCallResult`
+(`worker/deno/lib/orchestration/issue_run_gate.ts`) maps that `task-failure` to
+an `error` call. The orchestrator retries it, then ends the run with
+`<role> call failed after N attempt(s): <adapter message>`. The execute phase
+reason is therefore
+`Claude execution failed: manager call failed after N attempt(s): Codex refused the content as a safety risk — evidence: …`.
+`classifyRunFailure` answers class `agent-outcome`, `not_code_fixable`, for an
+`internal_error` with this reason, so the refusal is never
+auto-filed. The match (`CODEX_SAFETY_REFUSAL_RE` in
+`worker/deno/lib/run_outcome_classifier.ts`) is anchored to the start of the
+worker's own words. The only text it allows before the headline is the
+orchestrator's role and attempt-count prefix. The accepted roles come from
+`TARGET_ROLES`, including `spec_reviewer`. The headline quoted later in the
+message (or in agent output) does not trigger it. The category stays
+`internal_error`.
+`worker/deno/tests/codex_safety_refusal_5506_test.ts` drives the whole path. It
+takes the Codex adapter's real classification of the refusal, runs it through
+the real `runOrchestratedIssueRun` and the execute phase, and passes the
+resulting reason to `classifyRunFailure`.
+
 #### An orchestrated issue run records every provider call's stats (Issue #4595)
 
 `runOrchestratedIssueRun` (`worker/deno/lib/orchestration/issue_run_gate.ts`)

@@ -342,3 +342,51 @@ Deno.test("codex adapter - an unrecognised non-zero exit is a task failure", () 
   assertEquals(failure?.evidence, "process");
   assertStringIncludes(failure?.message ?? "", "exited 3");
 });
+
+/** The provider's own safety-flag text, with its curly apostrophe (Issue #5506). */
+const SAFETY_FLAG_MESSAGE =
+  "This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request. If you’re doing authorized security work that requires more cyber permissive safeguards, apply for Daybreak access via https://platform.openai.com/settings/organization/status-and-access before retrying.";
+
+Deno.test("codex adapter - a safety-flag refusal is a task failure, never an authentication refusal (Issue #5506)", () => {
+  const stdout = [
+    JSON.stringify({ type: "error", message: SAFETY_FLAG_MESSAGE }),
+    JSON.stringify({
+      type: "turn.failed",
+      error: { message: SAFETY_FLAG_MESSAGE },
+    }),
+  ].join("\n");
+
+  const failure = CODEX_OUTPUT_ADAPTER.classify(
+    { stdout, stderr: "", exitCode: 1 },
+    CODEX_OUTPUT_ADAPTER.decode(stdout),
+  );
+
+  assertEquals(failure?.category, "task-failure");
+  assert(
+    (failure?.message ?? "").startsWith(
+      "Codex refused the content as a safety risk",
+    ),
+    failure?.message,
+  );
+});
+
+Deno.test("codex adapter - a hostile safety-flag prefix with no risk word returns and is not the safety refusal (Issue #5506)", () => {
+  const hostile = "content was flagged for possible " + " ".repeat(50_000) +
+    "x";
+  const stdout = JSON.stringify({
+    type: "turn.failed",
+    error: { message: hostile },
+  });
+
+  const failure = CODEX_OUTPUT_ADAPTER.classify(
+    { stdout, stderr: "", exitCode: 1 },
+    CODEX_OUTPUT_ADAPTER.decode(stdout),
+  );
+
+  assert(
+    !(failure?.message ?? "").startsWith(
+      "Codex refused the content as a safety risk",
+    ),
+    failure?.message,
+  );
+});
