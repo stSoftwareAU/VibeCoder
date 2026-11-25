@@ -74,108 +74,127 @@ async function gitCheckout(dir: string): Promise<string> {
   return repo;
 }
 
-Deno.test("codex safety refusal - the orchestrated execute-phase reason is an agent-outcome, not a worker-crash (Issue #5506)", async () => {
-  setAutomaticProviderRoutingActive(true);
-  const dir = await Deno.makeTempDir();
-  try {
-    const repo = await gitCheckout(dir);
-    // A ChatGPT login proves the fixed-price Codex subscription.
-    await Deno.mkdir(`${dir}/codex`);
-    await Deno.writeTextFile(
-      `${dir}/codex/auth.json`,
-      JSON.stringify({ auth_mode: "chatgpt" }),
-    );
-    const config = buildDefaultWorkerConfig();
-    config.repoConfig = { "org/repo": { agentProvider: "codex" } };
-    const ctx: IssueContext = {
-      repo: "org/repo",
-      issueNumber: 5506,
-      issueTitle: "Fix a security bug",
-      issueBody: "Do the thing.",
-      issueLabels: ["bug"],
-      issueComments: "",
-      githubUser: "testbot",
-      config,
-    };
-    const state: PhaseState = {
-      branchName: "issue-5506-safety-refusal",
-      baseBranch: "main",
-      defaultBranch: "main",
-      repoPath: repo,
-      clarityStatus: "assessed_clear",
-      claudeOutput: "",
-      executeStartTime: Date.now(),
-      baselineQualityPassed: true,
-      baselineQualityOutput: "",
-    };
-    const refusal = codexSafetyFailure();
-    let providerCalls = 0;
-    const deps = createMockDeps({
-      claude: {
-        // A fleet image stamps the providers it carries; this test needs
-        // Codex, so the injected lookup reads no stamp (Issue #880 seam).
-        env: (name) =>
-          name === CONTAINER_IMAGE_STAMP_ENV ? undefined : Deno.env.get(name),
-        runClaudeWithRetry: () => {
-          throw new Error("automatic Codex must use the external orchestrator");
+for (
+  const [phase, role] of [["manager", "manager"], ["executor", "executor"], [
+    "reviewer",
+    "spec_reviewer",
+  ]]
+) {
+  Deno.test(`codex safety refusal - ${role} refusal is an agent-outcome (Issue #5506)`, async () => {
+    setAutomaticProviderRoutingActive(true);
+    const dir = await Deno.makeTempDir();
+    try {
+      const repo = await gitCheckout(dir);
+      // A ChatGPT login proves the fixed-price Codex subscription.
+      await Deno.mkdir(`${dir}/codex`);
+      await Deno.writeTextFile(
+        `${dir}/codex/auth.json`,
+        JSON.stringify({ auth_mode: "chatgpt" }),
+      );
+      const config = buildDefaultWorkerConfig();
+      config.repoConfig = { "org/repo": { agentProvider: "codex" } };
+      const ctx: IssueContext = {
+        repo: "org/repo",
+        issueNumber: 5506,
+        issueTitle: "Fix a security bug",
+        issueBody: "Do the thing.",
+        issueLabels: ["bug"],
+        issueComments: "",
+        githubUser: "testbot",
+        config,
+      };
+      const state: PhaseState = {
+        branchName: "issue-5506-safety-refusal",
+        baseBranch: "main",
+        defaultBranch: "main",
+        repoPath: repo,
+        clarityStatus: "assessed_clear",
+        claudeOutput: "",
+        executeStartTime: Date.now(),
+        baselineQualityPassed: true,
+        baselineQualityOutput: "",
+      };
+      const refusal = codexSafetyFailure();
+      const deps = createMockDeps({
+        claude: {
+          // A fleet image stamps the providers it carries; this test needs
+          // Codex, so the injected lookup reads no stamp (Issue #880 seam).
+          env: (name) =>
+            name === CONTAINER_IMAGE_STAMP_ENV ? undefined : Deno.env.get(name),
+          runClaudeWithRetry: () => {
+            throw new Error(
+              "automatic Codex must use the external orchestrator",
+            );
+          },
+          // The real orchestrator; only the provider process is faked.
+          runOrchestratedIssueRun: (input) =>
+            runOrchestratedIssueRun(
+              { ...input, workspaceDir: repo },
+              {
+                runClaudeWithRetry: (options) => {
+                  if (options.orchestrationRole !== phase) {
+                    return Promise.resolve({
+                      ok: true,
+                      value: {
+                        exitCode: 0,
+                        output: "step output",
+                        timedOut: false,
+                      },
+                    });
+                  }
+                  return Promise.resolve({
+                    ok: true,
+                    value: {
+                      exitCode: 1,
+                      output: "",
+                      timedOut: false,
+                      agentFailure: refusal,
+                    },
+                  });
+                },
+                preflight: async () => {},
+                stateDir: `${dir}/state`,
+                env: {
+                  CLAUDE_CODE_OAUTH_TOKEN: "test-token",
+                  CODEX_HOME: `${dir}/codex`,
+                },
+                now: () => 1_000,
+                log: () => {},
+                warn: () => {},
+              },
+            ),
         },
-        // The real orchestrator; only the provider process is faked.
-        runOrchestratedIssueRun: (input) =>
-          runOrchestratedIssueRun(
-            { ...input, workspaceDir: repo },
-            {
-              runClaudeWithRetry: () => {
-                providerCalls++;
-                return Promise.resolve({
-                  ok: true,
-                  value: {
-                    exitCode: 1,
-                    output: "",
-                    timedOut: false,
-                    agentFailure: refusal,
-                  },
-                });
-              },
-              preflight: async () => {},
-              stateDir: `${dir}/state`,
-              env: {
-                CLAUDE_CODE_OAUTH_TOKEN: "test-token",
-                CODEX_HOME: `${dir}/codex`,
-              },
-              now: () => 1_000,
-              log: () => {},
-              warn: () => {},
-            },
-          ),
-      },
-    });
+      });
 
-    const result = await workOnIssueExecuteClaude(ctx, state, deps);
+      const result = await workOnIssueExecuteClaude(ctx, state, deps);
 
-    assert(result.status === "failure", `status: ${result.status}`);
-    assertEquals(result.category, "internal_error");
-    const reason = result.reason;
-    // The orchestrator retried, then wrapped the adapter's message.
-    assert(providerCalls > 1, `provider calls: ${providerCalls}; ${reason}`);
-    assert(
-      /^Claude execution failed: manager call failed after \d+ attempt\(s\): /
-        .test(reason),
-      reason,
-    );
-    assertStringIncludes(reason, CODEX_SAFETY_REFUSAL_HEADLINE);
+      assert(result.status === "failure", `status: ${result.status}`);
+      assertEquals(result.category, "internal_error");
+      const reason = result.reason;
+      // The orchestrator retried, then wrapped the adapter's message.
 
-    const classification = classifyRunFailure(
-      result.category,
-      reason,
-      true,
-    );
-    assertEquals(classification.failureClass, "agent-outcome");
-    assertEquals(classification.fixability, "not_code_fixable");
-  } finally {
-    resetAutomaticProviderState();
-    await Deno.remove(dir, { recursive: true });
-  }
-});
+      assert(
+        new RegExp(
+          `^Claude execution failed: ${role} call failed after [0-9]+ attempt\\(s\\): `,
+        )
+          .test(reason),
+        reason,
+      );
+      assertStringIncludes(reason, CODEX_SAFETY_REFUSAL_HEADLINE);
+
+      const classification = classifyRunFailure(
+        result.category,
+        reason,
+        true,
+      );
+      assertEquals(classification.failureClass, "agent-outcome");
+      assertEquals(classification.fixability, "not_code_fixable");
+    } finally {
+      resetAutomaticProviderState();
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+}
 
 Deno.test("codex safety refusal - the orchestrator's prefix around another failure is still a worker-crash (Issue #5506)", () => {
   assertEquals(

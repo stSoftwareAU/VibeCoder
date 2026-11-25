@@ -11,12 +11,14 @@
  */
 
 /** The role one call plays inside an orchestrated run. */
-export type TargetRole =
-  | "manager"
-  | "executor"
-  | "spec_reviewer"
-  | "standards_reviewer"
-  | "explorer";
+export const TARGET_ROLES = [
+  "manager",
+  "executor",
+  "spec_reviewer",
+  "standards_reviewer",
+  "explorer",
+] as const;
+export type TargetRole = typeof TARGET_ROLES[number];
 
 /** A provider the orchestrator can name as a handoff target. */
 export type TargetProvider = "claude" | "codex" | "gemini" | "deepseek";

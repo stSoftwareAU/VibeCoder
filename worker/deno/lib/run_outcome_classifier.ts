@@ -30,6 +30,7 @@
  */
 
 import { assertNever } from "./assert_never.ts";
+import { TARGET_ROLES } from "./orchestration/types.ts";
 import { CODEX_SAFETY_REFUSAL_HEADLINE } from "./codex_output_adapter.ts";
 import { isHostDiskProtectiveStopText } from "./host_disk_protective_stop.ts";
 import { escapeRegExp } from "./regexp_escape.ts";
@@ -233,15 +234,16 @@ const PROVIDER_UNAVAILABLE_RE =
   /\bexternal orchestration: [\w-]+ unavailable \(/;
 
 /**
- * The worker's own text for a Codex safety refusal (Issue #5506), on both
- * paths: the direct run (`Claude execution failed: <headline>`) and the
- * orchestrated run, where the orchestrator puts
+ * The worker's own text for a Codex safety refusal (Issue #5506).
+ * The orchestrator puts
  * `<role> call failed after N attempt(s): ` in front of the adapter's message.
  * Anchored at the start, so the headline quoted later cannot trigger it.
  */
 const CODEX_SAFETY_REFUSAL_RE = new RegExp(
   "^Claude execution failed: " +
-    "(?:(?:manager|executor|reviewer) call failed after \\d{1,4} attempt\\(s\\): )?" +
+    `(?:(?:${
+      TARGET_ROLES.join("|")
+    }) call failed after \\d{1,4} attempt\\(s\\): )?` +
     escapeRegExp(CODEX_SAFETY_REFUSAL_HEADLINE),
 );
 

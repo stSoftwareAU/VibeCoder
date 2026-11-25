@@ -26,8 +26,7 @@ This PR fixes both. Closes #5506.
    `Claude execution failed: manager call failed after N attempt(s): Codex refused the content as a safety risk — evidence: …`.
    `classifyRunFailure` answers `agent-outcome` (`not_code_fixable`) for an
    `internal_error` whose worker text opens with `Claude execution failed:`,
-   then optionally that orchestrator prefix, then the headline. A direct run has
-   no prefix.
+   then optionally that orchestrator prefix, then the headline.
 
 ## Spec
 
@@ -45,9 +44,7 @@ This PR fixes both. Closes #5506.
 - The safety check runs **before** the authentication match. Moving it after
   would bring the false provider outage back.
 - The run-classifier rule (`CODEX_SAFETY_REFUSAL_RE`) is anchored to the start
-  of the worker's own text:
-  `^Claude execution failed: (?:(?:manager|executor|reviewer) call failed after \d{1,4} attempt\(s\): )?`
-  followed by the escaped headline. The only text it allows before the headline
+  of the worker's own text and accepts the orchestrator roles in `TARGET_ROLES`. The only text it allows before the headline
   is the orchestrator's own prefix. The same headline quoted later in a message,
   or in agent output, cannot trigger it. The headline is one exported constant,
   so the adapter and the classifier cannot drift apart.
@@ -90,7 +87,7 @@ flowchart LR
 - `worker/deno/tests/run_outcome_classifier_test.ts::codex safety refusal - an internal_error opening with the safety headline is an agent-outcome (Issue #5506)`
 - `worker/deno/tests/run_outcome_classifier_test.ts::codex safety refusal - a credential refusal is still a worker-crash (Issue #5506)`
 - `worker/deno/tests/run_outcome_classifier_test.ts::codex safety refusal - the headline only later in a message does not trigger the rule (Issue #5506)`
-- `worker/deno/tests/codex_safety_refusal_5506_test.ts::codex safety refusal - the orchestrated execute-phase reason is an agent-outcome, not a worker-crash (Issue #5506)`.
+- `worker/deno/tests/codex_safety_refusal_5506_test.ts::codex safety refusal - manager refusal is an agent-outcome (Issue #5506)`.
   This is the end-to-end test. It runs the Codex adapter's real classification
   of the #5456 refusal through the real `runOrchestratedIssueRun` (Codex roles,
   faked provider process only) and the real execute phase. It asserts the reason
@@ -120,7 +117,7 @@ flowchart LR
   `worker/deno/tests/mermaid_check_test.ts::collectMarkdownFiles - skips target/ even when its tree exceeds PATH_MAX (#5506)`,
   `worker/deno/tests/codex_output_adapter_1695_test.ts::codex adapter - a safety-flag refusal is a task failure, never an authentication refusal (Issue #5506)`
   and
-  `worker/deno/tests/codex_safety_refusal_5506_test.ts::codex safety refusal - the orchestrated execute-phase reason is an agent-outcome, not a worker-crash (Issue #5506)`
+  `worker/deno/tests/codex_safety_refusal_5506_test.ts::codex safety refusal - manager refusal is an agent-outcome (Issue #5506)`
 
 ## Test Plan
 
@@ -150,8 +147,8 @@ flowchart LR
 - `./quality.sh < /dev/null` ran on the head and finished
   `Result: PASSED (with skipped checks)`. Only `config integration` and
   `checkov` were skipped.
-- Twinned rules: none found. `SKIP_DIRECTORIES` has a single copy, and the
-  safety headline is one exported constant.
+- The directory exclusion applies to the Mermaid walker. Other whole-tree
+  walkers maintain their own exclusion sets.
 
 ## Not done / remaining risk
 
