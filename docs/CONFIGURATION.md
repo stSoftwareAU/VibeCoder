@@ -5344,8 +5344,8 @@ round. The formatters cover what the gate's format checks would flag, except an
 archive file with uncommitted changes (described below). A changed file git no
 longer tracks (removed from the index but still on disk) is left out of both: it
 is not in the push and `git add -u` cannot stage it, so the formatters skip it
-and the pre-push gate's format, lint and cspell checks skip it too
-(Issue #5410). The formatters run `deno fmt` on the changed code files (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
+and the pre-push gate's format, lint, cspell and markdownlint checks and its
+changed unit-test selection skip it too (Issues #5410 and #5538). The formatters run `deno fmt` on the changed code files (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
 `.cjs`, `.mts`, `.cts`, `.json`, `.jsonc`) that the deno root's own fmt
 `include`/`exclude` covers, and `cargo fmt --all` for a cargo root whose `.rs`
 files changed. Markdown outside `docs/archive/pr-summaries/` and
