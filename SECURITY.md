@@ -458,8 +458,8 @@ run `redactSecrets()` _first_: cutting first can split a secret — most
 damagingly a PEM block, whose END marker falls past the cut — leaving a fragment
 that no rule matches on the later pass.
 
-That ordering is held by a **type**, not by every call site remembering (Issue
-#1217). `RedactedText`
+That ordering is held by a **type**, not by every call site remembering (Issue #1217).
+`RedactedText`
 ([`worker/deno/lib/redacted_text.ts`](worker/deno/lib/redacted_text.ts)) is a
 branded string only `redactedTail()` / `redactedHead()` / `redactedLineTail()` /
 `redactedLogTail()` / `joinRedacted()` can mint, and each redacts the whole
@@ -574,8 +574,8 @@ extends through the later value. Before Issue #5435 the flag value ended at the
 escaped quote and the rest of the credential was published.
 
 A bare value that starts at, or contains, the closing quote of a credential
-flag's quoted value can keep that quote in front of the placeholder (Issues
-#5363 and #5456). In `--password 'alpha beta TOKEN='tail` the `TOKEN=` value
+flag's quoted value can keep that quote in front of the placeholder (Issues #5363
+and #5456). In `--password 'alpha beta TOKEN='tail` the `TOKEN=` value
 opens at that quote; masking it with the value left the `secret-cli-flag` rule
 no closing quote, so it masked only `'alpha` and published `beta`. The quote is
 kept only when the flag's opening quote lies outside every assignment mask. When
@@ -960,8 +960,8 @@ including an edit to a merged-in hidden file, is still refused. Outside a merge
 nothing is exempt on `MERGE_HEAD`'s account, and a `MERGE_HEAD` that cannot be
 read exempts nothing (fail closed).
 
-It also exempts **a path the default branch already publishes unchanged** (Issue
-#2774). A refused path is exempt only when its staged mode and blob are
+It also exempts **a path the default branch already publishes unchanged** (Issue #2774).
+A refused path is exempt only when its staged mode and blob are
 identical to that path on the default branch's tip, read from the local
 remote-tracking ref that `refs/remotes/origin/HEAD` names. The gate never
 fetches. The path is already public, so committing it discloses nothing, and
