@@ -23,8 +23,8 @@ pre-PR verifier the stop makes that pass `not checked`. Closes #4815.
 - The 2026-11-25 kill (`vibe-coder-41088`) carries the in-run reading from the
   previous PR: `MemAvailable 2344 MiB (logged 2026-11-25 09:44:07Z)`. The
   per-minute line then stopped, and the last log line was two minutes later. Its
-  container held two GRQ-AutoTrader claims at once (#4404 and #4598), and so
-  did the 2026-11-23 one (#5944 and #5595).
+  container held two GRQ-AutoTrader claims at once (#4404 and #4598), and so did
+  the 2026-11-23 one (#5944 and #5595).
 - Issue #4225 already found this mechanism. On a guest with no swap, running out
   of memory without an OOM kill stops the guest scheduling. Its job cap
   (`CARGO_BUILD_JOBS=2` in `container/entrypoint.sh`) limits one cargo, not two
@@ -57,8 +57,8 @@ pre-PR verifier the stop makes that pass `not checked`. Closes #4815.
 - The raw evidence stays in `~/logs/hard-kill-archive/` on GRQ-3 and was not
   read. The diagnosis uses only the posted facts and the claim comments on the
   GRQ-AutoTrader issues named above.
-- The quality gate and pre-flight commands are not watched, because they are
-  not agent runs.
+- The quality gate and pre-flight commands are not watched, because they are not
+  agent runs.
 
 ## Evidence
 
@@ -129,8 +129,7 @@ flowchart LR
   - the agent's file and a handover naming the guest memory floor are on the
     remote branch, and the local tree is clean;
   - `state.preservedWip` is set;
-  - the agent started once and never finished, so there was no in-process
-    retry.
+  - the agent started once and never finished, so there was no in-process retry.
 - No existing test was edited.
 - Results at the head (from `worker/deno`, stdin from `/dev/null`):
   - the three new files with `tests/claude_runner_host_disk_4390_test.ts`,
@@ -141,7 +140,8 @@ flowchart LR
     `wip_checkpoint*` and `guest_memory*` test file, plus
     `lib_sweep_coverage_test.ts`, with `--parallel`: 507 passed, 11 failed. The
     same 11 fail on an unmodified `origin/main` checkout in this container, with
-    the same names. They are in `claude_runner_model_unavailable_fallback_test.ts`,
+    the same names. They are in
+    `claude_runner_model_unavailable_fallback_test.ts`,
     `claude_runner_provider_fallback_4034_test.ts`,
     `claude_runner_invocation_budget_3648_test.ts`,
     `claude_runner_rate_limit_fallback_test.ts` and
@@ -152,10 +152,10 @@ flowchart LR
 - `./quality.sh` was started once, but on a tree where a WIP checkpoint had
   reverted the runner change; that is fixed in a later commit on the branch.
   That run reported `completeness checks: FAILED`: the new module was not in the
-  sweep ledger, which `top-up-4815.json` now fixes. It then ran out its
-  1,500 s bound in the whole-suite Deno test stage. Every other stage passed,
-  apart from config integration and checkov, which were skipped. There was no
-  runway to re-run the full gate on the final head.
+  sweep ledger, which `top-up-4815.json` now fixes. It then ran out its 1,500 s
+  bound in the whole-suite Deno test stage. Every other stage passed, apart from
+  config integration and checkov, which were skipped. There was no runway to
+  re-run the full gate on the final head.
 
 <!-- vibe-quality-gate-skipped reason="the one full ./quality.sh run hit its 1500 s bound in the whole-suite deno test stage; no runway remained to re-run it on the final head. Targeted suites above were run on the final head." -->
 
