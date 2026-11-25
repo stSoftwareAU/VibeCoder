@@ -733,6 +733,7 @@ async function _processQuestionWithHeartbeat(
 
 /**
  * Handle question failure — post failure feedback and manage labels.
+ * The question route's wrapper records the escalating cooldown (Issue #5376).
  */
 async function handleQuestionFailure(
   repo: string,

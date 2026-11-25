@@ -79,6 +79,21 @@ const QUOTA_RE =
 const RATE_LIMIT_RE = /rate[_ ]limit|too many requests|\b429\b/i;
 
 /**
+ * The headline for a Codex refusal of the task content as a cybersecurity
+ * risk. Exported so the run-outcome classifier can recognise the message the
+ * worker builds from it (Issue #5506).
+ */
+export const CODEX_SAFETY_REFUSAL_HEADLINE =
+  "Codex refused the content as a safety risk";
+
+/**
+ * The provider's safety-flag refusal (Issue #5506). Bounded, with no
+ * overlapping quantifiers, so a hostile line cannot backtrack.
+ */
+const SAFETY_FLAG_RE =
+  /\bcontent was flagged for possible [a-z -]{0,40}risk\b/i;
+
+/**
  * The CLI refusing the session it was asked to resume.
  *
  * `codex exec resume` names a session Codex must still hold; a rolled or
@@ -380,6 +395,18 @@ function classifyCodexFailure(
       category: "out-of-memory",
       message: say("The Codex CLI ran out of memory"),
       evidence: "prose",
+      errors: decoded.errors,
+    });
+  }
+
+  // Issue #5506: this refusal says "authorized security work", which the
+  // authentication match below would read as a rejected credential.
+  const safetyError = match(SAFETY_FLAG_RE);
+  if (safetyError || SAFETY_FLAG_RE.test(stderr)) {
+    return agentFailure({
+      category: "task-failure",
+      message: say(CODEX_SAFETY_REFUSAL_HEADLINE),
+      evidence: safetyError ? "structured" : "prose",
       errors: decoded.errors,
     });
   }

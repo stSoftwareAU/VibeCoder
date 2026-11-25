@@ -260,3 +260,35 @@ Deno.test("quality_gate_budget - each push record names only checks its path run
     assertNotMatch(customPr, /worker runs the gate before the PR is raised/);
   }
 });
+
+Deno.test("a review pass commits locally when recording a skipped gate", () => {
+  for (const budget of [600, 3600]) {
+    const lines = buildQualityGateBudgetLines(
+      "./quality.sh",
+      undefined,
+      budget,
+      "pr-review-verifier",
+    ).join("\n");
+    assertStringIncludes(
+      lines,
+      "commit locally for the worker to verify and push",
+    );
+    assertNotMatch(lines, /push what you have/);
+    for (
+      const guarantee of [
+        "pre-flight-only",
+        "agent-pre-push",
+        "full-gate",
+        "ci-fix",
+      ] as const
+    ) {
+      const other = buildQualityGateBudgetLines(
+        "./quality.sh",
+        undefined,
+        budget,
+        guarantee,
+      ).join("\n");
+      assertStringIncludes(other, "push what you have");
+    }
+  }
+});

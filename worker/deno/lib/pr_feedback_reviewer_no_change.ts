@@ -53,7 +53,8 @@ export const REVIEWER_NO_CHANGE_RETRY_NOTE =
   "Your previous run on this request-changes review ended with no commit, " +
   "no working-tree change and no `.pr_response_message`. A reviewer's " +
   'finding is never answered with "no change". For each finding, either ' +
-  "apply it and push the commit, or write `.pr_response_message` rebutting " +
+  "commit the fix locally and cite its SHA for the worker to verify and push, " +
+  "or write `.pr_response_message` rebutting " +
   "that finding by name with evidence — the command you ran and its " +
   "output, or the line you cite. If this run also ends with neither, the " +
   "review is retried in a later cycle, and a review still unanswered then " +

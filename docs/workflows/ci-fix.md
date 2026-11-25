@@ -471,7 +471,13 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   so an audit check whose reply still ends in `Depends on owner/repo#N` on a red
   base is deferred like any other check below, and a PR already parked on an
   audit's `vibe-ci-fix-deferred` marker stays parked until its tracking issue
-  closes. When the agent finds any other check already failing on the PR's
+  closes. The repair PR for a red default branch is a second exception (Issue
+  #5437): its head branch, `fix/red-default-branch-*`, exists to fix the red
+  check its base also has, so it is never deferred to that base, and the worker
+  enforces this. A `Depends on` claim on that branch is refused with a warning,
+  and the run takes the ordinary no-changes path, charging an attempt, with no
+  hold and no `vibe-ci-fix-deferred` marker. When the agent finds any other
+  check already failing on the PR's
   **base branch**, it ends its `.pr_response_message` with a line of its own —
   `Depends on owner/repo#N` — naming the issue that tracks it (searching that
   repository first with
@@ -704,7 +710,9 @@ Until stSoftwareAU/VibeCoder#3141 lands, the worker does not enforce this
 exception: an audit check whose reply ends in `Depends on` on a red base still
 runs through this chart like any other check, and a PR already parked on an
 audit's `vibe-ci-fix-deferred` marker stays parked until its tracking issue
-closes.
+closes. The repair PR for a red default branch (`fix/red-default-branch-*`) is
+kept out of this chart too, and the worker enforces that: it refuses a
+`Depends on` claim on that head before the base branch is read.
 
 The base-branch verdicts, on the claimed `Depends on` check (Issue #4680):
 

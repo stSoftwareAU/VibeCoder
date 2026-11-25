@@ -221,10 +221,11 @@ export interface SelectionResult {
    * Repos with at least one open low-priority issue that is not waiting
    * on a human (Issues #2164, #2751). Used to suppress idle-task
    * candidates from these repos — idle-task is strictly the lowest tier.
-   * An issue carrying a handoff label (`failed`, `refine-issue`,
+   * An issue carrying a handoff label (`refine-issue`,
    * `planning`, `question`, `needs-revision`, `needs-human`) or a
    * non-fleet assignee does not count; dependency-blocked, PR-blocked
-   * and fleet-assigned issues still do.
+   * and fleet-assigned issues still do. A leftover `failed` label alone
+   * still counts.
    * Optional for backward compatibility — defaults to an empty set.
    */
   reposWithOpenLowPriority?: ReadonlySet<string>;

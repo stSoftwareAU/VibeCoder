@@ -30,7 +30,10 @@
  */
 
 import { assertNever } from "./assert_never.ts";
+import { TARGET_ROLES } from "./orchestration/types.ts";
+import { CODEX_SAFETY_REFUSAL_HEADLINE } from "./codex_output_adapter.ts";
 import { isHostDiskProtectiveStopText } from "./host_disk_protective_stop.ts";
+import { escapeRegExp } from "./regexp_escape.ts";
 import {
   type FailureCategory,
   isOutOfCreditMessage,
@@ -230,6 +233,20 @@ const PROVIDER_UNAVAILABLE: RunFailureClassification = {
 const PROVIDER_UNAVAILABLE_RE =
   /\bexternal orchestration: [\w-]+ unavailable \(/;
 
+/**
+ * The worker's own text for a Codex safety refusal (Issue #5506).
+ * The orchestrator puts
+ * `<role> call failed after N attempt(s): ` in front of the adapter's message.
+ * Anchored at the start, so the headline quoted later cannot trigger it.
+ */
+const CODEX_SAFETY_REFUSAL_RE = new RegExp(
+  "^Claude execution failed: " +
+    `(?:(?:${
+      TARGET_ROLES.join("|")
+    }) call failed after \\d{1,4} attempt\\(s\\): )?` +
+    escapeRegExp(CODEX_SAFETY_REFUSAL_HEADLINE),
+);
+
 /** The agent did not deliver — a property of the attempt, not a worker defect. */
 const AGENT_OUTCOME: RunFailureClassification = {
   fixability: "not_code_fixable",
@@ -426,6 +443,12 @@ function transcriptShowsToolRuntimeFailure(
  * 1b. An unavailable external-orchestration provider (`internal_error`,
  *    worker's own words: `external orchestration: <provider> unavailable (`)
  *    — account state on the host, not a worker crash (Issue #4508).
+ * 1c. An `internal_error` whose worker text opens with the Codex
+ *    safety-refusal headline, with or without the orchestrator's role
+ *    prefix, is `agent-outcome` (`not_code_fixable`) — the agent CLI
+ *    declining the task content, not a worker crash (Issue #5506). Anchored
+ *    to the worker's own words, so the headline quoted in agent output does
+ *    not trigger it; it is answered before rule 5 so it is not read as a crash.
  * 2. A squash-lineage push refusal (Issue #534) — the base moved on; never
  *    a worker defect, and checked before the disk and crash rules so a
  *    branch name or a hint line in the refusal cannot be mistaken for
@@ -436,12 +459,12 @@ function transcriptShowsToolRuntimeFailure(
  *    cause is unproven, so `killed-unknown` (unknown). An OOM message that
  *    also mentions a timeout classifies as `oom` because the category was
  *    already `killed`, not `timeout`.
- * 5. Worker crashes: `internal_error`, or an unhandled exception / stack
+ * 5. Worker crashes: `internal_error` (other than rule 1b / 1c), or an unhandled exception / stack
  *    trace in the message with any other non-agent category.
  * 6. `missing_tools` — the image/PATH is the worker's to fix.
  * 7. `timeout` / `zero_output` — cause unproven → unknown.
  * 8. `quality_check` / `no_changes` /
- *    `evidence_missing` — the AGENT not
+ *    `evidence_missing` (and the rule 1c safety refusal) — the AGENT not
  *    delivering, not a worker defect: `not_code_fixable`, never auto-filed.
  *    Exception (Issue #4324): a transcript that shows the tool runtime
  *    failing is infrastructure (`tool-runtime`, code-fixable). An ordinary
@@ -547,6 +570,22 @@ export function classifyRunFailure(
       splitAgentNarration(failureMessage ?? "").worker,
     )
   ) return PROVIDER_UNAVAILABLE;
+  // A Codex content refusal is the agent declining the task, not a worker
+  // defect (Issue #5506). Anchored to the worker's opening words, so the same
+  // headline quoted in agent output cannot trigger it.
+  if (
+    category === "internal_error" &&
+    CODEX_SAFETY_REFUSAL_RE.test(
+      splitAgentNarration(failureMessage ?? "").worker,
+    )
+  ) {
+    return {
+      fixability: "not_code_fixable",
+      failureClass: "agent-outcome",
+      rationale:
+        "The agent CLI refused the task content as a safety risk — a content refusal, not a worker defect.",
+    };
+  }
 
   // 2. A squash-lineage refusal is the base having moved on (Issue #534),
   //    stated in the worker's own words — and its text quotes a branch name

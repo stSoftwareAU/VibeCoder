@@ -116,7 +116,7 @@ Deno.test("commitAndPushPending - rebases onto a sibling's newer head and pushes
     const result = await commitAndPushPending(
       FEATURE_BRANCH,
       "Fix CI failure: Quality Checks\n\nAutomated final-mile commit.",
-      { cwd: workerPath },
+      { cwd: workerPath, env: NO_HOST_GIT_CONFIG },
       false,
       undefined,
       TEST_RUN_ID,

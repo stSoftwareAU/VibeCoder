@@ -26,7 +26,13 @@ import {
   workflowRunsFloci,
 } from "../lib/aws_emulator_in_ci_check.ts";
 import { parse as parseYaml } from "@std/yaml/parse";
-import { reachableCommands } from "../lib/shell_command_words.ts";
+import {
+  commandIndex,
+  commandPrefixWords,
+  reachableCommands,
+  removeQuotes,
+  shellSegments,
+} from "../lib/shell_command_words.ts";
 
 async function makeTempRepo(): Promise<string> {
   return await Deno.makeTempDir({ prefix: "aws_emulator_in_ci_check_test_" });
@@ -785,10 +791,329 @@ Deno.test("workflowRunsAwsEmulator - exec and env prefixes before aws-emulator-r
 jobs:
   test:
     steps:
-      - run: exec aws-emulator-run --timeout 900 -- ./t.sh
+      - run: exec aws-emulator-run --timeout 900 -- ./test.sh
 `,
   );
   assert(workflowRunsAwsEmulator(doc));
+});
+
+// Issue #5351: after `env`, every operand containing `=` once quotes are
+// removed is an assignment; at shell level only an unquoted name counts.
+for (
+  const [label, run, expected] of [
+    [
+      'aws-emulator-run -- env "X"=./pytest',
+      'aws-emulator-run -- env "X"=./pytest',
+      false,
+    ],
+    [
+      "aws-emulator-run -- env ./a=./pytest",
+      "aws-emulator-run -- env ./a=./pytest",
+      false,
+    ],
+    [
+      "aws-emulator-run -- env X=./pytest",
+      "aws-emulator-run -- env X=./pytest",
+      false,
+    ],
+    [
+      'aws-emulator-run -- env "X"=1 pytest',
+      'aws-emulator-run -- env "X"=1 pytest',
+      true,
+    ],
+    [
+      'env "X"=1 aws-emulator-run -- pytest',
+      'env "X"=1 aws-emulator-run -- pytest',
+      true,
+    ],
+    [
+      "env X=1 aws-emulator-run -- pytest",
+      "env X=1 aws-emulator-run -- pytest",
+      true,
+    ],
+    [
+      '"X=1" aws-emulator-run -- pytest',
+      '"X=1" aws-emulator-run -- pytest',
+      false,
+    ],
+    [
+      'env "X"=1 aws-emulator-run -- pytest after set -euo pipefail',
+      'set -euo pipefail\n          env "X"=1 aws-emulator-run -- pytest',
+      true,
+    ],
+    // `env --split-string=echo …` runs `echo`, so an option word ends the scan
+    // and stays the command word. That fails closed even where `env` would
+    // still run the next word: GNU `env -S=echo cmd` stores `=echo` and runs
+    // `cmd`, but `-S=echo` is not credited.
+    [
+      "aws-emulator-run -- env --split-string=echo pytest",
+      "aws-emulator-run -- env --split-string=echo pytest",
+      false,
+    ],
+    [
+      "env --split-string=echo aws-emulator-run -- pytest",
+      "env --split-string=echo aws-emulator-run -- pytest",
+      false,
+    ],
+    [
+      'env "--split-string"=echo aws-emulator-run -- pytest',
+      'env "--split-string"=echo aws-emulator-run -- pytest',
+      false,
+    ],
+    [
+      "env -S=echo aws-emulator-run -- pytest",
+      "env -S=echo aws-emulator-run -- pytest",
+      false,
+    ],
+  ] as const
+) {
+  Deno.test(`workflowRunsAwsEmulator - ${label} is ${expected} (Issue #5351)`, () => {
+    const doc = parseYaml(
+      `on: pull_request
+jobs:
+  test:
+    steps:
+      - run: |
+          ${run}
+`,
+    );
+    assertEquals(workflowRunsAwsEmulator(doc), expected);
+  });
+}
+
+Deno.test("workflowRunsAwsEmulator - env --split-string=echo ./ci.sh does not run the script (Issue #5351)", () => {
+  const reader = (path: string) =>
+    path === "ci.sh" || path === "./ci.sh"
+      ? "aws-emulator-run -- pytest\n"
+      : null;
+  const workflow = (run: string) =>
+    parseYaml(
+      `on: pull_request
+jobs:
+  test:
+    steps:
+      - run: ${run}
+`,
+    );
+  // Positive control: the same reader credits a plain script call.
+  assert(workflowRunsAwsEmulator(workflow("./ci.sh"), reader));
+  assert(workflowRunsAwsEmulator(workflow("env X=1 ./ci.sh"), reader));
+  assertEquals(
+    workflowRunsAwsEmulator(
+      workflow("env --split-string=echo ./ci.sh"),
+      reader,
+    ),
+    false,
+  );
+});
+
+Deno.test("checkAwsEmulatorInCI - an embedded marker before env --split-string=echo cargo test is refused (Issue #5351)", async () => {
+  const result = await checkRepoWith({
+    "Cargo.toml": CARGO_TOML_AWS,
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(
+        "# aws-emulator-embedded: version=1.2.3; justification=x\nenv --split-string=echo cargo test",
+      ),
+    ),
+  });
+  assertEquals(result.wiring, "missing");
+  assertDiagnostic(result, "no status-preserving cargo test");
+  // Positive control: an assignment operand still reaches `cargo test`.
+  const control = await checkRepoWith({
+    "Cargo.toml": CARGO_TOML_AWS,
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(
+        '# aws-emulator-embedded: version=1.2.3; justification=x\nenv "X"=1 cargo test',
+      ),
+    ),
+  });
+  assertEquals(control.wiring, "official-embedded");
+});
+
+// Issue #5351: shell quote removal on a word as shellCommands returns it.
+for (
+  const [word, expected] of [
+    ['"X"=1', "X=1"],
+    ["'a b'", "a b"],
+    ["X\\=1", "X=1"],
+    ['"a\\"b"', 'a"b'],
+    ['"a\\zb"', "a\\zb"],
+    ["'a\\b'", "a\\b"],
+    ["plain", "plain"],
+  ] as const
+) {
+  Deno.test(`removeQuotes - ${word} (Issue #5351)`, () => {
+    assertEquals(removeQuotes(word), expected);
+  });
+}
+
+// Issue #5378: a `VAR=value` word whose unquoted `$( … )` or backtick value
+// holds a blank is one assignment, not an assignment followed by a command.
+for (
+  const [run, expected] of [
+    ["X=$(cat v) aws-emulator-run -- ./test.sh", true],
+    [
+      "AWS_REGION=$(aws configure get region) aws-emulator-run -- ./test.sh",
+      true,
+    ],
+    ["X=`cat v` aws-emulator-run -- ./test.sh", true],
+    ["env X=$(cat v) aws-emulator-run -- ./test.sh", true],
+    ["X=$((1 + 2)) aws-emulator-run -- ./test.sh", true],
+    // A quoted `)` does not close the substitution.
+    ['X=$(echo "a )" b) aws-emulator-run -- ./test.sh', true],
+    // A `!` inside the substitution is not a status-inverting prefix.
+    ["X=$(test ! -f v) aws-emulator-run -- ./test.sh", true],
+    ["X=$(test ! v) aws-emulator-run -- ./test.sh", true],
+    ["X=$(cat $(echo v w)) aws-emulator-run -- ./test.sh", true],
+    ["X=$(cat v) Y=$(cat w) aws-emulator-run -- ./test.sh", true],
+    // Controls already true before the fix.
+    ['X="$(cat v)" aws-emulator-run -- ./test.sh', true],
+    ["X=$(date) aws-emulator-run -- ./test.sh", true],
+    // The command is echo.
+    ["X=$(cat v) echo aws-emulator-run -- ./test.sh", false],
+    // The runner is an argument of cat inside the substitution.
+    ["X=$(cat v aws-emulator-run -- ./test.sh)", false],
+    // Never closed: nothing after it is a command.
+    ["X=$(cat v aws-emulator-run -- ./test.sh", false],
+    // A `(` inside `${…}` opens no substitution: a later `)` does not make
+    // the word after it the command.
+    ["X=${Y:-(} echo ${Z:-)} aws-emulator-run -- ./test.sh", false],
+    // These pin the documented limit: shellCommands splits a substitution at
+    // a `|` (or `;`, `&`, line break), so the runner is not seen after it.
+    ["X=$(cat v | tr -d x) aws-emulator-run -- ./test.sh", false],
+  ] as const
+) {
+  Deno.test(`workflowRunsAwsEmulator - ${run} is ${expected} (Issue #5378)`, () => {
+    const doc = parseYaml(
+      `on: pull_request
+jobs:
+  test:
+    steps:
+      - run: |
+          ${run}
+`,
+    );
+    assertEquals(workflowRunsAwsEmulator(doc), expected);
+  });
+}
+
+Deno.test("commandIndex - skips an assignment whose substitution holds blanks (Issue #5378)", () => {
+  for (
+    const [script, expected] of [
+      ["X=$(cat v) aws-emulator-run -- ./t.sh", 2],
+      ["X=$(cat v)", 2],
+      ["X=$(cat v", 2],
+      ["X=`a b` cmd", 2],
+      ['X=$(echo "a )" b) cmd', 3],
+      ["env X=$(cat v) cmd", 3],
+      ["X=1 cmd", 1],
+      ["X=${Y:-(} echo ${Z:-)} cmd", 4],
+      ["X=(a b) cmd", 2],
+      ["X=<(cat v) cmd", 2],
+    ] as const
+  ) {
+    assertEquals(
+      commandIndex(shellSegments(script)[0] ?? []),
+      expected,
+      script,
+    );
+  }
+});
+
+Deno.test("commandPrefixWords - leaves out the words inside an assignment's substitution (Issue #5378)", () => {
+  assertEquals(
+    commandPrefixWords(shellSegments("X=$(test ! v) cmd")[0] ?? []),
+    ["X=$(test"],
+  );
+  assertEquals(commandPrefixWords(shellSegments("! X=1 cmd")[0] ?? []), [
+    "!",
+    "X=1",
+  ]);
+});
+
+Deno.test("checkAwsEmulatorInCI - a runner after X=$(cat v) counts in a step and a script; echo $(cat v) does not (Issue #5378)", async () => {
+  const body = `X=$(cat v) ${RUNNER_STEP}`;
+  const inWorkflow = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+  });
+  assertEquals(inWorkflow.wiring, "official-server", "workflow");
+  const inScript = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+    "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+  });
+  assertEquals(inScript.wiring, "official-server", "script");
+  const control = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`echo $(cat v) ${RUNNER_STEP}`),
+    ),
+  });
+  assertEquals(control.wiring, "missing", "control");
+});
+
+// Issue #5378: the other callers of commandIndex read the same words.
+Deno.test("checkAwsEmulatorInCI - X=$(cat v) before cargo test, a status prefix and a failure exit (Issue #5378)", async () => {
+  // isCargoTestCommand: the assignment is skipped, so `cargo test` is found.
+  const marker = "# aws-emulator-embedded: version=1.2.3; justification=x\n";
+  const cargo = await checkRepoWith({
+    "Cargo.toml": CARGO_TOML_AWS,
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${marker}X=$(cat v) cargo test`),
+    ),
+  });
+  assertEquals(cargo.wiring, "official-embedded", "cargo test");
+  const cargoEcho = await checkRepoWith({
+    "Cargo.toml": CARGO_TOML_AWS,
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`${marker}X=$(cat v) echo cargo test`),
+    ),
+  });
+  assertEquals(cargoEcho.wiring, "missing", "echo cargo test");
+
+  // staticStatus: a `!` inside the substitution does not invert `false`.
+  const inWorkflow = async (body: string) =>
+    (await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    })).wiring;
+  assertEquals(
+    await inWorkflow(`X=$(test ! v) false && ${RUNNER_STEP}`),
+    "missing",
+    "substitution ! does not invert false",
+  );
+  // Controls: a real prefix `!` is honoured (`! true` is false, `true` is
+  // true), so the pair shows the inner `!` above was ignored on purpose.
+  assertEquals(
+    await inWorkflow(`! true && ${RUNNER_STEP}`),
+    "missing",
+    "! true",
+  );
+  assertEquals(
+    await inWorkflow(`true && ${RUNNER_STEP}`),
+    "official-server",
+    "true",
+  );
+
+  // failureExits: without set -e, `|| exit 1` makes the script fail with the
+  // runner; a prefix `!` breaks that; a `!` inside the substitution does not.
+  const inScript = async (body: string) =>
+    (await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    })).wiring;
+  assertEquals(
+    await inScript(`${RUNNER_STEP} || exit 1\necho done`),
+    "official-server",
+    "|| exit 1",
+  );
+  assertEquals(
+    await inScript(`! ${RUNNER_STEP} || exit 1\necho done`),
+    "missing",
+    "! runner || exit 1",
+  );
+  assertEquals(
+    await inScript(`X=$(test ! v) ${RUNNER_STEP} || exit 1\necho done`),
+    "official-server",
+    "substitution ! then runner || exit 1",
+  );
 });
 
 Deno.test("workflowRunsAwsEmulator - step runs aws-emulator-run wrapper", () => {
@@ -797,7 +1122,7 @@ Deno.test("workflowRunsAwsEmulator - step runs aws-emulator-run wrapper", () => 
 jobs:
   test:
     steps:
-      - run: aws-emulator-run -- ./t.sh
+      - run: aws-emulator-run -- ./test.sh
 `,
   );
   assert(workflowRunsAwsEmulator(doc));
@@ -809,7 +1134,7 @@ Deno.test("workflowRunsAwsEmulator - path ending in aws-emulator-run in command 
 jobs:
   test:
     steps:
-      - run: /usr/local/bin/aws-emulator-run -- ./t.sh
+      - run: /usr/local/bin/aws-emulator-run -- ./test.sh
 `,
   );
   assert(workflowRunsAwsEmulator(doc));
@@ -979,7 +1304,9 @@ function workflowRunBlock(body: string): unknown {
 Deno.test("workflowRunsAwsEmulator - if/then before aws-emulator-run counts", () => {
   assert(
     workflowRunsAwsEmulator(
-      workflowRunBlock(`if [ -n "$X" ]; then aws-emulator-run -- ./t.sh; fi`),
+      workflowRunBlock(
+        `if [ -n "$X" ]; then aws-emulator-run -- ./test.sh; fi`,
+      ),
     ),
   );
 });
@@ -987,7 +1314,7 @@ Deno.test("workflowRunsAwsEmulator - if/then before aws-emulator-run counts", ()
 Deno.test("workflowRunsAwsEmulator - timeout with a duration before aws-emulator-run counts", () => {
   assert(
     workflowRunsAwsEmulator(
-      workflowRunBlock("timeout 600 aws-emulator-run -- ./t.sh"),
+      workflowRunBlock("timeout 600 aws-emulator-run -- ./test.sh"),
     ),
   );
 });
@@ -995,7 +1322,7 @@ Deno.test("workflowRunsAwsEmulator - timeout with a duration before aws-emulator
 Deno.test("workflowRunsAwsEmulator - timeout with a -k option before aws-emulator-run counts", () => {
   assert(
     workflowRunsAwsEmulator(
-      workflowRunBlock("timeout -k 5 600 aws-emulator-run -- ./t.sh"),
+      workflowRunBlock("timeout -k 5 600 aws-emulator-run -- ./test.sh"),
     ),
   );
 });
@@ -1003,7 +1330,7 @@ Deno.test("workflowRunsAwsEmulator - timeout with a -k option before aws-emulato
 Deno.test("workflowRunsAwsEmulator - quoted aws-emulator-run command word counts", () => {
   assert(
     workflowRunsAwsEmulator(
-      workflowRunBlock(`"aws-emulator-run" -- ./t.sh`),
+      workflowRunBlock(`"aws-emulator-run" -- ./test.sh`),
     ),
   );
 });
@@ -1011,7 +1338,7 @@ Deno.test("workflowRunsAwsEmulator - quoted aws-emulator-run command word counts
 Deno.test("workflowRunsAwsEmulator - time before aws-emulator-run counts", () => {
   assert(
     workflowRunsAwsEmulator(
-      workflowRunBlock("time aws-emulator-run -- ./t.sh"),
+      workflowRunBlock("time aws-emulator-run -- ./test.sh"),
     ),
   );
 });
@@ -1019,7 +1346,7 @@ Deno.test("workflowRunsAwsEmulator - time before aws-emulator-run counts", () =>
 Deno.test("workflowRunsAwsEmulator - command aws-emulator-run counts", () => {
   assert(
     workflowRunsAwsEmulator(
-      workflowRunBlock("command aws-emulator-run -- ./t.sh"),
+      workflowRunBlock("command aws-emulator-run -- ./test.sh"),
     ),
   );
 });
@@ -1028,7 +1355,7 @@ Deno.test("workflowRunsAwsEmulator - aws-emulator-run on the line after an if li
   assert(
     workflowRunsAwsEmulator(
       workflowRunBlock(
-        `if [ -n "$X" ]; then\n  aws-emulator-run -- ./t.sh\nfi`,
+        `if [ -n "$X" ]; then\n  aws-emulator-run -- ./test.sh\nfi`,
       ),
     ),
   );
@@ -1078,7 +1405,7 @@ Deno.test("workflowRunsAwsEmulator - which aws-emulator-run does not count", () 
 Deno.test("workflowRunsAwsEmulator - commented if/then aws-emulator-run does not count", () => {
   assertEquals(
     workflowRunsAwsEmulator(
-      workflowRunBlock("# if true; then aws-emulator-run -- ./t.sh; fi"),
+      workflowRunBlock("# if true; then aws-emulator-run -- ./test.sh; fi"),
     ),
     false,
   );
@@ -1144,6 +1471,7 @@ Resources:
 
 const RUNNER_SCRIPT = `#!/usr/bin/env bash
 set -euo pipefail
+SCRIPT_SELF="\${BASH_SOURCE[0]}"
 if [[ -z "\${AWS_EMULATOR_ACTIVE:-}" ]]; then
     exec aws-emulator-run --timeout 900 -- "\${SCRIPT_SELF}" "$@"
 fi
@@ -1249,11 +1577,18 @@ Deno.test("checkAwsEmulatorInCI - script path with .. does not count", async () 
   try {
     const root = `${parent}/repo`;
     await Deno.mkdir(root);
-    await setupAwsRepo(root, "bash ../outside/run.sh");
-    await writeFile(parent, "outside/run.sh", RUNNER_SCRIPT);
+    await setupAwsRepo(root, "bash ../outside/aws-test.sh");
+    await writeFile(parent, "outside/aws-test.sh", RUNNER_SCRIPT);
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.usesAws, true);
     assertEquals(result.wiring, "missing");
+    // Positive control: the same script at an in-repo test-named path counts.
+    await setupAwsRepo(root, "bash outside/aws-test.sh");
+    await writeFile(root, "outside/aws-test.sh", RUNNER_SCRIPT);
+    assertEquals(
+      (await checkAwsEmulatorInCI(root)).wiring,
+      "official-server",
+    );
   } finally {
     await Deno.remove(parent, { recursive: true });
   }
@@ -1262,18 +1597,18 @@ Deno.test("checkAwsEmulatorInCI - script path with .. does not count", async () 
 Deno.test("checkAwsEmulatorInCI - absolute and expanded script paths do not count", async () => {
   const outside = await makeTempRepo();
   try {
-    await writeFile(outside, "run.sh", RUNNER_SCRIPT);
+    await writeFile(outside, "aws-test.sh", RUNNER_SCRIPT);
     for (
       const run of [
-        `bash ${outside}/run.sh`,
-        "bash ${{ github.workspace }}/x.sh",
-        'bash "$DIR/run.sh"',
+        `bash ${outside}/aws-test.sh`,
+        "bash ${{ github.workspace }}/x-test.sh",
+        'bash "$DIR/aws-test.sh"',
       ]
     ) {
       const root = await makeTempRepo();
       try {
         await setupAwsRepo(root, JSON.stringify(run));
-        await writeFile(root, "x.sh", RUNNER_SCRIPT);
+        await writeFile(root, "x-test.sh", RUNNER_SCRIPT);
         const result = await checkAwsEmulatorInCI(root);
         assertEquals(result.wiring, "missing", run);
       } finally {
@@ -1289,12 +1624,19 @@ Deno.test("checkAwsEmulatorInCI - in-repo symlink to an outside script does not 
   const root = await makeTempRepo();
   const outside = await makeTempRepo();
   try {
-    await setupAwsRepo(root, "bash ci/run.sh");
-    await writeFile(outside, "run.sh", RUNNER_SCRIPT);
+    await setupAwsRepo(root, "bash ci/aws-test.sh");
+    await writeFile(outside, "aws-test.sh", RUNNER_SCRIPT);
     await Deno.mkdir(`${root}/ci`);
-    await Deno.symlink(`${outside}/run.sh`, `${root}/ci/run.sh`);
+    await Deno.symlink(`${outside}/aws-test.sh`, `${root}/ci/aws-test.sh`);
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.wiring, "missing");
+    // Positive control: the same script as a regular in-repo file counts.
+    await Deno.remove(`${root}/ci/aws-test.sh`);
+    await writeFile(root, "ci/aws-test.sh", RUNNER_SCRIPT);
+    assertEquals(
+      (await checkAwsEmulatorInCI(root)).wiring,
+      "official-server",
+    );
   } finally {
     await Deno.remove(root, { recursive: true });
     await Deno.remove(outside, { recursive: true });
@@ -1315,24 +1657,30 @@ Deno.test("checkAwsEmulatorInCI - nonexistent script does not count and does not
 Deno.test("checkAwsEmulatorInCI - script over 1 MiB is not read", async () => {
   const root = await makeTempRepo();
   try {
-    await setupAwsRepo(root, "./big.sh");
+    await setupAwsRepo(root, "./big-test.sh");
     await writeFile(
       root,
-      "big.sh",
+      "big-test.sh",
       "#" + "x".repeat(1024 * 1024) + "\n" + RUNNER_SCRIPT,
     );
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.wiring, "missing");
+    // Positive control: the same script under the cap counts.
+    await writeFile(root, "big-test.sh", RUNNER_SCRIPT);
+    assertEquals(
+      (await checkAwsEmulatorInCI(root)).wiring,
+      "official-server",
+    );
   } finally {
     await Deno.remove(root, { recursive: true });
   }
 });
 
-Deno.test("checkAwsEmulatorInCI - timeout 900 ./ci/t.sh resolves the script and counts", async () => {
+Deno.test("checkAwsEmulatorInCI - timeout 900 ./ci/test.sh resolves the script and counts", async () => {
   const root = await makeTempRepo();
   try {
-    await setupAwsRepo(root, "timeout 900 ./ci/t.sh");
-    await writeFile(root, "ci/t.sh", RUNNER_SCRIPT);
+    await setupAwsRepo(root, "timeout 900 ./ci/test.sh");
+    await writeFile(root, "ci/test.sh", RUNNER_SCRIPT);
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.wiring, "official-server");
   } finally {
@@ -1357,7 +1705,7 @@ Deno.test({
       await writeFile(
         root,
         "ci/t.sh",
-        "#!/usr/bin/env bash\naws-emulator-run -- ./t.sh\n",
+        "#!/usr/bin/env bash\naws-emulator-run -- ./test.sh\n",
       );
       await Deno.chmod(script, 0o000);
       await assertRejects(
@@ -1380,7 +1728,7 @@ Deno.test({
 // PR #5276 review: runner text that cannot run earns no credit
 // ---------------------------------------------------------------------------
 
-const RUNNER = "aws-emulator-run -- ./t.sh";
+const RUNNER = "aws-emulator-run -- ./test.sh";
 
 /** A one-job, one-step workflow document built directly (no YAML parse). */
 function docWithStep(
@@ -1733,9 +2081,9 @@ Deno.test("workflowRunsAwsEmulator - an unreachable step calling a script that r
 Deno.test("checkAwsEmulatorInCI - a disabled or unreachable runner does not count as emulator coverage", async () => {
   for (
     const run of [
-      "exit 0\n          aws-emulator-run -- ./t.sh",
-      "if false; then aws-emulator-run -- ./t.sh; fi",
-      "true && exit 0\n          aws-emulator-run -- ./t.sh",
+      "exit 0\n          aws-emulator-run -- ./test.sh",
+      "if false; then aws-emulator-run -- ./test.sh; fi",
+      "true && exit 0\n          aws-emulator-run -- ./test.sh",
       "bash -n ./test.sh",
     ]
   ) {
@@ -1772,17 +2120,18 @@ Deno.test("checkAwsEmulatorInCI - a disabled or unreachable runner does not coun
   const root = await makeTempRepo();
   try {
     await writeFile(root, "infra/cloudformation/host.yaml", CFN_TEMPLATE);
+    await writeFile(root, "test.sh", "echo ok\n");
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `on: pull_request\njobs:\n  test:\n    steps:\n      - if: false\n        run: aws-emulator-run -- ./t.sh\n`,
+      `on: pull_request\njobs:\n  test:\n    steps:\n      - if: false\n        run: aws-emulator-run -- ./test.sh\n`,
     );
     assertEquals((await checkAwsEmulatorInCI(root)).wiring, "missing");
     // Positive control: the same step without the `if: false`.
     await writeFile(
       root,
       ".github/workflows/ci.yml",
-      `on: pull_request\njobs:\n  test:\n    steps:\n      - run: aws-emulator-run -- ./t.sh\n`,
+      `on: pull_request\njobs:\n  test:\n    steps:\n      - run: aws-emulator-run -- ./test.sh\n`,
     );
     assertEquals((await checkAwsEmulatorInCI(root)).wiring, "official-server");
   } finally {
@@ -1822,6 +2171,8 @@ Deno.test("checkAwsEmulatorInCI - a skipped brace group does not count as emulat
         if (viaScript) {
           await writeFile(root, "test.sh", `${script}\n`);
           run = "bash ./test.sh";
+        } else {
+          await writeFile(root, "test.sh", "echo ok\n");
         }
         await writeFile(
           root,
@@ -1871,7 +2222,7 @@ Deno.test("workflowRunsAwsEmulator - hostile long inputs finish with the right a
 // refuses it, and each group has an allowed control.
 // ---------------------------------------------------------------------------
 
-const RUNNER_STEP = "aws-emulator-run -- ./t.sh";
+const RUNNER_STEP = "aws-emulator-run -- ./test.sh";
 const CARGO_TOML_AWS =
   '[package]\nname = "x"\n\n[dependencies]\naws-sdk-s3 = "1"\n';
 const EMBEDDED_STEP =
@@ -1890,6 +2241,8 @@ async function checkRepoWith(
   const root = await makeTempRepo();
   try {
     await writeFile(root, "infra/cloudformation/host.yaml", CFN_TEMPLATE);
+    // The runner COMMAND script RUNNER_STEP names must exist (see #5112).
+    await writeFile(root, "test.sh", "echo ok\n");
     for (const [rel, text] of Object.entries(files)) {
       await writeFile(root, rel, text);
     }
@@ -1937,7 +2290,7 @@ Deno.test("checkAwsEmulatorInCI - a direct runner step in a pull_request job is 
   assertEquals(result.usesAws, true);
   assertEquals(result.wiring, "official-server");
   assertEquals(result.wiringEvidence, [
-    "`ci.yml` job `test`: `aws-emulator-run -- ./t.sh`",
+    "`ci.yml` job `test`: `aws-emulator-run -- ./test.sh`",
   ]);
   assertEquals(result.wiringDiagnostics, []);
 });
@@ -1945,7 +2298,7 @@ Deno.test("checkAwsEmulatorInCI - a direct runner step in a pull_request job is 
 Deno.test("checkAwsEmulatorInCI - a repository script that runs the emulator is official-server, with the script call as evidence", async () => {
   const result = await checkRepoWith({
     ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
-    "ci/t.sh": "#!/usr/bin/env bash\naws-emulator-run -- ./t.sh\n",
+    "ci/t.sh": "#!/usr/bin/env bash\naws-emulator-run -- ./test.sh\n",
   });
   assertEquals(result.wiring, "official-server");
   assertEquals(result.wiringEvidence, ["`ci.yml` job `test`: `./ci/t.sh`"]);
@@ -1961,7 +2314,7 @@ Deno.test("checkAwsEmulatorInCI - a workflow_call workflow called from a pull_re
   });
   assertEquals(called.wiring, "official-server");
   assertEquals(called.wiringEvidence, [
-    "`reusable.yml` job `test`: `aws-emulator-run -- ./t.sh`",
+    "`reusable.yml` job `test`: `aws-emulator-run -- ./test.sh`",
   ]);
 });
 
@@ -2065,8 +2418,8 @@ Deno.test("checkAwsEmulatorInCI - an embedded marker is refused when unpinned, u
 Deno.test("checkAwsEmulatorInCI - a comment naming the runner, an echo of it, or a command -v lookup is missing", async () => {
   for (
     const run of [
-      "# aws-emulator-run -- ./t.sh",
-      "echo aws-emulator-run -- ./t.sh",
+      "# aws-emulator-run -- ./test.sh",
+      "echo aws-emulator-run -- ./test.sh",
       "command -v aws-emulator-run",
     ]
   ) {
@@ -2408,7 +2761,7 @@ Deno.test("checkAwsEmulatorInCI - a runner followed by && and another line is re
 });
 
 Deno.test("checkAwsEmulatorInCI - a repository script without set -e that runs the runner then more lines is refused; with set -euo pipefail it is credited", async () => {
-  const body = `aws-emulator-run -- ./t.sh\necho done\n`;
+  const body = `aws-emulator-run -- ./test.sh\necho done\n`;
   const refused = await checkRepoWith({
     ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
     "ci/t.sh": `#!/usr/bin/env bash\n${body}`,
@@ -2434,7 +2787,7 @@ Deno.test("checkAwsEmulatorInCI - a runner started with exec is credited even wh
   const result = await checkRepoWith({
     ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
     "ci/t.sh":
-      "#!/usr/bin/env bash\nexec aws-emulator-run -- ./t.sh\necho never-reached\n",
+      "#!/usr/bin/env bash\nexec aws-emulator-run -- ./test.sh\necho never-reached\n",
   });
   assertEquals(result.wiring, "official-server");
 });
@@ -2603,13 +2956,13 @@ Deno.test("checkAwsEmulatorInCI - a script running runner || exit 1 then more li
   const credited = await checkRepoWith({
     ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
     "ci/t.sh":
-      "#!/usr/bin/env bash\naws-emulator-run -- ./t.sh || exit 1\necho done\n",
+      "#!/usr/bin/env bash\naws-emulator-run -- ./test.sh || exit 1\necho done\n",
   });
   assertEquals(credited.wiring, "official-server");
   const refused = await checkRepoWith({
     ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
     "ci/t.sh":
-      "#!/usr/bin/env bash\naws-emulator-run -- ./t.sh || exit 0\necho done\n",
+      "#!/usr/bin/env bash\naws-emulator-run -- ./test.sh || exit 0\necho done\n",
   });
   assertEquals(refused.wiring, "missing");
 });
@@ -2670,6 +3023,79 @@ Deno.test("checkAwsEmulatorInCI - a .tf file over the 1 MiB cap is not read, so 
     await writeFile(root, "infra/small/main.tf", aws);
     const result = await checkAwsEmulatorInCI(root);
     assertEquals(result.awsEvidence, ["infra/small/main.tf"]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - a manifest or CloudFormation candidate over the 1 MiB cap is not read, so it is not evidence; one at the cap still is (Issue #5360)", async () => {
+  const MIB = 1024 * 1024;
+  // Each kind carries AWS evidence in its head. The filler pads the file to an
+  // exact size inside a comment or a string, so the file still parses.
+  const kinds = [
+    {
+      slug: "pkg-json",
+      file: "package.json",
+      head: '{"dependencies":{"aws-sdk":"2.1.0"},"description":"',
+      filler: "x",
+      tail: '"}\n',
+    },
+    {
+      slug: "cargo",
+      file: "Cargo.toml",
+      head: '[dependencies]\naws-sdk-s3 = "1"\n',
+      filler: "#",
+      tail: "\n",
+    },
+    {
+      slug: "pom",
+      file: "pom.xml",
+      head:
+        "<project><dependencies><dependency><groupId>software.amazon.awssdk</groupId></dependency></dependencies><!--",
+      filler: "x",
+      tail: "--></project>\n",
+    },
+    {
+      slug: "requirements",
+      file: "requirements.txt",
+      head: "boto3==1.34.0\n",
+      filler: "#",
+      tail: "\n",
+    },
+    {
+      slug: "cfn-yaml",
+      file: "template.yaml",
+      head: 'AWSTemplateFormatVersion: "2010-09-09"\n',
+      filler: "#",
+      tail: "\n",
+    },
+    {
+      slug: "cfn-json",
+      file: "template.json",
+      head: '{"AWSTemplateFormatVersion":"2010-09-09","Description":"',
+      filler: "x",
+      tail: '"}\n',
+    },
+  ];
+  const root = await makeTempRepo();
+  try {
+    const expected: string[] = [];
+    for (const kind of kinds) {
+      const bodyLength = kind.head.length + kind.tail.length;
+      const build = (fillerLength: number) =>
+        kind.head + kind.filler.repeat(fillerLength) + kind.tail;
+      const big = `${kind.slug}/big/${kind.file}`;
+      const atCap = `${kind.slug}/at-cap/${kind.file}`;
+      const small = `${kind.slug}/small/${kind.file}`;
+      await writeFile(root, big, build(MIB + 1 - bodyLength));
+      await writeFile(root, atCap, build(MIB - bodyLength));
+      await writeFile(root, small, build(0));
+      assertEquals((await Deno.stat(`${root}/${big}`)).size, MIB + 1);
+      assertEquals((await Deno.stat(`${root}/${atCap}`)).size, MIB);
+      expected.push(atCap, small);
+    }
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.awsEvidence, expected.sort());
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -4031,5 +4457,669 @@ Deno.test("checkAwsEmulatorInCI - a gap record whose Floci job only installs a t
         prWorkflow(stepYaml(command), FLOCI_SERVICE),
     });
     assertEquals(result.wiring, "floci-gap", command);
+  }
+});
+
+// Issue #5348: a backslash-newline joins lines only as an odd run of backslashes
+// outside single quotes, and a `#` comment ends at its physical newline, so a
+// backslash at the end of a comment is comment text.
+const SHELL_CONTINUATION_CASES: [string, string, string[][]][] = [
+  [
+    "an even run of backslashes is not a continuation",
+    "a \\\\\nb",
+    [["a", "\\\\"], ["b"]],
+  ],
+  ["an odd run continues the line", "a \\\nb", [["a", "b"]]],
+  [
+    "three backslashes continue after an escaped pair",
+    "a \\\\\\\nb",
+    [["a", "\\\\b"]],
+  ],
+  [
+    "a comment ends at its physical newline",
+    "a # c \\\nb",
+    [["a"], ["b"]],
+  ],
+  ["a CRLF continuation joins with no blank", "a\\\r\nb", [["ab"]]],
+  [
+    "an escaped backslash at the end of a comment",
+    "a #c\\\\\nb",
+    [["a"], ["b"]],
+  ],
+  [
+    "a double-quoted word spanning a continuation",
+    'echo "x \\\ny"',
+    [["echo", '"x y"']],
+  ],
+];
+
+for (const [label, script, expected] of SHELL_CONTINUATION_CASES) {
+  Deno.test(`shellSegments - ${label} (Issue #5348)`, () => {
+    assertEquals(shellSegments(script), expected);
+  });
+}
+
+Deno.test("workflowRunsAwsEmulator - a line hidden by an escaped backslash runs its command (Issue #5348)", () => {
+  assertEquals(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("true \\\\\nexit 0\naws-emulator-run -- ./test.sh"),
+    ),
+    false,
+  );
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("true\naws-emulator-run -- ./test.sh"),
+    ),
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - a line hidden in a # comment that ends in a backslash runs its command (Issue #5348)", () => {
+  assertEquals(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("true # note \\\nexit 0\naws-emulator-run -- ./test.sh"),
+    ),
+    false,
+  );
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("true # note\naws-emulator-run -- ./test.sh"),
+    ),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #5112: the runner COMMAND must be the repository's test
+// ---------------------------------------------------------------------------
+
+const CONTROL_RUN = "aws-emulator-run -- deno task test";
+
+Deno.test("workflowRunsAwsEmulator - a probe, no-op or ignored-failure COMMAND is not credited; a test COMMAND is", () => {
+  const refused = [
+    "echo ok",
+    "aws --version",
+    "curl -f http://127.0.0.1:4566/health",
+    "sleep 1",
+    "sh -c 'exit 0'",
+    "bash -c 'deno task test || true'",
+    "pytest --version",
+  ];
+  for (const command of refused) {
+    assert(
+      workflowRunsAwsEmulator(workflowRunBlock(CONTROL_RUN)),
+      `control for ${command}`,
+    );
+    assertEquals(
+      workflowRunsAwsEmulator(
+        workflowRunBlock(`aws-emulator-run -- ${command}`),
+      ),
+      false,
+      command,
+    );
+    assertEquals(
+      workflowRunsAwsEmulator(
+        workflowRunBlock(`aws-emulator-run --timeout 900 -- ${command}`),
+      ),
+      false,
+      `--timeout ${command}`,
+    );
+  }
+  for (
+    const command of [
+      "deno task test",
+      "pytest -k aws",
+      "cargo test",
+      "./scripts/run-tests.sh",
+    ]
+  ) {
+    assert(
+      workflowRunsAwsEmulator(
+        workflowRunBlock(`aws-emulator-run -- ${command}`),
+      ),
+      command,
+    );
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - a probe-only runner is missing and the diagnostic names the command", async () => {
+  const root = await makeTempRepo();
+  try {
+    await setupAwsRepo(root, "aws-emulator-run -- aws --version");
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.wiring, "missing");
+    assert(
+      result.wiringDiagnostics.some((d) =>
+        d.includes("not a recognised repository test command") &&
+        d.includes("aws --version")
+      ),
+      result.wiringDiagnostics.join("\n"),
+    );
+    await setupAwsRepo(root, CONTROL_RUN);
+    assertEquals(
+      (await checkAwsEmulatorInCI(root)).wiring,
+      "official-server",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - a repository script COMMAND is credited only when it runs a kept test", async () => {
+  const cases: [string, string, string][] = [
+    ["runs the test", "set -euo pipefail\ndeno task test\n", "official-server"],
+    ["only echoes", "echo ok\n", "missing"],
+    ["ignores the failure", "deno task test || true\n", "missing"],
+  ];
+  for (const [label, script, wiring] of cases) {
+    const root = await makeTempRepo();
+    try {
+      await setupAwsRepo(root, "aws-emulator-run -- ./ci/run.sh");
+      await writeFile(root, "ci/run.sh", script);
+      const result = await checkAwsEmulatorInCI(root);
+      assertEquals(result.wiring, wiring, label);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - a self re-exec is credited only inside a test-named step script", async () => {
+  const script = (assign: string, ref: string) =>
+    `#!/usr/bin/env bash\nset -euo pipefail\n${assign}\nexec aws-emulator-run -- ${ref}\n`;
+  const cases: [string, string, string, string, string][] = [
+    [
+      "BASH_SOURCE variable",
+      "./ci/aws-test.sh",
+      "ci/aws-test.sh",
+      script('SELF="${BASH_SOURCE[0]}"', '"$SELF"'),
+      "official-server",
+    ],
+    [
+      "same script from a non-test step",
+      "./ci/run.sh",
+      "ci/run.sh",
+      script('SELF="${BASH_SOURCE[0]}"', '"$SELF"'),
+      "missing",
+    ],
+    [
+      "variable not assigned from the script",
+      "./ci/aws-test.sh",
+      "ci/aws-test.sh",
+      script("OTHER=/usr/bin/env", '"$OTHER"'),
+      "missing",
+    ],
+    [
+      "$0 form",
+      "./ci/aws-test.sh",
+      "ci/aws-test.sh",
+      "set -e",
+      "official-server",
+    ],
+    [
+      "echo $0 evasion",
+      "./ci/aws-test.sh",
+      "ci/aws-test.sh",
+      script('V="echo $0"', "$V"),
+      "missing",
+    ],
+    [
+      "true $0 evasion",
+      "./ci/aws-test.sh",
+      "ci/aws-test.sh",
+      script('V="true $0"', "$V"),
+      "missing",
+    ],
+    [
+      "reassigned variable evasion",
+      "./ci/aws-test.sh",
+      "ci/aws-test.sh",
+      script('SELF="$0"\nSELF=/bin/echo', '"$SELF"'),
+      "missing",
+    ],
+    [
+      "control: reassigned back to the script",
+      "./ci/aws-test.sh",
+      "ci/aws-test.sh",
+      script('SELF=/bin/echo\nSELF="$0"', '"$SELF"'),
+      "official-server",
+    ],
+    [
+      "control: quoted $0 value",
+      "./ci/aws-test.sh",
+      "ci/aws-test.sh",
+      script('V="$0"', "$V"),
+      "official-server",
+    ],
+  ];
+  for (const [label, step, file, text, wiring] of cases) {
+    const root = await makeTempRepo();
+    try {
+      await setupAwsRepo(root, step);
+      await writeFile(
+        root,
+        file,
+        label === "$0 form" ? script("", '"$0"') : text,
+      );
+      const result = await checkAwsEmulatorInCI(root);
+      assertEquals(result.wiring, wiring, label);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("workflowRunsAwsEmulator - hostile long self-reference scripts finish and are refused", () => {
+  const doc = parseYaml(
+    "on: pull_request\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: ./ci/aws-test.sh\n",
+  );
+  const read = (text: string) => (path: string) =>
+    path === "./ci/aws-test.sh" ? text : null;
+  const run = 'exec aws-emulator-run -- "$SELF"\n';
+  for (
+    const text of [
+      `${" ".repeat(50_000)}!SELF="$0"\n${run}`,
+      `export${" ".repeat(50_000)}!SELF="$0"\n${run}`,
+      `SELF=${"$".repeat(50_000)}\n${run}`,
+      `${"\n".repeat(50_000)}SELF=x\n${run}`,
+    ]
+  ) {
+    assertEquals(workflowRunsAwsEmulator(doc, read(text)), false);
+  }
+  // Positive control through the same reader.
+  assert(
+    workflowRunsAwsEmulator(doc, read(`SELF="$0"\n${run}`)),
+  );
+  const hostileWord = `"${"$".repeat(50_000)}"`;
+  assertEquals(
+    workflowRunsAwsEmulator(
+      doc,
+      read(`SELF="$0"\nexec aws-emulator-run -- ${hostileWord}\n`),
+    ),
+    false,
+  );
+});
+
+Deno.test("workflowRunsAwsEmulator - a variable that only mentions the script path is not a self re-exec", () => {
+  const doc = parseYaml(
+    "on: pull_request\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: ./ci/aws-test.sh\n",
+  );
+  const read = (text: string) => (path: string) =>
+    path === "./ci/aws-test.sh" ? text : null;
+  const run = 'exec aws-emulator-run -- "$V"\n';
+  for (
+    const value of [
+      '"${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"',
+      '"$(realpath "${BASH_SOURCE[0]}")"',
+      '"${DIR}/${0##*/}"',
+      '$(readlink -f "$0")',
+      "$BASH_SOURCE   ",
+    ]
+  ) {
+    assert(workflowRunsAwsEmulator(doc, read(`V=${value}\n${run}`)), value);
+  }
+  for (
+    const value of [
+      '"$(dirname "${BASH_SOURCE[0]}")/probe.sh"',
+      '"$0.probe"',
+      "$BASH_SOURCE/x",
+      '"${0##*/}"',
+      '"$A/$B/${0##*/}"',
+      '"$(realpath "$0" x)"',
+      "'$0'",
+      '"echo $0"',
+    ]
+  ) {
+    assertEquals(
+      workflowRunsAwsEmulator(doc, read(`V=${value}\n${run}`)),
+      false,
+      value,
+    );
+  }
+  // Hostile long values finish and are refused.
+  for (
+    const value of [
+      `${"$".repeat(50_000)}x`,
+      `$BASH_SOURCE${'"'.repeat(50_000)}x`,
+      `${"${0".repeat(20_000)}x`,
+      `${" ".repeat(50_000)}x`,
+      `"$${"A".repeat(50_000)}/x"`,
+      `"$(realpath ${" ".repeat(50_000)}x)"`,
+      `"$(realpath ${"(".repeat(50_000)}"`,
+      `"$A/${"${0##*/".repeat(10_000)}x`,
+    ]
+  ) {
+    assertEquals(
+      workflowRunsAwsEmulator(doc, read(`V=${value}\n${run}`)),
+      false,
+    );
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - a runner COMMAND script is read one level only (step, script, runner, script is not followed)", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "ci/run.sh", "set -e\ndeno task test\n");
+    // Direct in the step: credited.
+    await setupAwsRepo(root, "aws-emulator-run -- ./ci/run.sh");
+    assertEquals(
+      (await checkAwsEmulatorInCI(root)).wiring,
+      "official-server",
+    );
+    // Through a step script: the inner runner's script is not read.
+    await setupAwsRepo(root, "./ci/aws-test.sh");
+    await writeFile(
+      root,
+      "ci/aws-test.sh",
+      "#!/usr/bin/env bash\nexec aws-emulator-run -- ./ci/run.sh\n",
+    );
+    assertEquals((await checkAwsEmulatorInCI(root)).wiring, "missing");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - a test-named runner COMMAND script must exist in the checkout", async () => {
+  const root = await makeTempRepo();
+  try {
+    await setupAwsRepo(root, "aws-emulator-run -- ./scripts/run-tests.sh");
+    assertEquals((await checkAwsEmulatorInCI(root)).wiring, "missing");
+    await writeFile(root, "scripts/run-tests.sh", "echo ok\n");
+    assertEquals(
+      (await checkAwsEmulatorInCI(root)).wiring,
+      "official-server",
+    );
+    // An absolute tool path is not a repository script: it keeps rule a's credit.
+    await setupAwsRepo(
+      root,
+      "aws-emulator-run -- /usr/local/bin/pytest -k aws",
+    );
+    assertEquals(
+      (await checkAwsEmulatorInCI(root)).wiring,
+      "official-server",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - the in-script diagnostic names the script path and the COMMAND", async () => {
+  const root = await makeTempRepo();
+  try {
+    await setupAwsRepo(root, "./ci/aws-test.sh");
+    await writeFile(
+      root,
+      "ci/aws-test.sh",
+      "#!/usr/bin/env bash\nexec aws-emulator-run -- aws --version\n",
+    );
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.wiring, "missing");
+    assert(
+      result.wiringDiagnostics.some((d) =>
+        d.includes(
+          "through aws-emulator-run in `./ci/aws-test.sh`, which is not a recognised repository test command",
+        ) && d.includes("aws --version")
+      ),
+      result.wiringDiagnostics.join("\n"),
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("checkAwsEmulatorInCI - an exec inside X=$(...) does not exec the runner (Issue #5378)", async () => {
+  // No set -e: only `exec` makes the runner's status the script's status.
+  const inScript = async (body: string) =>
+    (await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\n`,
+    })).wiring;
+  assertEquals(
+    await inScript(`exec ${RUNNER_STEP}\necho more`),
+    "official-server",
+    "exec runner",
+  );
+  assertEquals(
+    await inScript(`${RUNNER_STEP}\necho more`),
+    "missing",
+    "runner, then more",
+  );
+  assertEquals(
+    await inScript(`X=$(echo exec v) ${RUNNER_STEP}\necho more`),
+    "missing",
+    "exec inside the substitution",
+  );
+});
+
+// Issue #5378 (pre-PR verifier): every caller of commandIndex /
+// keptCommands reads the command after an `X=$(cat v)` assignment, each
+// paired with an `echo` control that leaves the real command an argument.
+Deno.test("checkAwsEmulatorInCI - each commandIndex caller reads the command after X=$(cat v); an echo control does not (Issue #5378)", async () => {
+  const wiring = async (files: Record<string, string>) =>
+    (await checkRepoWith(files)).wiring;
+  const step = (body: string) => ({
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+  });
+  const cases: Array<[string, Record<string, string>, string]> = [
+    // segmentScriptPath: the step's script path follows the assignment.
+    ["step script path", {
+      ...step("X=$(cat v) ./ci/t.sh"),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${RUNNER_STEP}\n`,
+    }, "official-server"],
+    ["step script path, echo control", {
+      ...step("X=$(cat v) echo ./ci/t.sh"),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${RUNNER_STEP}\n`,
+    }, "missing"],
+    // keptCommands on the runner COMMAND script.
+    ["runner COMMAND script", {
+      ...step("aws-emulator-run -- ./ci/run.sh"),
+      "ci/run.sh": "#!/usr/bin/env bash\nX=$(cat v) npm test\n",
+    }, "official-server"],
+    ["runner COMMAND script, echo control", {
+      ...step("aws-emulator-run -- ./ci/run.sh"),
+      "ci/run.sh": "#!/usr/bin/env bash\nX=$(cat v) echo npm test\n",
+    }, "missing"],
+    // looksLikeTestCommand on the runner COMMAND itself.
+    ["runner COMMAND after env X=$(cat v)", {
+      ...step("aws-emulator-run -- env X=$(cat v) npm test"),
+    }, "official-server"],
+    ["runner COMMAND after env X=$(cat v), echo control", {
+      ...step("aws-emulator-run -- env X=$(cat v) echo npm test"),
+    }, "missing"],
+    // commandIsSelfReference: the self re-exec behind env X=$(cat v).
+    ["self re-exec", {
+      ...step("./ci/aws-test.sh"),
+      "ci/aws-test.sh":
+        '#!/usr/bin/env bash\nset -euo pipefail\nexec aws-emulator-run -- env X=$(cat v) "$0"\n',
+    }, "official-server"],
+    ["self re-exec, echo control", {
+      ...step("./ci/aws-test.sh"),
+      "ci/aws-test.sh":
+        '#!/usr/bin/env bash\nset -euo pipefail\nexec aws-emulator-run -- env X=$(cat v) echo "$0"\n',
+    }, "missing"],
+    // handlerExitsZero: the trap handler's exit follows the assignment.
+    [
+      "trap handler exit 0",
+      step(`trap 'X=$(cat v) exit 0' EXIT\n${RUNNER_STEP}`),
+      "missing",
+    ],
+    [
+      "trap handler, echo control",
+      step(`trap 'X=$(cat v) echo exit 0' EXIT\n${RUNNER_STEP}`),
+      "official-server",
+    ],
+    // The errexit and trap scan: `set +e` and `trap` behind the assignment.
+    ["set +e", step(`X=$(cat v) set +e\n${RUNNER_STEP}\necho done`), "missing"],
+    [
+      "set +e, echo control",
+      step(`X=$(cat v) echo set +e\n${RUNNER_STEP}\necho done`),
+      "official-server",
+    ],
+    [
+      "trap exit 0",
+      step(`X=$(cat v) trap 'exit 0' EXIT\n${RUNNER_STEP}`),
+      "missing",
+    ],
+    [
+      "trap exit 0, echo control",
+      step(`X=$(cat v) echo trap 'exit 0' EXIT\n${RUNNER_STEP}`),
+      "official-server",
+    ],
+    // The body's exit before the runner.
+    [
+      "exit 0 before the runner",
+      step(`X=$(cat v) exit 0\n${RUNNER_STEP}`),
+      "missing",
+    ],
+    [
+      "exit 0, echo control",
+      step(`X=$(cat v) echo exit 0\n${RUNNER_STEP}`),
+      "official-server",
+    ],
+    // keptCommands on a Floci job's test step.
+    ["Floci test step", {
+      ".github/workflows/ci.yml": GAP_RECORD +
+        prWorkflow(stepYaml("X=$(cat v) npm test"), FLOCI_SERVICE),
+    }, "floci-gap"],
+    ["Floci test step, echo control", {
+      ".github/workflows/ci.yml": GAP_RECORD +
+        prWorkflow(stepYaml("X=$(cat v) echo npm test"), FLOCI_SERVICE),
+    }, "floci-only"],
+  ];
+  for (const [label, files, expected] of cases) {
+    assertEquals(await wiring(files), expected, label);
+  }
+});
+
+// Issue #5382: a `case` arm's pattern is not the command word.
+Deno.test("reachableCommands - strips a case arm's pattern (Issue #5382)", () => {
+  const cases: [string, string, string[][]][] = [
+    [
+      "one-line arm",
+      "case $1 in\n  test) aws-emulator-run -- ./t.sh ;;\nesac",
+      [["aws-emulator-run", "--", "./t.sh"]],
+    ],
+    ["three alternatives", "case $1 in\n  a|b|c) cmd ;;\nesac", [["cmd"]]],
+    [
+      "spaced close paren",
+      "case $1 in\n  test ) cmd ;;\nesac",
+      [["cmd"]],
+    ],
+    [
+      "second arm",
+      "case $1 in\n  a) x ;;\n  b) y ;;\nesac",
+      [["x"], ["y"]],
+    ],
+    ["header on the same line", "case $1 in a) cmd ;; esac", [["cmd"]]],
+    [
+      "pattern alone on its line",
+      "case $1 in\n  test)\n    cmd\n    ;;\nesac",
+      [["cmd"]],
+    ],
+    [
+      "control: multi-line body",
+      "case $1 in\n  a)\n    echo x\n    cmd\n    ;;\nesac",
+      [["echo", "x"], ["cmd"]],
+    ],
+    [
+      "control: nested case",
+      "case $1 in\n  a) case $2 in\n    b) cmd ;;\n  esac ;;\nesac",
+      [["cmd"]],
+    ],
+  ];
+  for (const [label, script, expected] of cases) {
+    const found = reachableCommands(script);
+    assertEquals(found.map((c) => c.words), expected, label);
+  }
+  const runner = reachableCommands(
+    "case $1 in\n  test) aws-emulator-run -- ./t.sh ;;\nesac",
+  )[0];
+  assertEquals(commandIndex(runner?.words ?? []), 0);
+
+  const alternatives = reachableCommands("case $1 in\n  a|b) cmd ;;\nesac");
+  assertEquals(alternatives.map((c) => c.words), [["cmd"]]);
+  assertEquals(alternatives[0]?.sep, ";;");
+
+  const paren = reachableCommands("case $1 in\n  (test) cmd ;;\nesac");
+  assertEquals(paren.map((c) => c.words), [["cmd"]]);
+  assertEquals(paren[0]?.subshells, []);
+});
+
+Deno.test("checkAwsEmulatorInCI - a one-line case arm runs the runner in a step and a script (Issue #5382)", async () => {
+  const bodies = [
+    `case "$1" in\n  test) ${RUNNER_STEP} ;;\nesac`,
+    `case "$1" in\n  a|test) ${RUNNER_STEP} ;;\nesac`,
+    `case "$1" in\n  (test) ${RUNNER_STEP} ;;\nesac`,
+    `case "$1" in test) ${RUNNER_STEP} ;; esac`,
+  ];
+  for (const body of bodies) {
+    const inWorkflow = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml(body)),
+    });
+    assertEquals(inWorkflow.wiring, "official-server", `workflow: ${body}`);
+    const inScript = await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`,
+    });
+    assertEquals(inScript.wiring, "official-server", `script: ${body}`);
+  }
+  const control = await checkRepoWith({
+    ".github/workflows/ci.yml": prWorkflow(
+      stepYaml(`case "$1" in\n  test) echo ${RUNNER_STEP} ;;\nesac`),
+    ),
+  });
+  assertEquals(control.wiring, "missing", "control");
+});
+
+Deno.test("checkAwsEmulatorInCI - failure-exit idioms inside a one-line case arm (Issue #5382)", async () => {
+  const inScript = async (body: string) =>
+    (await checkRepoWith({
+      ".github/workflows/ci.yml": prWorkflow(stepYaml("./ci/t.sh")),
+      "ci/t.sh": `#!/usr/bin/env bash\n${body}\necho done\n`,
+    })).wiring;
+  assertEquals(
+    await inScript(
+      `case "$1" in\n  test) if ! ${RUNNER_STEP}; then exit 1; fi ;;\nesac`,
+    ),
+    "official-server",
+    "if !",
+  );
+  assertEquals(
+    await inScript(`case "$1" in\n  test) ${RUNNER_STEP} || exit 1 ;;\nesac`),
+    "official-server",
+    "|| exit",
+  );
+  assertEquals(
+    await inScript(`case "$1" in\n  test) ! ${RUNNER_STEP} || exit 1 ;;\nesac`),
+    "missing",
+    "! cmd || exit",
+  );
+});
+
+Deno.test("a runner must execute a repository test and propagate failure", async () => {
+  const cases = [
+    ["X=$(cat v) aws-emulator-run -- ./test.sh", "official-server"],
+    ["X=$(echo ${Y/)/} aws-emulator-run -- ./test.sh)", "missing"],
+    ["X=$(echo ${Y%)} aws-emulator-run -- ./test.sh)", "missing"],
+    ["X=$(case a in a) aws-emulator-run -- ./test.sh ;; esac) true", "missing"],
+    ["X=$(echo $'a\\') aws-emulator-run -- ./test.sh #')", "missing"],
+    ["case a in test) aws-emulator-run -- ./test.sh & ;; esac", "missing"],
+    ["case a in a|b) aws-emulator-run -- ./test.sh & ;; esac", "missing"],
+    ["case a in a) aws-emulator-run -- ./test.sh ;; esac", "official-server"],
+    ["aws-emulator-run -- bash -c './test.sh || true'", "missing"],
+    ["aws-emulator-run -- sh -c 'exit 0 # ./test.sh'", "missing"],
+    ["aws-emulator-run -- bash -n ./test.sh", "missing"],
+    ["aws-emulator-run -- bash -o noexec ./test.sh", "missing"],
+    ["aws-emulator-run -- bash ./test.sh", "official-server"],
+  ] as const;
+  for (const [body, expected] of cases) {
+    for (const script of [false, true]) {
+      const result = await checkRepoWith({
+        ".github/workflows/ci.yml": prWorkflow(
+          stepYaml(script ? "bash ./ci/run.sh" : body),
+        ),
+        "ci/run.sh": `#!/usr/bin/env bash\nset -e\n${body}\n`,
+        "test.sh": "#!/usr/bin/env bash\ndeno task test\n",
+      });
+      assertEquals(result.wiring, expected, `script=${script}: ${body}`);
+    }
   }
 });

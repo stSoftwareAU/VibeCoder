@@ -291,11 +291,13 @@ import {
 import {
   type CooldownConfig,
   type CooldownFailureKind,
+  isHeldByAnyCooldown,
   isWorkflowScopeRefused,
   loadState as loadCooldownState,
   recordIssueCooldown as cooldownRecordFn,
   recordWorkflowScopeRefusal,
 } from "./cooldown_state.ts";
+import { prepareLabelRouteFailureCooldown } from "./label_route_failure_cooldown.ts";
 import {
   enforceTokenScopeFleetBound,
   isParkedForMissingWorkflowScope,
@@ -388,7 +390,9 @@ let lastGraphqlQuotaReading: GraphqlQuotaReading | null = null;
 import {
   checkLivenessWindow,
   formatLivenessPressureFields,
+  LIVENESS_TICK_MARKER,
   readLivenessTickPressure,
+  withRunPressureTicks,
 } from "./liveness_guard.ts";
 
 // Crash handling
@@ -776,6 +780,21 @@ export interface ProductionDepsOptions {
    * prefetch, not factory-wide.
    */
   fleetPrefetchGhCommandFn?: (args: string[]) => Promise<string>;
+
+  /**
+   * `gh` runner for the built-in label routes' scan and issue read
+   * (Issue #5376). Production leaves it unset and gets {@link runGhCommand}.
+   * A wiring test injects a stub so `findAndProcessPlanning` and
+   * `findAndProcessQuestion` can be driven end to end, which is the only way
+   * to pin that those routes opt into the failure cooldown.
+   */
+  labelRouteGhCommandFn?: (args: string[]) => Promise<string>;
+  /**
+   * GitHub client the built-in label routes hand their processors
+   * (Issue #5376). Production leaves it unset and gets
+   * {@link createGitHubClient}.
+   */
+  labelRouteGitHubClient?: GitHubClient;
 
   /**
    * Overrides the `gh` runner used by the auto-merge sweep (list, live read,
@@ -1848,14 +1867,20 @@ export async function createProductionRunCoreDeps(
       cooldownConfig.workDir,
       cooldownConfig.issueRetryCooldown,
     );
-    const cooldownSet = new Set(
-      cooldownState.entries.map((e) => `${e.repo}|${e.issueNumber}`),
-    );
+    // Issue #5376: the entry's own window, not "any entry exists" — a kinded
+    // entry is kept for the 48 h escalation history.
+    const inCooldown = (repo: string, issueNumber: number): boolean =>
+      isHeldByAnyCooldown(
+        cooldownState,
+        cooldownConfig.issueRetryCooldown,
+        repo,
+        issueNumber,
+      );
     // Issue #2689: this install's workflow-scope refusals hold too, so the
     // census and idle detection model the same skip the scan makes.
     const refused = workflowScopeRefusalsIn(cooldownState);
     return (repo, issueNumber) =>
-      cooldownSet.has(`${repo}|${issueNumber}`) ||
+      inCooldown(repo, issueNumber) ||
       processedIssues.has(repo, issueNumber) ||
       refused(repo, issueNumber);
   };
@@ -2086,25 +2111,46 @@ export async function createProductionRunCoreDeps(
     /**
      * Apply the `work-on` new-work eligibility gates (Issue #937).
      *
-     * The built-in label routes answer an issue and remove their own label,
-     * so re-dispatch stops itself. A custom label route raises a PR and
-     * leaves its label in place, so without these gates the next cycle
-     * re-ran the whole implementation pipeline against the still-open PR.
+     * The built-in label routes answer an issue and remove their own label
+     * on success, so re-dispatch stops itself; a failed planning or question
+     * run keeps its label and is paced by `failureCooldown` instead. A custom
+     * label route raises a PR and leaves its label in place, so without these
+     * gates the next cycle re-ran the whole implementation pipeline against
+     * the still-open PR.
      */
     gateNewWork = false,
+    /**
+     * Hold and record the escalating failure cooldown for a route whose
+     * processor records a failure through `handleIssueFailure` (Issue #5376)
+     * — planning and question. A failed run keeps its label, so without it
+     * the next cycle re-runs the agent.
+     */
+    failureCooldown = false,
   ): Promise<PriorityHandlerResult> {
     // The retry cooldown this run holds over an issue, plus the issues this
     // process has already worked — the same set the claim scan filters on
     // (Issue #655). Loaded only for a gated scan; the label-removing routes
     // never took it and must keep their behaviour.
     const runLocalHold = gateNewWork ? await loadRunLocalHolds() : undefined;
+    const routeFailureCooldown = failureCooldown
+      ? await prepareLabelRouteFailureCooldown({
+        cooldownConfig,
+        workerDeps,
+        logger,
+      })
+      : undefined;
 
+    const labelRouteGh = options.labelRouteGhCommandFn ?? runGhCommand;
     const result = await findIssuesByLabel(config, label, {
       githubUser,
-      ghCommandFn: runGhCommand,
+      ghCommandFn: labelRouteGh,
       cache: issueCache,
       timelineCache,
       timelineBatchRegistry,
+      ...(routeFailureCooldown
+        ? { isIssueInCooldown: routeFailureCooldown.isHeld }
+        : {}),
+      // The gated hold is a superset, so it wins when both are set.
       ...(gateNewWork
         ? {
           gateNewWork: true,
@@ -2134,9 +2180,18 @@ export async function createProductionRunCoreDeps(
 
     logger.info(`Processing ${label} issue: ${repo}#${issueNumber}`);
 
-    const issueData: IssueData = await fetchIssueData(repo, issueNumber);
-    const ghClient = createGitHubClient(logger);
-    const processorDeps = { ghClient, logger, deps: workerDeps };
+    const issueData: IssueData = await fetchIssueData(
+      repo,
+      issueNumber,
+      labelRouteGh,
+    );
+    const ghClient = options.labelRouteGitHubClient ??
+      createGitHubClient(logger);
+    const processorDeps = {
+      ghClient,
+      logger,
+      deps: routeFailureCooldown?.workerDeps ?? workerDeps,
+    };
 
     const ctx: IssueContext = {
       repo,
@@ -4385,6 +4440,8 @@ export async function createProductionRunCoreDeps(
         config.planningLabel,
         processIssuePlanning,
         opts?.deadlineEpochMs,
+        false,
+        true,
       );
       return { ok: true, value: result };
     },
@@ -4443,6 +4500,9 @@ export async function createProductionRunCoreDeps(
       const result = await findAndProcessByLabel(
         config.questionLabel,
         processIssueQuestion,
+        undefined,
+        false,
+        true,
       );
       return { ok: true, value: result };
     },
@@ -7096,7 +7156,7 @@ export async function createProductionRunCoreDeps(
             await readLivenessTickPressure(),
           );
           logger.info(
-            `[liveness] tick=${tick} alerted=${v.alerted} ` +
+            `${LIVENESS_TICK_MARKER}${tick} alerted=${v.alerted} ` +
               `live_epoch=${v.liveEpoch ?? "none"} ` +
               `last_idle_claimed=${v.lastIdleClaimedEpoch ?? "none"} ` +
               `last_productive=${v.lastProductiveEpoch ?? "none"} ` +
@@ -7141,6 +7201,17 @@ export async function createProductionRunCoreDeps(
       } catch { /* already closed */ }
     }
   };
+
+  // Issue #4815: the end-of-cycle tick never runs during an issue run, so a
+  // guest that freezes mid-run left no reading taken after the claim. Each
+  // run logs its own pressure line every minute until it settles, and the
+  // hard-kill facts read the newest one back from the worker log tail.
+  const processIssueUnticked = deps.processIssue;
+  deps.processIssue = (issue, cycleDeadlineEpochMs, laneId) =>
+    withRunPressureTicks(
+      () => processIssueUnticked(issue, cycleDeadlineEpochMs, laneId),
+      { log: (message) => logger.info(message) },
+    );
 
   return { deps, config: coreConfig, cleanup };
 }

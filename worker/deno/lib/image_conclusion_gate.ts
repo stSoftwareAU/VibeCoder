@@ -37,20 +37,22 @@
  * content and closes the parent — also with no human step — so
  * {@link gatePlanningHandoff} withholds it on the same signal.
  *
- * The other conclusions on that path already land in front of a human: the
- * analysis-only hand-off and the blocked deferral both leave the issue open,
- * and a cross-repo PR is reviewed before it merges. Gating them would cost
- * false positives and buy nothing, so this gate does not.
+ * The other conclusions on that path do not retire the issue unreviewed: the
+ * blocked and time deferrals and the not-finished retry (Issue #4227) leave the
+ * issue open, and a cross-repo PR is reviewed before it merges. Gating them
+ * would cost false positives and buy nothing, so this gate does not.
  *
  * ## Why withholding, not corroborating
  *
  * There is no trustworthy corroboration available in-process. The cited
  * evidence is the agent's own output, and under injection that is precisely
  * the channel in doubt; the issue body is attacker-controlled by assumption.
- * So the gate withholds the close and lets the run fall through to the
- * existing analysis-only hand-off — the issue stays open, `needs-human` is
- * applied, and a person decides. Nothing is lost: the agent's analysis is
- * still posted, and a human close is one click.
+ * So the gate withholds the close and the run falls through to the
+ * not-finished handling — the issue stays open and is retried as not finished
+ * (Issue #4227), with no `needs-human` label and no human hand-off, and an
+ * issue marked analysis-only is not closed on its analysis either
+ * (Issue #4298). Nothing is lost: on the ordinary retry path the agent's last
+ * output is posted in the not-finished comment the next run reads.
  *
  * The gate is deliberately conjunctive — untrusted author **and** an image in
  * the body **and** a no-changes run claiming the issue is already resolved —
@@ -97,8 +99,8 @@ export function gateAlreadyResolvedClose(
       `"already resolved" claim: the untrusted issue body carried ` +
       `${imageCount} image reference(s), so a conclusion the worker would act ` +
       `on may have been drawn from an image whose instructions the agent can ` +
-      `be told not to report (Issue #1385). Handing off for human review ` +
-      `instead — the issue stays open.`,
+      `be told not to report (Issue #1385). Withholding the close — the ` +
+      `issue stays open and is retried as not finished (Issue #4227).`,
   };
 }
 

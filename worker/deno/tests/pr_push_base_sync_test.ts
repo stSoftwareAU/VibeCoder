@@ -101,6 +101,7 @@ Deno.test("a fix on a branch behind its base is pushed with the base merged in, 
       "Fix CI failure",
       {
         cwd: clone,
+        env: NO_HOST_GIT_CONFIG,
         expectedAncestor: startedAt,
         syncBaseBranch: "main",
       } as PushLineageOptions,
@@ -135,7 +136,10 @@ Deno.test("a pass with nothing to push does not push a branch update on its own"
   try {
     const before = await git(clone, "rev-parse", "HEAD");
     assertEquals(
-      await mergeBaseBeforePush("feature", "main", { cwd: clone }),
+      await mergeBaseBeforePush("feature", "main", {
+        cwd: clone,
+        env: NO_HOST_GIT_CONFIG,
+      }),
       undefined,
     );
     assertEquals(await git(clone, "rev-parse", "HEAD"), before);
@@ -153,6 +157,7 @@ Deno.test("a conflicting base is not merged; the fix is left for the conflict la
     const head = await git(clone, "rev-parse", "HEAD");
     const outcome = await mergeBaseBeforePush("feature", "main", {
       cwd: clone,
+      env: NO_HOST_GIT_CONFIG,
     });
     assertEquals(outcome?.kind, "declined");
     assertEquals(await git(clone, "rev-parse", "HEAD"), head);

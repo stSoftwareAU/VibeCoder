@@ -1053,9 +1053,9 @@ late: the deploy/publish workflows have already fired. Enforcement is
   `stale`, or a value GitHub adds in future — fails closed instead of falling
   through to `passed`.
 - **Zero checks is not green.** A head commit with no check runs
-  and no commit statuses reports `no_checks`, not `passed`, unless a failed
-  GitHub Actions suite applies (next bullet); the gate blocks and
-  the automated path escalates to a human. Only the explicit
+  and no commit statuses reports `no_checks`, not `passed`, unless a failed or
+  unfinished GitHub Actions suite applies (next bullets); the gate blocks and
+  the automated path requests a branch update and retries. Only the explicit
   `--allow-no-checks` operator override on `merge-if-checks-passed` relaxes it,
   and that command is itself gated on the monitored-repo allowlist and PR
   authorship.
@@ -1065,9 +1065,17 @@ late: the deploy/publish workflows have already fired. Enforcement is
   (typically `startup_failure`, which creates no check run) makes
   `determineCiStatus` return `failed`. This is checked before the `no_checks`
   return, so the `--allow-no-checks` override never relaxes it. Suites from
-  other apps and unfinished suites are ignored. The suites come from GraphQL
+  other apps are ignored. The suites come from GraphQL
   `checkSuites` (REST fallback `commits/{sha}/check-suites`), and the review
   gate skips such a PR as `ci-failed`.
+- **Unfinished Actions suites are pending even beside green checks.** A
+  `github-actions` suite whose status is not `completed` raises an otherwise
+  passing worker verdict to `pending`, including a zero-run workflow waiting
+  to start and a rerun whose earlier checks passed. Failures retain precedence.
+  The review gate uses the same rule and returns `waiting-ci` after checking
+  failures and cancellations. An unfinished suite also prevents `no_checks`,
+  so `--allow-no-checks` cannot bypass active CI. Elapsed time never makes an
+  unfinished Actions suite green.
 - **The merge is pinned to the checked commit.** The gate reports
   the head SHA it read the checks for, and `directMergePr()` merges with
   `gh pr merge --squash --match-head-commit <sha>`, or with `--merge` for a
@@ -1884,8 +1892,12 @@ not trigger it. It then checks the static wiring of the repo's GitHub Actions
 workflows; it does not read any CI result. The official AWS Emulator passes in
 one of two forms. Server mode is a reachable `run:` step that invokes
 `aws-emulator-run [--ready-timeout N] [--timeout N] -- COMMAND` with a COMMAND
-that is not a no-op, directly or through a repository script the step runs (one
-level deep, confined to the checkout). Embedded mode, for Rust repos only, is a
+that is the repository's test (a recognised test command, an existing
+test-named repository script credited by its name, a repository script that
+runs one, or a test-named step script that re-executes itself under the runner
+through a variable whose last assignment is exactly its own path; `echo`,
+version and health probes earn nothing), directly or through a repository
+script the step runs (one script read per step, confined to the checkout). Embedded mode, for Rust repos only, is a
 `# aws-emulator-embedded: version=<X.Y.Z>; justification=<text>` marker on a
 status-preserving `cargo test` or `cargo nextest` step. Either form passes only
 when the workflow runs on `pull_request` (directly, or through a `workflow_call`

@@ -17,7 +17,10 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { isPrBranchConflictError, updatePrBranch } from "../lib/git_pull.ts";
 import { isLocalAheadOfRemoteError } from "../lib/git_branch_sync.ts";
-import { runFixtureGit } from "./support/no_host_git_config.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  runFixtureGit,
+} from "./support/no_host_git_config.ts";
 
 async function git(args: string[], cwd: string): Promise<string> {
   const result = await runFixtureGit(args, { cwd });
@@ -92,6 +95,7 @@ Deno.test("updatePrBranch - refuses a local branch ahead of the PR's remote head
   try {
     const result = await updatePrBranch("issue-556-fix", "main", {
       cwd: localPath,
+      env: NO_HOST_GIT_CONFIG,
     });
 
     assertEquals(result.ok, false);
@@ -165,6 +169,7 @@ Deno.test("updatePrBranch - a genuine conflict on the remote head is still left 
 
     const result = await updatePrBranch("issue-9-collide", "main", {
       cwd: localPath,
+      env: NO_HOST_GIT_CONFIG,
     });
 
     assertEquals(result.ok, false);

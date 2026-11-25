@@ -2859,8 +2859,12 @@ When a comment is found:
 
 For an authorised `CHANGES_REQUESTED` review (`pr_review`), the worker also
 runs the disposable verifier after committing and formatting, before pushing
-(Issue #3784). It supplies the complete earlier problem/Fix pairs and requires
-one evidenced `fixed` verdict per numbered finding. Missing, duplicate,
+(Issue #3784). The agent of that pass does not push: its spawn denies
+`git push`, `gh pr merge` and `gh api` both as typed and in the `rtk`-prefixed
+form RTK's hook rewrites them to (`rtk git push`), and the feedback prompt
+tells it to commit and cite each fix instead (Issue #5571). The verifier
+supplies the complete earlier problem/Fix pairs and requires one evidenced
+`fixed` verdict per numbered finding. Missing, duplicate,
 `partly` or `not fixed` verdicts become blocking findings. An unavailable
 verifier does not block this path: it is logged as not checked, the fix is
 pushed, and the fleet review of the pushed head decides (Issue #4509). One
@@ -5389,6 +5393,183 @@ flowchart TD
   (`gh pr merge --disable-auto`), so a close GitHub refuses leaves a PR that
   can no longer land rather than one that still can.
 
+#### Red default branch: hold sync PRs, repair once (Issue #5437)
+
+When the default branch is red, every `sync/milestone-*` PR inherits the
+failure, and so does any other PR into the default branch that fails a check the
+default branch also fails. The CI-fix scan used to hand each of those PRs to the
+CI-fix agent separately, so the same fix was written onto a sync branch and onto
+the default branch. `findFailedCiChecks` now holds those inherited failures and
+repairs the default branch once, through one repair PR, or through a human fix
+PR that already passes them
+([`red_default_branch_repair.ts`](../worker/deno/lib/red_default_branch_repair.ts)).
+
+```mermaid
+flowchart TD
+    S["Red PR check"] --> K{"Sync PR?"}
+    K -- no --> N{"Red on the default tip and its merge base?"}
+    N -- yes --> H
+    N -- "no, or unreadable (warned)" --> O["Ordinary path: CI-fix agent"]
+    K -- yes --> A{"Sync head vs default branch"}
+    A -- "on-default: identical or behind" --> H["Inherited: held"]
+    A -- "contains-default: ahead" --> T{"Same check red on the default tip?"}
+    T -- yes --> H
+    T -- no --> O
+    T -- "tip unreadable" --> U["Stand down this scan, retried next scan"]
+    A -- "diverged" --> X{"Tip green on this PR's checks?"}
+    X -- yes --> M["Merge the default branch into the sync branch, server-side"]
+    X -- no --> D["Stale: held for the repair PR on its red checks, no CI-fix target, no merge yet"]
+    A -- "unknown" --> U["Stand down this scan, retried next scan"]
+    H --> F{"Head behind the tip?"}
+    F -- yes --> FF["Fast-forward to the tip, force=false"]
+    H --> R{"Tip red on a held check?"}
+    R -- yes --> G{"Open human (not fleet or bot) fix PR whose title or branch names a held check, or which references a held PR, green on every held check or still running with none failed?"}
+    G -- yes --> C["One status comment, edited in place; no repair PR"]
+    C --> W["A fleet status on any other PR is withdrawn, naming the fix"]
+    P --> W
+    G -- no --> P["One repair PR per repo: fix/red-default-branch-sha12"]
+    P --> Q["Its own red CI goes to the CI-fix agent first"]
+    style P fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style C fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style U fill:#9d0208,stroke:#6a040f,color:#fff
+```
+
+- **Held, not handed over.** An inherited check is skipped with the reason
+  `inherited-red-default-branch` and is not returned to the CI-fix agent. An
+  on-default head (identical or behind the tip) holds every failing check on it.
+  A contains-default head (ahead: a fresh merge of the current tip) holds only
+  the checks the default tip also has red. A sync-only failure, one the tip does
+  not share, takes the ordinary path and is still fixed.
+- **Non-sync PRs into the default branch.** A PR into the default branch that is
+  not a sync PR is held for a check only when that check is red on both the tip
+  and the PR's merge base with the default branch. The merge base is read with
+  `gh api repos/<repo>/compare/<default>...<head> --jq .merge_base_commit.sha`,
+  then the merge base's failed check runs are read, once per merge-base sha for
+  the scan. A PR cut from a green commit that breaks a check itself is therefore
+  not held, even when the tip is red on that check. Both reads happen only when
+  such a PR has a failing check that would otherwise be pushed, and the merge
+  base is read only for a check the tip already has red. If a read fails, or the
+  merge base is not a full commit SHA, the PR takes the ordinary path with a
+  warning quoting the cause. It is never held on unknown.
+- **Diverged is stale: held while main is red, refreshed once main is green.** A
+  diverged head lacks commits the default branch has since gained, so its
+  failures are never handed over. They are logged as `stale-sync-head`. While
+  the tip is red on any of the PR's candidate checks, the PR is held for the one
+  repair PR with those red-on-tip checks, so the status lists it. Once the tip
+  is green on the PR's candidate checks, the default branch is merged into the
+  sync branch with `POST repos/<repo>/merges` (base the sync branch, head the
+  default branch). That adds a merge commit and destroys nothing. The PR gets no
+  CI-fix target this scan, since its CI reruns on the new head. A refused merge,
+  for example a conflict, is logged and the milestone sync lane retries on its
+  next cycle. If the tip's red checks cannot be read, no merge is attempted and
+  the PR is not held this scan.
+- **Unknown stands down.** If the ancestry cannot be read, the sync PR gets no
+  CI-fix target this scan and a warning names it. An unreadable tip check-run
+  read stands down a contains-default head the same way. An on-default head
+  stays held, but no repair PR is opened while the tip's red checks cannot be
+  read, so held PRs wait for the next scan. "Could not tell" never hands a PR
+  over.
+- **Refresh is fast-forward only.** A held sync head behind the tip is moved with
+  `PATCH git/refs/heads/<branch>` and `force=false`, so GitHub refuses anything
+  that is not a fast-forward and no commit is lost. Once a repair lands, the
+  stale sync PRs pick it up on the next scan.
+- **A human fix that is green, or still running, is adopted, not duplicated.**
+  Before a repair PR is opened or adopted, the open PRs against the default
+  branch are listed (`gh pr list --base <default> --state open`, limit 30). A
+  candidate is one that is not a sync or repair PR, is not held, is by a login
+  outside the fleet and not a bot account, names a held check or a held PR
+  (below), and whose head contains the default branch's tip (the compare status
+  is `ahead`, so a stale branch cut before the red commit does not count). The
+  first candidate whose head commit has succeeded on every held check is the
+  fix, and a green fix always wins. Failing that, the first candidate with no
+  held check completed without `success`, `neutral` or `skipped` (so `failure`,
+  `timed_out` and `cancelled` all count) and at least one check run not yet
+  `completed` that started within two hours (`RUNNING_FIX_WAIT_MS`) is the
+  pending fix. A fleet or bot PR is never the fix on either path, green or
+  running: it is skipped with an info log naming its author (previously only
+  the pending path excluded them, so a fleet PR green on a diff-scoped check
+  could be adopted). A candidate names a held check when its title or head
+  branch contains the check name (case-insensitive, a whole token: the
+  characters either side are not ASCII letters or digits). The body does not
+  count for check names, because PR bodies routinely mention generic check
+  words such as "quality gate", and a held check may be called `gate`. A
+  candidate names a held PR when its title, body or head branch contains `#N`
+  not followed by another digit. A candidate naming neither is skipped with an
+  info log, on the green and the pending path alike, because a diff-scoped
+  check such as gitleaks (which scans only `base.sha..head.sha`) passes on any
+  PR that adds no finding, so green alone does not show the PR fixes main.
+  #5434 qualified because its branch `fix/gitleaks-allow-5310-fixtures` and
+  title name gitleaks. The list reads `title` and `body` as well, and a row
+  missing either field fails the read (the scan falls back to the repair PR). A
+  held check may not exist yet while CI is in flight (the `gate` check runs
+  after the others), so an absent one is not a failure. A run with no usable
+  start time does not hold the repair. A candidate whose ancestry cannot be
+  read is skipped with a warning quoting the error. The status is then
+  kept as one comment on it,
+  carrying the `vibe-red-default-branch-hold` marker, and no repair PR is made.
+  The status is the newest comment by a fleet login whose body ends with a
+  marker. If it carries the identical marker (the tip and the held set), a
+  repeat scan writes nothing. If it carries a different marker, it is edited in
+  place with `PATCH repos/<repo>/issues/comments/<id>`, so a changed held set
+  never adds a second status comment. With no such comment, one is posted.
+  Comments by other logins are ignored, and the fix PR's body is never edited.
+  A failed list, successful-check read or comment read is logged with its error,
+  and the worker's repair PR path runs instead. A failed check-run states read
+  is logged with its error, that candidate is not waited on, and the search
+  goes on to the next candidate. A failed post or edit is logged with
+  its error and no repair PR is made this scan; it is retried next scan.
+  Once a fix is adopted, the worker's own repair PR in that repo is not handed
+  to the CI-fix agent in the same scan, since that would write the same fix
+  twice. Its failure is skipped with the reason `red-default-branch-fix-adopted`.
+- **One fix status stands.** A pending fix's status says its CI is still
+  running and that the fleet cannot tell whether it fixes the failure, and its
+  marker carries `state="pending"`, so the status is edited to the green
+  wording once the PR turns green. Once the fix is settled (an adopted PR, the
+  worker's repair PR, or neither when the repair could not be opened), every
+  other open PR against the default branch, except sync and repair PRs, is
+  checked. Its newest fleet status comment, when it still carries the hold
+  marker, is edited in place (`withdrawSupersededFixStatuses` in
+  `red_default_branch_repair.ts`) to say the PR is no longer taken as the fix
+  and to name the fix now waited on. The withdrawn comment ends with a
+  `vibe-red-default-branch-withdrawn` marker naming the tip and that fix. It is
+  edited again only when either changes, and a PR adopted again has the same
+  comment edited back. This reads the comments of up to 30 PRs on each red
+  scan. A failed list, read or edit is logged with its error, and the next scan
+  tries again.
+- **One repair PR.** A repair PR is raised only when the tip itself is red on a
+  held check, and no human (not fleet or bot) fix PR was found whose title or
+  branch names a held check, or which references a held PR, and that is green
+  on every held check or still running with none failed. It is an empty commit
+  on the tip (GitHub refuses a PR with no commits), on a `fix/red-default-branch-<sha12>`
+  branch, opened against the default branch. A later scan adopts an open repair
+  PR with that prefix (the lowest number) rather than opening another: one in
+  the scan's listing, or else one found by a direct
+  `gh pr list --search head:fix/red-default-branch-` lookup, so a needs-human
+  repair PR or a scan scoped to one PR never opens a second. An unreadable
+  lookup opens nothing that scan. Its body
+  is replaced by the status only when the `vibe-red-default-branch-hold` marker
+  differs. A human-authored fix PR is never edited, only commented on. If that
+  branch already exists without an open PR, the create step fails and is logged
+  each scan until the branch is deleted.
+- **A repair PR that does not reproduce the failure.** A check that scans only
+  the PR's own commits (gitleaks runs over `base.sha..head.sha` on a pull
+  request) passes on the empty repair commit while the tip stays red. When an
+  adopted repair PR has no failure of its own on a held check, the lowest held
+  PR's failing check run (its id, name and annotations) is handed to the CI-fix
+  agent as a failure of the repair PR, on the repair branch. A repair PR opened
+  in the same scan is left to its own CI first. So is a repair PR that already
+  carries a fix (its branch changes files against the default branch, read
+  through `compare/<default>...<repair branch>`), which waits for its CI and
+  merge, and one whose held check is still running. An unreadable read hands
+  nothing over and warns with the `gh` error. Once that check run's retry
+  budget is spent, the scan warns that the default branch needs a human and logs
+  `red-default-branch-repair-needs-human` instead of handing it over again.
+- **Status wording.** The status reads "holding sync PRs" when every held PR is
+  a sync PR, and "holding PRs" when any held PR is not one.
+- **Top priority.** A failure on the repair PR is returned before any other
+  default-branch failure. The `top-priority` label is never applied; it is
+  reserved for workflow use.
+
 #### 🎟️ The conflict attempt ledger a milestone branch spends
 
 A milestone branch that conflicts with the default branch gets the same
@@ -5921,10 +6102,9 @@ Two changes close that:
   comment and applies no label, leaving the issue claimable. In
   `coding_failure_ladder.ts` the class gets its own `record-only`
   disposition, so the failure earns the plain cooldown rather than the
-  escalating 2 h → 6 h → 24 h one and never reaches the three-strike
-  `needs-human` park — skipping the ladder while leaving the cooldown in
-  place would have re-created the same human chore one rung later. It is
-  deliberately **not** `transient`: a transient decision returns before
+  escalating 2 h → 6 h → 24 h one, so a repository-configuration refusal
+  never waits out a ladder rung meant for a failure of the issue itself. It
+  is deliberately **not** `transient`: a transient decision returns before
   `handleIssueFailure` is reached, and the main loop's only route into that
   call is `planCodingFailure`'s `applyLadder`, so a transient refusal would
   have left every sibling issue with no written record at all. The
@@ -6125,6 +6305,41 @@ category stays `internal_error`, so `classifyCodingFailure` still returns the
 flat transient decision and the issue takes no `failed-once` mark. The other
 preflight refusals (CLI not runnable, fixed-price subscription, metered
 credentials) are not covered and stay `worker-crash`.
+
+#### A Codex safety refusal is a task failure, not a credential refusal or `worker-crash` (Issue #5506)
+
+Codex refuses content it flags as a cybersecurity risk with an `error` /
+`turn.failed` event reading "This content was flagged for possible cybersecurity
+risk … If you're doing authorized security work …". `classifyCodexFailure`
+(`worker/deno/lib/codex_output_adapter.ts`) matched "authorized" against its
+authentication pattern, so the run was read as a rejected credential ("Codex
+refused the credential"). That records an automatic provider outage, and the
+execute phase's `internal_error` reason was classed `worker-crash` and
+auto-filed. The adapter now checks the safety-flag text
+(`content was flagged for possible … risk`) before the authentication match and
+returns `task-failure` with the headline
+`Codex refused the content as a safety
+risk` (`CODEX_SAFETY_REFUSAL_HEADLINE`).
+
+On the orchestrated path (the one the #5456 run took), `toAgentCallResult`
+(`worker/deno/lib/orchestration/issue_run_gate.ts`) maps that `task-failure` to
+an `error` call. The orchestrator retries it, then ends the run with
+`<role> call failed after N attempt(s): <adapter message>`. The execute phase
+reason is therefore
+`Claude execution failed: manager call failed after N attempt(s): Codex refused the content as a safety risk — evidence: …`.
+`classifyRunFailure` answers class `agent-outcome`, `not_code_fixable`, for an
+`internal_error` with this reason, so the refusal is never
+auto-filed. The match (`CODEX_SAFETY_REFUSAL_RE` in
+`worker/deno/lib/run_outcome_classifier.ts`) is anchored to the start of the
+worker's own words. The only text it allows before the headline is the
+orchestrator's role and attempt-count prefix. The accepted roles come from
+`TARGET_ROLES`, including `spec_reviewer`. The headline quoted later in the
+message (or in agent output) does not trigger it. The category stays
+`internal_error`.
+`worker/deno/tests/codex_safety_refusal_5506_test.ts` drives the whole path. It
+takes the Codex adapter's real classification of the refusal, runs it through
+the real `runOrchestratedIssueRun` and the execute phase, and passes the
+resulting reason to `classifyRunFailure`.
 
 #### An orchestrated issue run records every provider call's stats (Issue #4595)
 
@@ -6666,6 +6881,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [circuit_breaker.ts](../worker/deno/lib/circuit_breaker.ts)                                                       | Circuit breaker with persistent state                                                                                                                                                                                           |
 |                             | [cooldown_state.ts](../worker/deno/lib/cooldown_state.ts)                                                         | Issue retry cooldown with persistent state                                                                                                                                                                                      |
 |                             | [coding_failure_ladder.ts](../worker/deno/lib/coding_failure_ladder.ts)                                           | Routes non-transient coding-run failures into the `failed-once` ladder and its escalating cooldown (Issues #1949, #4158)                                                                                                        |
+|                             | [label_route_failure_cooldown.ts](../worker/deno/lib/label_route_failure_cooldown.ts)                             | Records and honours the escalating cooldown for planning and question failures (Issue #5376)                                                                                                                                    |
 |                             | [crash_notification.ts](../worker/deno/lib/crash_notification.ts)                                                 | Operator alerts via issue comments and webhooks                                                                                                                                                                                 |
 |                             | [crash_cleanup.ts](../worker/deno/lib/crash_cleanup.ts)                                                           | Trap handler for unexpected exit cleanup                                                                                                                                                                                        |
 |                             | [failure_diagnosis.ts](../worker/deno/lib/failure_diagnosis.ts)                                                   | Failure root cause analysis                                                                                                                                                                                                     |

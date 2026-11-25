@@ -17,8 +17,10 @@
  * {@link handOffDeclaredOutcome} extracts the three detect-and-apply blocks
  * so both phases share one definition of "what counts as a declared
  * hand-off" and "was it actually applied". `workOnIssueHandleNoChanges` keeps
- * using it exactly as before (falling through to its own analysis-only /
- * partial-answer handling when no result was produced); the new
+ * using it exactly as before (falling through to its own not-finished
+ * handling when no result was produced: retried as not finished, Issue
+ * #4227, or closed with its analysis when the issue is marked analysis-only,
+ * Issue #4298); the new
  * `workOnIssueDeclaredHandoff` phase (declared_handoff_phase.ts) uses it to
  * catch the same signals on a run that also produced a code change.
  *
@@ -162,8 +164,9 @@ async function uncommittedFileCount(
  */
 export interface DeclaredOutcomeHandoff {
   /**
-   * Set when a deferral, a planning hand-off, or the deferral-exhausted
-   * analysis-only hand-off was actually applied. Callers should return this
+   * Set when a deferral or a planning hand-off was actually applied, or when
+   * exhausted time deferrals retried the issue as not finished (Issue
+   * #4227). Callers should return this
    * unchanged as their own {@link PhaseResult}.
    */
   result?: PhaseResult;
@@ -429,8 +432,10 @@ export async function handOffDeclaredOutcome(
   // genuinely needing a human decision) asks to be parked until a future
   // time via a `vibe-defer-until` marker. This is checked here, after the
   // blocked-dependency deferral above (which takes priority when both
-  // appear) and before the #2834 analysis-only hand-off below, which a
-  // missing/invalid/exhausted marker falls through to.
+  // appear) and before the planning hand-off below. An invalid marker falls
+  // through (on the committed path the issue is retried as not finished), and
+  // an exhausted deferral budget retries the issue as not finished (Issue
+  // #4227).
   const timeDeferral = blocked ? undefined : detectTimeDeferral(
     claudeOutput,
     Date.now(),

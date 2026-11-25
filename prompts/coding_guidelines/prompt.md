@@ -137,8 +137,8 @@ progress survives.
 - **Give every shell command its own timeout.** Every shell command carries
   its own `timeout`, sized to that command: seconds for `git` and `gh`,
   minutes for a build. Builds and test suites run one at a time, in the
-  foreground, and never with `run_in_background`. Save and push the work in
-  hand before the finish deadline the prompt states.
+  foreground, and never with `run_in_background`. Commit your work before the
+  finish deadline. Push only if this pass assigns the push to you.
 
 ## General Coding Principles
 
@@ -717,8 +717,8 @@ bullet under **Cross-Platform Bash Compatibility** shows.
 - **Give every shell command its own timeout.** Every shell command carries
   its own `timeout`, sized to that command: seconds for `git` and `gh`,
   minutes for a build. Builds and test suites run one at a time, in the
-  foreground, and never with `run_in_background`. Save and push the work in
-  hand before the finish deadline the prompt states.
+  foreground, and never with `run_in_background`. Commit your work before the
+  finish deadline. Push only if this pass assigns the push to you.
 
 ### Avoid Running Full E2E Suites
 

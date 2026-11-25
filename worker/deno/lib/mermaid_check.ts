@@ -40,6 +40,7 @@ const SKIP_DIRECTORIES = new Set([
   "_site",
   "vendor",
   ".jekyll-cache",
+  "target", // Cargo/Maven build output; can hold test-generated trees (Issue #5506)
 ]);
 
 /**

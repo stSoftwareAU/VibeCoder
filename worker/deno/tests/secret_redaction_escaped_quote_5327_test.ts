@@ -114,10 +114,12 @@ Deno.test("Issue #5327: containsSecret is true on each raw escaped input", () =>
 // The `a` after the opening quote puts an alphanumeric inside the rule's
 // lookahead (`(?=\S{0,63}[A-Za-z0-9])`), so the escape branches run rather than
 // the rule being rejected before they are reached.
-Deno.test("Issue #5327 (linearity): an unclosed backslash run passes through unchanged", () => {
+// Since Issue #5329 a double-quoted value with no closing quote is masked to the
+// end of its line, so the unclosed run is masked rather than passed through.
+Deno.test("Issue #5327 (linearity): an unclosed backslash run is masked to the end of its line", () => {
   const N = 131_072;
   const input = 'PASSWORD="a' + "\\".repeat(N);
-  assertEquals(redactSecrets(input), input);
+  assertEquals(redactSecrets(input), "PASSWORD=***REDACTED***");
 });
 
 Deno.test("Issue #5327 (linearity): escaped quotes past the bound fall back to the first quote", () => {

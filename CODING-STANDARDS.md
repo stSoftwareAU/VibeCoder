@@ -2310,8 +2310,8 @@ gate if a model-generation name reappears in this document.
 - **Give every shell command its own timeout.** Every shell command carries
   its own `timeout`, sized to that command: seconds for `git` and `gh`,
   minutes for a build. Builds and test suites run one at a time, in the
-  foreground, and never with `run_in_background`. Save and push the work in
-  hand before the finish deadline the prompt states.
+  foreground, and never with `run_in_background`. Commit your work before the
+  finish deadline. Push only if this pass assigns the push to you.
 - **Prefer positive instructions over negative ones.** "Use Australian English
   spelling" is more effective than "Do not use American English spelling".
 - **Structure prompts with clear sections** — headings and bullet points aid
