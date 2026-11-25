@@ -6153,8 +6153,9 @@ auto-filed. The match (`CODEX_SAFETY_REFUSAL_RE` in
 `worker/deno/lib/run_outcome_classifier.ts`) is anchored to the start of the
 worker's own words. The only text it allows before the headline is the
 orchestrator's role and attempt-count prefix. The accepted roles come from
-`TARGET_ROLES`, including `spec_reviewer`. The headline quoted later in the message (or in agent output) does not
-trigger it. The category stays `internal_error`.
+`TARGET_ROLES`, including `spec_reviewer`. The headline quoted later in the
+message (or in agent output) does not trigger it. The category stays
+`internal_error`.
 `worker/deno/tests/codex_safety_refusal_5506_test.ts` drives the whole path. It
 takes the Codex adapter's real classification of the refusal, runs it through
 the real `runOrchestratedIssueRun` and the execute phase, and passes the

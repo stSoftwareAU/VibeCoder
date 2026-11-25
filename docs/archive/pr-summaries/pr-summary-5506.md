@@ -44,10 +44,11 @@ This PR fixes both. Closes #5506.
 - The safety check runs **before** the authentication match. Moving it after
   would bring the false provider outage back.
 - The run-classifier rule (`CODEX_SAFETY_REFUSAL_RE`) is anchored to the start
-  of the worker's own text and accepts the orchestrator roles in `TARGET_ROLES`. The only text it allows before the headline
-  is the orchestrator's own prefix. The same headline quoted later in a message,
-  or in agent output, cannot trigger it. The headline is one exported constant,
-  so the adapter and the classifier cannot drift apart.
+  of the worker's own text and accepts the orchestrator roles in `TARGET_ROLES`.
+  The only text it allows before the headline is the orchestrator's own prefix.
+  The same headline quoted later in a message, or in agent output, cannot
+  trigger it. The headline is one exported constant, so the adapter and the
+  classifier cannot drift apart.
 - It reuses the existing `agent-outcome` slug. No new `RUN_FAILURE_CLASSES`
   entry was added, so no open run-failure issue is orphaned. The category stays
   `internal_error`.
@@ -88,11 +89,11 @@ flowchart LR
 - `worker/deno/tests/run_outcome_classifier_test.ts::codex safety refusal - a credential refusal is still a worker-crash (Issue #5506)`
 - `worker/deno/tests/run_outcome_classifier_test.ts::codex safety refusal - the headline only later in a message does not trigger the rule (Issue #5506)`
 - `worker/deno/tests/codex_safety_refusal_5506_test.ts::codex safety refusal - manager refusal is an agent-outcome (Issue #5506)`.
-  This is the end-to-end test. It runs the Codex adapter's real classification
-  of the #5456 refusal through the real `runOrchestratedIssueRun` (Codex roles,
-  faked provider process only) and the real execute phase. It asserts the reason
-  opens `Claude execution failed: manager call failed after N attempt(s):` and
-  that `classifyRunFailure` returns `agent-outcome`.
+  The same test runs for the executor and spec reviewer roles. It runs the Codex
+  adapter's real classification of the #5456 refusal through the real
+  `runOrchestratedIssueRun` (Codex roles, faked provider process only) and the
+  real execute phase. It asserts the reason contains the actual role and that
+  `classifyRunFailure` returns `agent-outcome`.
 - `worker/deno/tests/codex_safety_refusal_5506_test.ts::codex safety refusal - the orchestrator's prefix around another failure is still a worker-crash (Issue #5506)`
 - Documentation: `docs/INTERNALS.md` has a new section, "A Codex safety refusal
   is a task failure, not a credential refusal or `worker-crash` (Issue #5506)".
@@ -121,8 +122,8 @@ flowchart LR
 
 ## Test Plan
 
-- Added the nine tests listed under Evidence. No existing test was edited or
-  removed. The new tests are appended, or sit in the new file
+- The adapter, classifier and walker regressions are listed under Evidence. The
+  three orchestrated role cases and their control run in
   `tests/codex_safety_refusal_5506_test.ts`.
 - Controls:
   - The existing 401 → `authentication` test still passes.
@@ -144,7 +145,7 @@ flowchart LR
   - `tests/claude_runner_test.ts`, `tests/run_failure_issue_test.ts`,
     `tests/failure_diagnosis_test.ts`, `tests/coding_failure_ladder_test.ts` and
     `tests/collect_self_diagnostic_candidates_test.ts`: all passed.
-- `./quality.sh < /dev/null` ran on the head and finished
+- Before the review repair, `./quality.sh < /dev/null` finished
   `Result: PASSED (with skipped checks)`. Only `config integration` and
   `checkov` were skipped.
 - The directory exclusion applies to the Mermaid walker. Other whole-tree
