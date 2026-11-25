@@ -514,7 +514,12 @@ attacker-influenced text — model stdout, subprocess output — so a pattern th
 backtracks super-linearly stalls the whole event loop, and with it the
 single-instance worker. Bound or anchor every quantifier over a broad character
 class: `[a-z][a-z0-9+.-]*://` was quadratic on a long alphanumeric run until the
-scheme was capped at 64 characters. The answer is a bounded *pattern*, never a
+scheme was capped at 64 characters. The `*_TOKEN=` rule's key was quadratic on
+a long run of key characters holding many credential keywords, such as a list of
+variable names the decode pass joins into one run, until the key-character runs
+either side of the keyword were capped at 63 characters each (Issue #5373); a
+key with more than 63 key characters before or after its keyword is no longer
+matched. The answer is a bounded *pattern*, never a
 bounded *input* — capping the text would silently leave its tail unmasked, in
 direct conflict with "redact before you truncate" above.
 
@@ -555,6 +560,14 @@ is masked: `"abc\"def"`, `'abc\'def'`, the SQL `'abc''def'` and the shell
 quote and the rest of the credential was published. Two limits: the
 escape-aware read covers at most 4,096 characters or escapes, and a value whose
 escape never closes (`"C:\dir\"`) falls back to ending at the first quote.
+
+The same holds for a credential command-line flag's quoted value:
+`--token "abc\"def"`, `--password 'abc''def'` and `--password 'it'\''s'` are
+masked in full by the `secret-cli-flag` rule. When a later credential flag
+opens its quoted value at the apparent closing quote of a flag or assignment,
+the mask extends through the later value. Before
+Issue #5435 the flag value ended at the escaped quote and the rest of the
+credential was published.
 
 A bare value that starts at the closing quote of a credential flag's quoted
 value keeps that quote in front of the placeholder (Issue #5363). In
@@ -687,10 +700,18 @@ and, apart from that check, **only when the separator crossed a line break**:
 - That handling has limits, past which the base behaviour applies (the label
   is masked as the earlier label's value and the inner value is published):
   the inner label's separator and value must start within 256 characters of
-  the outer value's end, a double-quoted inner value must close within 4,096
-  characters of its opening quote, the label must be at most 128 characters,
-  and a single-quoted inner value whose first word itself holds two `'` (as in
-  `DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
+  the outer value's end, a double-quoted inner value that opens with a line
+  break, or holds no letter or digit within the 256-character window, must
+  close within 4,096 characters of its opening quote (since Issue #5329 any
+  other is read as unterminated and masked whole), the label must be at most
+  128 characters, and a single-quoted inner value whose first word itself
+  holds two `'` (as in `DEPLOY_TOKEN='a'b'c <value>'`) is not covered.
+
+Issue #5329 judges a quoted value inside its quotes: a letter or digit within
+its first 256 characters makes it a credential, so `PASSWORD=" hunter2"` and
+`API_KEY='#! s3cr3t'` are masked. A quoted value whose first letter or digit
+lies further in is not masked by this rule, and a double-quoted value with no
+closing quote is masked to the end of its line.
 
 `containsSecret()` asks the value predicate the same question the replacement
 does, so detection and redaction cannot drift apart — a body that redacts to
@@ -725,6 +746,15 @@ after a PascalCase heading that does not end in a credential word, on the same
 line after `: `, with a further word after it on that line; or, under Markdown
 markers, after a plural credential noun (`**Tokens:** sunshine and more`) with
 any further text after it on that line.
+
+One false positive is accepted as well (Issue #5399). Prose that quotes a
+credential word before a colon has the word after the colon masked: the title
+`… a word containing "Token": PR #5251's title …` is published with `PR`
+replaced by the placeholder, and a plural (`"Tokens": counts are shown below`)
+is masked the same way. That shape cannot be told apart from a JSON or YAML
+field with a bare value (`"Token": hunter2value`), so the product-heading
+exemption is not extended to it: a missed credential costs more than a
+corrupted word in a title.
 
 ### Transformed secrets are decoded, then re-scanned
 

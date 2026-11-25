@@ -92,11 +92,13 @@ Deno.test("Issue #5363: control - a flag whose value closed earlier leaves the l
   );
 });
 
-Deno.test("Issue #5363: control - bare values stop at a double quote, so a double quote is never kept", () => {
+// Since Issue #5329 a double-quoted value with no closing quote is masked to the
+// end of its line, so `"tail` is masked with its quote and none is kept.
+Deno.test("Issue #5363: control - an unterminated double-quoted value is masked whole, so a double quote is never kept", () => {
   assertRedacts(
     `--password "alpha beta TOKEN="tail`,
-    `--password ${R}tail`,
-    ["alpha", "beta"],
+    `--password ${R}${R}`,
+    ["alpha", "beta", "tail"],
   );
 });
 
