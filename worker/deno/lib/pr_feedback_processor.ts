@@ -82,7 +82,11 @@ import {
 import { prTitleForGraftQuery } from "./pr_title_read.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { prepareCodegraphRun } from "./codegraph_run.ts";
-import { type RtkOutputResult, settingsJsonOption } from "./rtk_output.ts";
+import {
+  RTK_REWRITE_PREFIX,
+  type RtkOutputResult,
+  settingsJsonOption,
+} from "./rtk_output.ts";
 import { bindGraftRun } from "./graft_run.ts";
 import { claimPrComment } from "./claim_pr_comment.ts";
 import {
@@ -409,16 +413,25 @@ export interface PrFeedbackProcessorDeps {
 // Constants
 // ---------------------------------------------------------------------------
 
+const PR_REVIEW_DENIED_COMMANDS = [
+  "git push",
+  "gh pr merge",
+  "gh api",
+] as const;
+
 /**
  * Shell commands a `pr_review` feedback run may not run: the worker pushes and
- * merges, and it verifies each earlier finding before it does. A provider
- * enforces them as command-prefix denials; Gemini carries them in a policy
- * file (`gemini_settings.ts`).
+ * merges, and it verifies each earlier finding before it does. Each prefix is
+ * denied as typed and in the form RTK's hook rewrites it to, because a
+ * `git push` prefix rule does not match `rtk git push` (Issue #5571). A
+ * provider enforces them as command-prefix denials; Gemini carries them in a
+ * policy file (`gemini_settings.ts`).
  */
 export const PR_REVIEW_DISALLOWED_BASH_TOOLS: readonly string[] = [
-  "Bash(git push:*)",
-  "Bash(gh pr merge:*)",
-  "Bash(gh api:*)",
+  ...PR_REVIEW_DENIED_COMMANDS.map((command) => `Bash(${command}:*)`),
+  ...PR_REVIEW_DENIED_COMMANDS.map((command) =>
+    `Bash(${RTK_REWRITE_PREFIX}${command}:*)`
+  ),
 ];
 
 const DEFAULT_MAX_COMMENT_TOKENS = 50000;

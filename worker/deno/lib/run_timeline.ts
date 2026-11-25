@@ -355,7 +355,7 @@ export function clampTimeoutToFinishDeadline(input: {
 /**
  * The one worker-written line appended to the end of the user prompt
  * (Issue #4244). It names the finish deadline, the seconds remaining, and
- * that the agent must commit and push before then.
+ * when the agent must commit and which passes may push.
  *
  * @param clamp - The deadline and the seconds left until it.
  * @returns The line, with no leading newline.
@@ -363,7 +363,7 @@ export function clampTimeoutToFinishDeadline(input: {
 export function finishDeadlinePromptLine(
   clamp: Pick<FinishSessionClamp, "finishIso" | "remainingSeconds">,
 ): string {
-  return `Finish deadline: ${clamp.finishIso} (${clamp.remainingSeconds} seconds remaining). Commit and push your work before then.`;
+  return `Finish deadline: ${clamp.finishIso} (${clamp.remainingSeconds} seconds remaining). Commit your work before then. Push only if this pass assigns the push to you.`;
 }
 
 /**
