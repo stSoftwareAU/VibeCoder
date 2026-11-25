@@ -289,6 +289,7 @@ Deno.test(
     );
     await Deno.chmod(`${hooksDir}/pre-push`, 0o755);
     const hostLike = {
+      ...NO_HOST_GIT_CONFIG,
       GIT_CONFIG_COUNT: "1",
       GIT_CONFIG_KEY_0: "core.hooksPath",
       GIT_CONFIG_VALUE_0: hooksDir,

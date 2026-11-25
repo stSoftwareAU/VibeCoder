@@ -241,6 +241,7 @@ interface Outcome {
 async function runCompletion(
   repoPath: string,
   formatter: (repo: string, baseRef: string | undefined) => Promise<unknown>,
+  formatterDeps = realFormatterDeps(),
 ): Promise<Outcome> {
   let pushes = 0;
   const order: string[] = [];
@@ -287,7 +288,7 @@ async function runCompletion(
         return await formatter(repo, baseRef) as never;
       },
       // The archive commit runs its git through the shield too (Issue #5371).
-      formatterDeps: realFormatterDeps(),
+      formatterDeps,
       gateUnpushedCommits: (...args) => {
         order.push("gate");
         return gateUnpushedCommits(
@@ -680,7 +681,20 @@ Deno.test({
       await git(["stash", "pop"], repo);
       assertEquals(await Deno.readTextFile(`${repo}/${summary}`), interrupted);
 
-      const o = await runCompletion(repo, real);
+      const archiveDeps = realFormatterDeps();
+      archiveDeps.runGitCommand = (args, options) =>
+        runGitCommand(args, {
+          ...options,
+          env: {
+            ...NO_HOST_GIT_CONFIG,
+            GIT_AUTHOR_NAME: "Archive fixture",
+          },
+        });
+      const o = await runCompletion(repo, real, archiveDeps);
+      assertEquals(
+        (await git(["log", "-1", "--format=%an"], repo)).trim(),
+        "Archive fixture",
+      );
       // No recovery turn: the formatter fixed the committed copy up front.
       assertEquals(o.order, ["format", "gate"]);
       assertEquals(o.pushes, 1, `gate should pass: ${o.reason ?? ""}`);

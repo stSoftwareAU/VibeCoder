@@ -1848,3 +1848,39 @@ Deno.test("a learnings scratch directory at its normal place reaches the pull an
     await Deno.remove(layout.root, { recursive: true });
   }
 });
+
+Deno.test("launch forwards the learnings store's Git transport policy", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const store = await makeStore(layout, "store.git");
+    const { logger } = recordingLogger();
+    for (const policy of ["never", "always"]) {
+      const launch = await resolveTokenEconomizerLaunch({
+        config: learningsBlock(),
+        workDir: layout.workDir,
+        repo: REPO,
+        runKind: "implementation",
+        subject: `${REPO}#1`,
+        runId: "transport-" + policy,
+        pluginDir: layout.fakePluginDir,
+        learningsStoreUrl: store,
+        checkLearningsVisibility: PRIVATE_STORE,
+        scanLearnings: CLEAN_SCAN,
+        logger,
+        learningsGitEnv: {
+          ...NO_HOST_GIT_CONFIG,
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "protocol.file.allow",
+          GIT_CONFIG_VALUE_0: policy,
+        },
+      });
+      assertEquals(
+        launch?.learnings?.persistence.status,
+        policy === "never" ? "unavailable" : "empty",
+      );
+    }
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});

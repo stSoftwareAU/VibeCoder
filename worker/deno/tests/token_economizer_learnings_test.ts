@@ -1670,3 +1670,69 @@ Deno.test("normal transfers refuse a repos symlink without reading or modifying 
     );
     assertEquals(await Deno.readTextFile(file), '{"outside":1}\n');
   }));
+
+Deno.test("pullLearnings applies the caller's local transport policy", () =>
+  withRoot(async (root) => {
+    const store = await newStore(root, "store");
+    const { logger } = capture();
+    const blocked = await pullLearnings(
+      pullOpts(root, "blocked", KEY_A, store.url, logger, {
+        gitEnv: {
+          ...NO_HOST_GIT_CONFIG,
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "protocol.file.allow",
+          GIT_CONFIG_VALUE_0: "never",
+        },
+      }),
+    );
+    assertEquals(blocked.status, "unavailable");
+    const restored = await pullLearnings(
+      pullOpts(root, "allowed", KEY_A, store.url, logger),
+    );
+    assertEquals(restored.status, "empty");
+  }));
+
+Deno.test("pushLearnings honours a refusing pre-push hook and the caller's shield", () =>
+  withRoot(async (root) => {
+    const store = await newStore(root, "store");
+    const { logger } = capture();
+    const hooks = join(root, "hooks");
+    await Deno.mkdir(hooks);
+    await Deno.writeTextFile(
+      join(hooks, "pre-push"),
+      "#!/bin/sh\necho fixture-hook-refused >&2\nexit 1\n",
+      { mode: 0o755 },
+    );
+    const refusing = {
+      ...NO_HOST_GIT_CONFIG,
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.hooksPath",
+      GIT_CONFIG_VALUE_0: hooks,
+    };
+    for (const name of ["blocked", "allowed"]) {
+      const persistence = await pullLearnings(
+        pullOpts(root, name, KEY_A, store.url, logger),
+      );
+      await plant(
+        join(root, name + "-home"),
+        KEY_A,
+        "claude/injection.json",
+        '{"facts":["sample"]}\n',
+      );
+      const result = await pushLearnings(
+        pushOpts(root, name, persistence, logger, recorder().stop, {
+          gitEnv: name === "blocked"
+            ? refusing
+            : { ...refusing, ...NO_HOST_GIT_CONFIG },
+        }),
+      );
+      if (name === "blocked") {
+        assert(result.kind === "dropped");
+        assertStringIncludes(result.reason, "fixture-hook-refused");
+        assertEquals(await commitCount(store.dir), 0);
+      } else {
+        assertEquals(result.kind, "pushed");
+        assertEquals(await commitCount(store.dir), 1);
+      }
+    }
+  }));
