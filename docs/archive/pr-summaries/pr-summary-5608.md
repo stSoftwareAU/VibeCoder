@@ -32,8 +32,8 @@ None.
 - Backend redaction change; no visual surface changed.
 - The regression file copied into an isolated checkout of unfixed `main`
   (`a0170265e`) had 19 failing cases and two passing controls, including failures
-  on both same-line and consecutive-line inputs. The
-  output exposed the credential value while `containsSecret` returned false
+  on both same-line and consecutive-line inputs. The output exposed the
+  credential value while `containsSecret` returned false
   on that output. Removing the outer label was an accepted control.
 - The nested-value regression also failed against checkpoint `eaf8bc0fb`:
   preserving the old outer mask exposed the first flag's value. The final
@@ -51,7 +51,7 @@ None.
 
 ```mermaid
 flowchart LR
-    A[Assignment value ends in a credential flag] --> B{Overlapping flag value?}
+    A[Value prefix then a credential flag with a following value] --> B{Overlapping flag value?}
     B -->|No| C[Keep flag name for CLI value redaction]
     B -->|Yes| D[Mask through successive overlapping values]
 ```
@@ -87,6 +87,11 @@ flowchart LR
   rule as well as the changed assignment path.
 - Targeted `deno fmt --check`, `deno lint` and frozen `deno check` on the
   production module and both changed test files: passed.
+- One full-gate attempt failed in
+  `worker/deno/tests/fleet_experiment_synthetic_test.ts::fleet experiment synthetic - a large sample with a clear price gap gives the control as leading arm`:
+  expected `leading-arm`, received `no-decision`. Its unchanged isolated suite
+  then passed all eight tests; the parallel-only failure was not reproduced
+  in isolation.
 - Compared both redactors over 1,852 base and 1,854 head files: README,
   SECURITY.md, Markdown under docs and prompts, and redaction test sources.
   Three base files and five head files changed output, all containing the
