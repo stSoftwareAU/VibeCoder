@@ -120,6 +120,12 @@ import {
   parseProcessTable,
 } from "./kill_diagnostics.ts";
 import {
+  formatMemoryGuardKill,
+  isBelowMemoryGuardFloor,
+  memoryGuardFloorBytes,
+  selectMemoryGuardVictim,
+} from "./memory_guard.ts";
+import {
   DEFAULT_DESCENDANT_SNAPSHOT_INTERVAL_MS,
   DescendantTracker,
   type OrphanCollectorDeps,
@@ -720,6 +726,12 @@ export interface RunClaudeOptions {
   memoryWatchMinIntervalMs?: number;
   /** `ps` reader for the memory watch — tests only. */
   memoryWatchRunPs?: () => Promise<string>;
+  /**
+   * The memory guard's kill (Issue #5529): SIGKILLs the largest process in
+   * the agent run's tree when the guest is below its floor. Defaults to
+   * `Deno.kill(pid, "SIGKILL")`. Tests only.
+   */
+  memoryGuardKill?: (pid: number) => void;
   /**
    * Kill-time evidence capture (Issue #4382); defaults to the real process
    * table and dmesg. Injectable for tests.
@@ -1969,6 +1981,10 @@ async function runClaudeWithTimeoutBody(
     // survivors, so while the run is alive each tick probes the memory
     // pressure and, when it reads high, logs the top processes — the
     // eventual victim included — at most once per window.
+    // The in-guest guard (Issue #5529) rides the same tick but is not held
+    // back by that window: a reading below its floor SIGKILLs the largest
+    // process in this run's tree at once, and the kill is logged. It is the
+    // one action the watch takes; the warning above stays evidence only.
     let lastMemoryWarnMs = 0;
     let memoryWatchInFlight = false;
     const memoryWatchMinIntervalMs = options.memoryWatchMinIntervalMs ??
@@ -1982,21 +1998,59 @@ async function runClaudeWithTimeoutBody(
         );
         if (reading.level !== "high") return;
         const now = clock.now();
-        if (now - lastMemoryWarnMs < memoryWatchMinIntervalMs) return;
-        lastMemoryWarnMs = now;
-        const psText = await (options.memoryWatchRunPs ?? defaultRunPs)();
-        const cgroup = await describeCgroupMemory((path) =>
-          Deno.readTextFile(path)
+        const critical = isBelowMemoryGuardFloor(reading);
+        const warnDue = now - lastMemoryWarnMs >= memoryWatchMinIntervalMs;
+        if (!critical && !warnDue) return;
+        if (warnDue) lastMemoryWarnMs = now;
+        const rows = parseProcessTable(
+          await (options.memoryWatchRunPs ?? defaultRunPs)(),
         );
-        logger?.warn(formatMemoryPressureWarning({
-          reading,
-          rows: parseProcessTable(psText),
-          agentPid: childPid,
-          knownDescendants: descendantTracker?.snapshot() ?? [],
-          ...(cgroup !== undefined ? { cgroup } : {}),
-        }));
+        const knownDescendants = descendantTracker?.snapshot() ?? [];
+        if (critical) {
+          const victim = selectMemoryGuardVictim({
+            reading,
+            rows,
+            agentPid: childPid,
+            knownDescendants,
+          });
+          if (victim !== undefined) {
+            let killed = false;
+            try {
+              (options.memoryGuardKill ?? defaultMemoryGuardKill)(victim.pid);
+              killed = true;
+            } catch (err) {
+              // Fail loud: a guard that cannot kill must say so in the log.
+              logger?.warn(
+                `Memory guard could not kill pid=${victim.pid}: ${
+                  err instanceof Error ? err.message : String(err)
+                } (Issue #5529)`,
+              );
+            }
+            if (killed) {
+              logger?.warn(formatMemoryGuardKill({
+                reading,
+                victim,
+                floorBytes: memoryGuardFloorBytes(reading.totalBytes ?? 0),
+              }));
+            }
+          }
+        }
+        if (warnDue) {
+          const cgroup = await describeCgroupMemory((path) =>
+            Deno.readTextFile(path)
+          );
+          logger?.warn(formatMemoryPressureWarning({
+            reading,
+            rows,
+            agentPid: childPid,
+            knownDescendants,
+            ...(cgroup !== undefined ? { cgroup } : {}),
+          }));
+        }
       } catch {
-        // Evidence only — never a reason to disturb the run.
+        // The guard's SIGKILL is the only action, and its failure is logged
+        // where it happens above. Anything else that throws here is evidence
+        // lost, never a reason to disturb the run.
       } finally {
         memoryWatchInFlight = false;
       }
@@ -3418,6 +3472,11 @@ export async function readAgentProcessTable(
 /** `ps -eo pid,ppid,rss,etime,args` for the memory watch. */
 async function defaultRunPs(): Promise<string> {
   return await readAgentProcessTable();
+}
+
+/** The memory guard's SIGKILL (Issue #5529). Tests inject `memoryGuardKill`. */
+function defaultMemoryGuardKill(pid: number): void {
+  Deno.kill(pid, "SIGKILL");
 }
 
 /**

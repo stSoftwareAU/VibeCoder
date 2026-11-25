@@ -358,6 +358,7 @@ export async function workOnIssueSetupBranch(
         defaultBranch,
         { cwd: repoPath },
       );
+    logger.info(setupStepStartLine("milestone branch"), { repo, issueNumber });
     let ensureResult = await ensureMilestoneBranch();
     if (state.setupAbandoned) return abandonedSetup(logger);
 
@@ -500,6 +501,10 @@ export async function workOnIssueSetupBranch(
     // attempt per run, not one per issue, so every issue of a branch this
     // cycle cannot bring level is answered from that single attempt.
     if (state.setupAbandoned) return abandonedSetup(logger);
+    logger.info(setupStepStartLine("milestone pre-sync"), {
+      repo,
+      issueNumber,
+    });
     const presync = await presyncMilestoneOnceForArming({
       repo,
       milestoneTitle,
@@ -590,6 +595,7 @@ export async function workOnIssueSetupBranch(
   // work is used. Discarding a pushed commit is data loss, not an opt-in.
   state.resumedFromCheckpoint = false;
   state.handoverNote = undefined;
+  logger.info(setupStepStartLine("session resume"), { repo, issueNumber });
   const persisted = await loadResumeState(config.workDir, repo, issueNumber);
   if (state.setupAbandoned) return abandonedSetup(logger);
   const resumeOutcome = await resumeIssueBranch(

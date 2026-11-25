@@ -1,0 +1,12 @@
+{
+  "issue": 5529,
+  "chunk": "top-up-5529",
+  "title": "top-up: in-guest memory guard for the agent run",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5529",
+  "definition": "Review that the in-guest memory guard acts only on a Linux memory reading below its floor (3% of total, never under 256 MiB), that it SIGKILLs only the largest process in the agent run's own tree (never the agent itself, the worker's own pid, or a process outside the tree), that a reading without byte counts or an unknown reading never triggers it, and that every guard kill, and every kill that fails, is logged rather than swallowed.",
+  "status": "claimed",
+  "sweptAt": "0d52315dacadaa56376feedf7ff834b277b7dec9",
+  "paths": [
+    "worker/deno/lib/memory_guard.ts"
+  ]
+}
