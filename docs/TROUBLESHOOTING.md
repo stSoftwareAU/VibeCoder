@@ -315,7 +315,12 @@ itself, and only a process of at least 256 MiB resident) and logs a WARNING
 line starting `Guest memory critically low`. On a guest with no swap, exhausting
 memory wedges the whole VM (every lane, `guest probe: did not answer`) instead
 of triggering an OOM kill, so losing one build step is the cheaper failure. The
-agent sees its command die with signal 9 (exit 137). Issue #5529.
+agent sees its command die with signal 9 (exit 137). The signal is sent only
+when the process is provably still the one chosen: its start time is unchanged
+from selection to the kill, and a fresh process table shows a live parent chain
+to the agent. Otherwise the worker logs `Memory guard left pid=… alone` and
+signals nothing, so a process re-parented away from the agent is never killed
+by the guard. Issue #5529.
 
 ### What a runtime-detection failure looks like
 

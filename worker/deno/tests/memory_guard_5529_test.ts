@@ -24,11 +24,13 @@ import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import {
   formatMemoryGuardKill,
   isBelowMemoryGuardFloor,
+  killMemoryGuardVictim,
   MEMORY_GUARD_MIN_VICTIM_RSS_KB,
   memoryGuardFloorBytes,
   selectMemoryGuardVictim,
 } from "../lib/memory_guard.ts";
 import { parseProcessTable } from "../lib/kill_diagnostics.ts";
+import { getStartTime } from "../lib/pid_guard.ts";
 import type { MemoryPressureReading } from "../lib/memory_pressure.ts";
 import {
   agentStubGate,
@@ -124,7 +126,6 @@ Deno.test("memory_guard #5529 - below the floor the guard kills the largest tree
     reading: CRITICAL_READING,
     rows: INCIDENT_ROWS,
     agentPid: 100,
-    knownDescendants: [],
     selfPid: 999_999,
   });
   assertEquals(victim?.pid, 105);
@@ -135,7 +136,6 @@ Deno.test("memory_guard #5529 - the control: 1.1 GiB free is above the floor, so
     reading: ABOVE_FLOOR_READING,
     rows: INCIDENT_ROWS,
     agentPid: 100,
-    knownDescendants: [],
     selfPid: 999_999,
   });
   assertEquals(victim, undefined);
@@ -146,7 +146,6 @@ Deno.test("memory_guard #5529 - a reading without byte counts chooses nothing", 
     reading: { level: "high" },
     rows: INCIDENT_ROWS,
     agentPid: 100,
-    knownDescendants: [],
     selfPid: 999_999,
   });
   assertEquals(victim, undefined);
@@ -165,7 +164,6 @@ Deno.test("memory_guard #5529 - a tree whose largest member is under 256 MiB cho
     reading: CRITICAL_READING,
     rows: small,
     agentPid: 100,
-    knownDescendants: [],
     selfPid: 999_999,
   });
   assertEquals(victim, undefined);
@@ -181,15 +179,15 @@ Deno.test("memory_guard #5529 - the worker's own pid is never chosen", () => {
     reading: CRITICAL_READING,
     rows,
     agentPid: 100,
-    knownDescendants: [],
     selfPid: 105,
   });
   assertEquals(victim?.pid, 106);
 });
 
-Deno.test("memory_guard #5529 - the knownDescendants snapshot puts a re-parented member in the tree", () => {
-  // 105 has been re-parented to init (the kill orphaned it), so only the
-  // snapshot still ties it to the agent run.
+Deno.test("memory_guard #5529 - a snapshot-only pid with no live chain to the agent is never chosen", () => {
+  // 105 hangs off init. It may be a re-parented member of the agent run, or a
+  // stranger that was given a reaped member's pid since the snapshot; the
+  // table cannot tell them apart, so the guard does not choose it.
   const rows = parseProcessTable(`  PID  PPID       RSS     ELAPSED COMMAND
   100     1   3145728       01:10 /usr/local/bin/claude --model opus
   105     1   1992294       01:06 /usr/bin/ld -o target/release/deps/vibe_worker
@@ -198,10 +196,132 @@ Deno.test("memory_guard #5529 - the knownDescendants snapshot puts a re-parented
     reading: CRITICAL_READING,
     rows,
     agentPid: 100,
-    knownDescendants: [105],
     selfPid: 999_999,
   });
-  assertEquals(victim?.pid, 105);
+  assertEquals(victim, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// The identity-gated kill
+// ---------------------------------------------------------------------------
+
+const AGENT_IDENTITY = { pid: 100, startedAt: "Wed Nov 25 14:00:00 2026" };
+const LINKER_STARTED = "Wed Nov 25 14:01:00 2026";
+const INCIDENT_VICTIM = INCIDENT_ROWS.find((r) => r.pid === 105)!;
+
+/**
+ * Seams for {@link killMemoryGuardVictim}: start times answered from `times`
+ * (a list is read in order, its last entry repeating), the re-read table from
+ * `psText`, and the kills recorded.
+ */
+function killHarness(
+  times: Record<number, string | string[]>,
+  psText: string = INCIDENT_PS,
+) {
+  const killed: number[] = [];
+  const reads = new Map<number, number>();
+  const readStartTime = (pid: number) => {
+    const entry = times[pid] ?? "";
+    if (typeof entry === "string") return Promise.resolve(entry);
+    const index = reads.get(pid) ?? 0;
+    reads.set(pid, index + 1);
+    return Promise.resolve(entry[Math.min(index, entry.length - 1)] ?? "");
+  };
+  return {
+    killed,
+    deps: {
+      readStartTime,
+      runPs: () => Promise.resolve(psText),
+      kill: (pid: number) => {
+        killed.push(pid);
+      },
+    },
+  };
+}
+
+Deno.test("memory_guard #5529 - a victim proven in the tree and unchanged is killed", async () => {
+  const { killed, deps } = killHarness({
+    100: AGENT_IDENTITY.startedAt,
+    105: LINKER_STARTED,
+  });
+  const outcome = await killMemoryGuardVictim({
+    victim: INCIDENT_VICTIM,
+    agentPid: 100,
+    agentIdentity: AGENT_IDENTITY,
+  }, deps);
+  assertEquals(outcome, { killed: true });
+  assertEquals(killed, [105]);
+});
+
+Deno.test("memory_guard #5529 - a pid whose identity changed between selection and the kill is not signalled", async () => {
+  // The linker exits and a stranger is given pid 105 after it was
+  // fingerprinted: the re-check reads a different start time.
+  const { killed, deps } = killHarness({
+    100: AGENT_IDENTITY.startedAt,
+    105: [LINKER_STARTED, "Wed Nov 25 14:02:30 2026"],
+  });
+  const outcome = await killMemoryGuardVictim({
+    victim: INCIDENT_VICTIM,
+    agentPid: 100,
+    agentIdentity: AGENT_IDENTITY,
+  }, deps);
+  assertEquals(outcome.killed, false);
+  assertEquals(killed, []);
+});
+
+Deno.test("memory_guard #5529 - a victim that is gone by the kill is not signalled", async () => {
+  const { killed, deps } = killHarness({ 100: AGENT_IDENTITY.startedAt });
+  const outcome = await killMemoryGuardVictim({
+    victim: INCIDENT_VICTIM,
+    agentPid: 100,
+    agentIdentity: AGENT_IDENTITY,
+  }, deps);
+  assertEquals(outcome.killed, false);
+  assertEquals(killed, []);
+});
+
+Deno.test("memory_guard #5529 - a reused snapshot pid outside the re-read tree is not signalled", async () => {
+  // By the re-read, pid 105 hangs off init: a stranger now holds the pid a
+  // tree member had, so membership is unproven.
+  const reread = INCIDENT_PS.replace(
+    "  105   104   1992294",
+    "  105     1   1992294",
+  );
+  assert(reread !== INCIDENT_PS, "the fixture row was rewritten");
+  const { killed, deps } = killHarness({
+    100: AGENT_IDENTITY.startedAt,
+    105: LINKER_STARTED,
+  }, reread);
+  const outcome = await killMemoryGuardVictim({
+    victim: INCIDENT_VICTIM,
+    agentPid: 100,
+    agentIdentity: AGENT_IDENTITY,
+  }, deps);
+  assertEquals(outcome.killed, false);
+  assertEquals(killed, []);
+});
+
+Deno.test("memory_guard #5529 - an agent that is not provably ours roots no kill", async () => {
+  const changed = killHarness({
+    100: "Wed Nov 25 14:05:00 2026",
+    105: LINKER_STARTED,
+  });
+  const outcome = await killMemoryGuardVictim({
+    victim: INCIDENT_VICTIM,
+    agentPid: 100,
+    agentIdentity: AGENT_IDENTITY,
+  }, changed.deps);
+  assertEquals(outcome.killed, false);
+  assertEquals(changed.killed, []);
+
+  const unknown = killHarness({ 105: LINKER_STARTED });
+  const noFingerprint = await killMemoryGuardVictim({
+    victim: INCIDENT_VICTIM,
+    agentPid: 100,
+    agentIdentity: null,
+  }, unknown.deps);
+  assertEquals(noFingerprint.killed, false);
+  assertEquals(unknown.killed, []);
 });
 
 // ---------------------------------------------------------------------------
@@ -252,6 +372,42 @@ Deno.test("memory_guard #5529 - a long command is cut to 90 characters with an e
 const TREE_DESCENDANT_PID = 424_242;
 /** A large process outside the agent's tree; never to be chosen. */
 const UNRELATED_PID = 999_001;
+
+/** The start time the fake tree descendant reports while it is "alive". */
+const DESCENDANT_STARTED = "Wed Nov 25 14:01:00 2026";
+
+/**
+ * The guard's start-time reader for the runner tests: the fake descendant
+ * answers `descendant()` (fixed unless a test changes it), and every other pid
+ * (the real stub agent) is read from the real `ps`.
+ */
+function guardStartTimes(
+  descendant: () => string = () => DESCENDANT_STARTED,
+): (pid: number) => Promise<string> {
+  return (pid) =>
+    pid === TREE_DESCENDANT_PID
+      ? Promise.resolve(descendant())
+      : getStartTime(pid);
+}
+
+/**
+ * Wait for `promise`, failing the case after 5 s of real time rather than
+ * hanging the suite when the runner never gets there.
+ */
+async function within<T>(promise: Promise<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`timed out waiting for ${what}`)),
+      5_000,
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Basename of the file the stub writes its own pid to. */
 const CHILD_PID_FILE = "child.pid";
@@ -320,6 +476,7 @@ Deno.test({
           probeMemoryPressure: () => Promise.resolve(CRITICAL_READING),
           memoryWatchRunPs: async () =>
             runnerPsTable(Number(await waitForFile(childPidFile))),
+          memoryGuardReadStartTime: guardStartTimes(),
           memoryGuardKill: (pid) => {
             killed.push(pid);
             guardKilled.resolve();
@@ -385,6 +542,7 @@ Deno.test({
           probeMemoryPressure: () => Promise.resolve(ABOVE_FLOOR_READING),
           memoryWatchRunPs: async () =>
             runnerPsTable(Number(await waitForFile(childPidFile))),
+          memoryGuardReadStartTime: guardStartTimes(),
           memoryGuardKill: (pid) => {
             killed.push(pid);
           },
@@ -444,6 +602,7 @@ Deno.test({
           probeMemoryPressure: () => Promise.resolve(CRITICAL_READING),
           memoryWatchRunPs: async () =>
             runnerPsTable(Number(await waitForFile(childPidFile))),
+          memoryGuardReadStartTime: guardStartTimes(),
           memoryGuardKill: () => {
             attempted.resolve();
             throw new Error("No such process");
@@ -467,6 +626,182 @@ Deno.test({
           w.includes("No such process")
         ),
         `the failed kill is logged, not swallowed: ${JSON.stringify(warns)}`,
+      );
+    } finally {
+      await stub.dispose();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithRetry - the guard acts inside the 60 s warning window and keeps acting while the guest stays critical (Issue #5529)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await createAgentStub(guardStubBody(), {
+      prefix: "memory_guard_5529_window_",
+    });
+    try {
+      // The incident shape: the first tick reads high but above the floor,
+      // which logs the pressure warning and opens the 60 s window; the next
+      // ticks, well inside it, read below the floor.
+      const readings = [
+        ABOVE_FLOOR_READING,
+        CRITICAL_READING,
+        CRITICAL_READING,
+      ];
+      let probes = 0;
+      const firstWarn = Promise.withResolvers<void>();
+      const guardLines = [
+        Promise.withResolvers<void>(),
+        Promise.withResolvers<void>(),
+      ];
+      let guardSeen = 0;
+      const { logger, warns } = capturingLogger((message) => {
+        if (message.startsWith("Memory pressure high during the agent run")) {
+          firstWarn.resolve();
+        }
+        if (message.startsWith("Guest memory critically low")) {
+          guardLines[guardSeen++]?.resolve();
+        }
+      });
+      const clock = fakeClock();
+      const signals = chunkSignals();
+      const killed: number[] = [];
+      const childPidFile = `${stub.dir}/${CHILD_PID_FILE}`;
+      const run = runClaudeWithRetry(
+        {
+          ...COMMON_OPTS,
+          clock,
+          agentBinaryPath: stub.path,
+          logger,
+          descendantSnapshotIntervalMs: 100,
+          memoryWatchMinIntervalMs: 60_000,
+          onActivity: signals.onActivity,
+          probeMemoryPressure: () =>
+            Promise.resolve(
+              readings[Math.min(probes++, readings.length - 1)]!,
+            ),
+          memoryWatchRunPs: async () =>
+            runnerPsTable(Number(await waitForFile(childPidFile))),
+          memoryGuardReadStartTime: guardStartTimes(),
+          memoryGuardKill: (pid) => {
+            killed.push(pid);
+          },
+        },
+        NO_RETRY_WAIT,
+      );
+      let result: Awaited<typeof run>;
+      try {
+        await signals.chunk(1);
+        // First tick: above the floor, so only the warning, which opens the
+        // window.
+        await clock.advance(100);
+        await within(firstWarn.promise, "the pressure warning");
+        assertEquals(killed, [], "above the floor nothing is killed");
+        // Second tick, 100 ms into the 60 s window: below the floor.
+        await clock.advance(100);
+        await within(guardLines[0]!.promise, "the first guard line");
+        assertEquals(killed, [TREE_DESCENDANT_PID]);
+        assertEquals(
+          warns.filter((w) => w.startsWith("Guest memory critically low"))
+            .length,
+          1,
+          JSON.stringify(warns),
+        );
+        // Third tick, still critical: no cool-down holds the guard back.
+        await clock.advance(100);
+        await within(guardLines[1]!.promise, "the second guard line");
+      } finally {
+        await releaseAgentStub(stub, "guard");
+        result = await run;
+      }
+
+      assert(
+        result.ok,
+        `expected ok result, got ${!result.ok && result.error}`,
+      );
+      assertEquals(killed, [TREE_DESCENDANT_PID, TREE_DESCENDANT_PID]);
+      assertEquals(
+        warns.filter((w) =>
+          w.startsWith("Memory pressure high during the agent run")
+        ).length,
+        1,
+        `the window still holds the pressure warning to one: ${
+          JSON.stringify(warns)
+        }`,
+      );
+    } finally {
+      await stub.dispose();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithRetry - a victim whose pid changed hands before the kill is left alone and the refusal is logged (Issue #5529)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await createAgentStub(guardStubBody(), {
+      prefix: "memory_guard_5529_reused_",
+    });
+    try {
+      const refused = Promise.withResolvers<void>();
+      const { logger, warns } = capturingLogger((message) => {
+        if (message.startsWith("Memory guard left pid=")) refused.resolve();
+      });
+      const clock = fakeClock();
+      const signals = chunkSignals();
+      const killed: number[] = [];
+      const childPidFile = `${stub.dir}/${CHILD_PID_FILE}`;
+      // The fingerprint reads the linker; every later read sees a stranger
+      // that was given the same pid.
+      let descendantReads = 0;
+      const run = runClaudeWithRetry(
+        {
+          ...COMMON_OPTS,
+          clock,
+          agentBinaryPath: stub.path,
+          logger,
+          descendantSnapshotIntervalMs: 100,
+          onActivity: signals.onActivity,
+          probeMemoryPressure: () => Promise.resolve(CRITICAL_READING),
+          memoryWatchRunPs: async () =>
+            runnerPsTable(Number(await waitForFile(childPidFile))),
+          memoryGuardReadStartTime: guardStartTimes(() =>
+            descendantReads++ === 0
+              ? DESCENDANT_STARTED
+              : "Wed Nov 25 14:09:59 2026"
+          ),
+          memoryGuardKill: (pid) => {
+            killed.push(pid);
+          },
+        },
+        NO_RETRY_WAIT,
+      );
+      let result: Awaited<typeof run>;
+      try {
+        await signals.chunk(1);
+        await clock.advance(100);
+        await within(refused.promise, "the refusal line");
+      } finally {
+        await releaseAgentStub(stub, "guard");
+        result = await run;
+      }
+
+      assert(
+        result.ok,
+        `expected ok result, got ${!result.ok && result.error}`,
+      );
+      assertEquals(killed, [], "an unproven pid is never signalled");
+      const line = warns.find((w) => w.startsWith("Memory guard left pid="))!;
+      assert(line.includes(`pid=${TREE_DESCENDANT_PID}`), line);
+      assert(line.includes("changed hands"), line);
+      assert(
+        !warns.some((w) => w.startsWith("Guest memory critically low")),
+        `no kill line for a refused kill: ${JSON.stringify(warns)}`,
       );
     } finally {
       await stub.dispose();

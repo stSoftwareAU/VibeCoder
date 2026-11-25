@@ -24,8 +24,11 @@ not handled. This PR fixes both. Closes #5529.
   60 s warning window. When the guest's available memory is below the greater of
   3% of total and 256 MiB, it sends SIGKILL to the largest process in that agent
   run's own tree, and logs a `Guest memory critically low` warning. The agent
-  CLI itself is never killed, and neither is a process under 256 MiB. The
-  selection is in the new `worker/deno/lib/memory_guard.ts`.
+  CLI itself is never killed, and neither is a process under 256 MiB. The signal
+  is identity-gated through `pid_guard.ts`: the victim must still be the process
+  chosen and still have a live parent chain to the agent, or it is left alone
+  and a `Memory guard left pid=… alone` warning is logged. The selection and the
+  gated kill are in the new `worker/deno/lib/memory_guard.ts`.
 
 ## Spec
 
@@ -52,9 +55,19 @@ not handled. This PR fixes both. Closes #5529.
 - While the reading stays below the floor, each tick (every 20 s, and on agent
   output) can kill the next-largest member. There is no cool-down, because a
   guest still below the floor is still at risk.
-- The victim is chosen from a `ps` table read a moment before the kill. This
-  accepts the small risk that the pid is reused in between, rather than adding
-  an identity check.
+- The guard never signals a pid it cannot prove is still its own
+  (CODING-STANDARDS.md, "Never signal a pid you cannot prove is still yours").
+  `killMemoryGuardVictim` fingerprints the victim with `captureProcessIdentity`
+  and re-reads the `ps` table, which must show a live parent chain from the
+  victim to the agent. It then re-verifies the agent against its spawn
+  fingerprint and the victim against its own with `isSameProcess`, immediately
+  before the SIGKILL. A victim whose start time is unchanged across that span is
+  the process the re-read placed in the tree. Any check that fails means no
+  signal.
+- The guard does not use the agent's descendant snapshot (Issue #4382) for
+  membership. A snapshot pid with no live chain to the agent may have been
+  reaped and given to a stranger since the snapshot, and the table cannot tell
+  the two apart. So a process re-parented away from the agent is not killed.
 
 ### Undiscoverable Facts
 
@@ -84,22 +97,37 @@ flowchart TD
     T[memory-watch tick: every 20 s and on agent output] --> R{guest reading high?}
     R -- no --> X[nothing]
     R -- yes --> F{available below max of 3% and 256 MiB?}
-    F -- yes --> V{largest process in this agent's tree, not the agent, at least 256 MiB?}
-    V -- yes --> K[SIGKILL it; WARNING: Guest memory critically low]
+    F -- yes --> V{largest process with a live parent chain to the agent, not the agent, at least 256 MiB?}
+    V -- yes --> P{fingerprint, re-read ps: still in the tree, agent and victim unchanged?}
+    P -- yes --> K[SIGKILL it; WARNING: Guest memory critically low]
+    P -- no --> U[no signal; WARNING: Memory guard left pid alone]
     V -- no --> W
     F -- no --> W{60 s warning window open?}
     K --> W
+    U --> W
     W -- yes --> L[existing top-processes warning, Issue #4384]
 ```
 
 - `worker/deno/tests/setup_step_log_test.ts::#5529 - a milestone setup inside
   the pre-sync agent reports milestone pre-sync, and a completed milestone setup
   logs the milestone steps in order`.
-- `worker/deno/tests/memory_guard_5529_test.ts`: floor and victim selection (the
-  largest tree member wins over the agent and over a larger unrelated linker,
-  with a 1.1 GiB control), the kill line, and three tests through the real
-  `runClaudeWithRetry`: a critical reading kills and logs, a high reading above
-  the floor only warns, and a kill that throws is logged.
+- `worker/deno/tests/memory_guard_5529_test.ts`:
+  - Floor and victim selection: the largest tree member wins over the agent and
+    over a larger unrelated linker, with a 1.1 GiB control. A snapshot-only pid
+    with no live chain to the agent is never chosen.
+  - The gated kill (`killMemoryGuardVictim`): a proven victim is killed. Nothing
+    is signalled for a pid whose start time changed between selection and the
+    kill, a victim that is gone, a reused pid that the re-read table places
+    outside the tree, or an agent that is changed or was never fingerprinted.
+  - The kill line.
+  - Five tests through the real `runClaudeWithRetry`. A critical reading kills
+    and logs. A high reading above the floor only warns. A kill that throws is
+    logged. A pid that changed hands is left alone and the refusal is logged.
+    The window test: with `memoryWatchMinIntervalMs: 60_000`, the first tick
+    reads above the floor and logs the pressure warning. The second tick, inside
+    the window, reads below the floor and kills the tree member, with one
+    `Guest memory critically low` line. A third critical tick kills again, and
+    the pressure warning is still logged once.
 - New ledger slice: `docs/audits/lib-sweep-coverage/top-up-5529.json` claims
   `worker/deno/lib/memory_guard.ts`.
 - Docs: `docs/TROUBLESHOOTING.md` (step labels, plus a guard paragraph) and
@@ -140,22 +168,31 @@ flowchart TD
     `chunkSignals` and `waitForFile` moved to
     `worker/deno/tests/support/claude_runner_harness.ts`, so the new test
     imports them rather than copying them. No test changed.
+- Mutation checks on the head, each reverted afterwards:
+  - Restoring the base gate (`if (!warnDue) return;`) fails the window test
+    (`timed out waiting for the first guard line`).
+  - Making `killMemoryGuardVictim` kill before any check fails the four
+    unproven-pid unit tests and the runner refusal test.
 - `formatProcessTable`'s tree walk was extracted unchanged into
   `agentTreeMembership` (`kill_diagnostics.ts`), which the guard reuses.
   `formatProcessTable`'s existing tests cover it.
 - Twinned rules: none found. The tree walk now has one copy.
 - On the final head, from `worker/deno`:
   `deno test --allow-all tests/setup_step_log_test.ts tests/hard_kill_report_test.ts tests/setup_deadline_5128_test.ts tests/memory_guard_5529_test.ts tests/claude_runner_killed_test.ts tests/kill_diagnostics_test.ts tests/memory_pressure_test.ts tests/lib_sweep_coverage_test.ts tests/setup_branch_presync_test.ts`
-  gave 201 passed and 0 failed.
-- `./quality.sh < /dev/null` on the head:
-  `Result: PASSED (with skipped
-  checks)`. Only `config integration` (no
-  `.config.json`) and `checkov` (not on PATH) were skipped.
+  gave 208 passed and 0 failed. Adding `tests/pid_guard_test.ts` gave 267 passed
+  and 0 failed.
+- `./quality.sh < /dev/null` on the head before the identity-gate change:
+  `Result: PASSED (with skipped checks)`. Only `config integration` (no
+  `.config.json`) and `checkov` (not on PATH) were skipped. On the final head,
+  `deno check mod.ts`, `deno lint` and `deno fmt --check` on the changed files
+  are clean. The worker re-runs the full gate.
 
 ## Not done / remaining risk
 
 - A memory hog outside every agent run's tree is not guarded. Examples are the
-  worker's own quality-gate run and a pre-setup command.
+  worker's own quality-gate run and a pre-setup command. The same holds for a
+  tree member whose parent has exited, because it is re-parented away from the
+  agent.
 - Whether the guard fires before a real guest stops scheduling has not been seen
   on a VM. The next `hard-kill-watchdog-*` recurrence, or a
   `Guest memory critically low` line in a worker log, will show it.

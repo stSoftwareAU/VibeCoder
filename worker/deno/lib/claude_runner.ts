@@ -122,6 +122,7 @@ import {
 import {
   formatMemoryGuardKill,
   isBelowMemoryGuardFloor,
+  killMemoryGuardVictim,
   memoryGuardFloorBytes,
   selectMemoryGuardVictim,
 } from "./memory_guard.ts";
@@ -729,9 +730,15 @@ export interface RunClaudeOptions {
   /**
    * The memory guard's kill (Issue #5529): SIGKILLs the largest process in
    * the agent run's tree when the guest is below its floor. Defaults to
-   * `Deno.kill(pid, "SIGKILL")`. Injectable for tests.
+   * `Deno.kill(pid, "SIGKILL")`. Injectable for tests. It is only reached
+   * once the victim's identity and tree membership are proven.
    */
   memoryGuardKill?: (pid: number) => void;
+  /**
+   * The start-time reader the memory guard proves identities with (Issue
+   * #5529). Defaults to `ps -o lstart=` (`pid_guard.ts`). Tests only.
+   */
+  memoryGuardReadStartTime?: (pid: number) => Promise<string>;
   /**
    * Kill-time evidence capture (Issue #4382); defaults to the real process
    * table and dmesg. Injectable for tests.
@@ -1984,7 +1991,9 @@ async function runClaudeWithTimeoutBody(
     // The in-guest guard (Issue #5529) rides the same tick but is not held
     // back by that window: a reading below its floor SIGKILLs the largest
     // process in this run's tree at once, and the kill is logged. It is the
-    // one action the watch takes; the warning above stays evidence only.
+    // one action the watch takes; the warning above stays evidence only. The
+    // signal is identity-gated: the victim must still be the process chosen
+    // and still have a live parent chain to the agent, or it is left alone.
     let lastMemoryWarnMs = 0;
     let memoryWatchInFlight = false;
     const memoryWatchMinIntervalMs = options.memoryWatchMinIntervalMs ??
@@ -2011,13 +2020,33 @@ async function runClaudeWithTimeoutBody(
             reading,
             rows,
             agentPid: childPid,
-            knownDescendants,
           });
           if (victim !== undefined) {
-            let killed = false;
             try {
-              (options.memoryGuardKill ?? defaultMemoryGuardKill)(victim.pid);
-              killed = true;
+              const outcome = await killMemoryGuardVictim(
+                { victim, agentPid: childPid, agentIdentity: childIdentity },
+                {
+                  runPs: options.memoryWatchRunPs ?? defaultRunPs,
+                  kill: options.memoryGuardKill ?? defaultMemoryGuardKill,
+                  ...(options.memoryGuardReadStartTime
+                    ? { readStartTime: options.memoryGuardReadStartTime }
+                    : {}),
+                },
+              );
+              if (outcome.killed) {
+                logger?.warn(formatMemoryGuardKill({
+                  reading,
+                  victim,
+                  floorBytes: memoryGuardFloorBytes(reading.totalBytes ?? 0),
+                }));
+              } else {
+                // Unproven means no signal (CODING-STANDARDS.md).
+                logger?.warn(
+                  `Memory guard left pid=${victim.pid} alone: ` +
+                    `${outcome.reason}, so it is not provably this agent ` +
+                    `run's process (Issue #5529)`,
+                );
+              }
             } catch (err) {
               // Fail loud: a guard that cannot kill must say so in the log.
               logger?.warn(
@@ -2025,13 +2054,6 @@ async function runClaudeWithTimeoutBody(
                   err instanceof Error ? err.message : String(err)
                 } (Issue #5529)`,
               );
-            }
-            if (killed) {
-              logger?.warn(formatMemoryGuardKill({
-                reading,
-                victim,
-                floorBytes: memoryGuardFloorBytes(reading.totalBytes ?? 0),
-              }));
             }
           }
         }
@@ -2048,9 +2070,9 @@ async function runClaudeWithTimeoutBody(
           }));
         }
       } catch {
-        // The guard's SIGKILL is the only action, and its failure is logged
-        // where it happens above. Anything else that throws here is evidence
-        // lost, never a reason to disturb the run.
+        // The guard's SIGKILL is the only action, and its failure or
+        // refusal is logged where it happens above. Anything else that
+        // throws here is evidence lost, never a reason to disturb the run.
       } finally {
         memoryWatchInFlight = false;
       }
