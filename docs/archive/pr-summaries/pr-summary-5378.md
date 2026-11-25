@@ -52,6 +52,11 @@ that was wired correctly. Closes #5378.
 
 ## Evidence
 
+The fixture named `a runner must execute a repository test and propagate
+failure` exercises both a workflow step and a repository script. It failed
+on `d64b9f90b`. With the repair, all 571 tests in the CI and workflow
+validator suites passed, including the positive runner controls.
+
 This is a backend change with no UI. Reproduction on the base branch
 (`origin/milestone/aws-emulator-validator-hardening`) ran
 `workflowRunsAwsEmulator` on a `pull_request` step:

@@ -1801,7 +1801,10 @@ function looksLikeTestCommand(words: string[]): boolean {
     );
   }
   if (head === "bash" || head === "sh") {
-    const first = operandsAfter(words, at, head)[0] ?? "";
+    const args = words.slice(at + 1);
+    const options = readShellOptions(args);
+    if (options.noexec || options.commandString) return false;
+    const first = stripQuotes(args[options.operand] ?? "");
     return first.includes("/") && namesTest(first.replace(/^.*\//, ""));
   }
   return raw.includes("/") && namesTest(head);

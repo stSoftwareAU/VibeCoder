@@ -5093,3 +5093,33 @@ Deno.test("checkAwsEmulatorInCI - failure-exit idioms inside a one-line case arm
     "! cmd || exit",
   );
 });
+
+Deno.test("a runner must execute a repository test and propagate failure", async () => {
+  const cases = [
+    ["X=$(cat v) aws-emulator-run -- ./test.sh", "official-server"],
+    ["X=$(echo ${Y/)/} aws-emulator-run -- ./test.sh)", "missing"],
+    ["X=$(echo ${Y%)} aws-emulator-run -- ./test.sh)", "missing"],
+    ["X=$(case a in a) aws-emulator-run -- ./test.sh ;; esac) true", "missing"],
+    ["X=$(echo $'a\\') aws-emulator-run -- ./test.sh #')", "missing"],
+    ["case a in test) aws-emulator-run -- ./test.sh & ;; esac", "missing"],
+    ["case a in a|b) aws-emulator-run -- ./test.sh & ;; esac", "missing"],
+    ["case a in a) aws-emulator-run -- ./test.sh ;; esac", "official-server"],
+    ["aws-emulator-run -- bash -c './test.sh || true'", "missing"],
+    ["aws-emulator-run -- sh -c 'exit 0 # ./test.sh'", "missing"],
+    ["aws-emulator-run -- bash -n ./test.sh", "missing"],
+    ["aws-emulator-run -- bash -o noexec ./test.sh", "missing"],
+    ["aws-emulator-run -- bash ./test.sh", "official-server"],
+  ] as const;
+  for (const [body, expected] of cases) {
+    for (const script of [false, true]) {
+      const result = await checkRepoWith({
+        ".github/workflows/ci.yml": prWorkflow(
+          stepYaml(script ? "bash ./ci/run.sh" : body),
+        ),
+        "ci/run.sh": `#!/usr/bin/env bash\nset -e\n${body}\n`,
+        "test.sh": "#!/usr/bin/env bash\ndeno task test\n",
+      });
+      assertEquals(result.wiring, expected, `script=${script}: ${body}`);
+    }
+  }
+});

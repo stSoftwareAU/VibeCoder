@@ -80,7 +80,7 @@ function shellCommandList(script: string): {
       commands.push({ words, sep });
       words = [];
       sep = next;
-    } else if (next !== "\n") {
+    } else if (next !== "\n" && !(sep === "&" && next === ";;")) {
       sep = next;
     }
   };
@@ -243,6 +243,14 @@ export function commandPrefixWords(words: string[]): string[] {
   return commandScan(words).prefix;
 }
 
+/** These shell constructs can contain a closing parenthesis that belongs to
+ * the construct itself. The word scan cannot locate the command after it.
+ */
+function ambiguousSubstitutionWord(word: string): boolean {
+  return word.includes("$'") || /\$\{[^{}]*[()]/.test(word) ||
+    /(?:^|\$\()case$/.test(word);
+}
+
 /**
  * Index past the assignment at `words[start]` and the following words its
  * unclosed `$( … )`, `(` or backtick substitution spans. Each skipped
@@ -257,11 +265,16 @@ function skipAssignment(
   let open = parenBalance(first).delta;
   // A `(` that opens no substitution (`${Y:-(}`) is not a span the shell
   // closes later, so nothing after it is read as the command (Issue #5378).
-  if (open > 0 && hasPlainOpenParen(first)) return words.length;
+  if (
+    open > 0 && (hasPlainOpenParen(first) || ambiguousSubstitutionWord(first))
+  ) {
+    return words.length;
+  }
   let ticks = backtickCount(first);
   let i = start + 1;
   while ((open > 0 || ticks % 2 === 1) && i < words.length) {
     const word = words[i] ?? "";
+    if (ambiguousSubstitutionWord(word)) return words.length;
     open += parenBalance(word).delta;
     ticks += backtickCount(word);
     inner.add(i);
