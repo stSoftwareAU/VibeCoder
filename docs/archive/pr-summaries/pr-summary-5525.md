@@ -75,6 +75,12 @@ hide commands after the closing quote. Closes #5525.
   reported 36,724 passed, 1 failed and 5 ignored; the serial pass did not run.
   Running that file directly through `deno task test:unit` then passed all
   **16** tests. Other completed gate checks passed, except the skips below.
+- Second full gate: both parallel and serial test passes succeeded, but the
+  runtime budget check failed for
+  `worker/deno/tests/log_level_prefix_lint_test.ts` (1 test, 1.62 seconds) and
+  `worker/deno/tests/parallel_safety_cap_test.ts` (2 tests, 3.43 seconds total).
+  A focused run of those files passed all **3** tests. No assertions or time
+  limits were changed.
 
 ## Merge verification
 
