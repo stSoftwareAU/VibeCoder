@@ -141,4 +141,18 @@ flowchart TD
   `agentTreeMembership` (`kill_diagnostics.ts`), which the guard reuses.
   `formatProcessTable`'s existing tests cover it.
 - Twinned rules: none found. The tree walk now has one copy.
-- Results on the final head are listed below.
+- On the final head, from `worker/deno`:
+  `deno test --allow-all tests/setup_step_log_test.ts tests/hard_kill_report_test.ts tests/setup_deadline_5128_test.ts tests/memory_guard_5529_test.ts tests/claude_runner_killed_test.ts tests/kill_diagnostics_test.ts tests/memory_pressure_test.ts tests/lib_sweep_coverage_test.ts tests/setup_branch_presync_test.ts`
+  gave 201 passed and 0 failed.
+- `./quality.sh < /dev/null` on the head: `Result: PASSED (with skipped
+  checks)`. Only `config integration` (no `.config.json`) and `checkov` (not on
+  PATH) were skipped.
+
+## Not done / remaining risk
+
+- A memory hog outside every agent run's tree is not guarded. Examples are the
+  worker's own quality-gate run and a pre-setup command.
+- Whether the guard fires before a real guest stops scheduling has not been
+  seen on a VM. The next `hard-kill-watchdog-*` recurrence, or a
+  `Guest memory critically low` line in a worker log, will show it.
+- The GRQ-3 archives named in the issue were not read: they are on that host.
