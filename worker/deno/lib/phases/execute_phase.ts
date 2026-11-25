@@ -12,6 +12,7 @@ import { classifyRunFailure } from "../run_outcome_classifier.ts";
 import { AgentTurnLimitError } from "../claude_turn_limit.ts";
 import { billedResultOfError } from "../failed_invocation_result.ts";
 import { UnfinishedIssueExecutorError } from "../issue_executor_enforcement.ts";
+import { GuestMemoryFloorError } from "../guest_memory_floor.ts";
 import { HostDiskParkError } from "../heavy_build_gate.ts";
 /**
  * Phase 3 — Execute Claude.
@@ -1632,11 +1633,16 @@ async function executeClaudeBody(
     // is preserved on the issue branch and the run is released as
     // interrupted — never a worker crash, and not retried by this branch.
     // Issue #5077 releases a host-disk park the same way under its own
-    // category. Only the category, the cause, the reason prefix, the detail
-    // and the log line differ.
+    // category, and Issue #4815 a guest-memory stop as interrupted. Only the
+    // category, the cause, the reason prefix, the detail and the log line
+    // differ.
     const releaseInterrupted = async (failure: {
       category: "interrupted" | "host_disk";
-      cause: "turn-limit" | "executor-unfinished" | "host-disk-park";
+      cause:
+        | "turn-limit"
+        | "executor-unfinished"
+        | "host-disk-park"
+        | "guest-memory-floor";
       prefix: string;
       detail?: string;
       logMessage: string;
@@ -1727,6 +1733,19 @@ async function executeClaudeBody(
         logMessage:
           "The host disk is below its floor; parking the agent and preserving the work for the next claim (Issue #5077)",
         agentStarted: claudeResult.error.agentStarted,
+        error: claudeResult.error,
+      });
+    }
+    // Issue #4815: the guest memory floor stopped the agent before the guest
+    // ran out of memory. The work is preserved for the next claim.
+    if (claudeResult.error instanceof GuestMemoryFloorError) {
+      return releaseInterrupted({
+        category: "interrupted",
+        cause: "guest-memory-floor",
+        prefix: claudeResult.error.message,
+        logMessage:
+          "Guest memory fell below its floor; stopping the agent and preserving the work for the next claim (Issue #4815)",
+        agentStarted: true,
         error: claudeResult.error,
       });
     }

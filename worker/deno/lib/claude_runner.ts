@@ -36,6 +36,12 @@ import {
   parkInFlightBuild,
   parkRunningBuild,
 } from "./heavy_build_gate.ts";
+import {
+  GUEST_MEMORY_POLL_MS,
+  guestMemoryFloorArmed,
+  GuestMemoryFloorError,
+  GuestMemoryFloorWatch,
+} from "./guest_memory_floor.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
 import {
   appendFinishDeadlinePrompt,
@@ -708,6 +714,12 @@ export interface RunClaudeOptions {
    * once production has armed the in-flight gate.
    */
   hostDiskPollMs?: number;
+  /**
+   * Cadence of the guest memory floor check (Issue #4815). Default
+   * `GUEST_MEMORY_POLL_MS` once production has armed it, otherwise off; `0`
+   * disables; an explicit positive value arms it (tests).
+   */
+  guestMemoryPollMs?: number;
   /** Process-table seams for the orphan collector — tests only. */
   orphanCollectorDeps?: OrphanCollectorDeps;
   /** Process-table seams for the leftover reaper — tests only. */
@@ -1603,6 +1615,8 @@ async function runClaudeWithTimeoutBody(
   // (Issue #4360). The run then fails as infrastructure, not as a timeout.
   let hostDiskPark: string | undefined;
   let hostDiskPoll: TimerHandle | undefined;
+  let guestMemoryPark: string | undefined;
+  let guestMemoryPoll: TimerHandle | undefined;
   let ghGuard: GhGuardShim | undefined;
   let prePushHook: PrePushHook | undefined;
   // The provider's per-run settings file (Issue #5341), removed in `finally`.
@@ -2124,6 +2138,43 @@ async function runClaudeWithTimeoutBody(
           });
         });
       }, options.hostDiskPollMs ?? 30_000);
+    }
+
+    // Stop the agent before the guest runs out of memory (Issue #4815).
+    const guestMemoryPollMs = options.guestMemoryPollMs ??
+      (guestMemoryFloorArmed() ? GUEST_MEMORY_POLL_MS : 0);
+    if (guestMemoryPollMs > 0) {
+      const memoryWatch = new GuestMemoryFloorWatch();
+      let memoryReadInFlight = false;
+      guestMemoryPoll = clock.setInterval(() => {
+        if (
+          runFinished || guestMemoryPark || hostDiskPark || memoryReadInFlight
+        ) return;
+        memoryReadInFlight = true;
+        void readMemoryPressureAtKill(options.probeMemoryPressure).then(
+          (reading) => {
+            memoryReadInFlight = false;
+            const reason = memoryWatch.observe(reading);
+            if (
+              !reason || runFinished || guestMemoryPark || hostDiskPark
+            ) return;
+            guestMemoryPark = reason;
+            logger?.warn(reason);
+            void killClaudeProcessTree(
+              childPid,
+              killAfterSeconds,
+              logger,
+              childIdentity,
+            ).catch((err) => {
+              logger?.error(
+                `Guest-memory kill failed for PID ${childPid}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            });
+          },
+        );
+      }, guestMemoryPollMs);
     }
 
     // Periodic progress lines (Issue #4169): the same stream the silence
@@ -2858,6 +2909,10 @@ async function runClaudeWithTimeoutBody(
       clock.clearInterval(descendantSnapshotTimer);
       descendantSnapshotTimer = undefined;
     }
+    if (guestMemoryPoll) {
+      clock.clearInterval(guestMemoryPoll);
+      guestMemoryPoll = undefined;
+    }
     if (hostDiskPoll) {
       clock.clearInterval(hostDiskPoll);
       hostDiskPoll = undefined;
@@ -3151,6 +3206,9 @@ async function runClaudeWithTimeoutBody(
         error: new HostDiskParkError(hostDiskPark, true),
       };
     }
+    if (guestMemoryPark) {
+      return { ok: false, error: new GuestMemoryFloorError(guestMemoryPark) };
+    }
     const runResult: ClaudeExecutionResult = {
       exitCode: timedOut ? TIMEOUT_EXIT_CODE : status.code,
       // The unclassified truth (Issue #4202): what the process really
@@ -3211,6 +3269,7 @@ async function runClaudeWithTimeoutBody(
     if (killBoundTimer) clock.clearTimeout(killBoundTimer);
     if (descendantSnapshotTimer) clock.clearInterval(descendantSnapshotTimer);
     if (hostDiskPoll) clock.clearInterval(hostDiskPoll);
+    if (guestMemoryPoll) clock.clearInterval(guestMemoryPoll);
     if (descendantTracker) await descendantTracker.settle();
     // On a throw the agent may still be alive, and it carries the tag too, so
     // it is terminated along with its leftovers rather than abandoned
