@@ -148,6 +148,15 @@ function shellCommandList(script: string): {
         if (lineBreak === 0) break;
         opener += 1 + lineBreak;
       }
+      // `$$` is the process-ID parameter and is read as one unit first, so
+      // the `'` in `$$'…'` opens an ordinary single-quoted word, while
+      // `$$$'…'` still opens ANSI-C at its third `$` (PR #5610 review).
+      if (text.charAt(opener) === "$") {
+        word += "$$";
+        inWord = true;
+        i = opener;
+        continue;
+      }
       if (text.charAt(opener) === "'") {
         quote = "$'";
         word += "$'";

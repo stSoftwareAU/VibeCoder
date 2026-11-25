@@ -4608,6 +4608,26 @@ const ANSI_C_QUOTE_CASES: [string, string, string[][]][] = [
     "true $'tail\\",
     [["true", "$'tail\\"]],
   ],
+  [
+    "the `$$` parameter before a quote opens an ordinary single-quoted word",
+    String.raw`true $$'a\' next`,
+    [["true", String.raw`$$'a\'`, "next"]],
+  ],
+  [
+    "a backslash after `$$'` escapes nothing",
+    "true $$'a\\' '\nnext'\nafter",
+    [["true", "$$'a\\'", "'\nnext'"], ["after"]],
+  ],
+  [
+    "a third dollar after `$$` still opens ANSI-C quoting",
+    String.raw`true $$$'can\'t'; next`,
+    [["true", String.raw`$$$'can\'t'`], ["next"]],
+  ],
+  [
+    "`$$` split by a continuation is still the process-ID parameter",
+    "true $\\\n$'a\\' next",
+    [["true", "$$'a\\'", "next"]],
+  ],
 ];
 
 for (const [label, script, expected] of ANSI_C_QUOTE_CASES) {
@@ -4623,6 +4643,21 @@ Deno.test("shellCommands - separators after an ANSI-C escaped quote remain outsi
       { words: ["next"], sep },
     ]);
   }
+});
+
+Deno.test("workflowRunsAwsEmulator - an emulator line inside a `$$'…'` word is argument text (PR #5610 review)", () => {
+  assertEquals(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("true $$'a\\' '\naws-emulator-run -- ./test.sh\n'"),
+    ),
+    false,
+  );
+  // Control: with the `$$'…'` word closed on its own line the emulator runs.
+  assert(
+    workflowRunsAwsEmulator(
+      workflowRunBlock("true $$'a\\'\naws-emulator-run -- ./test.sh"),
+    ),
+  );
 });
 
 Deno.test("workflowRunsAwsEmulator - a line hidden by an escaped backslash runs its command (Issue #5348)", () => {
