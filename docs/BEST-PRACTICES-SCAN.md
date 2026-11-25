@@ -486,6 +486,13 @@ in a string does not count. Nor does an invocation that runs no repository test:
 the helper's own `--smoke` self-check, `--smoke-client`, `-h`/`--help`, a bare
 `--`, `-- true`, or a COMMAND without `--` (which the helper rejects).
 
+The shared command tokeniser recognises Bash ANSI-C `$'…'` quote boundaries:
+backslash-escaped characters stay inside the word, and an unescaped apostrophe
+closes it. Multiline arguments remain arguments, including command-looking
+lines after an escaped apostrophe; commands after the closing quote are split
+normally. Raw word spelling is preserved; ANSI-C escape decoding is not part of
+this scan. The AWS Emulator workflow validator uses the same tokeniser.
+
 **Test COMMAND.** The COMMAND after `--` earns official-server credit only when
 it is the repository's test, in one of three forms:
 

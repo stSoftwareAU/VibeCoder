@@ -31,6 +31,7 @@ import {
   commandPrefixWords,
   reachableCommands,
   removeQuotes,
+  shellCommands,
   shellSegments,
 } from "../lib/shell_command_words.ts";
 
@@ -1300,6 +1301,26 @@ function workflowRunBlock(body: string): unknown {
     `on: pull_request\njobs:\n  test:\n    steps:\n      - run: |\n${indented}\n`,
   );
 }
+
+Deno.test("workflowRunsAwsEmulator - ANSI-C escaped quotes keep multiline arguments out of command position", () => {
+  const command = "aws-emulator-run -- ./test.sh";
+  for (const quoted of ['"can\'t"', String.raw`$'can\'t'`]) {
+    assertEquals(
+      workflowRunsAwsEmulator(
+        workflowRunBlock(`true ${quoted} '\n${command}\n'`),
+      ),
+      false,
+      `multiline argument after ${quoted}`,
+    );
+    assertEquals(
+      workflowRunsAwsEmulator(
+        workflowRunBlock(`true ${quoted}\n${command}`),
+      ),
+      true,
+      `executable control after ${quoted}`,
+    );
+  }
+});
 
 Deno.test("workflowRunsAwsEmulator - if/then before aws-emulator-run counts", () => {
   assert(
@@ -4498,6 +4519,75 @@ for (const [label, script, expected] of SHELL_CONTINUATION_CASES) {
     assertEquals(shellSegments(script), expected);
   });
 }
+
+const ANSI_C_QUOTE_CASES: [string, string, string[][]][] = [
+  [
+    "escaped apostrophe keeps operators and comments in the word",
+    String.raw`true $'can\'t; | & # text'; next`,
+    [["true", String.raw`$'can\'t; | & # text'`], ["next"]],
+  ],
+  [
+    "escaped backslash leaves the closing apostrophe unescaped",
+    String.raw`true $'path\\'; next`,
+    [["true", String.raw`$'path\\'`], ["next"]],
+  ],
+  [
+    "escaped backslash followed by an escaped apostrophe",
+    String.raw`true $'path\\\'tail'; next`,
+    [["true", String.raw`$'path\\\'tail'`], ["next"]],
+  ],
+  [
+    "multiline ANSI-C word keeps embedded commands and comment lines",
+    "true $'can\\'t\n# text\nnext'\nafter",
+    [["true", "$'can\\'t\n# text\nnext'"], ["after"]],
+  ],
+  [
+    "ANSI-C backslash-newline retains its raw spelling",
+    "true $'a\\\nb'\nafter",
+    [["true", "$'a\\\nb'"], ["after"]],
+  ],
+  [
+    "concatenated plain and quoted fragments stay one word",
+    String.raw`true pre$'can\'t'" middle"'end'; next`,
+    [["true", String.raw`pre$'can\'t'" middle"'end'`], ["next"]],
+  ],
+  [
+    "literal opener inside double quotes",
+    String.raw`true "$'can\'t"; next`,
+    [["true", String.raw`"$'can\'t"`], ["next"]],
+  ],
+  [
+    "literal dollar before an ordinary single quote closes",
+    "true 'literal $'; next",
+    [["true", "'literal $'"], ["next"]],
+  ],
+  [
+    "escaped dollar does not open ANSI-C quoting",
+    String.raw`true \$'literal\'; next`,
+    [["true", String.raw`\$'literal\'`], ["next"]],
+  ],
+  ["empty ANSI-C word", "true $''; next", [["true", "$''"], ["next"]]],
+  [
+    "unclosed ANSI-C word keeps its trailing backslash",
+    "true $'tail\\",
+    [["true", "$'tail\\"]],
+  ],
+];
+
+for (const [label, script, expected] of ANSI_C_QUOTE_CASES) {
+  Deno.test(`shellSegments - ${label}`, () => {
+    assertEquals(shellSegments(script), expected);
+  });
+}
+
+Deno.test("shellCommands - separators after an ANSI-C escaped quote remain outside the word", () => {
+  for (const sep of ["\n", ";", "|", "&", "&&", "||"]) {
+    assertEquals(shellCommands(String.raw`true $'can\'t'` + sep + "next"), [
+      { words: ["true", String.raw`$'can\'t'`], sep: "" },
+      { words: ["next"], sep },
+    ]);
+  }
+});
 
 Deno.test("workflowRunsAwsEmulator - a line hidden by an escaped backslash runs its command (Issue #5348)", () => {
   assertEquals(
