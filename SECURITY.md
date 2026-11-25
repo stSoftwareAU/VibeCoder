@@ -586,6 +586,11 @@ keeps its whole mask, the quote is kept in front of it, and the result is
 rule pairs with the later quote and masks through it (the Issue #5310 round 13
 cases pin that outcome). Keeping the quote before a later flag prevents that
 flag's name being swallowed and the remainder of its value being published.
+A kept quote ends the flag's value, so when the masked text after it ends in a
+credential label or flag name glued to the quote, as in
+`credentials: x'password: <value>` or `credentials: x'--password <value>`, that
+name is written back after the placeholder. The next assignment pass, or the
+flag rule, then masks the value after it, which the outer mask did not cover.
 
 A quoted value whose closing quote is where the `secret-cli-flag` rule opens a
 credential flag's value is masked through that flag's value (Issue #5457).

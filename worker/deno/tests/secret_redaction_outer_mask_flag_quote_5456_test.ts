@@ -134,6 +134,62 @@ Deno.test("Issue #5456: a later quote of the other kind does not replace the nee
   );
 });
 
+Deno.test("Issue #5456: a label glued after the kept quote has its bare value masked", () => {
+  assertRedacts(
+    "--token 'a b credentials: x'password: mike --token z it's",
+    `--token ${R}${R}password: ${R} --token ${R} it's`,
+    ["mike", "credentials", "z it"],
+  );
+});
+
+Deno.test("Issue #5456: a label glued after the kept quote has its quoted value masked", () => {
+  assertRedacts(
+    `--token 'alpha beta credentials: TOKEN='password: "mike pass" --token z it's`,
+    `--token ${R}${R}password: "${R}" --token ${R} it's`,
+    ["mike pass", "beta", "z it"],
+  );
+});
+
+Deno.test("Issue #5456: a flag name glued after the kept quote has its value masked", () => {
+  assertRedacts(
+    "--token 'a b credentials: x'--password mike --token z it's",
+    `--token ${R}${R}--password ${R} --token ${R} it's`,
+    ["mike", "credentials", "z it"],
+  );
+});
+
+Deno.test("Issue #5456: a glued label before a later quoted flag masks both values", () => {
+  assertRedacts(
+    "--token 'a b credentials: x'password: mike --token 'z y'",
+    `--token ${R}${R}password: ${R} --token ${R}`,
+    ["mike", "z y"],
+  );
+});
+
+Deno.test("Issue #5456: text before a glued label stays inside the mask", () => {
+  assertRedacts(
+    "--token 'a b credentials: x'foo,password: mike --token z it's",
+    `--token ${R}${R}password: ${R} --token ${R} it's`,
+    ["mike", "foo"],
+  );
+});
+
+Deno.test("Issue #5456: a label glued after a quote kept with no later quote has its value masked", () => {
+  assertRedacts(
+    "--token 'a b credentials: x'password: mike",
+    `--token ${R}${R}password: ${R}`,
+    ["mike", "credentials"],
+  );
+});
+
+Deno.test("Issue #5456: a label glued after a quote a bare value opens at has its value masked", () => {
+  assertRedacts(
+    "--password 'alpha beta TOKEN='password: mike",
+    `--password ${R}${R}password: ${R}`,
+    ["mike", "beta"],
+  );
+});
+
 // Controls: these pass on the unfixed code as well. They pin that only a
 // flag's closing quote is kept in front of the placeholder.
 

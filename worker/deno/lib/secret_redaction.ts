@@ -828,7 +828,10 @@ const RULES: readonly RedactionRule[] = [
   // flag rule pairs the quotes. Otherwise the quote is masked with the value
   // and the flag rule pairs with the later quote and masks through it (the
   // Issue #5310 round 13 cases pin that outcome). The quote is kept only when
-  // the flag's opening quote lies outside every mask of the walk.
+  // the flag's opening quote lies outside every mask of the walk. A credential
+  // label or flag name glued after a kept quote, as in
+  // `credentials: x'password: <value>`, is written back after the placeholder
+  // so the next pass or the flag rule masks its value (see `maskLeads`).
   //
   // A quoted value whose closing quote is where `secret-cli-flag` opens a
   // credential flag's value is masked through that flag's value (Issue #5457):
@@ -2401,8 +2404,9 @@ function redactAssignmentsOnce(text: string): string {
   let last = 0;
   masked.forEach((a, i) => {
     const quote = QUOTED_VALUE.test(a.value) ? a.value.charAt(0) : "";
+    const { lead, trail } = leads[i] as MaskLead;
     out += text.slice(last, a.index) +
-      `${a.key}${a.sep}${leads[i]}${REDACTION_PLACEHOLDER}${quote}`;
+      `${a.key}${a.sep}${lead}${REDACTION_PLACEHOLDER}${quote}${trail}`;
     last = a.end;
   });
   return out + text.slice(last);
@@ -2416,14 +2420,21 @@ function redactAssignmentsOnce(text: string): string {
  * that kind survives, or that quote lies past another flag whose value starts
  * outside every mask (Issue #5456). Otherwise the flag rule pairs with the later
  * quote and masks through it, as the Issue #5310 round 13 tests pin.
+ *
+ * A kept quote ends the flag's value, so the mask's text after it is no longer
+ * that value. When that text ends in a credential label or flag name glued
+ * after the quote, as in `credentials: x'password: <value>` or
+ * `credentials: x'--password <value>`, the name is written back after the
+ * placeholder as `trail`. The next walk pass, or the flag rule, then masks the
+ * value after it, which the outer mask left outside (Issue #5456).
  */
 function maskLeads(
   text: string,
   masked: readonly AssignmentVerdict[],
   flags: ReturnType<typeof flagClosingQuotes>,
-): string[] {
+): MaskLead[] {
   const { closes, starts } = flags;
-  const leads: string[] = new Array(masked.length);
+  const leads: MaskLead[] = new Array(masked.length);
   const later = { "'": Infinity, '"': Infinity };
   const note = (s: string, at: number) => {
     for (const q of ["'", '"'] as const) {
@@ -2457,13 +2468,50 @@ function maskLeads(
         lead = q;
       }
     }
-    leads[i] = lead;
+    const trail = lead !== quote
+      ? gluedName(text, close + 1, a.end, starts[f])
+      : "";
+    leads[i] = { lead, trail };
     // Emitted quotes lie within this mask, before any later unmasked flag.
+    note(trail, a.end - trail.length);
     note(`${lead}${quote}`, start);
     note(`${a.key}${a.sep}`, a.index);
     from = a.index;
   }
   return leads;
+}
+
+/** What {@link maskLeads} writes around one mask's placeholder. */
+interface MaskLead {
+  /** The quote written in front of the placeholder, or `""`. */
+  readonly lead: string;
+  /** A credential label or flag name written back after the placeholder. */
+  readonly trail: string;
+}
+
+/**
+ * The credential label or flag name that the bare mask text from `from` to
+ * `end` ends in, or `""` (Issue #5456). `flag` is the start of the last
+ * credential flag before `end` whose value begins outside every mask; a flag
+ * name inside the text has its value past `end`. A label counts only when it
+ * ends in a `:` or `=` separator, and is read by {@link labelEndingAt}, whose
+ * scan is bounded, so the pass stays linear.
+ */
+function gluedName(
+  text: string,
+  from: number,
+  end: number,
+  flag: number | undefined,
+): string {
+  if (from >= end) return "";
+  if (flag !== undefined && flag >= from && flag < end) {
+    return text.slice(flag, end);
+  }
+  // Only a label with a separator has its value past `end`; a bare word that
+  // merely ends in a key such as `password` is mask text and stays masked.
+  if (!/[:=]/.test(text.slice(Math.max(from, end - 2), end))) return "";
+  const label = labelEndingAt(text, from, end);
+  return label ? text.slice(label.start, end) : "";
 }
 
 /**
