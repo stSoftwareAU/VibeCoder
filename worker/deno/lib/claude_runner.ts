@@ -2011,9 +2011,24 @@ async function runClaudeWithTimeoutBody(
         const warnDue = now - lastMemoryWarnMs >= memoryWatchMinIntervalMs;
         if (!critical && !warnDue) return;
         if (warnDue) lastMemoryWarnMs = now;
-        const rows = parseProcessTable(
-          await (options.memoryWatchRunPs ?? defaultRunPs)(),
-        );
+        let psText: string;
+        try {
+          psText = await (options.memoryWatchRunPs ?? defaultRunPs)();
+        } catch (err) {
+          // Fail loud below the floor (CODING-STANDARDS.md "Never Fail
+          // Silently"): a `ps` that fails or times out while the guest is
+          // thrashing would otherwise leave the guard silent, and the log
+          // could not tell "could not act" from "never reached".
+          if (critical) {
+            logger?.warn(
+              `Memory guard could not read the process table: ${
+                err instanceof Error ? err.message : String(err)
+              } (Issue #5529)`,
+            );
+          }
+          return;
+        }
+        const rows = parseProcessTable(psText);
         const knownDescendants = descendantTracker?.snapshot() ?? [];
         if (critical) {
           const victim = selectMemoryGuardVictim({

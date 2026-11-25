@@ -635,6 +635,68 @@ Deno.test({
 
 Deno.test({
   name:
+    "runClaudeWithRetry - a process-table read that fails below the floor is logged, kills nothing and leaves the run ok (Issue #5529)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await createAgentStub(guardStubBody(), {
+      prefix: "memory_guard_5529_ps_fail_",
+    });
+    try {
+      const logged = Promise.withResolvers<void>();
+      const { logger, warns } = capturingLogger((message) => {
+        if (
+          message.startsWith("Memory guard could not read the process table")
+        ) {
+          logged.resolve();
+        }
+      });
+      const clock = fakeClock();
+      const signals = chunkSignals();
+      const killed: number[] = [];
+      const run = runClaudeWithRetry(
+        {
+          ...COMMON_OPTS,
+          clock,
+          agentBinaryPath: stub.path,
+          logger,
+          descendantSnapshotIntervalMs: 100,
+          onActivity: signals.onActivity,
+          probeMemoryPressure: () => Promise.resolve(CRITICAL_READING),
+          memoryWatchRunPs: () =>
+            Promise.reject(new Error("ps timed out after 10 s")),
+          memoryGuardReadStartTime: guardStartTimes(),
+          memoryGuardKill: (pid) => {
+            killed.push(pid);
+          },
+        },
+        NO_RETRY_WAIT,
+      );
+      await signals.chunk(1);
+      await clock.advance(100);
+      await within(logged.promise, "the process-table failure warning");
+      await releaseAgentStub(stub, "guard");
+      const result = await run;
+
+      assert(
+        result.ok,
+        `expected ok result, got ${!result.ok && result.error}`,
+      );
+      assertEquals(killed, []);
+      const lines = warns.filter((w) =>
+        w.startsWith("Memory guard could not read the process table")
+      );
+      assert(lines.length >= 1, JSON.stringify(warns));
+      assert(lines[0]!.includes("ps timed out after 10 s"), lines[0]);
+      assert(lines[0]!.includes("(Issue #5529)"), lines[0]);
+    } finally {
+      await stub.dispose();
+    }
+  },
+});
+
+Deno.test({
+  name:
     "runClaudeWithRetry - the guard acts inside the 60 s warning window and keeps acting while the guest stays critical (Issue #5529)",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
