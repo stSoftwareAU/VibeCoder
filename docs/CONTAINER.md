@@ -1455,13 +1455,20 @@ Every hard kill on Issue #4815 had a guest that stopped answering its exec
 probe. The last in-run reading before the 2026-11-25 kill was MemAvailable
 2344 MiB. The guest has no swap, and running out of memory without an OOM kill
 stops it scheduling (the reason the entrypoint caps `CARGO_BUILD_JOBS`,
-Issue #4225). Stopping one run keeps the guest, and the other slots, answering.
+Issue #4225). Stopping the agent runs keeps the guest answering.
+
+The reading is guest-wide and each agent run watches it on its own, so a low
+guest stops every agent run active in the worker within the same poll, not one
+run: another slot's execute turn or pre-PR verifier pass stops with it. Each
+stopped run is handled as below.
 
 The stop reason opens with `[GUEST_MEMORY_FLOOR]` and names both figures. In
 the execute phase the run is released as `interrupted`, logged at WARNING, and
 not retried in-process. Its work stays on the issue branch in a `wip:` commit
 ("execute was stopped at the guest memory floor …") with a handover note. In
-the pre-PR verifier the stop makes that pass `not checked`; it does not block.
+the quality-fix loop the run is released as `interrupted` with the same reason,
+and no further quality pass, infrastructure retry or bump audit starts. In the
+pre-PR verifier the stop makes that pass `not checked`; it does not block.
 
 ### HOST_DISK_BUDGET merges without the build (Issue #4326)
 

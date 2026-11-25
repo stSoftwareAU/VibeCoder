@@ -9,7 +9,10 @@ tagged leftovers. The guest then keeps answering instead of freezing until the
 launcher watchdog reaps the whole container. In the execute phase the stop is
 released as `interrupted`, the work is kept on the issue branch in a `wip:`
 commit with a handover note, and the run is not retried in-process. In the
-pre-PR verifier the stop makes that pass `not checked`. Closes #4815.
+quality-fix loop it is released as `interrupted` and no further quality pass
+starts. In the pre-PR verifier the stop makes that pass `not checked`. The
+reading is guest-wide, so every agent run active in the worker stops at once,
+not one run. Closes #4815.
 
 ## Spec
 
@@ -32,8 +35,9 @@ pre-PR verifier the stop makes that pass `not checked`. Closes #4815.
   (`slot_governor.ts`) only stops new slots starting, and the existing in-run
   memory watch (Issue #4384) only logs evidence.
 - So the repair stops the run that would exhaust memory, the same way the host
-  disk floor already stops one (Issue #4360). A loud, retried failure of one run
-  replaces a frozen guest that loses every slot and an hour or more.
+  disk floor already stops one (Issue #4360). Every agent run active in the
+  worker is stopped, each with a loud failure its next claim resumes, in place
+  of a frozen guest that loses every slot and an hour or more.
 
 ### Essential Design Decisions
 
@@ -44,7 +48,9 @@ pre-PR verifier the stop makes that pass `not checked`. Closes #4815.
 - It needs both figures. A reading without them (unreadable, or macOS's
   level-only reading) resets the count and never stops a run. Two readings in a
   row are required, so one dip does not kill a run. The watch trips once per
-  run.
+  run. Each run keeps its own watch over the same guest-wide reading, so a low
+  guest stops every concurrent agent run, including another slot's verifier
+  pass; there is no one-run-at-a-time latch.
 - It reads through the existing `probeMemoryPressure` seam
   (`Deno.systemMemoryInfo()` on Linux), which forks nothing, so it still works
   when spawning gets slow under pressure.
@@ -71,14 +77,19 @@ flowchart LR
     P -->|"ok, or no figures"| A
     K --> E{caller}
     E -->|execute phase| I["interrupted: wip commit + handover, no in-process retry"]
+    E -->|quality-fix loop| Q["interrupted: no further quality pass"]
     E -->|pre-PR verifier| N[not checked, does not block]
 ```
 
 - Code: `worker/deno/lib/guest_memory_floor.ts` (new),
   `worker/deno/lib/claude_runner.ts` (the `guestMemoryPoll` block,
   `GuestMemoryFloorError` after the leftover reap),
-  `worker/deno/lib/phases/execute_phase.ts`, `worker/deno/lib/wip_checkpoint.ts`
-  (the `guest-memory-floor` cause), `worker/deno/commands/run_core.ts`.
+  `worker/deno/lib/phases/execute_phase.ts`,
+  `worker/deno/lib/phases/quality_gate_remediation_phase.ts` (a
+  `GuestMemoryFloorError` from the `quality_fix` agent returns `interrupted`,
+  and the infra retry and bump audit skip a `[GUEST_MEMORY_FLOOR]` reason),
+  `worker/deno/lib/wip_checkpoint.ts` (the `guest-memory-floor` cause),
+  `worker/deno/commands/run_core.ts`.
 - Docs: `docs/CONTAINER.md`, section "A running agent stops at the guest memory
   floor (Issue #4815)", and a `[GUEST_MEMORY_FLOOR]` paragraph in
   `docs/TROUBLESHOOTING.md`. The pre-PR verifier statement was checked against
@@ -122,7 +133,20 @@ flowchart LR
   - a low probe stops a long-running agent with a `GuestMemoryFloorError` whose
     message opens with `[GUEST_MEMORY_FLOOR]`;
   - control: a healthy probe lets the same run complete `ok`;
-  - not armed (no `guestMemoryPollMs`), a low probe does not stop the run.
+  - not armed (no `guestMemoryPollMs`), a low probe does not stop the run;
+  - armed with `armGuestMemoryFloor(true)` as `run-core` does, with no
+    `guestMemoryPollMs`, a low probe stops the run after two
+    `GUEST_MEMORY_POLL_MS` steps, with the exact reason; with an explicit
+    `guestMemoryPollMs: 0` the armed run completes;
+  - two concurrent armed runs over one low probe both stop with the exact
+    reason, pinning that every active run stops;
+  - each test asserts the exact reason, or the exit code and output. Forcing the
+    arming expression in `claude_runner.ts` to `0` fails the armed and two-run
+    tests.
+- `worker/deno/tests/quality_gate_attempt_report_test.ts::quality gate - a guest memory stop ends remediation with no further quality run (Issue #4815)`,
+  with and without an applied bump: the result is `interrupted` with the exact
+  reason, the gate ran once, the fix agent ran once, no infra retry was counted
+  and no revert ran. It fails against the branch without the phase change.
 - New, `worker/deno/tests/execute_phase_guest_memory_floor_4815_test.ts`,
   through `workOnIssueExecuteClaude` and the real runner:
   - the result is `interrupted` with the marker in its reason;
@@ -130,9 +154,14 @@ flowchart LR
     remote branch, and the local tree is clean;
   - `state.preservedWip` is set;
   - the agent started once and never finished, so there was no in-process retry.
-- No existing test was edited.
+- No existing test was edited; one test was added to
+  `quality_gate_attempt_report_test.ts`.
 - Results at the head (from `worker/deno`, stdin from `/dev/null`):
-  - the three new files with `tests/claude_runner_host_disk_4390_test.ts`,
+  - after the verifier fixes: the three new files with
+    `tests/quality_gate_attempt_report_test.ts`,
+    `tests/claude_runner_host_disk_4390_test.ts` and
+    `tests/wip_checkpoint_test.ts`: 43 passed, 0 failed;
+  - before them: the three new files with `tests/claude_runner_host_disk_4390_test.ts`,
     `tests/execute_phase_host_disk_park_5077_test.ts` and
     `tests/wip_checkpoint_test.ts`: 33 passed, 0 failed;
   - `tests/lib_sweep_coverage_test.ts`: 39 passed;
