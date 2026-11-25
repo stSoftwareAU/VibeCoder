@@ -13,7 +13,10 @@ import {
   syncMilestoneBranchWithDefault,
   updatePrBranch,
 } from "../lib/git_pull.ts";
-import { runFixtureGit } from "./support/no_host_git_config.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  runFixtureGit,
+} from "./support/no_host_git_config.ts";
 import {
   isForcedPush,
   recordedPushes,
@@ -108,7 +111,7 @@ Deno.test("updatePrBranch - returns early when not behind and no conflicting rea
     const result = await updatePrBranch(
       "feature-branch",
       "main",
-      { cwd: localPath },
+      { cwd: localPath, env: NO_HOST_GIT_CONFIG },
     );
 
     assertEquals(result.ok, true);
@@ -169,7 +172,7 @@ Deno.test("updatePrBranch - a 'conflicting' PR whose changes collide with the ba
     const result = await updatePrBranch(
       "feature-branch",
       "main",
-      { cwd: localPath, env: trace.env },
+      { cwd: localPath, env: { ...trace.env, ...NO_HOST_GIT_CONFIG } },
       "conflicting",
     );
     // Issue #2807: the conflict is aborted, never pushed.
@@ -244,7 +247,7 @@ Deno.test("updatePrBranch - a 'behind' PR whose merge conflicts is aborted and L
     const result = await updatePrBranch(
       "issue-42-update",
       "main",
-      { cwd: localPath, env: trace.env },
+      { cwd: localPath, env: { ...trace.env, ...NO_HOST_GIT_CONFIG } },
       "behind",
     );
     assertEquals(await recordedRebase(trace), false, "no git rebase ran");
@@ -299,7 +302,7 @@ Deno.test("updatePrBranch - a 'behind' PR with NO conflict merges the base in an
 
     const result = await updatePrBranch("issue-7-docs", "main", {
       cwd: localPath,
-      env: trace.env,
+      env: { ...trace.env, ...NO_HOST_GIT_CONFIG },
     }, "behind");
     assertEquals(result.ok, true, JSON.stringify(result));
     const after = await heads(localPath, "issue-7-docs");
@@ -345,7 +348,7 @@ Deno.test("updatePrBranch - a 'conflicting' PR whose merge is clean merges the b
 
     const result = await updatePrBranch("issue-9-docs", "main", {
       cwd: localPath,
-      env: trace.env,
+      env: { ...trace.env, ...NO_HOST_GIT_CONFIG },
     }, "conflicting");
 
     assertEquals(result.ok, true, JSON.stringify(result));
@@ -394,7 +397,7 @@ Deno.test("updatePrBranch - a rejected plain push fails loud with git's stderr a
 
     const result = await updatePrBranch("issue-8-docs", "main", {
       cwd: localPath,
-      env: trace.env,
+      env: { ...trace.env, ...NO_HOST_GIT_CONFIG },
     }, "behind");
 
     assertEquals(result.ok, false);
@@ -432,7 +435,7 @@ Deno.test("updatePrBranch - without conflicting reason returns early when not be
     const result = await updatePrBranch(
       "my-feature",
       "main",
-      { cwd: localPath },
+      { cwd: localPath, env: NO_HOST_GIT_CONFIG },
     );
 
     assertEquals(result.ok, true);
@@ -444,7 +447,7 @@ Deno.test("updatePrBranch - without conflicting reason returns early when not be
     const result2 = await updatePrBranch(
       "my-feature",
       "main",
-      { cwd: localPath },
+      { cwd: localPath, env: NO_HOST_GIT_CONFIG },
       "behind",
     );
 
@@ -526,7 +529,7 @@ Deno.test("syncMilestoneBranchWithDefault - succeeds when milestone branch exist
     const result = await syncMilestoneBranchWithDefault(
       "milestone/v1-0",
       "main",
-      { cwd: shallowPath },
+      { cwd: shallowPath, env: NO_HOST_GIT_CONFIG },
     );
 
     assertEquals(
@@ -580,7 +583,7 @@ Deno.test("syncMilestoneBranchWithDefault - a non-conflict merge failure is a fa
     const result = await syncMilestoneBranchWithDefault(
       "milestone/test-4260",
       "main",
-      { cwd: localPath },
+      { cwd: localPath, env: NO_HOST_GIT_CONFIG },
     );
 
     assertEquals(
@@ -647,7 +650,7 @@ Deno.test("syncMilestoneBranchWithDefault - a dirty shallow clone is healed rath
     const result = await syncMilestoneBranchWithDefault(
       "milestone/v1-0",
       "main",
-      { cwd: shallowPath },
+      { cwd: shallowPath, env: NO_HOST_GIT_CONFIG },
     );
 
     assertEquals(result.ok, true, "the dirty tree must be healed, not fatal");
@@ -730,7 +733,7 @@ Deno.test("syncMilestoneBranchWithDefault - a triaged side and an agent-resolved
     const result = await syncMilestoneBranchWithDefault(
       "milestone/v2",
       "main",
-      { cwd: localPath },
+      { cwd: localPath, env: NO_HOST_GIT_CONFIG },
       undefined,
       passingGate,
       passingGate,

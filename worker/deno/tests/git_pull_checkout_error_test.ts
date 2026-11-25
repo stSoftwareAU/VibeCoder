@@ -13,7 +13,10 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ensurePrMergeable, updatePrBranch } from "../lib/git_pull.ts";
-import { runFixtureGit } from "./support/no_host_git_config.ts";
+import {
+  NO_HOST_GIT_CONFIG,
+  runFixtureGit,
+} from "./support/no_host_git_config.ts";
 
 /** A clone on `main` with one commit and no feature branch anywhere. */
 async function setupCloneWithoutFeatureBranch(): Promise<{
@@ -56,6 +59,7 @@ Deno.test("#335/#394 - updatePrBranch names why the branch could not be position
   try {
     const result = await updatePrBranch("issue-999-missing", "main", {
       cwd: localPath,
+      env: NO_HOST_GIT_CONFIG,
     });
 
     assertEquals(result.ok, false);

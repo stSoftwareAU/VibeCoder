@@ -1,5 +1,6 @@
 /**
- * Behaviour of the shared no-host git config helper (Issue #5254, Issue #5309).
+ * Behaviour of the shared no-host git config helper (Issue #5254, Issue #5309,
+ * Issue #5385).
  *
  * Real git against a temporary bare remote. A hostile pre-push hook is wired
  * in through the three routes a host can use (an injected environment entry, a
@@ -8,15 +9,26 @@
  * passed as child env overlays, so this test never mutates the process
  * environment.
  *
+ * The journal tests (Issue #5385) put a `WORK_DIR` in the caller env and check
+ * that a fixture push writes no audit row there, while a control push with the
+ * journal re-enabled does.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  _resetAuditCaches,
+  auditFilePath,
+  loadEntries,
+} from "../lib/audit_journal.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { envFrom } from "./support/env_lookup.ts";
 import {
   NO_HOST_GIT_CONFIG,
   NO_HOST_HOOKS_ARGS,
   runFixtureGit,
+  runShieldedGit,
 } from "./support/no_host_git_config.ts";
 
 const HOSTILE_MARKER = "HOSTILE_PRE_PUSH_HOOK_RAN";
@@ -464,5 +476,142 @@ Deno.test("runFixtureGit: the args layer alone shuts out a repo-local core.hooks
     assertEquals(r.stderr.includes(HOSTILE_MARKER), false);
     assertEquals(await refExists(fx, "case-x"), true);
     assertEquals(await fileExists(hook.marker), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Audit journal (Issue #5385)
+// ---------------------------------------------------------------------------
+
+/**
+ * Caller env as the fleet container exports it: a live WORK_DIR and run identity.
+ * `VIBE_AUDIT_DISABLED: "0"` keeps the journal on from the caller's side, so a
+ * host-level switch-off (which the process env would otherwise supply) cannot
+ * mask a leak (Issue #5385).
+ */
+function callerEnvWithWorkDir(workDir: string): Record<string, string> {
+  return {
+    WORK_DIR: workDir,
+    WORKER_UNIQUE_ID: "no-host-5385",
+    VIBE_RUN_ID: "no-host-5385",
+    VIBE_AUDIT_DISABLED: "0",
+  };
+}
+
+/** A WORK_DIR inside the fixture root, so its `audit` journal is ours to inspect. */
+async function makeWorkDir(fx: Fixture, name: string): Promise<string> {
+  const dir = `${fx.root}/${name}`;
+  await Deno.mkdir(dir);
+  return dir;
+}
+
+/**
+ * Assert no journal exists for `env`. `loadEntries` reports a missing file as
+ * `Audit journal not found: <path>`, so that is the outcome checked here.
+ */
+async function assertNoJournal(env: Record<string, string>): Promise<void> {
+  const path = auditFilePath({ env: envFrom(env) });
+  assertEquals(await fileExists(path), false, `journal written at ${path}`);
+  const journal = await loadEntries(path);
+  assertEquals(journal.ok, false);
+  if (!journal.ok) assertStringIncludes(journal.error.message, "not found");
+}
+
+/** Assert the journal for `env` holds exactly one successful `git-push` row. */
+async function assertOnePushJournalled(
+  env: Record<string, string>,
+): Promise<void> {
+  const journal = await loadEntries(auditFilePath({ env: envFrom(env) }));
+  assertEquals(journal.ok, true);
+  if (!journal.ok) throw journal.error;
+  assertEquals(journal.value.length, 1);
+  assertEquals(journal.value[0]?.verb, "git-push");
+  assertEquals(journal.value[0]?.outcome, "success");
+}
+
+Deno.test("runFixtureGit: a push with WORK_DIR in the caller env writes no audit journal row (Issue #5385)", async () => {
+  await withFixture(async (fx) => {
+    const dir = await makeWorkDir(fx, "journal-a");
+    const env = callerEnvWithWorkDir(dir);
+    try {
+      const r = await runFixtureGit(
+        ["push", "origin", "HEAD:refs/heads/case-5385-a"],
+        { cwd: fx.work, env },
+      );
+      assert(r.ok, r.ok ? "" : r.error.message);
+      assertEquals(r.value.code, 0, r.value.stderr);
+      assertEquals(await refExists(fx, "case-5385-a"), true);
+      await assertNoJournal(env);
+    } finally {
+      _resetAuditCaches();
+    }
+  });
+});
+
+Deno.test("runShieldedGit: a push with WORK_DIR in the caller env writes no audit journal row (Issue #5385)", async () => {
+  await withFixture(async (fx) => {
+    const dir = await makeWorkDir(fx, "journal-b");
+    const env = callerEnvWithWorkDir(dir);
+    try {
+      const r = await runShieldedGit(
+        ["push", "origin", "HEAD:refs/heads/case-5385-b"],
+        { cwd: fx.work, env },
+      );
+      assert(r.ok, r.ok ? "" : r.error.message);
+      assertEquals(r.value.code, 0, r.value.stderr);
+      assertEquals(await refExists(fx, "case-5385-b"), true);
+      await assertNoJournal(env);
+    } finally {
+      _resetAuditCaches();
+    }
+  });
+});
+
+Deno.test("runGitCommand with the shield in env: a push with WORK_DIR in the caller env writes no audit journal row (Issue #5385)", async () => {
+  await withFixture(async (fx) => {
+    const dir = await makeWorkDir(fx, "journal-c");
+    const env = callerEnvWithWorkDir(dir);
+    try {
+      const r = await runGitCommand(
+        [
+          ...NO_HOST_HOOKS_ARGS,
+          "push",
+          "origin",
+          "HEAD:refs/heads/case-5385-c",
+        ],
+        { cwd: fx.work, env: { ...env, ...NO_HOST_GIT_CONFIG } },
+      );
+      assert(r.ok, r.ok ? "" : r.error.message);
+      assertEquals(r.value.code, 0, r.value.stderr);
+      assertEquals(await refExists(fx, "case-5385-c"), true);
+      await assertNoJournal(env);
+    } finally {
+      _resetAuditCaches();
+    }
+  });
+});
+
+Deno.test("control: the audit env after the shield re-enables the journal for one push (Issue #5385)", async () => {
+  await withFixture(async (fx) => {
+    const dir = await makeWorkDir(fx, "journal-d");
+    const env = callerEnvWithWorkDir(dir);
+    const journalEnv = { ...env, VIBE_AUDIT_DISABLED: "0" };
+    try {
+      const r = await runGitCommand(
+        [
+          ...NO_HOST_HOOKS_ARGS,
+          "push",
+          "origin",
+          "HEAD:refs/heads/case-5385-d",
+        ],
+        { cwd: fx.work, env: { ...NO_HOST_GIT_CONFIG, ...journalEnv } },
+      );
+      assert(r.ok, r.ok ? "" : r.error.message);
+      assertEquals(r.value.code, 0, r.value.stderr);
+      assertEquals(await refExists(fx, "case-5385-d"), true);
+      await assertOnePushJournalled(env);
+    } finally {
+      _resetAuditCaches();
+    }
   });
 });

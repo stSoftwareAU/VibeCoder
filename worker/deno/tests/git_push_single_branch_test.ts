@@ -100,7 +100,7 @@ Deno.test("commitAndPushPending - a good push on a single-branch clone reports n
     const result = await commitAndPushPending(
       branch,
       "Final-mile commit (Issue #211)",
-      { cwd: clone },
+      { cwd: clone, env: NO_HOST_GIT_CONFIG },
     );
 
     assert(
@@ -143,7 +143,10 @@ Deno.test("pushUnpushedCommits - counts only the commits the remote lacks on a s
     // …and exactly one is not.
     await commitFile(clone, "f4.txt", "4\n");
 
-    const result = await pushUnpushedCommits(branch, { cwd: clone });
+    const result = await pushUnpushedCommits(branch, {
+      cwd: clone,
+      env: NO_HOST_GIT_CONFIG,
+    });
     assert(result.ok, `expected ok, got: ${!result.ok ? result.error : ""}`);
     // The bug reported 4 (commits ahead of main); only one was unpushed.
     if (result.ok) assertEquals(result.value, 1);
@@ -183,7 +186,7 @@ Deno.test("commitAndPushPending - still reports unpushed commits honestly when t
     const result = await commitAndPushPending(
       branch,
       "Final-mile commit (Issue #211)",
-      { cwd: clone },
+      { cwd: clone, env: NO_HOST_GIT_CONFIG },
     );
 
     // The head moved during the run, so recovery merges it in and pushes:
