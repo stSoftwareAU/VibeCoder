@@ -15,6 +15,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
+import { loadState } from "../lib/cooldown_state.ts";
 import { createLogger } from "../lib/logger.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { handleIssueFailure } from "../lib/label_failure.ts";
@@ -142,21 +143,14 @@ function stubClient(label: string): GitHubClient {
  */
 async function runRouteTwice(
   route: "planning" | "question",
-): Promise<{
-  first: boolean;
-  second: boolean;
-  claudeCalls: number[];
-  comments: string[];
-}> {
+): Promise<void> {
   const workDir = await Deno.makeTempDir({ prefix: "lrfc-wiring-" });
   const comments: string[] = [];
-  let claudeCalls = 0;
   const label = route === "planning" ? "planning" : "question";
   const gh = stubGh(label, comments);
   const workerDeps = createMockDeps({
     claude: {
       runClaudeWithRetry: () => {
-        claudeCalls++;
         return Promise.resolve({
           ok: false,
           error: new Error("Claude failed"),
@@ -205,15 +199,29 @@ async function runRouteTwice(
       ? () => deps.findAndProcessPlanning({ deadlineEpochMs: Date.now() + 6e5 })
       : () => deps.findAndProcessQuestion();
     const first = await run();
-    const afterFirst = claudeCalls;
+    assert(first.ok);
+    assertEquals(first.value.processed, false);
+    const state = await loadState(workDir);
+    assertEquals(
+      state.entries.map(({ repo, issueNumber, kind }) => ({
+        repo,
+        issueNumber,
+        kind,
+      })),
+      [{ repo: REPO, issueNumber: ISSUE, kind: "non_transient" }],
+    );
+    const published = [...comments];
+    if (route === "planning") {
+      assert(
+        published.some((comment) => comment.includes(PROMISE)),
+        published.join("\n"),
+      );
+    }
     const second = await run();
-    assert(first.ok && second.ok);
-    return {
-      first: first.value.processed,
-      second: second.value.processed,
-      claudeCalls: [afterFirst, claudeCalls],
-      comments,
-    };
+    assert(second.ok);
+    assertEquals(second.value.processed, false);
+    assertEquals(await loadState(workDir), state);
+    assertEquals(comments, published);
   } finally {
     await cleanup?.();
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
@@ -222,36 +230,12 @@ async function runRouteTwice(
 
 Deno.test(
   "production deps - a failed planning run posts the 2 h promise and is not re-run on the next scan (Issue #5376)",
-  async () => {
-    const outcome = await runRouteTwice("planning");
-    assertEquals(outcome.first, false);
-    assert(outcome.claudeCalls[0]! > 0, "the first call never ran the agent");
-    assert(
-      outcome.comments.some((c) => c.includes(PROMISE)),
-      outcome.comments.join("\n---\n"),
-    );
-    assertEquals(outcome.second, false);
-    assertEquals(
-      outcome.claudeCalls[1],
-      outcome.claudeCalls[0],
-      "the second scan re-ran the agent on an issue in its cooldown",
-    );
-  },
+  () => runRouteTwice("planning"),
 );
 
 Deno.test(
   "production deps - a failed question run is not re-run on the next scan (Issue #5376)",
-  async () => {
-    const outcome = await runRouteTwice("question");
-    assertEquals(outcome.first, false);
-    assert(outcome.claudeCalls[0]! > 0, "the first call never ran the agent");
-    assertEquals(outcome.second, false);
-    assertEquals(
-      outcome.claudeCalls[1],
-      outcome.claudeCalls[0],
-      "the second scan re-ran the agent on an issue in its cooldown",
-    );
-  },
+  () => runRouteTwice("question"),
 );
 
 /**
