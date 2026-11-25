@@ -177,6 +177,19 @@ interface LineScan {
 }
 
 /**
+ * Whether `pending` (unquoted continuation text) ends in a `$` that is neither
+ * escaped nor the second half of a `$$`, so it can still open `$'` or pair as
+ * `$$` with the first character of the next physical line.
+ */
+function endsInLoneDollar(pending: string): boolean {
+  const run = /(\\*)(\$+)$/.exec(pending);
+  if (run === null) return false;
+  const escaped = (run[1] ?? "").length % 2 === 1;
+  const dollars = (run[2] ?? "").length - (escaped ? 1 : 0);
+  return dollars % 2 === 1;
+}
+
+/**
  * The quoting open at the end of `physical`, given the `state` at its start,
  * and whether the scan reached a comment. `before` is the text of the same
  * logical line before `physical` (the pending continuation, "" for none), so a
@@ -198,6 +211,21 @@ function scanLine(
   // operator, precedes it. An escape or quote is a word character.
   let boundary = /(^|[ \t;&|()<>])$/.test(before);
   let i = 0;
+  // A lone unquoted `$` that ended the pending continuation still pairs with
+  // the start of this line once Bash removes the backslash-newline: with a
+  // `'` it opens `$'…'`, and with a `$` it is the `$$` parameter. The same
+  // rule as `shellCommands` (CODING-STANDARDS.md "Change every copy of a
+  // twinned rule", PR #5610 review).
+  if (open === "" && endsInLoneDollar(before)) {
+    if (physical[0] === "'") {
+      open = "$'";
+      boundary = false;
+      i = 1;
+    } else if (physical[0] === "$") {
+      boundary = false;
+      i = 1;
+    }
+  }
   while (i < physical.length) {
     const c = physical[i] ?? "";
     if (open === "'") {
@@ -236,6 +264,11 @@ function scanLine(
     } else if (c === "#" && boundary) {
       return { open, comment: true };
     } else if (c === "\\") {
+      boundary = false;
+      i += 2;
+    } else if (c === "$" && physical[i + 1] === "$") {
+      // `$$` is the process-ID parameter, read as one unit before any
+      // opener: the `'` after it opens an ordinary single-quoted word.
       boundary = false;
       i += 2;
     } else if (c === "$" && physical[i + 1] === "'") {

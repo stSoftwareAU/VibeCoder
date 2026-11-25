@@ -88,6 +88,67 @@ Deno.test("real aws-emulator.yml passes every check", () => {
   assertEquals(problemsOf(REAL), []);
 });
 
+Deno.test("pinned install inside a multiline argument after an ANSI-C escaped quote is refused", () => {
+  for (
+    const quoted of [
+      '"can\'t"',
+      String.raw`$'can\'t'`,
+      "$\\\n          'can\\'t'",
+    ]
+  ) {
+    expectFindings(
+      mutate([
+        TOOLCHAIN_ANCHOR,
+        `true ${quoted} '\n          ${TOOLCHAIN_ANCHOR}\n          '`,
+      ]),
+      ["[pinned-install] no step runs"],
+    );
+    expectFindings(
+      mutate([
+        TOOLCHAIN_ANCHOR,
+        `true ${quoted}\n          ${TOOLCHAIN_ANCHOR}`,
+      ]),
+      [],
+    );
+  }
+});
+
+Deno.test("pinned install inside a `$$'…'` argument is refused (PR #5610 review)", () => {
+  expectFindings(
+    mutate([
+      TOOLCHAIN_ANCHOR,
+      `true $$'a\\' '\n          ${TOOLCHAIN_ANCHOR}\n          '`,
+    ]),
+    ["[pinned-install] no step runs"],
+  );
+  // Control: the `$$'…'` word closed on its own line leaves the install code.
+  expectFindings(
+    mutate([
+      TOOLCHAIN_ANCHOR,
+      `true $$'a\\'\n          ${TOOLCHAIN_ANCHOR}`,
+    ]),
+    [],
+  );
+});
+
+Deno.test("a comment line inside an argument after a continued ANSI-C opener is kept as code (PR #5610 review)", () => {
+  expectFindings(
+    mutate([
+      TOOLCHAIN_ANCHOR,
+      `true $\\\n          'can\\'t' '\n          # '\n          true '\n          ${TOOLCHAIN_ANCHOR}\n          '`,
+    ]),
+    ["[pinned-install] no step runs"],
+  );
+  // Control: the same lines with the quoted word closed before the install.
+  expectFindings(
+    mutate([
+      TOOLCHAIN_ANCHOR,
+      `true $\\\n          'can\\'t'\n          ${TOOLCHAIN_ANCHOR}`,
+    ]),
+    [],
+  );
+});
+
 Deno.test("test-aws-emulator.sh exists and is executable", () => {
   const mode = Deno.statSync(SCRIPT_PATH).mode ?? 0;
   assert((mode & 0o111) !== 0, "test-aws-emulator.sh must be executable");
