@@ -1676,7 +1676,7 @@ function closesWithinReach(
  */
 const CLI_FLAG_AT = new RegExp(
   String
-    .raw`--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+(?!-)${CLI_FLAG_VALUE}`,
+    .raw`(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+)(?!-)${CLI_FLAG_VALUE}`,
   "iy",
 );
 
@@ -2149,8 +2149,9 @@ const FLAG_NAME_AT_END =
  * rule would mask the second flag's name with the first flag's value and
  * publish the second value. Instead, mask through both values, extending
  * through successive overlapping flags. Each extension reads a bounded name
- * tail and advances through the next value with {@link CLI_FLAG_AT}; the
- * value reads are disjoint, so the work stays linear. Otherwise keep `end`.
+ * tail and advances through the next value with {@link CLI_FLAG_AT} and
+ * {@link cliFlagEnd}, including shared-quote overlaps; the value reads are
+ * disjoint, so the work stays linear. Otherwise keep `end`.
  */
 function flagSafeAssignmentEnd(
   text: string,
@@ -2163,7 +2164,7 @@ function flagSafeAssignmentEnd(
   const flag = CLI_FLAG_AT.exec(text);
   CLI_FLAG_AT.lastIndex = 0;
   if (flag === null) return end;
-  let through = at + flag[0].length;
+  let through = cliFlagEnd(text, flag);
   let from = end;
   let overlaps = false;
   while (true) {
@@ -2174,7 +2175,7 @@ function flagSafeAssignmentEnd(
     CLI_FLAG_AT.lastIndex = 0;
     if (next === null) break;
     from = through;
-    through = nested + next[0].length;
+    through = cliFlagEnd(text, next);
     overlaps = true;
   }
   return overlaps ? through : at;
@@ -2265,17 +2266,24 @@ function redactCliFlags(text: string): string {
     const prefix = match[1]!;
     const start = match.index + prefix.length;
     out += text.slice(last, start) + REDACTION_PLACEHOLDER;
-    const quote = text[start];
-    const end = pattern.lastIndex;
-    // The escape-aware reader widened the old first-quote match only
-    // when another quote of the same kind precedes its closing quote.
-    last = (quote === '"' || quote === "'") && text[end - 1] === quote &&
-        match[0].indexOf(quote, prefix.length + 1) < match[0].length - 1
-      ? throughFollowingFlag(text, start, end)
-      : end;
+    last = cliFlagEnd(text, match);
     pattern.lastIndex = last;
   }
   return out + text.slice(last);
+}
+
+/** The complete CLI value extent, shared by replacement and assignment masks. */
+function cliFlagEnd(text: string, match: RegExpExecArray): number {
+  const prefixLength = match[1]!.length;
+  const start = match.index + prefixLength;
+  const quote = text[start];
+  const end = match.index + match[0].length;
+  // The escape-aware reader widened the old first-quote match only
+  // when another quote of the same kind precedes its closing quote.
+  return (quote === '"' || quote === "'") && text[end - 1] === quote &&
+      match[0].indexOf(quote, prefixLength + 1) < match[0].length - 1
+    ? throughFollowingFlag(text, start, end)
+    : end;
 }
 
 /**

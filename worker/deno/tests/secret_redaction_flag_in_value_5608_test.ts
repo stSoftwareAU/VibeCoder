@@ -1,5 +1,6 @@
 // Issue #5608: preserve trailing flag names, or mask overlapping values together.
 import { assertEquals } from "@std/assert";
+import { redactGhBodyArgs } from "../lib/gh_body_redaction.ts";
 import {
   containsSecret,
   REDACTION_PLACEHOLDER,
@@ -84,6 +85,38 @@ Deno.test("#5608: overlapping nested flags keep every value masked", () => {
     }
   }
 });
+
+for (const separator of [" ", "\n"]) {
+  for (const outbound of [false, true]) {
+    Deno.test(
+      `#5608: shared quotes after nested flags (${JSON.stringify(separator)}, ${
+        outbound ? "outbound body" : "redactor"
+      })`,
+      () => {
+        for (const quote of ['"', "'"]) {
+          const input = `password:${separator}token=--token first--password ` +
+            `${quote}private-path\\${quote} --api-key ${quote}${V}${quote}`;
+          assertEquals(containsSecret(input), true);
+          if (outbound) {
+            const args = ["pr", "create", "--body", input];
+            const once = redactGhBodyArgs(args);
+            assertEquals(once[3]!.includes(V), false);
+            assertEquals(once, [
+              "pr",
+              "create",
+              "--body",
+              `password:${separator}${R}`,
+            ]);
+            assertEquals(containsSecret(once[3]!), false);
+            assertEquals(redactGhBodyArgs(once), once);
+          } else {
+            assertFinal(input, `password:${separator}${R}`);
+          }
+        }
+      },
+    );
+  }
+}
 
 Deno.test("#5608: shortening a cross-line mask keeps credential prefixes masked", () => {
   for (const prefix of ["hunter2", "longlowerword"]) {

@@ -562,7 +562,10 @@ name and masks its value. An exception is a flag whose own value ends in
 another credential flag's name followed by a value, as in
 `password: token=--token first--password second`: the assignment masks through
 both values, extending through successive overlaps. Keeping the first flag
-would otherwise mask the second flag's name and publish its value. The name
+would otherwise mask the second flag's name and publish its value. These
+extensions use the CLI redactor's complete value extent, including a quoted
+value with an escaped quote whose apparent closing quote also opens a later
+flag's value. The assignment masks that later value as well. The name
 checks read at most 150 characters, and each overlap advances through the next
 value; the input is never truncated. Before this fix the assignment masked the
 first flag's name and published its value. Whether to mask is judged on the
