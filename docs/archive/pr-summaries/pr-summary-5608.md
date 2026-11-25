@@ -85,23 +85,29 @@ flowchart LR
   production module and changed test files: passed.
 - `markdownlint-cli2 SECURITY.md`: passed across the configured 246 published
   Markdown files. Archived summaries are excluded by that configuration.
-- `deno task pr-summary-check --base origin/main
-  ../../docs/archive/pr-summaries/pr-summary-5608.md`: zero blocked gates.
-  Acceptance-criteria closure and independent review were not checked because
-  no issue-body file was supplied; reproduction-status gating was not checked
-  because no labels were supplied.
+- `deno task pr-summary-check --base origin/main --issue-body-file <body>
+  --labels top-priority,failed-once` on the summary: 0 gates blocked, 0 not
+  checked. Closure, two-axis review and reproduction status are not applicable,
+  because the issue states no acceptance criteria and has no `bug` label.
 - Shared-rule sweep: `CLI_FLAG_AT`, `CLI_FLAG_RULE_G` and the CLI rule already
   share `CLI_FLAG_VALUE`. The assignment overlap extension now calls the same
   complete-extent helper as `redactCliFlags`, rather than copying its quote
   condition. Existing callers of `CLI_FLAG_AT` use the unchanged full match.
 
+- Full `deno task test:unit < /dev/null` from `worker/deno` on this head:
+  exit 0. The 63 test files that import the redaction module, run together:
+  1,703 passed, 0 failed.
+- `./quality.sh < /dev/null` on this head: `Result: PASSED (with skipped
+  checks)`. Config integration and checkov were skipped; every other stage
+  passed.
+
 ## Merge verification
 
-The worker will rerun the full quality gate and pre-PR verifier after this fix.
-CI and independent code review remain pending.
+CI and independent code review are pending.
 
 ## Limitations
 
-The full quality gate and pre-PR verifier were not rerun in this repair pass;
-only the focused regressions, related suites and targeted static checks were
-run. No remaining credential leak was observed in those checks.
+An earlier attempt was blocked by the pre-push gate's
+`deno task test:unit (2081 files)` on another host. That host's output was not
+available here, and the full unit suite and `./quality.sh` both pass on this
+head, so the failure was not reproduced.
