@@ -81,6 +81,12 @@ hide commands after the closing quote. Closes #5525.
   `worker/deno/tests/parallel_safety_cap_test.ts` (2 tests, 3.43 seconds total).
   A focused run of those files passed all **3** tests. No assertions or time
   limits were changed.
+- Final full gate, `DENO_JOBS=2 ./quality.sh < /dev/null`: **PASSED (with skipped
+  checks)**. Both unit-test passes and the runtime budget check passed, as did
+  lint, type checking, formatting and the completed security checks. The
+  existing worker-count override reduced concurrency without changing coverage
+  or thresholds.
+- `deno task pr-summary-check` passed: **0 blocked, 0 not checked** gates.
 
 ## Merge verification
 
@@ -89,6 +95,7 @@ hide commands after the closing quote. Closes #5525.
 
 ## Not checked and remaining risks
 
-- Config integration and Checkov were marked skipped by the local gate.
-  Live AWS execution was not run for this parser-only change. ANSI-C escape
-  decoding and a complete Bash grammar remain outside this change.
+- Config integration was skipped (`deno or .config.json not available`), and
+  Checkov was skipped because no local pinned binary or preloaded image was
+  available. Live AWS execution was not run for this parser-only change.
+  ANSI-C escape decoding and a complete Bash grammar remain outside this change.
