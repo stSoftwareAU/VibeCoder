@@ -35,26 +35,28 @@ hide commands after the closing quote. Closes #5525.
   double-quoted controls passed. After the fix, both consumers pass their
   negative cases and executable controls.
 - Issue provenance: #5525: shell_command_words: `shellCommands` does not model
-  `$'...'` ANSI-C quoting, so an escaped quote inside one inverts the quote state
-  for the rest of the body.
+  `$'...'` ANSI-C quoting, so an escaped quote inside one inverts the quote
+  state for the rest of the body.
 
 ## Test Plan
 
 - `worker/deno/tests/aws_emulator_in_ci_check_test.ts`: added the
   `workflowRunsAwsEmulator - ANSI-C escaped quotes keep multiline arguments out
-  of command position` regression, eleven `shellSegments` boundary cases and
-  the `shellCommands` separator regression. Covers escaped apostrophes and
-  backslashes, multiline content, raw backslash-newline, concatenated fragments,
-  ordinary quotes, escaped dollars, empty words and an unclosed word.
+  of command position`
+  regression, eleven `shellSegments` boundary cases and the `shellCommands`
+  separator regression. Covers escaped apostrophes and backslashes, multiline
+  content, raw backslash-newline, concatenated fragments, ordinary quotes,
+  escaped dollars, empty words and an unclosed word.
 - `worker/deno/tests/issue_5110_aws_emulator_workflow_test.ts`: added
   `pinned install inside a multiline argument after an ANSI-C escaped quote is
-  refused`, using the real workflow and existing mutation helpers. Requires
-  exactly the pinned-install finding and an executable control with no findings.
+  refused`,
+  using the real workflow and existing mutation helpers. Requires exactly the
+  pinned-install finding and an executable control with no findings.
 - Ran `deno task test:unit` on those two files from `worker/deno`: **585 passed,
-  0 failed**. With the full new boundary table on base: **578 passed, 7 failed**.
-  No existing assertions were removed or changed.
-- Targeted `deno fmt --check`, `deno lint` and frozen `deno check` passed.
-  Type checking included the shared tokeniser, both consumer modules and both
+  0 failed**. With the full new boundary table on base: **578 passed, 7
+  failed**. No existing assertions were removed or changed.
+- Targeted `deno fmt --check`, `deno lint` and frozen `deno check` passed. Type
+  checking included the shared tokeniser, both consumer modules and both
   affected test files.
 - Corpus: compared base and head readers over all **15** real workflow YAML
   files, the three applicable workflow validators, and the aggregate repository
@@ -81,9 +83,9 @@ hide commands after the closing quote. Closes #5525.
   `worker/deno/tests/parallel_safety_cap_test.ts` (2 tests, 3.43 seconds total).
   A focused run of those files passed all **3** tests. No assertions or time
   limits were changed.
-- Final full gate, `DENO_JOBS=2 ./quality.sh < /dev/null`: **PASSED (with skipped
-  checks)**. Both unit-test passes and the runtime budget check passed, as did
-  lint, type checking, formatting and the completed security checks. The
+- Final full gate, `DENO_JOBS=2 ./quality.sh < /dev/null`: **PASSED (with
+  skipped checks)**. Both unit-test passes and the runtime budget check passed,
+  as did lint, type checking, formatting and the completed security checks. The
   existing worker-count override reduced concurrency without changing coverage
   or thresholds.
 - `deno task pr-summary-check` passed: **0 blocked, 0 not checked** gates.
@@ -97,5 +99,5 @@ hide commands after the closing quote. Closes #5525.
 
 - Config integration was skipped (`deno or .config.json not available`), and
   Checkov was skipped because no local pinned binary or preloaded image was
-  available. Live AWS execution was not run for this parser-only change.
-  ANSI-C escape decoding and a complete Bash grammar remain outside this change.
+  available. Live AWS execution was not run for this parser-only change. ANSI-C
+  escape decoding and a complete Bash grammar remain outside this change.
