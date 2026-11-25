@@ -277,6 +277,17 @@ function scenarioGhFn(created: { head: string; body: string }[]) {
         milestone: { number: 99, title: "secret redaction follow-ups" },
       });
     }
+    // Milestone A's own closed issue, named by its PR on A's branch: its REST
+    // view shows it still in A, so it is not added as a moved issue.
+    if (key === "api repos/owner/repo/issues/5327") {
+      return JSON.stringify({
+        number: 5327,
+        title: "Redact tokens",
+        state: "closed",
+        updated_at: "2026-10-06T00:00:00Z",
+        milestone: { number: 7, title: "secret-assignment rule hardening" },
+      });
+    }
     if (key.includes("/timeline")) return "[]";
     if (key.includes("issues?milestone=") && key.includes("state=closed")) {
       const m = key.match(/milestone=(\d+)/)?.[1];

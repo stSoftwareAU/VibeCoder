@@ -3855,8 +3855,8 @@ for each claimed delivered issue, ascending and capped at 62
 (`MILESTONE_PROVENANCE_MAX_CHILDREN`: the reviewer's `MAX_GOVERNING_ISSUES` of 64
 less the tracking issue and the parent, both held in
 `worker/deno/lib/governing_issue_limits.ts` so they cannot drift), so the fleet
-reviewer can read the issues the rollup serves. Flagged issues get no line. The fingerprint version bump
-refreshes each open rollup once so it gains these lines.
+reviewer can read the issues the rollup serves. Flagged issues get no line. The Issue #4967 fingerprint version bump
+refreshed each open rollup once so it gained these lines. The Issue #5458 bump (`rollup-provenance-v3`) refreshes each open rollup once more, so it carries each claimed issue's moved-to-milestone note.
 
 **Closed-issue rollup classification** — each closed milestone issue is claimed
 when a merged PR either has the canonical `(Issue #N)` / `(#N)` title reference
@@ -3864,7 +3864,26 @@ or has a same-repository `issue-N` head branch. The branch lookup recovers
 adopted agent PRs whose titles predate canonical title repair; fork heads,
 other issue numbers and milestone sync branches do not claim the issue. The
 merged PR must also postdate the issue's latest reopen, and an unreadable issue
-timeline remains flagged for review.
+timeline remains flagged for review. Only a merged PR into this milestone's
+branch counts (Issue #5458): one based on another milestone's branch
+(`milestone/…`) is not delivery here, while a PR into the default branch still
+counts. When every merged PR went into another milestone's branch, the issue is
+flagged `merged-into-other-milestone` ("every merged PR went into another
+milestone's branch"), or `merged-pr-search-unreadable` when a PR search was
+unreadable; otherwise the reopen check runs over the remaining PRs only. The
+closed-issue list also follows the branch: each same-repository issue named by a
+PR merged into `milestone/<slug>` (by its `issue-N` head or trailing `(#N)` /
+`(Issue #N)` title), not in the milestone in any state and not a tracker, is read
+over REST (`gh api repos/<repo>/issues/<N>`), and when it is closed, not a pull
+request and now in another milestone or none, it is added and classified like the
+rest. A claimed one is listed under "Issues addressed" with `(now in milestone
+"<title>")` or `(no longer in a milestone)`. A failed `--base` list or issue read
+makes the whole closed-issue read fail (`null`), never a shorter list. The
+`--base` list is cached under `prs_base_merged_<branch>` for the issue cache's
+TTL; an unreadable one is not cached. The claim verdict is cached under
+`milestone_claim_verdict_v3_<N>`, served only for the same `updatedAt` and
+milestone branch (v2 and v1 entries are ignored), and a
+`merged-into-other-milestone` verdict is cached when both searches were readable.
 If either PR search fails and the other finds no delivery, the issue is flagged
 as an unreadable PR search. No verdict from partial search results is cached,
 even when the available delivery predates a reopen, so a later scan retries the
