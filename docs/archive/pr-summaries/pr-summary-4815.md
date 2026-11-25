@@ -161,7 +161,8 @@ flowchart LR
     `tests/quality_gate_attempt_report_test.ts`,
     `tests/claude_runner_host_disk_4390_test.ts` and
     `tests/wip_checkpoint_test.ts`: 43 passed, 0 failed;
-  - before them: the three new files with `tests/claude_runner_host_disk_4390_test.ts`,
+  - before them: the three new files with
+    `tests/claude_runner_host_disk_4390_test.ts`,
     `tests/execute_phase_host_disk_park_5077_test.ts` and
     `tests/wip_checkpoint_test.ts`: 33 passed, 0 failed;
   - `tests/lib_sweep_coverage_test.ts`: 39 passed;
