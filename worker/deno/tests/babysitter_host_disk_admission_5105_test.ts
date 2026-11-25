@@ -456,12 +456,14 @@ Deno.test("the production pass runs one repair container at a time", async () =>
   let started = 0;
   let running = 0;
   let peak = 0;
-  const release: (() => void)[] = [];
-  const settle = async () => {
-    for (let i = 0; i < 50; i++) await new Promise((r) => setTimeout(r, 0));
-  };
+  const repairs = Array.from({ length: 2 }, () => ({
+    started: Promise.withResolvers<void>(),
+    release: Promise.withResolvers<void>(),
+  }));
+  let cleaningUp = false;
+  let done: Promise<void> | undefined;
   try {
-    const done = pass(
+    done = pass(
       true,
       "fleet-babysitter[bot]",
       {} as unknown as Parameters<typeof pass>[2],
@@ -486,27 +488,39 @@ Deno.test("the production pass runs one repair container at a time", async () =>
         stateDir: `${root}/state`,
         hostId: "queue-host",
         repair: () => {
-          started++;
+          const repair = repairs[started++];
+          assert(repair, "unexpected extra repair");
           peak = Math.max(peak, ++running);
-          return new Promise<void>((resolve) =>
-            release.push(() => {
-              running--;
-              resolve();
-            })
-          );
+          repair.started.resolve();
+          return (cleaningUp ? Promise.resolve() : repair.release.promise)
+            .finally(() => running--);
         },
       },
     );
-    await settle();
+    const endedBeforeStart = done.then(() => {
+      throw new Error("the pass ended before the expected repair started");
+    });
+    await Promise.race([repairs[0]!.started.promise, endedBeforeStart]);
+    // Keep the first repair held while a competing task can finish its
+    // asynchronous discovery-ledger writes (including a lock retry).
+    for (let i = 0; i < 50; i++) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
     assertEquals(started, 1, "the second repair started beside the first");
-    release[0]!();
-    await settle();
+    repairs[0]!.release.resolve();
+    await Promise.race([repairs[1]!.started.promise, endedBeforeStart]);
     assertEquals(started, 2);
-    release[1]!();
+    repairs[1]!.release.resolve();
     await done;
     assertEquals(peak, 1);
   } finally {
-    await Deno.remove(root, { recursive: true });
+    cleaningUp = true;
+    for (const repair of repairs) repair.release.resolve();
+    try {
+      await done;
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
   }
 });
 

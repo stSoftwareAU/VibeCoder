@@ -31,16 +31,22 @@ const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /**
  * Split a `run:` body into commands, each with its words and the separator
  * before it (`\n`, `;`, `|`, `&`, `&&` or `||`). Quotes keep a word together
- * (`X="a b"` is one word), and a newline or `;`/`|`/`&` starts a new command.
+ * (`X="a b"` is one word), and an unquoted newline or `;`/`|`/`&` starts a
+ * new command.
  *
- * A backslash escapes the next character outside single quotes, and the word
+ * Outside quotes a backslash escapes the next character, and the word
  * keeps the escape as written (`\\`, `\"`, `\;`). An odd run of backslashes
- * before a newline is a continuation: the newline is removed with no blank
- * inserted, so `ab\` + newline + `cd` is the word `abcd`, and leading blanks on
+ * outside quotes before a newline continues the line: the newline is removed
+ * with no blank inserted, so `ab\` + newline + `cd` is the word `abcd`, and leading blanks on
  * the next line still split. An even run is escaped backslashes, so the newline
  * ends the command (`a \\` + newline + `b` is two commands). Inside double
  * quotes a backslash continues the line before a newline, escapes `\`, `"`,
- * `$` or a backtick, and is otherwise literal. A `#` that starts a word is a
+ * `$` or a backtick, and is otherwise literal. ANSI-C `$'…'` quoting opens
+ * outside other quotes, including across unquoted line continuations,
+ * consumes backslash-escaped characters together and
+ * closes only on an unescaped apostrophe. Its raw spelling (including escapes
+ * and newlines) is kept, without decoding; adjacent quoted and plain fragments
+ * remain one word. A `#` that starts a word outside quotes is a
  * comment that ends at its physical newline, so a backslash at its end is
  * comment text and the next line is its own command.
  */
@@ -87,6 +93,15 @@ function shellCommandList(script: string): {
 
   for (let i = 0; i < text.length; i++) {
     const ch = text.charAt(i);
+    if (quote === "$'") {
+      word += ch;
+      if (ch === "\\" && i + 1 < text.length) {
+        word += text.charAt(++i);
+      } else if (ch === "'") {
+        quote = null;
+      }
+      continue;
+    }
     if (quote === "'") {
       // Single quotes are literal, a backslash-newline included.
       word += ch;
@@ -124,6 +139,31 @@ function shellCommandList(script: string): {
       inWord = true;
       if (escaped !== "") i++;
       continue;
+    }
+    if (ch === "$") {
+      // Unquoted continuations disappear before Bash recognises the opener.
+      let opener = i + 1;
+      while (text.charAt(opener) === "\\") {
+        const lineBreak = newlineLength(opener + 1);
+        if (lineBreak === 0) break;
+        opener += 1 + lineBreak;
+      }
+      // `$$` is the process-ID parameter and is read as one unit first, so
+      // the `'` in `$$'…'` opens an ordinary single-quoted word, while
+      // `$$$'…'` still opens ANSI-C at its third `$` (PR #5610 review).
+      if (text.charAt(opener) === "$") {
+        word += "$$";
+        inWord = true;
+        i = opener;
+        continue;
+      }
+      if (text.charAt(opener) === "'") {
+        quote = "$'";
+        word += "$'";
+        inWord = true;
+        i = opener;
+        continue;
+      }
     }
     if (ch === '"' || ch === "'") {
       quote = ch;
