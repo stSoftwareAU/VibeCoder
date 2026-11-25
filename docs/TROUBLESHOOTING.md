@@ -255,8 +255,11 @@ guest does not answer, Issue #5250) and a last step logged, from
 a fixed list (`pre-PR verifier`, `quality gate`,
 `agent turn`, a setup step (`setup: issue claim`, `setup: claim churn check`,
 `setup: repository setup`, `setup: heartbeat start`,
-`setup: default branch sync`, `setup: feature branch` or
-`setup: pre-setup command`, each logged as the step starts, Issue #5128) or
+`setup: default branch sync`, `setup: milestone branch`,
+`setup: milestone pre-sync`, `setup: session resume`, `setup: feature branch`
+or `setup: pre-setup command`, each logged as the step starts, Issue #5128; the
+three labels after `default branch sync` were added by Issue #5529, and the
+milestone branch and milestone pre-sync steps run only for a milestone issue) or
 `unknown`, plus `mutation check` for logs written before Issue #5095 retired
 that step; it is the last step the log reported, so the wedge is in or after it,
 and it is not part of the dedup signature), then moves the file to
@@ -302,6 +305,22 @@ repeatedly — a chronic offender needs the runtime itself looked at:
 ```bash
 deno run worker/deno/mod.ts self-heal-summary | grep container_wedged
 ```
+
+A guest can run out of memory before the kernel's OOM killer acts. While an
+agent run is alive, the worker's memory watch reads the guest's available
+memory on every tick (every 20 seconds, and on agent output). When it is below
+the greater of 3% of total memory and 256 MiB, the worker sends SIGKILL to the
+largest process in that agent run's own process tree (never the agent CLI
+itself, and only a process of at least 256 MiB resident) and logs a WARNING
+line starting `Guest memory critically low`. On a guest with no swap, exhausting
+memory wedges the whole VM (every lane, `guest probe: did not answer`) instead
+of triggering an OOM kill, so losing one build step is the cheaper failure. The
+agent sees its command die with signal 9 (exit 137). The signal is sent only
+when the process is provably still the one chosen: its start time is unchanged
+from selection to the kill, and a fresh process table shows a live parent chain
+to the agent. Otherwise the worker logs `Memory guard left pid=… alone` and
+signals nothing, so a process re-parented away from the agent is never killed
+by the guard. Issue #5529.
 
 ### What a runtime-detection failure looks like
 

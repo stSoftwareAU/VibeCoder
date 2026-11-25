@@ -37,7 +37,7 @@ function buildState(): PhaseState {
   };
 }
 
-function buildContext(workDir: string): IssueContext {
+function buildContext(workDir: string, milestoneTitle?: string): IssueContext {
   return {
     repo: REPO,
     issueNumber: 5128,
@@ -46,6 +46,7 @@ function buildContext(workDir: string): IssueContext {
     issueLabels: ["work-on"],
     issueComments: "",
     githubUser: "vibe-worker",
+    ...(milestoneTitle ? { milestoneTitle } : {}),
     config: { ...buildDefaultWorkerConfig(), workDir },
   };
 }
@@ -152,7 +153,7 @@ Deno.test("#5128 - a refused claim logs only the issue claim line and the report
   }
 });
 
-Deno.test("#5128 - a completed setup logs all seven start lines in order", async () => {
+Deno.test("#5128 - a completed setup logs all eight start lines in order", async () => {
   resetMilestoneArmSyncMemo();
   const workDir = await Deno.makeTempDir({ prefix: "issue5128-setup-" });
   const state = buildState();
@@ -173,6 +174,7 @@ Deno.test("#5128 - a completed setup logs all seven start lines in order", async
       "[setup-step] repository setup: started",
       "[setup-step] heartbeat start: started",
       "[setup-step] default branch sync: started",
+      "[setup-step] session resume: started",
       "[setup-step] feature branch: started",
       "[setup-step] pre-setup command: started",
     ]);
@@ -182,6 +184,77 @@ Deno.test("#5128 - a completed setup logs all seven start lines in order", async
     );
   } finally {
     if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("#5529 - a milestone setup inside the pre-sync agent reports milestone pre-sync, and a completed milestone setup logs the milestone steps in order", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "issue5529-setup-" });
+  const state = buildState();
+  const completedState = buildState();
+  try {
+    // Behind the default branch, so the pre-sync reaches its conflict-agent
+    // call. Snapshot what the run has logged by the time that call is made.
+    resetMilestoneArmSyncMemo();
+    const captured: string[] = [];
+    let atAgentCall: string[] = [];
+    const deps = createMockDeps({
+      logger: { info: (message: string) => void captured.push(message) },
+      git: {
+        countCommitsAhead: () =>
+          Promise.resolve({ ok: true as const, value: 2 }),
+        syncMilestoneBranchWithDefault: () => {
+          atAgentCall = stepLines(captured);
+          return Promise.resolve({
+            ok: true as const,
+            value: { message: "merged main down" },
+          });
+        },
+      },
+    });
+    await workOnIssueSetupBranch(
+      buildContext(workDir, "M1"),
+      state,
+      deps,
+    );
+    assertEquals(
+      hardKillLastStep(evidenceFrom(atAgentCall)),
+      "setup: milestone pre-sync",
+    );
+
+    // A level milestone branch: the run completes, and every step logs once,
+    // in run order.
+    resetMilestoneArmSyncMemo();
+    const completed: string[] = [];
+    const result = await workOnIssueSetupBranch(
+      buildContext(workDir, "M1"),
+      completedState,
+      createMockDeps({
+        logger: { info: (message: string) => void completed.push(message) },
+        git: {
+          countCommitsAhead: () =>
+            Promise.resolve({ ok: true as const, value: 0 }),
+        },
+      }),
+    );
+    assertEquals(result.status, "continue");
+    assertEquals(stepLines(completed), [
+      "[setup-step] issue claim: started",
+      "[setup-step] claim churn check: started",
+      "[setup-step] repository setup: started",
+      "[setup-step] heartbeat start: started",
+      "[setup-step] default branch sync: started",
+      "[setup-step] milestone branch: started",
+      "[setup-step] milestone pre-sync: started",
+      "[setup-step] session resume: started",
+      "[setup-step] feature branch: started",
+      "[setup-step] pre-setup command: started",
+    ]);
+  } finally {
+    if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+    if (completedState.heartbeatHandle) {
+      await stopHeartbeat(completedState.heartbeatHandle);
+    }
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
   }
 });
