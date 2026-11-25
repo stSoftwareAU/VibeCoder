@@ -16,9 +16,9 @@ redacted. Mask overlapping nested flag values together. Closes #5608.
 - Detection and replacement share `verdictOf` and the assignment walk.
 - Classify the original value before changing its mask boundary, so a shortened
   cross-line prefix cannot become exempt as a short word or prose.
-- When a flag's value ends in another credential flag taking a value, extend
-  the assignment mask through successive overlaps instead of hiding a flag's
-  name while leaving its value visible.
+- When a flag's value ends in another credential flag taking a value, extend the
+  assignment mask through successive overlaps instead of hiding a flag's name
+  while leaving its value visible.
 - Name probes read at most 150 characters. Overlap extensions advance through
   disjoint value spans; the input remains untruncated. The existing quoted-flag
   overlap handler shares the trailing-name matcher.
@@ -31,10 +31,10 @@ None.
 
 - Backend redaction change; no visual surface changed.
 - The regression file copied into an isolated checkout of unfixed `main`
-  (`a0170265e`) had 19 failing tests and two passing controls, including failures
-  on both same-line and consecutive-line inputs. The output exposed the
-  credential value while `containsSecret` returned false
-  on that output. Removing the outer label was an accepted control.
+  (`a0170265e`) had 19 failing tests and two passing controls, including
+  failures on both same-line and consecutive-line inputs. The output exposed the
+  credential value while `containsSecret` returned false on that output.
+  Removing the outer label was an accepted control.
 - The nested-value regression also failed against checkpoint `eaf8bc0fb`:
   preserving the old outer mask exposed the first flag's value. The final
   implementation masks both overlapping values.
@@ -42,8 +42,8 @@ None.
   existing redaction suites passed: 668 tests, zero failures.
 - Security review: this fix adds no sink, dependency, filesystem, network or
   process operation. It applies `capsec-secret-logging` in the existing shared
-  redactor. SECURITY.md describes the nested-value exception; the threat
-  model's existing redaction controls remain applicable.
+  redactor. SECURITY.md describes the nested-value exception; the threat model's
+  existing redaction controls remain applicable.
 - Provenance checked: #5608 — secret-assignment walk masks a credential flag's
   name inside an outer label's value and publishes the flag's value.
 - Related provenance checked: #5330 — secret-assignment rule masks a credential
@@ -61,57 +61,58 @@ flowchart LR
 - Added `worker/deno/tests/secret_redaction_flag_in_value_5608_test.ts`:
   generated `#5608:` cases cover same-line and consecutive-line assignments,
   chained assignments, tabs, quoted values and independent following flags.
-  `#5608: overlapping nested flags keep every value masked` checks two and
-  three overlapping flags on both line layouts. These cases assert exact
-  output, input detection, output detection, secret removal and idempotence.
-- `#5608: shortening a cross-line mask keeps credential prefixes masked` in
-  that file failed against the shortened-value classifier and passes with the
+  `#5608: overlapping nested flags keep every value masked` checks two and three
+  overlapping flags on both line layouts. These cases assert exact output, input
+  detection, output detection, secret removal and idempotence.
+- `#5608: shortening a cross-line mask keeps credential prefixes masked` in that
+  file failed against the shortened-value classifier and passes with the
   original-value classifier, covering both short and prose-shaped prefixes.
-- The same file's missing-value controls cover absent values, following
-  options, bare assignment separators, equals-attached values and
-  non-credential flags. Controls pin existing behaviour and may pass on base.
-  Its hostile-size tests cover repeated flag names, a rejected suffix, long
-  hyphen runs, 20,000 assignments and 20,000 overlapping flags without timing
-  assertions.
+- The same file's missing-value controls cover absent values, following options,
+  bare assignment separators, equals-attached values and non-credential flags.
+  Controls pin existing behaviour and may pass on base. Its hostile-size tests
+  cover repeated flag names, a rejected suffix, long hyphen runs, 20,000
+  assignments and 20,000 overlapping flags without timing assertions.
 - Modified seven expectations in
   `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`. Four round-9
-  cases now retain flag names and mask their formerly exposed `x` values;
-  two round-11 cases mask the credential prefixes before trailing flags.
-  The round-13 neighbour case masks overlapping values and their intervening
-  quote text. Those old preservation expectations conflict with the issue's
-  value-redaction requirement. Every fixture and its detection, idempotence
-  and original-secret-removal assertions remain.
-- From `worker/deno`, `deno task test:unit tests/secret_redaction*_test.ts
-  tests/secret_transform_redaction_test.ts`: passed, 668 tests. Existing quoted
-  flag regressions exercise the reused trailing-name matcher through the CLI
-  rule as well as the changed assignment path.
+  cases now retain flag names and mask their formerly exposed `x` values; two
+  round-11 cases mask the credential prefixes before trailing flags. The
+  round-13 neighbour case masks overlapping values and their intervening quote
+  text. Those old preservation expectations conflict with the issue's
+  value-redaction requirement. Every fixture and its detection, idempotence and
+  original-secret-removal assertions remain.
+- From `worker/deno`,
+  `deno task test:unit tests/secret_redaction*_test.ts
+  tests/secret_transform_redaction_test.ts`:
+  passed, 668 tests. Existing quoted flag regressions exercise the reused
+  trailing-name matcher through the CLI rule as well as the changed assignment
+  path.
 - Targeted `deno fmt --check`, `deno lint` and frozen `deno check` on the
   production module and both changed test files: passed.
 - One full-gate attempt failed in
   `worker/deno/tests/fleet_experiment_synthetic_test.ts::fleet experiment synthetic - a large sample with a clear price gap gives the control as leading arm`:
   expected `leading-arm`, received `no-decision`. Its unchanged isolated suite
-  then passed all eight tests; the parallel-only failure was not reproduced
-  in isolation.
+  then passed all eight tests; the parallel-only failure was not reproduced in
+  isolation.
 - Compared both redactors over 1,852 base and 1,854 head files: README,
   SECURITY.md, Markdown under docs and prompts, and redaction test sources.
   Three base files and five head files changed output, all containing the
-  affected credential examples; no unexpected masking change was found.
-  Labelled regression fixtures have zero false positives and zero false
-  negatives at head. The prose corpus is not a labelled secret inventory, so
-  its total false-negative count is unknown.
-- The trailing-name pattern previously embedded in `throughFollowingFlag`
-  now shares `flagNameEndingAt` with the new assignment-boundary helper.
+  affected credential examples; no unexpected masking change was found. Labelled
+  regression fixtures have zero false positives and zero false negatives at
+  head. The prose corpus is not a labelled secret inventory, so its total
+  false-negative count is unknown.
+- The trailing-name pattern previously embedded in `throughFollowingFlag` now
+  shares `flagNameEndingAt` with the new assignment-boundary helper.
 - Full-gate attempts, each in the foreground with a 900-second timeout:
 
-  1. Passed with configuration integration and Checkov skipped, before the
-     final cross-line classifier correction.
-  2. Failed on the final production code: 36,746 parallel tests passed,
-     one fleet-experiment test failed with the assertion recorded above, and
-     five were ignored. The serial pass did not run. Lint, type checking,
-     formatting and the other available stages passed.
-  3. Timed out with exit status 124 while the test stage remained pending.
-     The last reported stage was `release-tag ruleset: PASSED`; no final test,
-     lint, type-check or format verdict was emitted by this attempt.
+  1. Passed with configuration integration and Checkov skipped, before the final
+     cross-line classifier correction.
+  2. Failed on the final production code: 36,746 parallel tests passed, one
+     fleet-experiment test failed with the assertion recorded above, and five
+     were ignored. The serial pass did not run. Lint, type checking, formatting
+     and the other available stages passed.
+  3. Timed out with exit status 124 while the test stage remained pending. The
+     last reported stage was `release-tag ruleset: PASSED`; no final test, lint,
+     type-check or format verdict was emitted by this attempt.
 
 - `deno task pr-summary-check`: passed with zero blocked and zero unchecked
   gates. Acceptance-criteria closure, two-axis review and the bug-label
@@ -128,8 +129,8 @@ flowchart LR
 
 ## Limitations
 
-Local configuration integration was skipped (`deno or .config.json not
-available`); Checkov was skipped because neither its pinned binary nor image
-was available.
-The parallel-only fleet-experiment failure remains undiagnosed, and the final
-full quality run did not finish.
+Local configuration integration was skipped
+(`deno or .config.json not
+available`); Checkov was skipped because neither its
+pinned binary nor image was available. The parallel-only fleet-experiment
+failure remains undiagnosed, and the final full quality run did not finish.
