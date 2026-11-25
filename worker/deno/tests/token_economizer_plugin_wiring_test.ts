@@ -1518,6 +1518,7 @@ Deno.test("a learnings round trip pulls an empty store, pushes a learned state f
         runId,
         pluginDir: layout.fakePluginDir,
         learningsStoreUrl: store,
+        learningsGitEnv: NO_HOST_GIT_CONFIG,
         checkLearningsVisibility: PRIVATE_STORE,
         scanLearnings: CLEAN_SCAN,
         logger,
@@ -1599,6 +1600,7 @@ Deno.test("a public learnings store is refused: the plugin still loads, the refu
       runId: "public-1",
       pluginDir: layout.fakePluginDir,
       learningsStoreUrl: store,
+      learningsGitEnv: NO_HOST_GIT_CONFIG,
       checkLearningsVisibility: () =>
         Promise.resolve({ private: false, reason: "repository is public" }),
       logger,
@@ -1645,6 +1647,7 @@ Deno.test("an unreachable learnings store is unavailable, logged as a WARNING, a
       runId: "missing-1",
       pluginDir: layout.fakePluginDir,
       learningsStoreUrl: join(layout.root, "missing.git"),
+      learningsGitEnv: NO_HOST_GIT_CONFIG,
       checkLearningsVisibility: PRIVATE_STORE,
       logger,
     });
@@ -1706,6 +1709,7 @@ Deno.test("a failed learnings push leaves the run's result unchanged and is logg
       runId: "fail-1",
       pluginDir: layout.fakePluginDir,
       learningsStoreUrl: store,
+      learningsGitEnv: NO_HOST_GIT_CONFIG,
       checkLearningsVisibility: PRIVATE_STORE,
       scanLearnings: CLEAN_SCAN,
       logger,
@@ -1790,6 +1794,7 @@ Deno.test("a learnings scratch directory symlinked outside the work root is refu
       runId: "alias-1",
       pluginDir: layout.fakePluginDir,
       learningsStoreUrl: store,
+      learningsGitEnv: NO_HOST_GIT_CONFIG,
       checkLearningsVisibility: PRIVATE_STORE,
       logger,
     });
@@ -1829,6 +1834,7 @@ Deno.test("a learnings scratch directory at its normal place reaches the pull an
       runId: "normal-1",
       pluginDir: layout.fakePluginDir,
       learningsStoreUrl: store,
+      learningsGitEnv: NO_HOST_GIT_CONFIG,
       checkLearningsVisibility: PRIVATE_STORE,
       logger,
     });
@@ -1838,6 +1844,42 @@ Deno.test("a learnings scratch directory at its normal place reaches the pull an
       !warnings.some((m) => m.includes("unavailable")),
       JSON.stringify(warnings),
     );
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("launch forwards the learnings store's Git transport policy", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const store = await makeStore(layout, "store.git");
+    const { logger } = recordingLogger();
+    for (const policy of ["never", "always"]) {
+      const launch = await resolveTokenEconomizerLaunch({
+        config: learningsBlock(),
+        workDir: layout.workDir,
+        repo: REPO,
+        runKind: "implementation",
+        subject: `${REPO}#1`,
+        runId: "transport-" + policy,
+        pluginDir: layout.fakePluginDir,
+        learningsStoreUrl: store,
+        checkLearningsVisibility: PRIVATE_STORE,
+        scanLearnings: CLEAN_SCAN,
+        logger,
+        learningsGitEnv: {
+          ...NO_HOST_GIT_CONFIG,
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "protocol.file.allow",
+          GIT_CONFIG_VALUE_0: policy,
+        },
+      });
+      assertEquals(
+        launch?.learnings?.persistence.status,
+        policy === "never" ? "unavailable" : "empty",
+      );
+    }
   } finally {
     await Deno.remove(layout.root, { recursive: true });
   }

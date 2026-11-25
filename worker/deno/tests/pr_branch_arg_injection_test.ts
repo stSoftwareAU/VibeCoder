@@ -14,6 +14,7 @@ import { assert, assertEquals } from "@std/assert";
 import { isWorkerPr } from "../lib/pr_branch_update.ts";
 import { WORKER_PR_MARKER_PREFIX } from "../lib/pr_body.ts";
 import { updatePrBranch } from "../lib/git_pull.ts";
+import { NO_HOST_GIT_CONFIG } from "./support/no_host_git_config.ts";
 
 const EVIL = "--upload-pack=touch /tmp/pwned";
 
@@ -28,6 +29,7 @@ Deno.test("a spoofed worker marker on a dash-leading branch is not selected for 
 Deno.test("updatePrBranch refuses a dash-leading head branch without running git", async () => {
   const result = await updatePrBranch(EVIL, "main", {
     cwd: "/nonexistent-vibe-12",
+    env: NO_HOST_GIT_CONFIG,
   });
   // It returns a handled error, and never spawned git (cwd does not exist —
   // a git run there would fail differently, but the guard short-circuits).
@@ -43,6 +45,7 @@ Deno.test("updatePrBranch refuses a dash-leading head branch without running git
 Deno.test("updatePrBranch refuses a dash-leading base branch too", async () => {
   const result = await updatePrBranch("issue-1-x", EVIL, {
     cwd: "/nonexistent-vibe-12",
+    env: NO_HOST_GIT_CONFIG,
   });
   assertEquals(result.ok, false);
 });
