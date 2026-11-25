@@ -824,6 +824,13 @@ const RULES: readonly RedactionRule[] = [
   // masks whole, as in `--token 'alpha beta credentials: TOKEN='tail` (main's
   // result, see `flagQuoteReaches`). That keeps the base behaviour.
   //
+  // A quoted value whose closing quote is where `secret-cli-flag` opens a
+  // credential flag's value is masked through that flag's value (Issue #5457):
+  // an unclosed single-quoted value running onto the next line's
+  // `--password '...'`, a double-quoted Windows path ending in a backslash, or
+  // a quoted message ending in `token:` with text glued to its closing quote.
+  // Masking only up to that quote hid the flag's name and published its value.
+  //
   // JSON structure survives the mask (Issue #4169's transcript tee is the
   // sink that showed it). Every stream-json line the agent emits carries a
   // `"usage":{"input_tokens":50,...}` block — a key that merely *contains*
@@ -1111,6 +1118,26 @@ function walkAssignmentsMemoised(text: string): AssignmentVerdict[] {
     }
     const outer = verdictOf(text, match);
     const valueStart = outer.end - outer.value.length;
+    // Issue #5457: a quoted value whose closing quote opens a credential
+    // flag's value is masked through that value (see flagValueThroughQuote).
+    const flagEnd = outer.masked ? flagValueThroughQuote(text, outer) : -1;
+    if (flagEnd !== -1) {
+      const kept = pastFloor(text, {
+        ...outer,
+        end: flagEnd,
+        value: text.slice(valueStart, flagEnd),
+      }, floor);
+      if (kept) {
+        verdicts.push(kept);
+        INNER_MEMO.masks.push({
+          start: kept.end - kept.value.length,
+          end: flagEnd,
+        });
+      }
+      floor = Math.max(floor, flagEnd);
+      from = valueStart;
+      continue;
+    }
     const inner = innerAssignment(text, valueStart, outer.end, 0, outer.masked);
     if (
       inner && !inner.keepsOuter && !quotedRunOn(text, outer) &&
@@ -2194,6 +2221,43 @@ function flagValueStartsAt(text: string, at: number): boolean {
     if (INNER_MEMO.text === text) INNER_MEMO.flagValueStarts = starts;
   }
   return starts.has(at);
+}
+
+/**
+ * The `secret-cli-flag` rule's value alternatives, read at one offset.
+ */
+const CLI_FLAG_VALUE_AT = /"[^"]+"|'[^']+'|\S+/y;
+
+/**
+ * Issue #5457: where a credential flag's value ends when `verdict` is a closed
+ * quoted value whose closing quote is where the `secret-cli-flag` rule opens
+ * that flag's value outside a JSON member boundary, else -1. The
+ * walk masks the value through the flag's value, so the flag's name is not
+ * hidden from the rule. The read is bounded
+ * by the flag rule's own value match, so the walk stays linear (the linearity
+ * rule in the module header).
+ */
+function flagValueThroughQuote(
+  text: string,
+  verdict: AssignmentVerdict,
+): number {
+  const value = verdict.value;
+  const quote = value[0];
+  if (
+    (quote !== "'" && quote !== '"') || value.length < 2 ||
+    !value.endsWith(quote) ||
+    verdict.end === text.length ||
+    (quote === '"' && text[verdict.index - 1] === '"' &&
+      /^"\s*:/.test(verdict.sep) && /^[\s,:\]}]/.test(text[verdict.end]!)) ||
+    !flagValueStartsAt(text, verdict.end - 1)
+  ) return -1;
+  try {
+    CLI_FLAG_VALUE_AT.lastIndex = verdict.end - 1;
+    const match = CLI_FLAG_VALUE_AT.exec(text);
+    return match ? verdict.end - 1 + match[0].length : -1;
+  } finally {
+    CLI_FLAG_VALUE_AT.lastIndex = 0;
+  }
 }
 
 /** Most earlier masks {@link flagQuoteReaches} skips back over. */
