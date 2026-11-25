@@ -2089,8 +2089,8 @@ export async function classifyClosedIssues(
  * Issue #5458: the list also follows what merged into the milestone branch. An
  * issue whose PR landed on the branch but which has since moved to another
  * milestone (or to none) is added from the branch's merged PRs, with
- * `movedToMilestone` set, so the rollup still claims it. Those issues are
- * classified against the branch like the rest. The branch read is part of the
+ * `movedToMilestone` set, so the rollup can list where it now sits. Those issues
+ * are classified against the branch like the rest. The branch read is part of the
  * same try: a failed read is `null`, never a silently shorter list.
  */
 async function getClosedIssues(

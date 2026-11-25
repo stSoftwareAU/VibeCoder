@@ -53,11 +53,32 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Reject incomplete gh rows instead of silently dropping delivered issues. */
+function validateMergedPrRows(rows: unknown[], context: string): void {
+  for (const row of rows) {
+    if (!isRecord(row)) throw new Error(`${context}: malformed PR row`);
+    if (
+      typeof row.number !== "number" || !Number.isSafeInteger(row.number) ||
+      row.number <= 0
+    ) {
+      throw new Error(`${context}: malformed number`);
+    }
+    for (const field of ["title", "headRefName"] as const) {
+      if (typeof row[field] !== "string") {
+        throw new Error(`${context}: malformed ${field}`);
+      }
+    }
+    if (typeof row.isCrossRepository !== "boolean") {
+      throw new Error(`${context}: malformed isCrossRepository`);
+    }
+  }
+}
+
 /**
  * Read the merged PRs based on the milestone branch (Issue #5458).
  *
- * A successful, parseable array is cached under the branch name. An
- * unreadable, unparseable or non-array response throws and is not cached.
+ * A validated array is cached under the branch name. An unreadable or
+ * malformed response throws and is not cached; cached rows are validated too.
  */
 async function readMergedIntoBranch(
   repo: string,
@@ -66,12 +87,15 @@ async function readMergedIntoBranch(
   cache?: IssueCache,
 ): Promise<unknown[]> {
   const cacheKey = `prs_base_merged_${milestoneBranch}`;
+  const context = `the pull requests merged into ${milestoneBranch} in ${repo}`;
   if (cache) {
     const cached = await cache.read<unknown[]>(repo, cacheKey);
-    if (Array.isArray(cached)) return cached;
+    if (Array.isArray(cached)) {
+      validateMergedPrRows(cached, context);
+      return cached;
+    }
   }
 
-  const context = `the pull requests merged into ${milestoneBranch} in ${repo}`;
   let output: string;
   try {
     output = await ghCommandFn([
@@ -103,6 +127,7 @@ async function readMergedIntoBranch(
       `could not read ${context}: the response was not a JSON array`,
     );
   }
+  validateMergedPrRows(parsed, context);
 
   if (cache) await cache.write(repo, cacheKey, parsed);
   return parsed;
@@ -150,22 +175,24 @@ async function readIssueRow(
   }
   if (
     !isRecord(parsed) || typeof parsed.title !== "string" ||
-    typeof parsed.state !== "string" ||
     (parsed.updated_at !== undefined && typeof parsed.updated_at !== "string")
   ) {
     throw new Error(`${context} is malformed`);
+  }
+  if (parsed.state !== "open" && parsed.state !== "closed") {
+    throw new Error(`${context}: malformed state`);
   }
 
   let milestoneNumber: number | null = null;
   let milestoneTitle: string | null = null;
   const milestone = parsed.milestone;
-  if (milestone !== undefined && milestone !== null) {
+  if (milestone !== null) {
     if (
       !isRecord(milestone) || typeof milestone.number !== "number" ||
-      !Number.isSafeInteger(milestone.number) ||
+      !Number.isSafeInteger(milestone.number) || milestone.number <= 0 ||
       typeof milestone.title !== "string"
     ) {
-      throw new Error(`${context} is malformed`);
+      throw new Error(`${context}: malformed milestone`);
     }
     milestoneNumber = milestone.number;
     milestoneTitle = milestone.title;
@@ -188,10 +215,10 @@ async function readIssueRow(
  * The closed issues that merged into `milestoneBranch` but now sit in another
  * milestone, ascending by number (Issue #5458).
  *
- * Each merged same-repository PR based on the branch, other than a fleet
- * milestone sync PR, names candidate issues from its head branch and its
- * title. Candidates in `excluded` (the milestone's own members) are dropped,
- * then each remaining candidate is read over REST. A candidate is returned
+ * Up to 1,000 merged PRs based on the branch are read. Same-repository PRs,
+ * other than fleet milestone sync PRs, name candidate issues from their head
+ * branches and titles. Candidates in `excluded` (the milestone's own members)
+ * are dropped, then each remaining candidate is read over REST. A candidate is returned
  * only when it is closed, is not a pull request, and does not sit in
  * `milestoneNumber`; `movedToMilestone` is its milestone's title, or null
  * when it has none.

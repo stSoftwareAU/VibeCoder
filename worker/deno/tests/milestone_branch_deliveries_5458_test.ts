@@ -23,6 +23,7 @@ import {
 } from "../lib/milestone_completion.ts";
 import { fetchIssuesMovedOffBranch } from "../lib/milestone_branch_deliveries.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
+import { redactGhBodyText } from "../lib/gh_body_redaction.ts";
 
 const REPO = "owner/repo";
 const BRANCH_A = "milestone/secret-assignment-rule-hardening";
@@ -154,6 +155,46 @@ Deno.test("classifyClosedIssues - an unreadable title search with only another m
   );
 
   assertEquals(result[0]?.claimProblem, "merged-pr-search-unreadable");
+});
+
+Deno.test("classifyClosedIssues - a later merge into another milestone does not override a reopen here (Issue #5458)", async () => {
+  const later = "2026-10-07T00:00:00Z";
+  const ghFn = async (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("/timeline")) {
+      return JSON.stringify([{
+        event: "reopened",
+        actor: { login: "owner" },
+        created_at: "2026-10-06T00:00:00Z",
+      }]);
+    }
+    return titleSearchRows(args, {
+      7: [
+        mergedPr(70, "Earlier delivery here (#7)", BRANCH_A),
+        {
+          ...mergedPr(71, "Later delivery elsewhere (#7)", BRANCH_B),
+          mergedAt: later,
+        },
+      ],
+      8: [
+        mergedPr(80, "Earlier delivery elsewhere (#8)", BRANCH_B),
+        {
+          ...mergedPr(81, "Later delivery here (#8)", BRANCH_A),
+          mergedAt: later,
+        },
+      ],
+    });
+  };
+  const result = await classifyClosedIssues(
+    REPO,
+    BRANCH_A,
+    [{ number: 7, title: "Reopened here" }, {
+      number: 8,
+      title: "Redelivered here",
+    }],
+    ghFn,
+  );
+  assertEquals(result[0]?.claimProblem, "predates-reopen");
+  assertEquals(result[1]?.claimProblem, undefined);
 });
 
 Deno.test("classifyClosedIssues - a cached verdict for one milestone branch is not served for another (Issue #5458)", async () => {
@@ -362,6 +403,131 @@ Deno.test("checkAndHandleMilestoneCompletions - a rollup claims an issue that mo
   assertFalse(bodyB.includes("Part of #5326"));
 });
 
+Deno.test("checkAndHandleMilestoneCompletions - retries a malformed branch delivery read without publishing a shorter rollup (Issue #5458)", async () => {
+  const created: { head: string; body: string }[] = [];
+  const inner = scenarioGhFn(created);
+  let malformed = true;
+  const deps = createMockDeps({
+    ghCommandFn: async (args) => {
+      if (args[0] === "api" && args[1]?.includes("/milestones?")) {
+        return JSON.stringify([MILESTONE_A]);
+      }
+      if (
+        malformed && args[0] === "pr" && args[1] === "list" &&
+        args.includes("--base")
+      ) {
+        return JSON.stringify([{ ...PR_5433, isCrossRepository: undefined }]);
+      }
+      return await inner(args);
+    },
+  });
+  await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(created, []);
+  malformed = false;
+  await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(created.length, 1);
+  assertStringIncludes(created[0]!.body, "Part of #5326");
+  assertStringIncludes(created[0]!.body, "Part of #5327");
+});
+
+for (const incomplete of [false, true]) {
+  Deno.test(`checkAndHandleMilestoneCompletions - refreshes moved-issue notes in an existing ${incomplete ? "incomplete" : "complete"} rollup (Issue #5458)`, async () => {
+    await withTempCache(async (cache) => {
+      const created: { head: string; body: string }[] = [];
+      const inner = scenarioGhFn(created);
+      const live = {
+        number: 301,
+        title: `Milestone: ${MILESTONE_A.title}`,
+        state: "OPEN",
+        headRefName: BRANCH_A,
+        isCrossRepository: false,
+        body: "old rollup body",
+      };
+      let milestone: { number: number; title: string } | null = MILESTONE_B;
+      let edits = 0;
+      const deps = createMockDeps({
+        cache,
+        ghCommandFn: async (args) => {
+          if (args[0] === "api" && args[1]?.includes("/milestones?")) {
+            return JSON.stringify([MILESTONE_A]);
+          }
+          if (
+            args[0] === "api" && args[1] === "repos/owner/repo/milestones/7"
+          ) {
+            return JSON.stringify({ open_issues: incomplete ? 1 : 0 });
+          }
+          if (
+            incomplete && args[0] === "api" &&
+            args[1]?.includes("issues?milestone=7&state=open")
+          ) {
+            return JSON.stringify([{
+              number: 6000,
+              title: "New work",
+              body: "",
+              user: { login: "owner" },
+            }]);
+          }
+          if (args[0] === "api" && args[1] === "repos/owner/repo/issues/5326") {
+            return JSON.stringify({
+              title: "Redact secret assignments",
+              state: "closed",
+              updated_at: "2026-10-20T00:00:00Z",
+              milestone,
+            });
+          }
+          if (
+            args[0] === "pr" && args[1] === "list" &&
+            args[args.indexOf("--head") + 1] === BRANCH_A
+          ) {
+            return JSON.stringify([live]);
+          }
+          if (args[0] === "pr" && args[1] === "view" && args[2] === "301") {
+            return JSON.stringify(live);
+          }
+          if (args[0] === "pr" && args[1] === "edit" && args[2] === "301") {
+            edits++;
+            live.body = redactGhBodyText(args[args.indexOf("--body") + 1]!);
+            return "";
+          }
+          return await inner(args);
+        },
+      });
+
+      await checkAndHandleMilestoneCompletions(deps);
+      assertEquals(edits, 1);
+      assertStringIncludes(live.body, "Part of #5326");
+      assertStringIncludes(
+        live.body,
+        '(now in milestone "secret redaction follow-ups")',
+      );
+
+      // The issue update timestamp stays fixed, isolating the note's input to
+      // the fingerprint from the cached classification.
+      milestone = { number: 100, title: "Later fixes" };
+      await checkAndHandleMilestoneCompletions(deps);
+      assertEquals(edits, 2);
+      assertStringIncludes(live.body, '(now in milestone "Later fixes")');
+      assertFalse(live.body.includes("secret redaction follow-ups"));
+      assertStringIncludes(live.body, "Part of #5326");
+
+      milestone = null;
+      await checkAndHandleMilestoneCompletions(deps);
+      assertEquals(edits, 3);
+      assertStringIncludes(live.body, "(no longer in a milestone)");
+      assertFalse(live.body.includes("Later fixes"));
+      assertStringIncludes(live.body, "Part of #5326");
+
+      await checkAndHandleMilestoneCompletions(deps);
+      assertEquals(edits, 3, "an unchanged note preserves the existing body");
+      assertEquals(
+        created,
+        [],
+        "refreshing the body creates no duplicate rollup",
+      );
+    });
+  });
+}
+
 function createMockDeps(
   overrides: Partial<MilestoneCompletionDeps> = {},
 ): MilestoneCompletionDeps {
@@ -514,7 +680,12 @@ Deno.test("fetchIssuesMovedOffBranch - returns closed issues that merged into th
     BRANCH_A,
     7,
     new Set([5327]),
-    movedOffGhFn(calls),
+    movedOffGhFn(calls, {
+      prList: JSON.stringify([
+        ...MOVED_PR_ROWS,
+        { ...MOVED_PR_ROWS[0], number: 68, headRefName: "adopted-fix" },
+      ]),
+    }),
   );
 
   assertEquals(moved, [
@@ -588,6 +759,87 @@ Deno.test("fetchIssuesMovedOffBranch - throws, and does not cache, an unreadable
   });
 });
 
+Deno.test("fetchIssuesMovedOffBranch - rejects malformed PR rows without caching a shortened delivery list (Issue #5458)", async () => {
+  const valid = MOVED_PR_ROWS[0]!;
+  for (
+    const [field, value] of [
+      ["number", undefined],
+      ["title", undefined],
+      ["headRefName", undefined],
+      ["isCrossRepository", undefined],
+      ["isCrossRepository", "false"],
+    ] as const
+  ) {
+    await withTempCache(async (cache) => {
+      await assertRejects(
+        () =>
+          fetchIssuesMovedOffBranch(
+            REPO,
+            BRANCH_A,
+            7,
+            new Set(),
+            movedOffGhFn([], {
+              prList: JSON.stringify([{ ...valid, [field]: value }]),
+            }),
+            cache,
+          ),
+        Error,
+        `malformed ${field}`,
+      );
+      const recovered = await fetchIssuesMovedOffBranch(
+        REPO,
+        BRANCH_A,
+        7,
+        new Set(),
+        movedOffGhFn([], { prList: JSON.stringify([valid]) }),
+        cache,
+      );
+      assertEquals(recovered.map((issue) => issue.number), [5326]);
+    });
+  }
+});
+
+Deno.test("fetchIssuesMovedOffBranch - distinguishes a missing milestone from an explicit null (Issue #5458)", async () => {
+  const valid = REST_ISSUES[5331] as Record<string, unknown>;
+  for (
+    const [field, value] of [
+      ["milestone", undefined],
+      ["milestone", { number: 99 }],
+      ["state", "unknown"],
+    ] as const
+  ) {
+    const options = {
+      prList: JSON.stringify([MOVED_PR_ROWS[6]]),
+      rest: { 5331: { ...valid, [field]: value } },
+    };
+    await assertRejects(
+      () =>
+        fetchIssuesMovedOffBranch(
+          REPO,
+          BRANCH_A,
+          7,
+          new Set(),
+          movedOffGhFn([], options),
+        ),
+      Error,
+      `malformed ${field}`,
+    );
+    const accepted = await fetchIssuesMovedOffBranch(
+      REPO,
+      BRANCH_A,
+      7,
+      new Set(),
+      movedOffGhFn([], { ...options, rest: { 5331: valid } }),
+    );
+    assertEquals(accepted, [{
+      number: 5331,
+      title: "Orphaned delivery",
+      updatedAt: "2026-10-22T00:00:00Z",
+      movedToMilestone: null,
+    }]);
+  }
+});
+
 Deno.test("fetchIssuesMovedOffBranch - serves the parsed merged-PR list from cache (Issue #5458)", async () => {
   await withTempCache(async (cache) => {
     const first: string[][] = [];
@@ -613,6 +865,18 @@ Deno.test("fetchIssuesMovedOffBranch - serves the parsed merged-PR list from cac
       cache,
     );
     assertEquals(prListCalls(second), 0, "the merged-PR list is cached");
+
+    const otherBranchCalls: string[][] = [];
+    const otherBranch = await fetchIssuesMovedOffBranch(
+      REPO,
+      BRANCH_B,
+      99,
+      new Set(),
+      movedOffGhFn(otherBranchCalls, { prList: "[]" }),
+      cache,
+    );
+    assertEquals(otherBranch, [], "A's deliveries must not leak into B's list");
+    assertEquals(prListCalls(otherBranchCalls), 1);
   });
 });
 

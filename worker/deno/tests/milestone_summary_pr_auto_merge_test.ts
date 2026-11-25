@@ -122,6 +122,13 @@ function scriptGh(
     if (key.includes("pr view") && key.includes("baseRefName")) {
       return Promise.resolve("main");
     }
+    // Branch-delivery discovery reads merged PRs, independently of open children.
+    if (
+      key.includes("pr list") && key.includes("--base") &&
+      args.includes("merged")
+    ) {
+      return Promise.resolve("[]");
+    }
     // Open PRs targeting the milestone branch (the gate's second read).
     if (key.includes("pr list") && key.includes("--base")) {
       return Promise.resolve(JSON.stringify(openChildPrs));
@@ -190,6 +197,7 @@ Deno.test("summary PR arming - open children withhold arming with no second comm
   assertEquals(result.ok, true);
 
   // The #3909 gate refuses, so `--auto` is never issued …
+  assertEquals(calls.some((c) => c.key.includes("pr create")), true);
   assertEquals(armingCalls(calls).length, 0);
   // … and the gate's own reason comment is the only one posted.
   const comments = commentCalls(calls);
