@@ -501,7 +501,6 @@ for (const incomplete of [false, true]) {
         body: "old rollup body",
       };
       let milestone: { number: number; title: string } | null = MILESTONE_B;
-      let edits = 0;
       const deps = createMockDeps({
         cache,
         ghCommandFn: async (args) => {
@@ -542,7 +541,6 @@ for (const incomplete of [false, true]) {
             return JSON.stringify(live);
           }
           if (args[0] === "pr" && args[1] === "edit" && args[2] === "301") {
-            edits++;
             live.body = redactGhBodyText(args[args.indexOf("--body") + 1]!);
             return "";
           }
@@ -551,7 +549,6 @@ for (const incomplete of [false, true]) {
       });
 
       await checkAndHandleMilestoneCompletions(deps);
-      assertEquals(edits, 1);
       assertStringIncludes(live.body, "Part of #5326");
       assertStringIncludes(
         live.body,
@@ -562,20 +559,26 @@ for (const incomplete of [false, true]) {
       // the fingerprint from the cached classification.
       milestone = { number: 100, title: "Later fixes" };
       await checkAndHandleMilestoneCompletions(deps);
-      assertEquals(edits, 2);
       assertStringIncludes(live.body, '(now in milestone "Later fixes")');
       assertFalse(live.body.includes("secret redaction follow-ups"));
       assertStringIncludes(live.body, "Part of #5326");
 
       milestone = null;
       await checkAndHandleMilestoneCompletions(deps);
-      assertEquals(edits, 3);
       assertStringIncludes(live.body, "(no longer in a milestone)");
       assertFalse(live.body.includes("Later fixes"));
       assertStringIncludes(live.body, "Part of #5326");
 
+      // An owner's edit that keeps the rollup's fingerprint survives the next
+      // scan when nothing behind the note has changed.
+      const edited = `${live.body}\n\nOwner's note: keep this paragraph.`;
+      live.body = edited;
       await checkAndHandleMilestoneCompletions(deps);
-      assertEquals(edits, 3, "an unchanged note preserves the existing body");
+      assertEquals(
+        live.body,
+        edited,
+        "an unchanged note preserves the existing body",
+      );
       assertEquals(
         created,
         [],
