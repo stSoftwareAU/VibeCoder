@@ -75,6 +75,11 @@ archived watchdog incident remains undiagnosed. Part of #5544.
 
 - Detector and reference-scan suites: 25 passed. Label-strip and shared
   reserved-label suites: 62 passed, using `deno task test:unit` sequentially.
+- Affected issue-worker, wiring, PR-feedback and CI-fix suites: 248 passed.
+  The first command exceeded its 90s bound; the same suites passed under a
+  600s bound. Formatting and lint passed for the three changed TypeScript
+  files. A type check including the large caller graphs exceeded 180s without
+  diagnostics; a check limited to changed files is still running.
 - Added tests are in
   `worker/deno/tests/escape_hatch_reference_scan_5544_test.ts` and
   `worker/deno/tests/escape_hatch_label_strip_test.ts`. Existing assertions were
@@ -94,4 +99,5 @@ archived watchdog incident remains undiagnosed. Part of #5544.
 ## Remaining risk
 
 The original watchdog cause is unverified. Private archive contents were not
-committed. No push or issue/PR lifecycle change was performed.
+committed. The full quality gate has not run yet. No push or issue/PR lifecycle
+change was performed.
