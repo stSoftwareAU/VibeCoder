@@ -16,7 +16,8 @@ export async function runGitOperationsCommand(
       PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
       ...denoCacheEnv(),
       ...NO_HOST_GIT_CONFIG,
-      HOME: workDir,
+      // Preserve Deno's default cache location when DENO_DIR is unset.
+      HOME: Deno.env.get("HOME") ?? workDir,
       TMPDIR: workDir,
       WORK_DIR: workDir,
     },

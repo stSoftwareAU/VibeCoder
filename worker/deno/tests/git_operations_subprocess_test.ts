@@ -20,7 +20,7 @@ for (const explicitAuditDir of [false, true]) {
           PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
           ...denoCacheEnv(),
           ...NO_HOST_GIT_CONFIG,
-          HOME: workDir,
+          HOME: Deno.env.get("HOME") ?? workDir,
           TMPDIR: workDir,
           WORK_DIR: workDir,
           ...(explicitAuditDir ? { VIBE_AUDIT_DIR: auditDir } : {}),

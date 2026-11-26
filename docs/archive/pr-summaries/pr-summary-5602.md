@@ -16,8 +16,8 @@ presync subprocess invocation through a shared test helper. Closes #5602.
 - `runGitOperationsCommand` passes the JSON request as an argv element and
   decodes the last stdout line as the command result. Non-zero child exits
   report both output streams.
-- The child clears inherited environment, shares the existing Deno cache and
-  PATH, and sets `NO_HOST_GIT_CONFIG`, HOME, TMPDIR and WORK_DIR explicitly.
+- The child clears inherited environment, retains HOME, PATH and the existing
+  Deno cache setting, and sets `NO_HOST_GIT_CONFIG`, TMPDIR and WORK_DIR explicitly.
   Command requests retain their Git config settings and production validation.
 - The two refusal tests remain in-process: their invalid env is refused before
   git runs. The success and push-failure cases use the isolated helper.
