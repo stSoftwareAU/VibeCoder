@@ -8,6 +8,7 @@ the deadline passes with the client still running, `run.sh` reads the guest's
 (default 120) below the elapsed time, the watchdog extends its deadline by the
 suspended time and keeps waiting. The total extension is at most one more
 watchdog deadline, so a guest that stays suspended is still reaped.
+
 Closes #5544.
 
 ## Spec
@@ -48,11 +49,11 @@ Closes #5544.
   host. It read them from command output that earlier GRQ-23 runs of this issue
   had quoted in their session transcripts in the shared `GRQ-VibeCoder-logs`
   mirror (`runs/GRQ-23/2026-11-26/`).
-- A GRQ-23 run at about 18:58 UTC on 26 November reached the same diagnosis
-  and a similar fix. Its branch failed the pre-push unit-test gate and was never
+- A GRQ-23 run at about 18:58 UTC on 26 November reached the same diagnosis and
+  a similar fix. Its branch failed the pre-push unit-test gate and was never
   pushed, so this PR re-implements it.
-- What suspended the VM is not known; host sleep on the macOS host is the
-  likely cause. It could not be checked from inside a container.
+- What suspended the VM is not known; host sleep on the macOS host is the likely
+  cause. It could not be checked from inside a container.
 
 ## Evidence
 
@@ -79,7 +80,7 @@ and records the cause in the #5544 section. The outer-watchdog item in
 - **symptom** — the launcher reaped container `vibe-coder-70601` at its 11400s
   deadline (`[run.sh] watchdog: vibe-coder-70601 is still running after 11400s
   - reaping it (Issue #4173)`), although the guest still answered and had been
-  up only 36 minutes.
+    up only 36 minutes.
 - **status** — `partial` — reason: the regression tests were observed failing
   against the base `run.sh` and passing after the fix, but the suspension is
   simulated by the stub runtime reporting a low guest uptime. No real VM was
@@ -102,10 +103,10 @@ and records the cause in the #5544 section. The outer-watchdog item in
     `run.sh - a guest whose uptime covers the elapsed time is reaped at the deadline (Issue #5544)`
     and
     `run.sh - a deadline shorter than the suspension minimum reaps without probing the guest (Issue #5544)`.
-    Both are reaped at 6s with no extension. The second runs on the default
-    120s minimum. Its title says "without probing", but it asserts the outcome
-    only, because the stub's exec log cannot tell this probe from the reaper's
-    own exec calls.
+    Both are reaped at 6s with no extension. The second runs on the default 120s
+    minimum. Its title says "without probing", but it asserts the outcome only,
+    because the stub's exec log cannot tell this probe from the reaper's own
+    exec calls.
 - No existing test was edited. Results:
   - the whole `run_sh_launcher_test.ts` passed: 128 passed, 0 failed;
   - `deno task test:unit` on the launcher-parity, container-watchdog,
@@ -123,7 +124,7 @@ and records the cause in the #5544 section. The outer-watchdog item in
 - The `resilience-and-concurrency.md` flowchart shows the deadline leading
   straight to the kill and does not show the extension step.
 - What suspended the VM was not identified. A slow image pull longer than 120s
-  before the guest boots would also be credited, but the one-deadline cap
-  bounds that.
+  before the guest boots would also be credited, but the one-deadline cap bounds
+  that.
 - No spec or standards reviewers ran, because the issue has no acceptance
   criteria. Not pushed: this pass did not assign the push.
