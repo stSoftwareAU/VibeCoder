@@ -108,11 +108,26 @@ or shutdown statement required replacement. Both changed production callers use
 
 ## Acceptance Criteria
 
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
 - **missing** — a container wedged and the launcher watchdog reaped it, so the
-  run never released its claim — reason: the archive contains claim-release and
-  strip-completion records but no stack or operation record identifying the
-  historical main-loop stall. The diagnostic gap is fixed; a cause-specific
-  wedge fix remains unverified.
+  run never released its claim — reviewer: missing — reason: the independent
+  Spec reviewer confirmed that the diff adds diagnostics without establishing
+  or repairing the historical wedge. The executor rechecked the matching facts
+  archive, rotated worker log and launcher log; both claims were recorded
+  released before the last main-loop liveness record, but the pending operation
+  remains unidentified. Pending-dependency tests release their promises before
+  asserting cleanup and do not prove recovery from a permanently wedged await.
+  No speculative recovery policy was added on this retry.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — The independent Standards reviewer checked phase-progress reuse,
+  preservation of results, errors and shutdown policy, retained test assertions,
+  deterministic pending-wait and cleanup checks, and documentation of diagnostic
+  scope and the unreproduced root cause. No code or test violation was found.
 
 ## Test Plan
 
@@ -147,6 +162,11 @@ or shutdown statement required replacement. Both changed production callers use
   `worker/deno/tests/run_core_callbacks_test.ts`,
   `worker/deno/tests/circuit_breaker_test.ts` and
   `worker/deno/tests/budget_pacing_test.ts`.
+- This retry reran the three changed test files with
+  `deno task test tests/phase_progress_test.ts tests/run_core_after_target_test.ts tests/subscription_allocation_3646_test.ts < /dev/null`
+  from `worker/deno`: 51 passed, zero failed. Production code and tests were
+  unchanged; no new reproduction or red check of the historical wedge is
+  claimed.
 - Targeted formatting, lint and type checks passed. The foreground command
   `timeout 900 ./quality.sh < /dev/null` returned
   `Result: PASSED (with skipped checks)`. Its unit-test stage passed in 678.2s;
@@ -154,9 +174,11 @@ or shutdown statement required replacement. Both changed production callers use
   formatting passed. Configuration integration was skipped with
   `deno or .config.json not available`; Checkov was skipped because the pinned
   binary/image was unavailable. No failed check remains.
-- `deno task pr-summary-check` with the actual issue body and labels passed:
-  zero blocked gates and zero not checked. The criteria/reviewer gates reported
-  not applicable because the issue states no acceptance-criteria heading.
+- This retry's `deno task pr-summary-check` with the actual issue body and
+  labels passed: zero blocked gates and zero not checked. Independent two-axis
+  review passed; acceptance-criteria closure reported not applicable because
+  the issue states no acceptance-criteria heading. The summary's own missing
+  criterion remains recorded above.
 - No new regex, persisted shape, destructive operation, failure ledger or
   privileged operation was introduced. The diagnostic labels contain
   worker-written names; no incident log text is added to the new records.
