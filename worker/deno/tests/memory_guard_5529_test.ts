@@ -954,3 +954,36 @@ Deno.test({
     }
   },
 });
+
+// ---------------------------------------------------------------------------
+// Worker-wide guard seams (Issue #5634)
+// ---------------------------------------------------------------------------
+
+Deno.test("memory_guard #5634 - excludePids stops a pid being chosen, and without it the pid is chosen", () => {
+  const base = {
+    reading: CRITICAL_READING,
+    rows: INCIDENT_ROWS,
+    agentPid: 100,
+    selfPid: 999_999,
+  };
+  assertEquals(selectMemoryGuardVictim(base)?.pid, 105);
+  assertEquals(
+    selectMemoryGuardVictim({ ...base, excludePids: [105] })?.pid,
+    106,
+  );
+});
+
+Deno.test("memory_guard #5634 - the worker scope names the worker, the default keeps the agent run text", () => {
+  const options = {
+    reading: CRITICAL_READING,
+    victim: INCIDENT_VICTIM,
+    floorBytes: memoryGuardFloorBytes(TOTAL_15_7_GIB),
+  };
+  const worker = formatMemoryGuardKill({ ...options, scope: "worker" });
+  assert(worker.startsWith("Guest memory critically low ("), worker);
+  assert(worker.includes("Issue #5634"), worker);
+  assert(!worker.includes("this agent run's tree"), worker);
+  const agentRun = formatMemoryGuardKill(options);
+  assert(agentRun.includes("this agent run's tree"), agentRun);
+  assert(agentRun.includes("(Issue #5529)"), agentRun);
+});

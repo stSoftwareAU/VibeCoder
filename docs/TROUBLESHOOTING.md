@@ -376,6 +376,17 @@ to the agent. Otherwise the worker logs `Memory guard left pid=… alone` and
 signals nothing, so a process re-parented away from the agent is never killed
 by the guard. Issue #5529.
 
+The worker also runs one worker-wide check every 5 seconds for its whole life
+(Issue #5634). Below the same floor it sends SIGKILL to the largest process (at
+least 256 MiB) in the worker's own process tree, never an agent CLI itself and
+never the worker, so a quality gate, merge check or other command run outside
+any agent run is covered too. It logs the same `Guest memory critically low`
+line, ending `(Issue #5634)`, or, once per low spell, a line saying no process
+qualified. The identity proof is the same as above: a process re-parented away
+from the worker (for example a backgrounded job whose shell exited) is still
+never killed. A process running as the separate `agent` account, which the worker
+cannot signal directly, is signalled through `sudo -n -u agent -- kill`.
+
 ### What a runtime-detection failure looks like
 
 With no supported runtime, the launcher exits non-zero **before** doing anything

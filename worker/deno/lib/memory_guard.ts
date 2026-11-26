@@ -85,6 +85,12 @@ export interface MemoryGuardVictimOptions {
   agentPid: number;
   /** The worker's own pid, never chosen. Defaults to `Deno.pid`. */
   selfPid?: number;
+  /**
+   * Further pids that are never chosen (Issue #5634). The worker-wide guard
+   * passes the live agent CLI pids, so it never kills an agent itself. Default
+   * empty.
+   */
+  excludePids?: readonly number[];
 }
 
 /**
@@ -92,8 +98,8 @@ export interface MemoryGuardVictimOptions {
  *
  * Undefined unless the reading is below the floor. Otherwise it is the
  * largest-RSS row whose live parent chain in `rows` reaches the agent, is not
- * the agent itself, is not the worker, and is at least
- * {@link MEMORY_GUARD_MIN_VICTIM_RSS_KB}.
+ * the agent itself, is not the worker, is not in `excludePids`, and is at
+ * least {@link MEMORY_GUARD_MIN_VICTIM_RSS_KB}.
  *
  * The descendant snapshot (Issue #4382) is deliberately not used here. A
  * snapshot pid with no live chain to the agent may have been reaped and
@@ -105,10 +111,12 @@ export function selectMemoryGuardVictim(
 ): ProcessRow | undefined {
   if (!isBelowMemoryGuardFloor(options.reading)) return undefined;
   const selfPid = options.selfPid ?? Deno.pid;
+  const excluded = new Set(options.excludePids ?? []);
   const inTree = agentTreeMembership(options.rows, options.agentPid, []);
   let victim: ProcessRow | undefined;
   for (const row of options.rows) {
     if (row.pid === options.agentPid || row.pid === selfPid) continue;
+    if (excluded.has(row.pid)) continue;
     if (row.rssKb < MEMORY_GUARD_MIN_VICTIM_RSS_KB) continue;
     if (!inTree(row)) continue;
     if (victim === undefined || row.rssKb > victim.rssKb) victim = row;
@@ -123,6 +131,11 @@ export interface MemoryGuardKillOptions {
   victim: ProcessRow;
   /** The floor the reading fell below, in bytes. */
   floorBytes: number;
+  /**
+   * Whose tree the victim was in: `"agent-run"` (default, Issue #5529) or
+   * `"worker"` (the worker-wide guard, Issue #5634).
+   */
+  scope?: "agent-run" | "worker";
 }
 
 /**
@@ -142,10 +155,15 @@ export function formatMemoryGuardKill(options: MemoryGuardKillOptions): string {
     ? `${victim.command.slice(0, KILL_LINE_COMMAND_CHARS - 1)}…`
     : victim.command;
   const rssMib = Math.round(victim.rssKb / 1024);
-  return `Guest memory critically low (${available} of ${total} available, ` +
-    `floor ${formatBytesShort(floorBytes)}) — killed pid=${victim.pid} ` +
-    `rss=${rssMib} MiB ${command}, the largest process in this agent run's ` +
-    `tree, so the guest does not wedge (Issue #5529)`;
+  const head = `Guest memory critically low (${available} of ${total} ` +
+    `available, floor ${formatBytesShort(floorBytes)}) — killed ` +
+    `pid=${victim.pid} rss=${rssMib} MiB ${command}`;
+  if (options.scope === "worker") {
+    return `${head}, the largest process the worker started, so the guest ` +
+      `does not wedge (Issue #5634)`;
+  }
+  return `${head}, the largest process in this agent run's tree, so the ` +
+    `guest does not wedge (Issue #5529)`;
 }
 
 /** Injectable seams for {@link killMemoryGuardVictim}. */
@@ -154,8 +172,12 @@ export interface MemoryGuardKillDeps {
   readStartTime?: (pid: number) => Promise<string>;
   /** `ps -eo pid,ppid,rss,etime,args`, re-read to prove tree membership. */
   runPs: () => Promise<string>;
-  /** The SIGKILL itself. May throw; the caller logs the failure. */
-  kill: (pid: number) => void;
+  /**
+   * The SIGKILL itself, awaited when it returns a promise (Issue #5634: a
+   * process of another account is signalled through `sudo`). May throw or
+   * reject; the caller logs the failure.
+   */
+  kill: (pid: number) => void | Promise<void>;
 }
 
 /** Inputs for {@link killMemoryGuardVictim}. */
@@ -188,7 +210,7 @@ export type MemoryGuardKillOutcome =
  * tree, and an agent whose start time still matches its spawn fingerprint is
  * still our child. Anything unproven is left alone, never signalled.
  *
- * A `runPs` or `kill` that throws propagates, so the caller can log it.
+ * A `runPs` or `kill` that throws or rejects propagates, so the caller can log it.
  */
 export async function killMemoryGuardVictim(
   options: KillMemoryGuardVictimOptions,
@@ -197,7 +219,10 @@ export async function killMemoryGuardVictim(
   const { victim, agentPid, agentIdentity } = options;
   const readStartTime = deps.readStartTime ?? getStartTime;
   if (agentIdentity === null) {
-    return { killed: false, reason: "the agent could not be fingerprinted" };
+    return {
+      killed: false,
+      reason: "the root of the tree could not be fingerprinted",
+    };
   }
   const identity = await captureProcessIdentity(victim.pid, readStartTime);
   if (identity === null) {
@@ -209,14 +234,13 @@ export async function killMemoryGuardVictim(
   if (row === undefined || row.pid === agentPid || !inTree(row)) {
     return {
       killed: false,
-      reason: "the re-read process table does not place it in this agent " +
-        "run's tree",
+      reason: "the re-read process table does not place it in the tree",
     };
   }
   if (!(await isSameProcess(agentIdentity, readStartTime))) {
     return {
       killed: false,
-      reason: "the agent's pid no longer holds the agent",
+      reason: "the root pid no longer holds the process it held",
     };
   }
   if (!(await isSameProcess(identity, readStartTime))) {
@@ -225,6 +249,6 @@ export async function killMemoryGuardVictim(
       reason: "the pid changed hands between selection and the kill",
     };
   }
-  deps.kill(victim.pid);
+  await deps.kill(victim.pid);
   return { killed: true };
 }

@@ -13,6 +13,10 @@ import { setRunProviderOverride } from "../lib/agent_provider.ts";
 import { createDefaultRunCoreConfig, runCoreLoop } from "../lib/run_core.ts";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
 import { armGuestMemoryFloor } from "../lib/guest_memory_floor.ts";
+import {
+  productionWorkerMemoryGuardDeps,
+  startWorkerMemoryGuard,
+} from "../lib/worker_memory_guard.ts";
 import { enableInFlightHostDiskGate } from "../lib/heavy_build_gate.ts";
 import type { RootFilesystemFault } from "../lib/root_filesystem_fault.ts";
 import { formatStartupBuildLines } from "../lib/repair_base_merge_4943.ts";
@@ -154,11 +158,21 @@ export const runCoreCommand: Command = {
       });
       // Armed here, not inside the deps factory: unit tests build those deps
       // and must not park every other test's agent (Issue #4360). The guest
-      // memory floor is armed the same way (Issue #4815).
+      // memory floor is armed the same way (Issue #4815). So is the worker-wide
+      // memory guard, which watches the worker's whole process tree and is
+      // stopped when the loop ends (Issue #5634).
       enableInFlightHostDiskGate(true);
       armGuestMemoryFloor(true);
+      const stopWorkerMemoryGuard = startWorkerMemoryGuard(
+        productionWorkerMemoryGuardDeps(deps.logWarn ?? deps.log),
+      );
 
-      const result = await runCoreLoop(coreConfig, deps);
+      let result: Awaited<ReturnType<typeof runCoreLoop>>;
+      try {
+        result = await runCoreLoop(coreConfig, deps);
+      } finally {
+        stopWorkerMemoryGuard();
+      }
 
       return {
         // Issue #563: a fatal error is a failed run whatever else is true of
