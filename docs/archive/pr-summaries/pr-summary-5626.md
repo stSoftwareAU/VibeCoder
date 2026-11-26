@@ -143,6 +143,11 @@ flowchart TD
   gave `94 passed | 0 failed`. `deno fmt --check`, `deno lint` and `deno check`
   on the changed TypeScript are clean, and `bash -n container/entrypoint.sh`
   passes.
+- `./quality.sh < /dev/null` on the head gave exit 0 and
+  `Result: PASSED (with skipped checks)`. The gate itself skipped two stages:
+  config integration (no `.config.json` in this checkout) and Checkov (no
+  checkov on this host; the CI Checkov job still runs).
+  `deno task pr-summary-check` reported 0 gates blocked and 0 not checked.
 
 ### Not done or not checked
 
