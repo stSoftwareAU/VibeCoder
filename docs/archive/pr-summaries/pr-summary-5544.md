@@ -110,7 +110,12 @@ flowchart TD
   independent Spec reviewer checked the incident archive and matching launcher
   log. Both record claim release and completed strips, but neither identifies
   the original main-loop stall. The narrower reproduced defects do not establish
-  that watchdog cause.
+  that watchdog cause. The final retry rechecked this without changing code. At
+  default configuration the base end-of-cycle sleep is at most three times a
+  jittered 375s, about 19 minutes, and the breaker backoff is capped at 300s
+  before jitter. Even the unpatched sleep therefore cannot account alone for 66
+  minutes without a completion line. The incident archive is not on the retry's
+  host, so the pending await is still unidentified.
 
 ## Standards Review
 
