@@ -41,7 +41,7 @@ missing-wiring finding. Closes #5559.
 flowchart LR
     A[Regular workflow candidate] --> B{Stat size over 1 MiB?}
     B -- yes --> C[Report skipped filename]
-    C --> D[AWS wiring unknown]
+    C --> D[Skipped workflow wiring unknown]
     B -- no --> E[Read and parse YAML]
     E -- parse failure --> C
     E -- parsed --> F[Assess readable workflow]
@@ -67,6 +67,13 @@ flowchart LR
   `worker/deno/tests/language_validity_gate_test.ts` regressions: **472 passed,
   0 failed** after the fix. The loader regression was observed red before it.
 - Targeted `deno fmt --check`, `deno lint` and frozen `deno check`: passed.
+- `timeout 1200 ./quality.sh < /dev/null`: **passed with skipped checks**.
+  Deno unit tests (parallel and serial), lint, type checking, formatting,
+  completeness, Mermaid, Markdown, Semgrep and gitleaks passed.
+- Workflow-size corpus audit at base and head: 15 files on each, largest
+  39,945 bytes; none exceeded the cap. No invocation matcher changed.
+- `deno task pr-summary-check --base origin/main` with the fetched issue body
+  and labels: passed, zero blocked and zero unchecked gates.
 - No existing test assertions were removed or changed. No duplicate workflow
   loader or twinned workflow-size rule was found; existing callers retain the
   shared loader.
@@ -78,4 +85,8 @@ CI and independent code review have not been observed in this run.
 ## Remaining limitations
 
 The stat-before-read check does not bound a file that grows after the stat.
-No memory-exhaustion benchmark or concurrent-growth test was run.
+The full gate skipped configuration integration because local configuration
+was unavailable, and Checkov because neither its pinned binary nor container
+image was available. Its unit-test runner excludes integration suites.
+No memory-exhaustion benchmark or concurrent-growth test was run. This executor
+was not assigned a push and did not push.
