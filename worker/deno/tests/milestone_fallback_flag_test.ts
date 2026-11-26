@@ -17,6 +17,7 @@ import type { Result } from "../types.ts";
 import {
   describeConflictAnalyses,
   describeFallbackAction,
+  failedAttemptDetails,
   fallbackRun,
   fileFallbackFlag,
   readBehindSince,
@@ -25,7 +26,11 @@ import type {
   MergeFallbackFiling,
   MergeFallbackOutcome,
 } from "../lib/merge_fallback_issue.ts";
-import type { FileAnalysis } from "../lib/milestone_conflict_triage.ts";
+import {
+  type FileAnalysis,
+  MilestoneConflictEscalation,
+} from "../lib/milestone_conflict_triage.ts";
+import { mergeGateFailureError } from "../lib/milestone_merge_gate.ts";
 import type { ConflictAttemptRecord } from "../lib/milestone_sync_streak.ts";
 
 const REPO = "owner/repo";
@@ -103,6 +108,66 @@ Deno.test("describeConflictAnalyses - each half stands alone, and nothing at all
 
   // An error naming no file at all renders as nothing, not as bare headings.
   assertEquals(describeConflictAnalyses({ analyses: [], resolved: [] }), "");
+});
+
+Deno.test("failedAttemptDetails - a plain error carries nothing to the ledger (Issue #5595)", () => {
+  assertEquals(failedAttemptDetails(new Error("x")), {});
+});
+
+Deno.test("failedAttemptDetails - a conflict escalation still carries its timings and analyses (Issue #5595)", () => {
+  const timings = "Timings (host `mel-01`): agent 20s";
+  const escalation = new MilestoneConflictEscalation(
+    "every rung left it undecided",
+    [analysis("lib/a.ts", "agent: both sides rewrote the loop")],
+    [],
+    "d".repeat(40),
+    undefined,
+    undefined,
+    timings,
+  );
+  assertEquals(failedAttemptDetails(escalation), {
+    timings,
+    analysis: describeConflictAnalyses(escalation),
+  });
+
+  const untimed = new MilestoneConflictEscalation(
+    "every rung left it undecided",
+    [analysis("lib/a.ts", "agent: undecided")],
+    [],
+    "d".repeat(40),
+  );
+  assertEquals(failedAttemptDetails(untimed), {
+    analysis: describeConflictAnalyses(untimed),
+  });
+});
+
+Deno.test("failedAttemptDetails - a clean-merge gate refusal carries its timings and repair outcome (Issue #5595)", () => {
+  const err = mergeGateFailureError("milestone/1", "main", {
+    status: "failed",
+    cause: "tree-check-failed",
+    detail: "deno task check failed (exit 1)",
+    output: "",
+  });
+  err.timings = "Timings (host `mel-01`): agent 20s";
+  err.repairOutcome =
+    "Gate repair: 2 round(s) ran and the check still refused the merged tree.";
+  assertEquals(failedAttemptDetails(err), {
+    timings: "Timings (host `mel-01`): agent 20s",
+    analysis:
+      "Gate repair: 2 round(s) ran and the check still refused the merged tree.",
+  });
+});
+
+Deno.test("failedAttemptDetails - a whitespace-only merge-gate field is dropped (Issue #5595)", () => {
+  const err = mergeGateFailureError("milestone/1", "main", {
+    status: "failed",
+    cause: "tree-check-failed",
+    detail: "deno task check failed (exit 1)",
+    output: "",
+  });
+  err.timings = "  \n";
+  err.repairOutcome = "\t ";
+  assertEquals(failedAttemptDetails(err), {});
 });
 
 Deno.test("fallbackRun - carries the conclusion, the host, the timings and the account (Issue #2311)", () => {
