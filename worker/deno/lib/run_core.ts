@@ -18,6 +18,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { withPhaseProgress } from "./phase_progress.ts";
 import { configuredProviderFallbackPolicy } from "./provider_fallback_policy.ts";
 import {
   type DeferredSweep,
@@ -6252,6 +6253,14 @@ export async function runCoreLoop(
   // threw, the circuit-breaker branch, a rate-limit pause) skips nothing.
   let budgetInReserve = false;
 
+  // Name waits after the liveness tick separately from concurrently finishing slots.
+  const cycleEndStep = <T>(step: string, work: () => Promise<T>): Promise<T> =>
+    withPhaseProgress({
+      label: `cycle_end_${step}`,
+      log: (message) => deps.log(message),
+      now: deps.now,
+    }, work);
+
   const fireCycleCallback = (reason: CycleEndReason): Promise<void> => {
     const finishedAt = deps.now();
     return dispatchCycleCallback(deps, {
@@ -6314,7 +6323,10 @@ export async function runCoreLoop(
     if (!deps.readGraphqlQuota) return baseSleepSeconds;
     let reading: { limit: number; remaining: number; reset: number } | null;
     try {
-      reading = await deps.readGraphqlQuota();
+      reading = await cycleEndStep(
+        "quota_probe",
+        () => deps.readGraphqlQuota!(),
+      );
     } catch (error) {
       warnOf(deps)(
         `budget-pacing: the GraphQL quota probe threw, so the fixed ` +
@@ -7591,10 +7603,16 @@ export async function runCoreLoop(
           }
 
           // --- End-of-cycle sleep ---
-          await fireCycleCallback("no_eligible_work");
+          await cycleEndStep(
+            "callback",
+            () => fireCycleCallback("no_eligible_work"),
+          );
           let cycleSleepSeconds: number;
           if (tracker.scanHadSuccess) {
-            await deps.circuitBreakerReset();
+            await cycleEndStep(
+              "breaker_reset",
+              () => deps.circuitBreakerReset(),
+            );
             const jitteredSleep = sleepWithJitter(config.sleepInterval);
             // Issue #2447: pace the sleep by the GraphQL budget left in the
             // window. When the account spent more last cycle than the
@@ -7605,17 +7623,24 @@ export async function runCoreLoop(
               jitteredSleep,
             );
           } else {
-            await deps.circuitBreakerRecordZeroProgress();
-            const backoffInterval = await deps.circuitBreakerGetSleepInterval();
+            await cycleEndStep(
+              "breaker_record",
+              () => deps.circuitBreakerRecordZeroProgress(),
+            );
+            const backoffInterval = await cycleEndStep(
+              "breaker_interval",
+              () => deps.circuitBreakerGetSleepInterval(),
+            );
             cycleSleepSeconds = sleepWithJitter(backoffInterval);
           }
           // Pace another cycle, never delay an exit whose deadline already passed.
           const cycleRunwayMs = endTime - deps.now();
           if (!shutdownRequested && cycleRunwayMs > 0) {
-            await deps.sleep(
-              Math.min(cycleSleepSeconds * 1000, cycleRunwayMs),
-              cycleSleepAbort.signal,
-            );
+            await cycleEndStep("sleep", () =>
+              deps.sleep(
+                Math.min(cycleSleepSeconds * 1000, cycleRunwayMs),
+                cycleSleepAbort.signal,
+              ));
           } else {
             deps.log(
               `End-of-cycle sleep skipped — ${
@@ -7631,7 +7656,10 @@ export async function runCoreLoop(
           // against the census's reason. The reason is retained so the
           // run's trailing segment is attributed, not left `unknown`.
           if (tracker.foundClaimableIssue) fleetIdleReason = "served";
-          await emitFleetSummary(fleetIdleReason);
+          await cycleEndStep(
+            "summary",
+            () => emitFleetSummary(fleetIdleReason),
+          );
 
           // Issue #2427: the resume skip applies once. After a full sweep
           // completes, subsequent iterations dispatch from Priority 1.

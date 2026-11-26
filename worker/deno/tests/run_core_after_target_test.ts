@@ -589,7 +589,11 @@ Deno.test(
  * visible before shutdown and cleanup changes it, so completion proves more
  * than invoking a cleanup stub. The fake clock controls every cycle sleep.
  */
-function startShutdownRun(progressed: boolean, livenessAt: number) {
+function startShutdownRun(
+  progressed: boolean,
+  livenessAt: number,
+  overrides: Partial<RunCoreDeps> = {},
+) {
   const clock = fakeClock(START_MS);
   const signals = new Map<string, () => void>();
   const processes = new Set([7319]);
@@ -633,6 +637,7 @@ function startShutdownRun(progressed: boolean, livenessAt: number) {
       atLiveness.resolve();
       await continueCycle.promise;
     },
+    ...overrides,
   });
   const run = runCoreLoop(config, deps).then((result) => {
     completed = { at: clock.now(), result };
@@ -781,3 +786,135 @@ for (const signalName of ["SIGTERM", "SIGINT"] as const) {
     }
   });
 }
+
+const cycleEndWaits = [
+  { step: "callback", dep: "runCycleCallback", progressed: false },
+  { step: "breaker_reset", dep: "circuitBreakerReset", progressed: true },
+  {
+    step: "breaker_record",
+    dep: "circuitBreakerRecordZeroProgress",
+    progressed: false,
+  },
+  {
+    step: "breaker_interval",
+    dep: "circuitBreakerGetSleepInterval",
+    progressed: false,
+  },
+  { step: "quota_probe", dep: "readGraphqlQuota", progressed: true },
+  { step: "summary", dep: "writeFleetTelemetrySummary", progressed: false },
+] as const;
+
+for (const { step, dep, progressed } of cycleEndWaits) {
+  for (const signalled of [false, true]) {
+    Deno.test(`run_core - pending ${step} is identifiable after liveness, shutdown=${signalled} (Issue #5544)`, async () => {
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const wait = async () => {
+        entered.resolve();
+        await release.promise;
+      };
+      const overrides: Partial<RunCoreDeps> = dep === "readGraphqlQuota"
+        ? {
+          readGraphqlQuota: async () => {
+            await wait();
+            return { limit: 5000, remaining: 1353, reset: 1795512695 };
+          },
+        }
+        : dep === "circuitBreakerGetSleepInterval"
+        ? {
+          circuitBreakerGetSleepInterval: async () => {
+            await wait();
+            return 30;
+          },
+        }
+        : { [dep]: wait };
+      const fixture = startShutdownRun(progressed, TARGET_MS, overrides);
+      const phase = `[phase] cycle_end_${step}:`;
+      try {
+        await fixture.ready;
+        fixture.resume();
+        await entered.promise;
+        assertEquals(fixture.state(), LIVE_SHUTDOWN_STATE);
+        assertEquals(fixture.completion(), undefined);
+        assertEquals(
+          fixture.logs.filter((line) => line.startsWith(phase)),
+          [`${phase} started`],
+          "the pending main-loop operation is named before it settles",
+        );
+        if (signalled) fixture.signal("SIGTERM");
+        release.resolve();
+        await fixture.cycleSettledOrSleeping();
+        assertShutdownCompleted(fixture, TARGET_MS, signalled);
+        assertEquals(
+          fixture.logs.filter((line) => line.startsWith(phase)),
+          [`${phase} started`, `${phase} completed in 0s`],
+        );
+      } finally {
+        release.resolve();
+        await fixture.dispose();
+      }
+    });
+  }
+}
+
+Deno.test("run_core - cycle callback fault remains reported and cleanup completes (Issue #5544)", async () => {
+  const fixture = startShutdownRun(false, TARGET_MS, {
+    runCycleCallback: () =>
+      Promise.reject(new Error("hook context unavailable")),
+  });
+  try {
+    await fixture.ready;
+    fixture.resume();
+    await fixture.cycleSettledOrSleeping();
+    assertEquals(fixture.state(), RELEASED_SHUTDOWN_STATE);
+    assertEquals(fixture.completion()?.result.fatalError, false);
+    assertEquals(
+      fixture.completion()?.result.exitReason,
+      "Run duration expired",
+    );
+    assertEquals(fixture.errors, [
+      "Cycle callback faulted: hook context unavailable. The scan cycle's own outcome is unchanged.",
+    ]);
+    assertEquals(
+      fixture.logs.filter((line) =>
+        line.startsWith("[phase] cycle_end_callback:")
+      ),
+      [
+        "[phase] cycle_end_callback: started",
+        "[phase] cycle_end_callback: completed in 0s",
+      ],
+    );
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+Deno.test("run_core - admitted sleep identifies its wait and settlement on shutdown (Issue #5544)", async () => {
+  const fixture = startShutdownRun(false, TARGET_MS - 1000);
+  try {
+    await fixture.ready;
+    fixture.resume();
+    await fixture.cycleSettledOrSleeping();
+    assertEquals(fixture.completion(), undefined);
+    assertEquals(
+      fixture.logs.filter((line) =>
+        line.startsWith("[phase] cycle_end_sleep:")
+      ),
+      ["[phase] cycle_end_sleep: started"],
+    );
+    fixture.signal("SIGINT");
+    await flushShutdownPromises(fixture.clock);
+    assertShutdownCompleted(fixture, TARGET_MS - 1000, true);
+    assertEquals(
+      fixture.logs.filter((line) =>
+        line.startsWith("[phase] cycle_end_sleep:")
+      ),
+      [
+        "[phase] cycle_end_sleep: started",
+        "[phase] cycle_end_sleep: completed in 0s",
+      ],
+    );
+  } finally {
+    await fixture.dispose();
+  }
+});

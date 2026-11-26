@@ -88,3 +88,19 @@ export function startPhaseProgress(
     },
   };
 }
+
+/** Report a wait's progress, retaining its result or rejection and stopping its ticker. */
+export async function withPhaseProgress<T>(
+  options: PhaseProgressOptions,
+  work: () => Promise<T>,
+): Promise<T> {
+  const progress = startPhaseProgress(options);
+  try {
+    const result = await work();
+    progress.done();
+    return result;
+  } catch (error) {
+    progress.done("threw");
+    throw error;
+  }
+}

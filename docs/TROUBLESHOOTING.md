@@ -286,6 +286,33 @@ When a signal-driven exit reaches normal completion reporting, it logs
 `Shutdown signal received. Exiting for refresh.` instead of reporting that the
 run duration expired.
 
+After the end-of-cycle liveness check, `[phase] cycle_end_<step>:` lines
+identify the main loop's waits (Issue #5544). They use the existing phase
+progress ticker: `started`, a `still running` line about once a minute while
+pending, and `completed` or `threw` with elapsed time when the wait settles.
+The ticker stops on settlement; it does not time out or cancel the work.
+
+| Step | Wait identified |
+| --- | --- |
+| `callback` | Final cycle callback dispatch, including allocation refresh before the optional hook |
+| `allocation_refresh` | Production cycle callback's subscription-allocation refresh (a no-op when automatic routing is disabled) |
+| `breaker_reset` | Circuit-breaker reset after a cycle with progress |
+| `breaker_record` | Zero-progress circuit-breaker accounting |
+| `breaker_interval` | Reading the zero-progress backoff interval |
+| `quota_probe` | GraphQL quota read for pacing a cycle with progress, when that reader is supplied |
+| `sleep` | Admitted end-of-cycle sleep, capped and interruptible as described above |
+| `summary` | End-of-cycle fleet summary, including its telemetry write |
+
+Read each start together with its settlement line and any nested allocation
+or `Running cycle callback` lines. A `completed` dispatch can include a handled
+hook or telemetry fault; the associated failure line remains authoritative.
+These records distinguish a pending main-loop wait from later slot activity;
+they do not change the report's last-phase signature into a stack trace.
+The archived GRQ-23 run `vibe-mwud88ss-874459` predates these records: its
+09:24:53 UTC liveness line on 24 November 2026 is followed by slot tails, with
+no record identifying the main loop's pending await. Both recorded follow-up
+label strips completed. The historical cause remains unverified.
+
 A setup phase still running after 30 minutes for the clone, git, stream
 compaction and pre-setup command is abandoned (Issue #5128). A milestone issue adds two
 agent budgets (`claude_timeout`, for the milestone pre-sync agent and its repair
