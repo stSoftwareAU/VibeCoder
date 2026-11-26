@@ -195,16 +195,16 @@ flowchart TD
   unknown.
 - This run's pre-push gate then failed
   `runClaudeWithRetry - enableModelFallback:false gives up with no downgrade for a phase-resolved fable (Issue #2735)`
-  in `worker/deno/tests/claude_runner_model_unavailable_fallback_test.ts`.
-  That file's runs named no `workDir`, so the runner read its cooldown and
-  limit signals from the host's `WORK_DIR`, where the live worker had just
-  recorded a Fable usage cooldown. Run directly with that `WORK_DIR`, 16 of 16
-  concurrent runs of the file failed (the fallback cases recorded `["opus"]`
-  instead of `["fable", "opus"]`). Each run now passes the stub's own temporary
-  directory as `workDir`, and the same 16 concurrent runs pass, as does
-  `deno task test:unit` on the file (5 passed). The `false` case's own
-  assertion failure was not observed locally; it reads the same host signal
-  directory, which the fix isolates.
+  in `worker/deno/tests/claude_runner_model_unavailable_fallback_test.ts`. That
+  file's runs named no `workDir`, so the runner read its cooldown and limit
+  signals from the host's `WORK_DIR`, where the live worker had just recorded a
+  Fable usage cooldown. Run directly with that `WORK_DIR`, 16 of 16 concurrent
+  runs of the file failed (the fallback cases recorded `["opus"]` instead of
+  `["fable", "opus"]`). Each run now passes the stub's own temporary directory
+  as `workDir`, and the same 16 concurrent runs pass, as does
+  `deno task test:unit` on the file (5 passed). The `false` case's own assertion
+  failure was not observed locally; it reads the same host signal directory,
+  which the fix isolates.
 - `timeout 2400 ./quality.sh < /dev/null` on the branch head gave
   `Result: PASSED (with skipped checks)`. Configuration integration was skipped
   (`deno or .config.json not available`), and Checkov was skipped because
