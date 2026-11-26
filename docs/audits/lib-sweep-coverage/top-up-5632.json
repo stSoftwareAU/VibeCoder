@@ -1,0 +1,13 @@
+{
+  "issue": 5632,
+  "chunk": "top-up-5632",
+  "title": "Duplicated-knowledge scan checkpoints and batch review",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5632",
+  "definition": "Review fleet authorship and retry accounting in duplicate_scan_checkpoint.ts and commit-scoped batch resumption in duplicate_scan_review.ts.",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/duplicate_scan_checkpoint.ts",
+    "worker/deno/lib/duplicate_scan_review.ts"
+  ],
+  "sweptAt": "7a8b192b8975e182267e552d5301af9f4bf1383f"
+}

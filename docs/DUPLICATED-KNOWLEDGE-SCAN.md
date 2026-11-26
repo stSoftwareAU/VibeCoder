@@ -153,3 +153,22 @@ only until the next scan re-detects it, so prefer the in-source suppression when
 the duplication is deliberate — and, better still, write the reason down as a
 project convention, which Phase 0 then honours across every judgement-bearing
 scan.
+
+## Interrupted scans
+
+Discovery and model calls use the target checkout. The fleet records the host and
+stage on the wrapper and refreshes its claim while it works. Discovery yields
+to heartbeat timers while comparing blocks. Review proceeds five candidates
+at a time. A completed batch stores the retained indexes. On the same commit a
+replacement worker skips that batch, including candidates it rejected. The
+final pass searches for missed rules, ranks findings together, and accounts for
+issues already filed for this wrapper.
+
+Two distinct recovered assignments with no intervening scan checkpoint also
+park the wrapper, covering a worker that disappears during startup.
+
+Each interrupted stage gets one automatic retry. At the next pickup, two
+unfinished starts for the same stage park the wrapper with `needs-human` before
+another model call. Inspect worker logs for checkout or discovery failures.
+For repeated review failures, split the remaining scope. To resume a parked
+wrapper after remediation, remove `needs-human` and restore its work priority.

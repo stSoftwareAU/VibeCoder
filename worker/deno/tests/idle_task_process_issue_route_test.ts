@@ -827,3 +827,28 @@ Deno.test("routed idle-task outcome reports agent_not_invoked when the template 
     telemetryAbsentReason: "agent_not_invoked",
   });
 });
+
+Deno.test("duplicate scan refuses paid work when its claim cannot refresh", async () => {
+  let scanCalls = 0;
+  const comments: string[] = [];
+  const outcome = await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
+    logger: makeLogger().logger,
+    findTemplateFn: () => fakeTemplate("duplicated-knowledge"),
+    claimRouteFn: okClaim,
+    ghCommandFn: async (args) => {
+      if (args.includes("--slurp")) return "[]";
+      comments.push(args.at(-1)!);
+      return "";
+    },
+    ensureCloneFn: () => {
+      throw new Error("unexpected clone");
+    },
+    handleIdleTaskFn: async () => {
+      scanCalls++;
+      return { handled: true, ok: true };
+    },
+  });
+  assertEquals(outcome, { routed: true, success: false });
+  assertEquals(scanCalls, 0);
+  assert(comments.some((c) => c.includes("The claim heartbeat did not start")));
+});

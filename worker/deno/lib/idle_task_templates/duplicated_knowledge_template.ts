@@ -47,7 +47,19 @@ import {
   registerTemplate,
 } from "../idle_task_template.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
-import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
+import { isFleetAuthor } from "../fleet_authors.ts";
+import { repoCheckoutPath } from "../repo_checkout_path.ts";
+import { runGitCommandChecked } from "../git_timeout.ts";
+import {
+  DUPLICATED_KNOWLEDGE_ISSUE_TITLE,
+  type DuplicateScanJournal,
+  openDuplicateScanJournal,
+} from "../duplicate_scan_checkpoint.ts";
+import { reviewDuplicateCandidates } from "../duplicate_scan_review.ts";
+import {
+  type AlertDedupAuthorOptions,
+  resolveAlertDedupAuthors,
+} from "../alert_dedup_authors.ts";
 import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
 import {
@@ -60,7 +72,11 @@ import {
   renderOpenIssueTitles,
 } from "../idle_task_snapshot.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
-import { runIdleTaskClaude } from "../idle_task_claude_budget.ts";
+import {
+  getIdleTaskRunContext,
+  resolveIdleTaskClaimRunway,
+  runIdleTaskClaude,
+} from "../idle_task_claude_budget.ts";
 import { RUN_ID_ENV_VAR } from "../run_id.ts";
 import { buildAttributionFooter } from "../idle_task_attribution.ts";
 import {
@@ -85,8 +101,7 @@ const DESCRIPTION =
 export const DUPLICATED_KNOWLEDGE_LABEL = "duplicated-knowledge";
 
 /** Static wrapper title — dispatch matches against this string. */
-export const DUPLICATED_KNOWLEDGE_ISSUE_TITLE =
-  "Run a duplicated-knowledge scan";
+export { DUPLICATED_KNOWLEDGE_ISSUE_TITLE };
 
 /** Colour for the `duplicated-knowledge` label (matches the prompt seed). */
 export const DUPLICATED_KNOWLEDGE_LABEL_COLOUR = "1D76DB";
@@ -144,11 +159,14 @@ export interface DuplicatedKnowledgeTemplateDeps {
    * Claude exited cleanly; the caller verifies the outcome by diffing the
    * snapshot.
    */
-  runScanFn?: (opts: RunScanOptions) => Promise<Result<true, ScanError>>;
+  runScanFn?: (
+    opts: RunScanOptions,
+  ) => Promise<Result<true | number[], ScanError>>;
 }
 
 /** Inputs to a duplicated-knowledge Claude run. */
 export interface RunScanOptions {
+  issueNumber: number;
   repo: string;
   workDir: string;
   /** Stable ids already open as `duplicated-knowledge` issues — skip-list. */
@@ -258,7 +276,19 @@ export function renderDuplicatedKnowledgeSummary(
 async function defaultRunScan(
   opts: RunScanOptions,
   loadPromptFn: (name: string) => Promise<Result<string>>,
-): Promise<Result<true, ScanError>> {
+  journal: DuplicateScanJournal,
+  authors: string[],
+  gh: (args: string[]) => Promise<string>,
+): Promise<Result<true | number[], ScanError>> {
+  const revision = await runGitCommandChecked(
+    ["rev-parse", "--verify", "HEAD"],
+    { cwd: opts.workDir },
+  );
+  if (!revision.ok) throw revision.error;
+  const commit = revision.value.trim();
+  if (!/^[a-f0-9]{40,64}$/.test(commit)) {
+    throw new Error("Invalid checkout revision");
+  }
   const promptResult = await loadPromptFn(PROMPT_NAME);
   if (!promptResult.ok) {
     return {
@@ -267,24 +297,64 @@ async function defaultRunScan(
     };
   }
 
-  // Deterministic pre-pass over the cloned repo. Best-effort: any failure
-  // yields the `(none)` sentinel and the scan still self-drives on its
-  // language-agnostic path. The pre-pass narrows the search; it never
-  // stands in for the knowledge-vs-text judgement.
-  let duplicateBlocks = "(none)";
-  try {
-    const blocks = await findDuplicateBlocks({ workDir: opts.workDir });
-    duplicateBlocks = renderDuplicateBlocks(blocks);
-  } catch {
-    // best-effort — leave the (none) sentinel
+  const wrapperMarker = `<!-- duplicate-scan-wrapper:${opts.issueNumber} -->`;
+  // Count partial filing even when a later retry runs on another host or
+  // commit, or a maintainer has already closed one of the findings.
+  async function filedByWrapper(): Promise<number[]> {
+    const raw = await gh([
+      "api",
+      "--method",
+      "GET",
+      "--paginate",
+      "--slurp",
+      `repos/${opts.repo}/issues?labels=duplicated-knowledge&state=all&per_page=100`,
+      "--jq",
+      `flatten | map(select((.body // "") | contains("${wrapperMarker}")) | {number,login:.user.login})`,
+    ]);
+    return JSON.parse(raw).filter((r: { login: string }) =>
+      isFleetAuthor(r.login, authors)
+    ).map((r: { number: number }) => r.number);
   }
+  const previouslyFiled = await filedByWrapper();
+  await journal.finish("prepare scan");
+  const filing = commit + "/filing";
+  if (journal.completed(filing) || previouslyFiled.length >= 6) {
+    return { ok: true, value: previouslyFiled };
+  }
+  const discovery = commit + "/discovery";
+  await journal.begin(discovery);
+  const blocks = await findDuplicateBlocks({ workDir: opts.workDir });
+  await journal.finish(discovery);
+  const selected = await reviewDuplicateCandidates(
+    blocks,
+    commit,
+    opts.workDir,
+    journal,
+  );
+  await journal.begin(filing);
+  if (
+    resolveIdleTaskClaimRunway(getIdleTaskRunContext().cycleDeadlineEpochMs)
+      .belowFloor
+  ) {
+    throw new Error("Batches saved. Waiting for a fresh filing budget.");
+  }
+  const duplicateBlocks = renderDuplicateBlocks(selected);
 
   const prompt = assembleDuplicatedKnowledgePrompt(promptResult.value, {
     suppressedIds: opts.suppressedIds,
     knownOpenFindingIds: opts.knownOpenFindingIds,
     openIssueTitles: opts.openIssueTitles,
     duplicateBlocks,
-  });
+    attributionFooter: wrapperMarker + "\n" +
+      buildAttributionFooter({
+        template: NAME,
+        runId: Deno.env.get(RUN_ID_ENV_VAR) ?? "unknown",
+      }),
+  }) +
+    "\nThe worker has reviewed the deterministic candidates in batches. The input contains only those retained for final triage. Continue with the independent search, global ranking and single filing cap." +
+    ` Only ${
+      6 - previouslyFiled.length
+    } finding slots remain for this wrapper. Include the wrapper marker with the attribution footer on each issue.`;
 
   const result = await runIdleTaskClaude({
     prompt,
@@ -298,7 +368,7 @@ async function defaultRunScan(
       "EnterPlanMode",
       "ExitPlanMode",
     ],
-  });
+  }, { maxRetries: 0 });
   if (!result.ok) {
     return {
       ok: false,
@@ -311,7 +381,9 @@ async function defaultRunScan(
       ok: false,
       error: {
         kind: "timeout",
-        message: "Claude duplicated-knowledge scan timed out",
+        message: `Claude duplicated-knowledge scan timed out (${
+          result.value.timeoutReason ?? "unspecified watchdog"
+        })`,
       },
     };
   }
@@ -321,7 +393,9 @@ async function defaultRunScan(
       error: { kind: "claude", message: `Claude exited with code ${exitCode}` },
     };
   }
-  return { ok: true, value: true };
+  const filed = await filedByWrapper();
+  await journal.finish(filing);
+  return { ok: true, value: filed };
 }
 
 // ---------------------------------------------------------------------------
@@ -347,9 +421,6 @@ export function createDuplicatedKnowledgeTemplate(
         DUPLICATED_KNOWLEDGE_LABEL_COLOUR,
         "Copy-pasted block that should call one existing helper",
       ));
-  const runScanFn = deps.runScanFn ??
-    ((opts) => defaultRunScan(opts, loadPromptFn));
-
   async function buildIssueBody(opts: IdleTaskBodyOptions): Promise<string> {
     // Issue #2077: the wrapper body IS the prompt — fully substituted at
     // file time so a developer reading the issue sees concrete values
@@ -399,6 +470,18 @@ export function createDuplicatedKnowledgeTemplate(
 
   async function runTask(opts: IdleTaskRunOptions): Promise<IdleTaskRunResult> {
     try {
+      const authors = deps.runScanFn
+        ? []
+        : await resolveAlertDedupAuthors(dedupAuthors, console.warn);
+      const journal = deps.runScanFn
+        ? undefined
+        : await openDuplicateScanJournal(
+          opts.repo,
+          opts.idleTaskIssueNumber,
+          authors,
+          ghCommandFn,
+        );
+      await journal?.begin("prepare scan");
       // 1. Ensure the `duplicated-knowledge` label exists before any
       //    filing. It is not seeded anywhere else, so the first run must
       //    create it. A soft failure is non-fatal — the prompt also
@@ -436,13 +519,23 @@ export function createDuplicatedKnowledgeTemplate(
 
       // 4. Invoke Claude. It files surviving findings via `gh issue
       //    create` directly — no JSON parsing here.
-      const scanResult = await runScanFn({
+      const scanOptions: RunScanOptions = {
         repo: opts.repo,
-        workDir: opts.workDir,
+        workDir: repoCheckoutPath(opts.workDir, opts.repo),
+        issueNumber: opts.idleTaskIssueNumber,
         knownOpenFindingIds,
         openIssueTitles,
         suppressedIds: [],
-      });
+      };
+      const scanResult = journal
+        ? await defaultRunScan(
+          scanOptions,
+          loadPromptFn,
+          journal,
+          authors,
+          ghCommandFn,
+        )
+        : await deps.runScanFn!(scanOptions);
       if (!scanResult.ok) {
         return {
           ok: false,
@@ -461,7 +554,11 @@ export function createDuplicatedKnowledgeTemplate(
 
       return {
         ok: true,
-        summary: renderDuplicatedKnowledgeSummary(newlyFiled),
+        summary: renderDuplicatedKnowledgeSummary(
+          newlyFiled !== null && Array.isArray(scanResult.value)
+            ? [...new Set([...newlyFiled, ...scanResult.value])]
+            : newlyFiled,
+        ),
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

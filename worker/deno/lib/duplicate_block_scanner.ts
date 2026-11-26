@@ -247,20 +247,35 @@ export function findDuplicateBlocksIn(
   files: readonly SourceFile[],
   opts: DuplicateBlockOptions = {},
 ): DuplicateBlock[] {
+  const scan = scanDuplicateWindows(files, opts);
+  let step = scan.next();
+  while (!step.done) step = scan.next();
+  return step.value;
+}
+
+// Both entry points share the same detector. Production yields to heartbeat
+// timers between chunks while pure callers can consume it synchronously.
+function* scanDuplicateWindows(
+  files: readonly SourceFile[],
+  opts: DuplicateBlockOptions,
+): Generator<void, DuplicateBlock[]> {
   const windowLines = opts.windowLines ?? 5;
   const maxBlocks = opts.maxBlocks ?? 25;
   if (windowLines < 1) return [];
 
-  const docs = files.map((f) => ({
-    file: f.file,
-    lines: significantLines(f.content),
-  }));
+  const docs: { file: string; lines: SignificantLine[] }[] = [];
+  for (const file of files) {
+    docs.push({ file: file.file, lines: significantLines(file.content) });
+    if (docs.length % 32 === 0) yield;
+  }
 
   // Index every window position by its key.
   const index = new Map<string, Occurrence[]>();
   for (let d = 0; d < docs.length; d++) {
+    if ((d + 1) % 32 === 0) yield;
     const lines = docs[d]?.lines ?? [];
     for (let start = 0; start + windowLines <= lines.length; start++) {
+      if ((start + 1) % 4096 === 0) yield;
       const key = windowKey(lines, start, windowLines);
       const bucket = index.get(key);
       if (bucket === undefined) index.set(key, [{ doc: d, start }]);
@@ -274,8 +289,10 @@ export function findDuplicateBlocksIn(
   const blocks: DuplicateBlock[] = [];
 
   for (let d = 0; d < docs.length; d++) {
+    if ((d + 1) % 32 === 0) yield;
     const lines = docs[d]?.lines ?? [];
     for (let start = 0; start + windowLines <= lines.length; start++) {
+      if ((start + 1) % 4096 === 0) yield;
       if (covered[d]?.has(start)) continue;
       const occurrences = index.get(windowKey(lines, start, windowLines)) ?? [];
       const fresh = occurrences.filter((o) => !covered[o.doc]?.has(o.start));
@@ -322,12 +339,13 @@ function extendedLength(
 ): number {
   // Cap at the smallest gap between two sites in the same document.
   let limit = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < sites.length; i++) {
-    for (let j = i + 1; j < sites.length; j++) {
-      const a = sites[i]!;
-      const b = sites[j]!;
-      if (a.doc !== b.doc) continue;
-      limit = Math.min(limit, Math.abs(a.start - b.start));
+  // The index builds each bucket in document and increasing offset order.
+  // The smallest gap is always between consecutive occurrences.
+  for (let i = 1; i < sites.length; i++) {
+    const previous = sites[i - 1]!;
+    const current = sites[i]!;
+    if (previous.doc === current.doc) {
+      limit = Math.min(limit, current.start - previous.start);
     }
   }
 
@@ -409,10 +427,17 @@ export async function findDuplicateBlocks(
   } catch {
     return [];
   }
-  return findDuplicateBlocksIn(files, {
-    windowLines: opts.windowLines,
-    maxBlocks: opts.maxBlocks,
-  });
+  const scan = scanDuplicateWindows(files, opts);
+  let step = scan.next();
+  let lastYield = performance.now();
+  while (!step.done) {
+    if (performance.now() - lastYield >= 50) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      lastYield = performance.now();
+    }
+    step = scan.next();
+  }
+  return step.value;
 }
 
 // ---------------------------------------------------------------------------

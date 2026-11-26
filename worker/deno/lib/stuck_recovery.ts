@@ -90,6 +90,11 @@ export function shouldHonourClearedMarker(
   ) return true;
   return false;
 }
+import { resolveAlertDedupAuthors } from "./alert_dedup_authors.ts";
+import {
+  DUPLICATED_KNOWLEDGE_ISSUE_TITLE,
+  openDuplicateScanJournal,
+} from "./duplicate_scan_checkpoint.ts";
 import {
   hasOpenLinkedPR,
   isIssueStuck,
@@ -773,6 +778,50 @@ export async function detectAssignedWithoutHeartbeat(
       });
       if (decision !== "recovered") continue;
 
+      if (candidate.title.trim() === DUPLICATED_KNOWLEDGE_ISSUE_TITLE) {
+        // A host may disappear before it writes even the checkout checkpoint.
+        // Count distinct GitHub assignments, never duplicate recovery notices.
+        try {
+          const journal = await openDuplicateScanJournal(
+            repo,
+            candidate.number,
+            [
+              githubUser,
+              ...await resolveAlertDedupAuthors({}, console.warn),
+            ],
+            ghFn,
+          );
+          const events = await ghFn([
+            "api",
+            "--paginate",
+            "--slurp",
+            `repos/${repo}/issues/${candidate.number}/events?per_page=100`,
+            "--jq",
+            'flatten | map(select(.event == "assigned") | {id,login:.assignee.login})',
+          ]);
+          const last = (JSON.parse(events) as { id: number; login: string }[])
+            .findLast((e) => e.login === candidate.assignee);
+          // A heartbeat or checkpoint posted during those paginated reads
+          // invalidates the selection. The next sweep will read the new state.
+          const updated = await ghFn([
+            "api",
+            `repos/${repo}/issues/${candidate.number}`,
+            "--jq",
+            ".updated_at",
+          ]);
+          if (updated.trim() !== candidate.updatedAt) continue;
+          if (last && Number.isSafeInteger(last.id)) {
+            await journal.recover(last.id);
+          }
+        } catch (error) {
+          recordFaultEvent(
+            "catch_block_warning",
+            `Could not verify scan recovery for ${repo}#${candidate.number}: ${error}`,
+          );
+          continue;
+        }
+      }
+
       // Unassign
       await ghFn([
         "issue",
@@ -794,7 +843,7 @@ export async function detectAssignedWithoutHeartbeat(
 ---
 
 Cross-account assigned-without-heartbeat recovery (Issues #632, #2671)`
-        : `Automatic recovery: this issue was unassigned from \`${candidate.assignee}\` because the worker has no active heartbeat for this issue (assigned over ${minutes} minutes ago with no heartbeat recorded). This likely means the worker crashed between claiming the issue and starting work. The issue is now available to be picked up again.
+        : `Automatic recovery: this issue was unassigned from \`${candidate.assignee}\` because the worker has no active heartbeat for this issue (assigned over ${minutes} minutes ago with no heartbeat recorded). Check the last recorded stage and worker log to locate the interruption. The assignment has been released.
 
 ---
 

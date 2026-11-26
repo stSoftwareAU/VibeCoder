@@ -42,9 +42,14 @@ import { buildImplementationCommentContext } from "../lib/implementation_comment
 import { fetchMilestoneParentDirection } from "../lib/owner_direction.ts";
 import { annotateIssueContentWithTrust } from "../lib/issue_content_trust_filter.ts";
 import {
+  findIdleTaskTemplate,
   handleIdleTaskIssue,
   type HandleIdleTaskIssueResult,
 } from "../lib/idle_task_claim_handler.ts";
+import { routeIdleTaskInProcessIssue } from "../lib/idle_task_process_issue_route.ts";
+import { idleRouteOptInInput } from "../lib/idle_task_opt_in.ts";
+import { resolveFleetPrAuthorSet } from "../lib/fleet_authors.ts";
+import { releaseClaimWithCooldown } from "../lib/claim_issue.ts";
 import { finaliseIdleTaskWrapper } from "../lib/idle_task_wrapper_closure.ts";
 import { runGhCommand } from "../lib/github.ts";
 import {
@@ -200,6 +205,56 @@ export async function runWorkOnIssueCommand(
   const handleIdleTask = commandDeps.handleIdleTask ?? handleIdleTaskIssue;
   const ghCommandFn = commandDeps.ghCommandFn ?? runGhCommand;
   const idleDeps = commandDeps.createDeps();
+  // A CLI pickup must honour the same lease and checkpoints as the fleet loop.
+  if (
+    findIdleTaskTemplate({ repo, issueTitle, issueBody: issueData.body })
+      ?.name === "duplicated-knowledge"
+  ) {
+    const identity = { ...config, githubUser };
+    const optIn = idleRouteOptInInput({
+      config,
+      githubUser,
+      issueAuthor: issueData.author,
+    });
+    const route = await routeIdleTaskInProcessIssue({
+      ...optIn,
+      githubUser,
+      repo,
+      issueNumber,
+      issueTitle,
+      issueLabels: issueData.labels,
+      issueBody: issueData.body,
+      workDir: config.workDir,
+      fleetAuthors: resolveFleetPrAuthorSet(identity),
+      pushCapableAuthors: optIn.fleetIdentityLogins,
+    }, {
+      logger: idleDeps.logger,
+      ghCommandFn,
+      handleIdleTaskFn: handleIdleTask,
+    });
+    const success = route.routed && route.success;
+    if (route.routed && !route.success && !("claimLost" in route)) {
+      await releaseClaimWithCooldown({
+        repo,
+        issueNumber,
+        githubUser,
+        workerId: githubUser,
+        ghCommandFn,
+      });
+    }
+    const data: WorkOnIssueResult = {
+      category: "unknown",
+      phase: "idle_task",
+      success,
+      reason: "claimDetail" in route
+        ? route.claimDetail
+        : success
+        ? "Scan completed"
+        : "See the wrapper for the last recorded stage",
+      timings: {},
+    };
+    return { success, message: JSON.stringify(data), data };
+  }
   const idleResult = await handleIdleTask(
     {
       repo,
