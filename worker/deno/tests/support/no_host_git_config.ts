@@ -13,7 +13,9 @@
  * spread `VIBE_AUDIT_DISABLED: "0"` AFTER the shield. Because `runFixtureGit`
  * and `runShieldedGit` spread the shield last, they never journal.
  * `GIT_CONFIG_SHIELD` is the git-only variant, for an env allowlist that refuses
- * the audit key.
+ * the audit key. Tests that drive pushes through such a caller use
+ * `runGitOperationsCommand` from `git_operations_subprocess.ts` to set the
+ * audit off switch in a private process instead.
  *
  * Production functions a test calls (`pushUnpushedCommits`,
  * `commitAndPushPending`, `syncMilestoneBranchWithDefault`, `updatePrBranch`,
@@ -41,7 +43,8 @@ import {
  * The git-config keys alone, for a caller that accepts only those keys, such as
  * the `git-operations` command's `env` argument (Issue #5371), which refuses
  * `VIBE_AUDIT_DISABLED` by design. A push that such a caller drives can still be
- * journalled when the process env sets `WORK_DIR` or `VIBE_AUDIT_DIR`.
+ * journalled when the process env sets `WORK_DIR` or `VIBE_AUDIT_DIR`; command
+ * tests use `runGitOperationsCommand` to isolate that process environment.
  */
 export const GIT_CONFIG_SHIELD: Readonly<Record<string, string>> = Object
   .freeze({
