@@ -78,15 +78,17 @@ archived watchdog incident remains undiagnosed. Part of #5544.
 - Affected issue-worker, wiring, PR-feedback and CI-fix suites: 248 passed.
   The first command exceeded its 90s bound; the same suites passed under a
   600s bound. Formatting and lint passed for the three changed TypeScript
-  files. A type check including the large caller graphs exceeded 180s without
-  diagnostics; a check limited to changed files is still running.
+  files. Type checks including the large caller graphs and limited to changed
+  files each exceeded 180s without diagnostics while shared guest memory was
+  below its floor. The summary checker passed with zero blocked or unchecked
+  gates.
 - Added tests are in
   `worker/deno/tests/escape_hatch_reference_scan_5544_test.ts` and
   `worker/deno/tests/escape_hatch_label_strip_test.ts`. Existing assertions were
   retained; the fake client now updates its stored labels on removal so the
   added tests assert state as well as the strip summary.
 - Compatibility corpus: archived summaries, prompt Markdown and relevant test
-  source at base (1,620 files, 3,240 comparisons) and head (1,621 files, 3,242
+  source at base (1,620 files, 3,240 comparisons) and head (1,622 files, 3,244
   comparisons), using two repository slugs. Zero result mismatches; zero added
   positives or negatives relative to the base detector. This establishes
   compatibility, not independent accuracy of the existing prose heuristic.
