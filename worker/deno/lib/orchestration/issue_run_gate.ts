@@ -21,6 +21,8 @@ import {
   type RunStats,
 } from "../claude_runner.ts";
 import type { ExternalIssueRunInput } from "../execute_claude_phase.ts";
+import { GuestMemoryFloorError } from "../guest_memory_floor.ts";
+import { HostDiskParkError } from "../heavy_build_gate.ts";
 import { idempotencyKey } from "./checkpoint.ts";
 import { preflightRole } from "./preflight.ts";
 import { restoreCheckout, snapshotCheckout } from "./read_only_guard.ts";
@@ -217,13 +219,16 @@ function callStatsOf(result: ClaudeRunResult): OrchestratedCallStats[] {
  * final result when the run is done, carrying the stats of every other
  * provider call the run made in `orchestrationCalls` (Issue #4595). A
  * timed-out run whose last call the runner timed out returns that runner
- * result, so the phase's timeout handling applies (Issue #4584). Any other
- * outcome is an error.
+ * result, so the phase's timeout handling applies (Issue #4584). A call the
+ * runner stopped to protect the host (guest memory floor, host-disk park) is
+ * not retried and returns that typed error, so the phase releases the run as
+ * `interrupted` or `host_disk` (Issue #5618). Any other outcome is an error.
  *
  * @param input - The issue, its brief, the Claude options and the settings.
  * @param deps - The runner and the optional state dir, env and clock.
  * @returns The last manager result on `done`, the runner's timed-out result on
- *   a timed-out run, otherwise an error.
+ *   a timed-out run, the typed `GuestMemoryFloorError` or `HostDiskParkError`
+ *   of a protective stop, otherwise an error.
  */
 export async function runOrchestratedIssueRun(
   input: ExternalIssueRunInput,
@@ -293,11 +298,13 @@ export async function runOrchestratedIssueRun(
 
   let lastManagerResult: ClaudeRunResult | undefined;
   let lastTimedOut: ClaudeRunResult | undefined;
+  let protectiveStop: Error | undefined;
   // Every provider call's result and its stats entries, in call order (Issue #4595).
   const calls: { result: ClaudeRunResult; stats: OrchestratedCallStats[] }[] =
     [];
   const invoke: InvokeAgent = async (call) => {
     lastTimedOut = undefined;
+    protectiveStop = undefined;
     // Codex cannot deny the editing tools, so a read-only Codex role is held
     // to it here: whatever the call changes in the checkout is put back
     // (Issue #4356). Unrecordable means unenforceable, so the call is refused.
@@ -336,6 +343,20 @@ export async function runOrchestratedIssueRun(
       }
     }
     if (!run.ok) {
+      // A protective stop is not retried (a retry would start into the same
+      // low memory or full disk) and its typed error reaches the phase (Issue #5618).
+      if (
+        run.error instanceof GuestMemoryFloorError ||
+        run.error instanceof HostDiskParkError
+      ) {
+        protectiveStop = run.error;
+        return {
+          ok: false,
+          kind: "error",
+          message: run.error.message,
+          retryable: false,
+        };
+      }
       return { ok: false, kind: "error", message: run.error.message };
     }
     const result = run.value;
@@ -395,6 +416,8 @@ export async function runOrchestratedIssueRun(
   if (outcome.state === "done" && lastManagerResult) {
     return { ok: true, value: withOtherCalls(lastManagerResult) };
   }
+  // The phase releases these as interrupted or host_disk by their type.
+  if (protectiveStop) return { ok: false, error: protectiveStop };
   return {
     ok: false,
     error: new Error(

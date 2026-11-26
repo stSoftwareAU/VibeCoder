@@ -327,7 +327,9 @@ stateDiagram-v2
 ```
 
 - **Executing to Dispatched (retry).** A failed attempt is dispatched again
-  while the attempt count is below `maxRetries`.
+  while the attempt count is below `maxRetries`, except a call marked
+  non-retryable: a run-ending release (Issue #4584), or a guest-memory-floor or
+  host-disk stop (Issue #5618).
 - **Executing to TimedOut.** The attempt ran past `timeoutMs`. It is stopped and
   released with the timeout reported. This diagram does not retry it.
 - **Executing to Cancelled.** A cancel request stops the attempt. It is released
