@@ -225,82 +225,88 @@ Deno.test("auth breaker - absent dep keeps the breaker inert (Issue #4167)", asy
 // Issue #5544 — no probe or back-off when the loop will not claim again
 // ---------------------------------------------------------------------------
 
-/** Two failing claims; the second leaves the clock at `afterSecondClaim`. */
+const PROBE_LATENCY_MS = 5_000;
+
+/**
+ * Failing claims on a clock that advances only by the waits actually taken:
+ * `sleep` adds its duration and the auth probe (an external call) takes
+ * `PROBE_LATENCY_MS`. The second claim ends at `afterSecondClaim`; a third
+ * claim ends the cycle so the loop terminates when it is reached.
+ */
 function backoffHarness(afterSecondClaim: "past" | "inside") {
   const config = createDefaultRunCoreConfig();
   const cycleMs = config.runDurationSeconds * 1000;
   const backoffMs = config.sleepInterval * 1000;
-  const state = {
-    claims: 0,
-    probes: 0,
-    sleeps: [] as number[],
-    logs: [] as string[],
-  };
+  const claimStarts: number[] = [];
+  const claimEnds: number[] = [];
   let now = 0;
   const deps = createMockDeps({
     now: () => now,
-    log: (m) => state.logs.push(m),
     findNextIssue: () =>
       Promise.resolve({
         ok: true,
         value: {
           repo: "o/r",
-          issueNumber: state.claims + 1,
+          issueNumber: claimStarts.length + 1,
           issueTitle: "always fails",
           milestoneTitle: "",
         },
       }),
     processIssue: () => {
-      state.claims++;
-      if (state.claims === 2) {
-        now = afterSecondClaim === "past" ? cycleMs + 1 : 1000;
-      }
+      claimStarts.push(now);
+      const n = claimStarts.length;
+      if (n === 2) now = afterSecondClaim === "past" ? cycleMs + 1 : 1000;
+      if (n >= 3) now = cycleMs + 1;
+      claimEnds.push(now);
       return Promise.resolve({ ok: true, value: { success: false } });
     },
     sleep: (ms?: number) => {
-      state.sleeps.push(ms ?? 0);
-      // Only the back-off moves the clock past the deadline (control case).
-      if (ms === backoffMs) now = cycleMs + 1;
+      now += ms ?? 0;
       return Promise.resolve();
     },
     recheckAgentAuth: () => {
-      state.probes++;
+      now += PROBE_LATENCY_MS;
       return Promise.resolve({ authFailed: false });
     },
   });
-  return { config, deps, state, backoffMs };
+  return {
+    config,
+    deps,
+    claimStarts,
+    claimEnds,
+    backoffMs,
+    cycleMs,
+    clock: () => now,
+  };
 }
 
-Deno.test("failure back-off - a failure streak that ends past the deadline neither probes auth nor backs off (Issue #5544)", async () => {
-  const { config, deps, state, backoffMs } = backoffHarness("past");
+Deno.test("failure back-off - a failure streak that ends past the deadline spends no further time and claims no more (Issue #5544)", async () => {
+  const { config, deps, claimStarts, cycleMs, clock } = backoffHarness("past");
   assert(config.sleepInterval > 0, "the back-off must be enabled");
 
   await runCoreLoop(config, deps);
 
-  assertEquals(state.claims, 2);
-  assertEquals(state.probes, 0, "no probe when no further claim follows");
-  assert(
-    !state.sleeps.includes(backoffMs),
-    `no back-off sleep expected: ${state.sleeps.join(",")}`,
-  );
-  assert(
-    !state.logs.some((m) => m.includes("backing off")),
-    "no back-off line expected",
-  );
-  assert(
-    state.logs.some((m) => m.includes("reached the cycle deadline")),
-    "the loop must stop at its deadline gate",
+  assertEquals(claimStarts.length, 2, "no claim after the deadline");
+  assertEquals(
+    clock(),
+    cycleMs + 1,
+    "no probe or back-off time may elapse once the deadline has passed",
   );
 });
 
-Deno.test("failure back-off - a failure streak before the deadline still probes and backs off (Issue #5544)", async () => {
-  const { config, deps, state, backoffMs } = backoffHarness("inside");
+Deno.test("failure back-off - a failure streak before the deadline waits the back-off before the next claim (Issue #5544)", async () => {
+  const { config, deps, claimStarts, claimEnds, backoffMs } = backoffHarness(
+    "inside",
+  );
   assert(config.sleepInterval > 0, "the back-off must be enabled");
 
   await runCoreLoop(config, deps);
 
-  assertEquals(state.claims, 2);
-  assertEquals(state.probes, 1);
-  assertEquals(state.sleeps.filter((ms) => ms === backoffMs).length, 1);
-  assert(state.logs.some((m) => m.includes("backing off")));
+  assertEquals(claimStarts.length, 3, "the streak still reaches a third claim");
+  const gapMs = (claimStarts[2] ?? NaN) - (claimEnds[1] ?? NaN);
+  assert(
+    gapMs >= backoffMs,
+    `the third claim started ${gapMs}ms after the second ended; ` +
+      `the back-off is ${backoffMs}ms`,
+  );
 });

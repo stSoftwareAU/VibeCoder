@@ -87,7 +87,7 @@ back-off, and records the archived run's last line.
   and back-off. The live-container wedge, and the main loop's pending await
   after 09:24:53, are still unreproduced.
 - **regression test** —
-  `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot whose pool will not claim again skips the failure probe and back-off (Issue #5544)`
+  `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot whose pool will not claim again spends no probe or back-off time (Issue #5544)`
 
 ## Original trigger closed
 
@@ -118,7 +118,7 @@ finish deadline had passed.
 
 - **partial** — a container wedged and the launcher watchdog reaped it, so the
   run never released its claim — evidence:
-  `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot whose pool will not claim again skips the failure probe and back-off (Issue #5544)`
+  `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot whose pool will not claim again spends no probe or back-off time (Issue #5544)`
   — reviewer: partial — reason: the diff removes the slot back-off that was the
   run's last logged wait, but the main loop's end-of-cycle path, where the run
   actually stalled, is unchanged, so a run in this state still has nothing that
@@ -132,22 +132,22 @@ finish deadline had passed.
 
 ## Test Plan
 
-- New tests, each observed red on the unmodified `run_core.ts` (`probes` 1,
-  expected 0) and green after the fix:
-  - `worker/deno/tests/run_core_auth_breaker_test.ts::failure back-off - a failure streak that ends past the deadline neither probes auth nor backs off (Issue #5544)`
-    (serial). It also asserts no back-off sleep and no `backing off` line, and,
-    as a positive control, that the loop stops at its
-    `reached the cycle
-    deadline` gate.
-  - `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot whose pool will not claim again skips the failure probe and back-off (Issue #5544)`
-    (pool). It also asserts `stop reason=deadline`.
+- New tests run through `runCoreLoop` on a clock that advances only by the waits
+  actually taken (`sleep` adds its duration; the auth probe, an external call,
+  takes 5 s). They assert outcomes — claims taken and elapsed time — not hook
+  call counts. Each "past the deadline" test was observed red on the unmodified
+  `run_core.ts` (the clock ran past `cycleMs + 1` by the probe and back-off
+  time) and green after the fix:
+  - `worker/deno/tests/run_core_auth_breaker_test.ts::failure back-off - a failure streak that ends past the deadline spends no further time and claims no more (Issue #5544)`
+    (serial): two claims only, and no time elapses after the deadline.
+  - `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot whose pool will not claim again spends no probe or back-off time (Issue #5544)`
+    (pool): the same two assertions.
 - Controls, green on both trees:
-  `failure back-off - a failure streak before the
-  deadline still probes and backs off (Issue #5544)`
+  `worker/deno/tests/run_core_auth_breaker_test.ts::failure back-off - a failure streak before the deadline waits the back-off before the next claim (Issue #5544)`
   and
-  `slot pool - a slot
-  that will claim again still probes and backs off (Issue #5544)`.
-  Each asserts one probe, one back-off sleep and the `backing off` line.
+  `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot that will claim again waits the back-off before its next claim (Issue #5544)`.
+  Each asserts a third claim is taken, and starts at least
+  `sleepInterval * 1000` after the second ended.
 - Edited test: in `worker/deno/tests/run_core_spend_guards_3648_test.ts`,
   `SEC-769865133420 -
   the failure path backs off before the next claim`. It
