@@ -382,7 +382,7 @@ const DESCENDANT_STARTED = "Wed Nov 25 14:01:00 2026";
 /**
  * The guard's start-time reader for the runner tests: the fake descendant
  * answers `descendant()` (fixed unless a test changes it), and every other pid
- * (the real stub agent) is read from the real `ps`.
+ * (the real stub agent) uses the real process start token.
  */
 function guardStartTimes(
   descendant: () => string = () => DESCENDANT_STARTED,

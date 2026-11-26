@@ -1227,8 +1227,8 @@ claim gate, untruncated budget, extensions, hard-cap kill with the work in
 progress preserved — is on one page:
 [The cycle-deadline model](CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model).
 
-So a run past `claude_timeout` means the deadline was re-armed while the run
-kept making progress. Reconstruct what happened from three places:
+A run past `claude_timeout` can have an extended deadline or a late watchdog.
+Reconstruct what happened from three places:
 
 1. **The grants** — one line per extension in `worker-*.log`:
 
@@ -1253,6 +1253,15 @@ kept making progress. Reconstruct what happened from three places:
    kill is a scheduled release (finish deadline or run hard cap, see
    [the hard cap](#the-hard-cap-was-what-stopped-it) below), so grep for it at
    either level.
+
+   A `fired at … late` suffix records a delayed watchdog, not a progress
+   extension. Compare wall timestamps with the guest process probe's elapsed
+   times; a responsive guest with available memory does not explain the delay.
+   If `pid-guard` then reports that it cannot prove the process identity, the
+   signal was refused. Linux now fingerprints kernel start ticks from
+   `/proc/<pid>/stat`, so calendar-clock and timezone shifts do not change the
+   identity; other platforms retain `ps -o lstart=`. Missing or malformed
+   identity evidence still prevents signalling (Issue #5572).
 
    The clause after the semicolon is the signal that stalled: a silent agent
    (`tool activity stale (last tool call 483s ago, last agent output 400s ago,

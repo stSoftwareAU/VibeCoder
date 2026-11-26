@@ -1,0 +1,106 @@
+# PR Summary — Issue #5538
+
+## Summary
+
+The pre-push gate no longer hands a pushed path that git no longer tracks
+(removed with `git rm --cached`, left on disk) to markdownlint or to the changed
+unit-test selection. `runPrePushGate` now passes `formatterCandidates`, the
+pushed paths filtered against `git ls-files -z` that Issue #5410 already built
+for the formatter, lint, cspell and Floci selection, as `validationChanged`. It
+also uses that list for `needsMarkdownlint`, so an index-removed Markdown file
+no longer blocks the push on its lint violations or makes the gate refuse when
+`markdownlint-cli2` is not found. Closes #5538.
+
+## Spec
+
+### Intent and Rationale
+
+- A file the push no longer carries must not block it. Otherwise the recovery
+  turn is asked to repair a file outside the branch, and its `git add -A` commit
+  can put that file back on the branch.
+- The change reuses the tracked set the gate already builds instead of adding a
+  second filter, so every per-file check that reads the pushed paths now shares
+  one scope.
+
+### Essential Design Decisions
+
+- The unfiltered `touched.value` list still feeds the triggers that must see
+  deleted or renamed-away paths: the CI cargo checks, cargo deny, ShellCheck,
+  the referenced-test and directory-listing scans, and the full-suite decision.
+  A tracked test whose text names an index-removed file therefore still runs,
+  because it may read that path.
+- The sibling-test lookup in `plannedUnitTestFiles` already ran only tracked
+  test files. The fix stops an index-removed source from pulling in its tracked
+  `tests/<name>_test.ts` sibling.
+
+### Undiscoverable Facts
+
+- An earlier attempt on this branch was blocked by the worker's pre-push full
+  unit run on another host. The one failing test was
+  `gh-guard-shim - a mid-run registerWriteRepo does not widen the spawned child`
+  in `worker/deno/tests/gh_guard_shim_test.ts`, which this diff does not touch.
+  It passed on this host in its own file and on three filtered re-runs, and in
+  the full `./quality.sh` run below.
+
+## Evidence
+
+Backend only, with no UI files.
+
+```mermaid
+flowchart LR
+    C[contained: pushed paths still on disk] --> F["formatterCandidates: filtered by git ls-files"]
+    F --> S[fmt / lint / cspell / Floci]
+    F --> M[markdownlint and its binary lookup]
+    F --> U[changed unit-test selection]
+    T[touched: keeps deleted paths] --> X[CI cargo, cargo deny, ShellCheck, referenced and listing tests]
+```
+
+- Code: `worker/deno/lib/pre_push_gate.ts`, the `needsMarkdownlint` and
+  `validationChanged:` lines in `runPrePushGate`, plus the `validationChanged`
+  doc comment in `planChangedFileChecks`.
+- Docs: `docs/CONFIGURATION.md`, in the sentence on files git no longer tracks
+  (the `formatBeforeGate` paragraph), now names markdownlint and the changed
+  unit-test selection.
+- Issue numbers cited: #5538: Pre-push gate still runs markdownlint and
+  unit-test selection on a pushed path git no longer tracks. #5410: Repository
+  formatters commit nothing when a branch-changed file is no longer tracked but
+  is still on disk.
+
+## Test Plan
+
+- New: `worker/deno/tests/pre_push_gate_untracked_validation_5538_test.ts`,
+  seven real-git tests through `runPrePushGate`. The markdownlint tests use a
+  stub runner that fails a markdownlint command only when it names the file with
+  the violation; the unit tests use a process-boundary fake of the `test:unit`
+  task that fails a selected `tests/<name>_test.ts` when `src/<name>.ts`, read
+  from the directory the command runs in, is broken. Four of the seven fail at
+  the base and three controls pass there (see Red on base below):
+  - `markdownlint leaves out a pushed Markdown file git no longer tracks (Issue #5538)`:
+    the gate passes, and its one markdownlint command names `notes/kept.md` but
+    not `scratch.md`. Control:
+    `markdownlint still fails on a tracked Markdown file with a violation (Issue #5538 control)`
+    fails with a `PreFlightGateError` whose command names `scratch.md`.
+  - `an index-removed Markdown file does not demand a markdownlint binary (Issue #5538)`:
+    with no binary found, the gate passes and runs no markdownlint. Control:
+    `a tracked Markdown file with no markdownlint binary is still refused (Issue #5538 control)`
+    is refused with `markdownlint-cli2 could not be found`.
+  - `a failing sibling test of a source git no longer tracks does not block the push (Issue #5538)`:
+    the untracked `src/gen.ts` is broken, so `tests/gen_test.ts` would fail if
+    selected; the gate passes and `tests/kept_test.ts` ran. Control:
+    `a newly failing sibling test of a tracked source blocks the push (Issue #5538 control)`
+    is refused with a `PreFlightGateError` naming `tests/gen_test.ts`.
+  - `a failing test of the tracked source still blocks when another source is untracked (Issue #5538)`:
+    the gate is refused naming `tests/kept_test.ts` and not `tests/gen_test.ts`.
+- Red on base: with only `validationChanged: formatterCandidates` reverted to
+  `contained.value` in `pre_push_gate.ts`, four tests failed (both markdownlint
+  index-removed tests and both unit-test index-removed tests) and the three
+  controls passed. All seven pass at the head.
+- No existing test was edited. `deno test -A` from `worker/deno` over the new
+  file, `worker/deno/tests/repo_formatters_5410_test.ts` and
+  `worker/deno/tests/pre_push_gate_test.ts` (stdin from `/dev/null`): 223
+  passed, 0 failed.
+- `./quality.sh < /dev/null` was last run at `acc4b9d60`, before the unit tests
+  were rewritten to assert gate outcomes; it is not re-run at this head.
+  Targeted checks at this head: `deno fmt`, `deno lint` and the test run above.
+
+Not checked: the full `./quality.sh` gate at this head.
