@@ -152,9 +152,11 @@ finish deadline had passed.
   `SEC-769865133420 -
   the failure path backs off before the next claim`. It
   used to end the cycle inside the second claim and still expect the back-off.
-  That behaviour is the one this issue removes. The back-off sleep now ends the
-  cycle instead. The test still asserts that a consecutive failure backs off by
-  `sleepInterval * 1000` before the next claim. No assertion was removed.
+  That behaviour is the one this issue removes. The second failure now stays
+  inside the cycle, the clock advances by each sleep actually taken, and a third
+  claim ends the cycle. The test asserts the third claim starts at least
+  `sleepInterval * 1000` after the second ended, with no assertion on the exact
+  sleep argument.
 - The existing auth-breaker tests (#4167) pass unchanged. Their failures happen
   inside the cycle, so they still reach the probe.
 - Ran `deno task test:unit` on the auth-breaker, slot-pool, after-target and
