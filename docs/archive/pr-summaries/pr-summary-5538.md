@@ -73,9 +73,8 @@ flowchart LR
   stub runner that fails a markdownlint command only when it names the file with
   the violation; the unit tests use a process-boundary fake of the `test:unit`
   task that fails a selected `tests/<name>_test.ts` when `src/<name>.ts`, read
-  from the directory the command runs in, is broken. The tests pass at the base,
-  so a failure is newly introduced by the branch, not a base failure the gate
-  warns about:
+  from the directory the command runs in, is broken. Four of the seven fail at
+  the base and three controls pass there (see Red on base below):
   - `markdownlint leaves out a pushed Markdown file git no longer tracks (Issue #5538)`:
     the gate passes, and its one markdownlint command names `notes/kept.md` but
     not `scratch.md`. Control:
