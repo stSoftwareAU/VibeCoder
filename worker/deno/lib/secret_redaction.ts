@@ -57,8 +57,8 @@ export const REDACTION_PLACEHOLDER = "***REDACTED***";
 
 /**
  * A credential flag's value as the `secret-cli-flag` rule reads it, shared by
- * that rule, `CLI_FLAG_AT` and `CLI_FLAG_RULE_G` so the walk reads each flag's
- * value exactly as the rule masks it (Issue #5435). The quoted branches accept
+ * that rule, `CLI_FLAG_AT` and `CLI_FLAG_RULE_G` so the walk and rule share
+ * the initial value extent (Issue #5435). The quoted branches accept
  * an escaped quote of their own kind as `SECRET_ASSIGNMENT_PATTERN` does
  * (Issue #5327): a backslash pair in either quote kind, and in single quotes a
  * doubled `''` or the shell `'\''` idiom. Each escape-aware branch is bounded
@@ -66,7 +66,9 @@ export const REDACTION_PLACEHOLDER = "***REDACTED***";
  * first two characters, so it stays linear (Issue #3942). A longer value, or
  * one whose escape never closes (`"C:\dir\"`), falls back to the old branches
  * that end at the first quote. If a later flag opens its quoted value at
- * the apparent closing quote, throughFollowingFlag masks the overlap.
+ * the apparent closing quote, throughFollowingFlag masks the overlap. The CLI
+ * replacement then preserves a trailing credential flag name with a value so
+ * the next scan masks that value too.
  */
 const CLI_FLAG_VALUE = String
   .raw`(?:"(?:[^"\\]|\\[^]){1,4096}"|'(?:[^'\\]|\\[^]|''|'\\''){1,4096}'|"[^"]+"|'[^']+'|\S+)`;
@@ -889,7 +891,9 @@ const RULES: readonly RedactionRule[] = [
   // value (`token: --token <value>`, on the same line or the next) is left to
   // this rule by the assignment rule (Issue #5330). So is one whose name ends an
   // earlier label's value after other text (`password: token=--token <value>`).
-  // Overlapping nested flag values are masked together instead (Issue #5608).
+  // The assignment masks overlapping nested flag values together (Issue #5608).
+  // Without that outer mask, keep a trailing credential flag name with a value
+  // for this rule's next match, rather than hiding it with the first value.
   //
   // A quoted flag value may hold an escaped quote of its own kind and is masked
   // whole (Issue #5435): before, the value ended at that quote and the rest
@@ -2133,10 +2137,9 @@ function flagQuoteReaches(
 
 /**
  * An upper bound on a credential flag's name: `--`, up to 63 name characters
- * either side of the credential keyword, and the keyword itself. The tail of
- * the value {@link flagSafeAssignmentEnd} reads is capped at this, so the read
- * costs the same however long the value is (the linearity rule in the module
- * header).
+ * either side of the credential keyword, and the keyword itself. Assignment
+ * and CLI mask boundary checks read at most this much of the value's tail,
+ * whatever its length (the linearity rule in the module header).
  */
 const FLAG_NAME_SPAN = 150;
 
@@ -2153,10 +2156,9 @@ const FLAG_NAME_AT_END =
  * name with the outer value hid the flag from that rule and published the
  * value. A flag at the value's start is {@link credentialFlagTakesValueAt}'s
  * (Issue #5330). Only the value's last {@link FLAG_NAME_SPAN} characters are
- * read. A flag whose own value, as the `secret-cli-flag` rule reads it, ends
- * in another credential flag's name with a value after it is not cut: that
- * rule would mask the second flag's name with the first flag's value and
- * publish the second value. Instead, mask through both values, extending
+ * read. A flag whose complete value extent ends in another credential flag's
+ * name with a value after it is not cut: retain the outer assignment's mask
+ * through both values rather than exposing its inner text. Extend
  * through successive overlapping flags. Each extension reads a bounded name
  * tail and advances through the next value with {@link CLI_FLAG_AT} and
  * {@link cliFlagEnd}, including shared-quote overlaps; the value reads are
@@ -2265,6 +2267,10 @@ function throughFollowingFlag(
   return end;
 }
 
+/**
+ * Keep a trailing credential flag name with a value for the next match. Only
+ * the bounded name tail is revisited; shared-quote overlaps are read first.
+ */
 function redactCliFlags(text: string): string {
   const pattern = CLI_FLAG_RULE_G;
   pattern.lastIndex = 0;
@@ -2276,12 +2282,14 @@ function redactCliFlags(text: string): string {
     const start = match.index + prefix.length;
     out += text.slice(last, start) + REDACTION_PLACEHOLDER;
     last = cliFlagEnd(text, match);
+    const next = flagNameEndingAt(text, start, last);
+    if (next > start && credentialFlagTakesValueAt(text, next)) last = next;
     pattern.lastIndex = last;
   }
   return out + text.slice(last);
 }
 
-/** The complete CLI value extent, shared by replacement and assignment masks. */
+/** The complete CLI value extent, before replacement preserves a trailing name. */
 function cliFlagEnd(text: string, match: RegExpExecArray): number {
   const prefixLength = match[1]!.length;
   const start = match.index + prefixLength;
