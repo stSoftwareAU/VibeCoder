@@ -21,8 +21,7 @@ import {
   type RunStats,
 } from "../claude_runner.ts";
 import type { ExternalIssueRunInput } from "../execute_claude_phase.ts";
-import { GuestMemoryFloorError } from "../guest_memory_floor.ts";
-import { HostDiskParkError } from "../heavy_build_gate.ts";
+import { protectiveStopOf } from "../protective_stop.ts";
 import { idempotencyKey } from "./checkpoint.ts";
 import { preflightRole } from "./preflight.ts";
 import { restoreCheckout, snapshotCheckout } from "./read_only_guard.ts";
@@ -345,11 +344,9 @@ export async function runOrchestratedIssueRun(
     if (!run.ok) {
       // A protective stop is not retried (a retry would start into the same
       // low memory or full disk) and its typed error reaches the phase (Issue #5618).
-      if (
-        run.error instanceof GuestMemoryFloorError ||
-        run.error instanceof HostDiskParkError
-      ) {
-        protectiveStop = run.error;
+      const stop = protectiveStopOf(run.error);
+      if (stop !== undefined) {
+        protectiveStop = stop;
         return {
           ok: false,
           kind: "error",

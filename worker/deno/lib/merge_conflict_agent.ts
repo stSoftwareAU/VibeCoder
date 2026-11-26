@@ -134,7 +134,9 @@ export interface MergeConflictAgentOutcome {
  *
  * @param request - The target, the conflicted paths and the run bounds
  * @returns An error result when the prompt could not be built, the agent could
- *   not run, or it timed out; otherwise whether the worker ended the run.
+ *   not run (a protective stop is its `cause`; see `protectiveStopOf` in
+ *   `protective_stop.ts`), or
+ *   it timed out; otherwise whether the worker ended the run.
  */
 export async function runMergeConflictAgent(
   request: MergeConflictAgentRequest,
@@ -213,9 +215,13 @@ export async function runMergeConflictAgent(
   );
 
   if (!claudeResult.ok) {
+    // Issue #5626: the cause keeps a protective stop's type for the PR pass;
+    // the message is unchanged for every other caller.
     return {
       ok: false,
-      error: new Error(`agent run failed: ${claudeResult.error.message}`),
+      error: new Error(`agent run failed: ${claudeResult.error.message}`, {
+        cause: claudeResult.error,
+      }),
     };
   }
   // Issue #1693: the worker ended this run — the handler was abandoned by the

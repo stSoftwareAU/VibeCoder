@@ -1,0 +1,12 @@
+{
+  "issue": 5626,
+  "chunk": "top-up-5626",
+  "title": "top-up: the shared protective-stop check",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5626",
+  "definition": "module added so the issue run and the PR merge-conflict pass share one test for the guest-memory floor and host-disk park stops: protective_stop.ts (#5626)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/protective_stop.ts"
+  ],
+  "sweptAt": "7b35a0be0ba206bac58def2839d5c12e896746f8"
+}
