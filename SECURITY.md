@@ -458,8 +458,8 @@ run `redactSecrets()` _first_: cutting first can split a secret — most
 damagingly a PEM block, whose END marker falls past the cut — leaving a fragment
 that no rule matches on the later pass.
 
-That ordering is held by a **type**, not by every call site remembering (Issue #1217).
-`RedactedText`
+That ordering is held by a **type**, not by every call site remembering (Issue
+#1217). `RedactedText`
 ([`worker/deno/lib/redacted_text.ts`](worker/deno/lib/redacted_text.ts)) is a
 branded string only `redactedTail()` / `redactedHead()` / `redactedLineTail()` /
 `redactedLogTail()` / `joinRedacted()` can mint, and each redacts the whole
@@ -559,6 +559,24 @@ another flag after it (`password: --token --verbose`), or a bare `=` or `:`
 after it (`credentials: --token = <value>`, an Issue #5310 shape) is masked as
 the label's value as before.
 
+The same holds for a credential flag whose name ends a value after other text,
+as in `password: token=--token <value>` or `password: abc--token <value>`, with
+the label on the same line or the line before (Issue #5608). The assignment's
+value ends before the flag's name, so `secret-cli-flag` keeps the name and masks
+its value. An exception is a flag whose own value ends in another credential
+flag's name followed by a value, as in
+`password: token=--token first--password second`: the assignment masks through
+both values, extending through successive overlaps. Keeping the first flag would
+otherwise mask the second flag's name and publish its value. These extensions
+use the CLI redactor's complete value extent, including a quoted value with an
+escaped quote whose apparent closing quote also opens a later flag's value. The
+assignment masks that later value as well. The name checks read at most 150
+characters, and each overlap advances through the next value; the input is never
+truncated. Before this fix the assignment masked the first flag's name and
+published its value. Whether to mask is judged on the original assignment value,
+so shortening the mask cannot expose a prefix by reclassifying it as a short
+word or prose across a line break.
+
 A quoted value may hold an escaped quote of its own kind, and the whole literal
 is masked: `"abc\"def"`, `'abc\'def'`, the SQL `'abc''def'` and the shell
 `'it'\''s'` are each masked in full. Before Issue #5327 the mask stopped at that
@@ -574,8 +592,8 @@ extends through the later value. Before Issue #5435 the flag value ended at the
 escaped quote and the rest of the credential was published.
 
 A bare value that starts at, or contains, the closing quote of a credential
-flag's quoted value can keep that quote in front of the placeholder (Issues #5363
-and #5456). In `--password 'alpha beta TOKEN='tail` the `TOKEN=` value
+flag's quoted value can keep that quote in front of the placeholder (Issues
+#5363 and #5456). In `--password 'alpha beta TOKEN='tail` the `TOKEN=` value
 opens at that quote; masking it with the value left the `secret-cli-flag` rule
 no closing quote, so it masked only `'alpha` and published `beta`. The quote is
 kept only when the flag's opening quote lies outside every assignment mask. When
@@ -610,11 +628,11 @@ double-quoted Windows path ending in a backslash and a quoted message ending in
 flag's value.
 
 The label side stays deliberately blunt — it catches real secrets — apart from
-the prose-heading check below. The value is judged before the mask is applied,
-and, apart from that check, **only when the separator crossed a line break**:
+the prose-heading check below. After the flag handling above, the value-shape
+checks apply **only when the separator crossed a line break**:
 
-- An **inline** assignment is masked exactly as it always was, with one
-  exception: a prose heading (Issue #5253, below). `secret_scanning: enabled`,
+- An **inline** assignment passes the value-shape check; a prose heading is
+  exempted separately (Issue #5253, below). `secret_scanning: enabled`,
   `PASSWORD=12345`, and a value wrapped in backticks or opening with `#`, `>` or
   `|` — all legitimate password characters — are untouched by the judgement.
   That boundary is load-bearing: an earlier cut judged inline values too, and a
@@ -962,8 +980,8 @@ including an edit to a merged-in hidden file, is still refused. Outside a merge
 nothing is exempt on `MERGE_HEAD`'s account, and a `MERGE_HEAD` that cannot be
 read exempts nothing (fail closed).
 
-It also exempts **a path the default branch already publishes unchanged** (Issue #2774).
-A refused path is exempt only when its staged mode and blob are
+It also exempts **a path the default branch already publishes unchanged** (Issue
+#2774). A refused path is exempt only when its staged mode and blob are
 identical to that path on the default branch's tip, read from the local
 remote-tracking ref that `refs/remotes/origin/HEAD` names. The gate never
 fetches. The path is already public, so committing it discloses nothing, and

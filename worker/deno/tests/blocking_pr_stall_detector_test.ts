@@ -650,6 +650,38 @@ Deno.test("a draft PR is not reported as a stalled repository", () => {
   assertEquals(stall, null);
 });
 
+Deno.test("a draft PR whose gate fails closed is not a red-CI stall", () => {
+  // A repository's quality gate skips every job on a draft and fails with
+  // "mark it ready for review and that run decides". The draft is a timed-out
+  // run's continuation; its issue run resumes it, not the ci-fix lane.
+  const stall = detectBlockingPrStall(
+    observation({
+      failingChecks: [{ name: "gate", completedAt: "2026-08-11T12:07:00Z" }],
+      lastFleetPushAt: "2026-08-11T12:00:00Z",
+      checkCounts: { total: 20, pending: 0 },
+      isDraft: true,
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assertEquals(stall, null);
+});
+
+Deno.test("a draft PR with an unanswered authorised comment still trips", () => {
+  const stall = detectBlockingPrStall(
+    observation({
+      failingChecks: [{ name: "gate", completedAt: "2026-08-11T12:07:00Z" }],
+      lastFleetPushAt: "2026-08-11T12:00:00Z",
+      lastAuthorisedCommentAt: "2026-08-11T13:00:00Z",
+      isDraft: true,
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assert(stall, "expected a stall");
+  assertEquals(stall.signals.map((s) => s.reason), ["unanswered-comment"]);
+});
+
 // ---------------------------------------------------------------------------
 // Merge-conflict lane ownership (Issue #1213).
 //

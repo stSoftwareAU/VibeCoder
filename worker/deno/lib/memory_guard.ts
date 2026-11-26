@@ -150,7 +150,7 @@ export function formatMemoryGuardKill(options: MemoryGuardKillOptions): string {
 
 /** Injectable seams for {@link killMemoryGuardVictim}. */
 export interface MemoryGuardKillDeps {
-  /** A process's absolute start time; "" when the pid holds nothing. */
+  /** A process's start token; "" when the pid holds nothing identifiable. */
   readStartTime?: (pid: number) => Promise<string>;
   /** `ps -eo pid,ppid,rss,etime,args`, re-read to prove tree membership. */
   runPs: () => Promise<string>;

@@ -1320,7 +1320,10 @@ export function planChangedFileChecks(
      */
     cspellInCi?: boolean;
     denoScopes?: Record<string, DenoScopeConfig>;
-    /** Pushed paths for unit tests and markdownlint when formatting is skipped. */
+    /**
+     * Tracked pushed paths for unit tests and markdownlint when formatting is
+     * skipped; a path git no longer tracks is left out (Issue #5538).
+     */
     validationChanged?: string[];
     /** Deno roots whose `test:unit` task the changed tests run through. */
     denoUnitTestRoots?: string[];
@@ -3247,7 +3250,8 @@ export async function runPrePushGate(opts: {
   // A pushed path git no longer tracks (removed from the index with `git rm
   // --cached`, still on disk) is left out, the same scope the repository
   // formatters use: they no longer format it, so checking it would block on a
-  // file that is not in the push (Issue #5410).
+  // file that is not in the push (Issue #5410). The same tracked list feeds
+  // markdownlint and the changed unit-test selection (Issue #5538).
   const trackedSet = new Set(tracked);
   const formatterCandidates = contained.value.filter((p) => trackedSet.has(p));
   // The selection the formatter, lint, cspell and Floci planner sees. In
@@ -3255,15 +3259,16 @@ export async function runPrePushGate(opts: {
   // `deno fmt --check` covers are selected (Issue #5169: CI's `deno fmt
   // --check` failed fleet repairs), and cspell is never looked up, so no
   // checker the mode skips can block the push. An empty selection is not an
-  // empty change set: the pushed paths are still read for the unit tests,
-  // markdownlint and cargo deny.
+  // empty change set: the tracked pushed paths are still read for the unit
+  // tests and markdownlint, and the touched paths for the CI cargo checks and
+  // cargo deny.
   const formatterSelection = opts.repairChecksWithCiCargo
     ? formatterCandidates.filter((p) =>
       isRustRelevant(p) || hasExtension(p, DENO_FORMAT_EXTENSIONS)
     )
     : formatterCandidates;
 
-  const needsMarkdownlint = contained.value.some((p) =>
+  const needsMarkdownlint = formatterCandidates.some((p) =>
     hasExtension(p, MARKDOWN_EXTENSIONS)
   );
   let markdownlintBinary: string | null = null;
@@ -3361,7 +3366,7 @@ export async function runPrePushGate(opts: {
     denoFullUnitRoots: denoUnitTestRoots.filter((root) =>
       needsFullUnitSuite(touched.value, root) || unfollowable.includes(root)
     ),
-    validationChanged: contained.value,
+    validationChanged: formatterCandidates,
     denoReferencedTests: referencedTests,
     ciCargo,
     cargoChanged: ciCargoPaths,

@@ -887,7 +887,9 @@ const RULES: readonly RedactionRule[] = [
   //
   // A credential flag with a value that an earlier label would capture as its
   // value (`token: --token <value>`, on the same line or the next) is left to
-  // this rule by the assignment rule (Issue #5330).
+  // this rule by the assignment rule (Issue #5330). So is one whose name ends an
+  // earlier label's value after other text (`password: token=--token <value>`).
+  // Overlapping nested flag values are masked together instead (Issue #5608).
   //
   // A quoted flag value may hold an escaped quote of its own kind and is masked
   // whole (Issue #5435): before, the value ended at that quote and the rest
@@ -1029,23 +1031,28 @@ function execAssignmentAt(
 /**
  * Judge one pattern match with {@link assignmentIsMasked}. A value that is a
  * credential flag with a value after it is not masked; see
- * {@link credentialFlagTakesValueAt}.
+ * {@link credentialFlagTakesValueAt}. A value that ends in a credential flag's
+ * name with a value after it (`password: token=--token <value>`,
+ * `password: abc--token <value>`) ends before the flag's name, see
+ * {@link flagSafeAssignmentEnd}, which masks through overlapping flag values.
  */
 function verdictOf(text: string, match: RegExpExecArray): AssignmentVerdict {
-  const end = match.index + match[0].length;
+  const matchEnd = match.index + match[0].length;
   const key = match[1] ?? "";
   const sep = match[2] ?? "";
-  const value = match[3] ?? "";
-  const valueStart = end - value.length;
+  const matchedValue = match[3] ?? "";
+  const valueStart = matchEnd - matchedValue.length;
+  const end = flagSafeAssignmentEnd(text, valueStart, matchEnd);
   return {
     index: match.index,
     end,
     key,
     sep,
-    value,
+    value: text.slice(valueStart, end),
     // Issue #5330: a credential flag with a value is left to `secret-cli-flag`.
     masked: !credentialFlagTakesValueAt(text, valueStart) &&
-      assignmentIsMasked(key, sep, value, textAfter(text, end)),
+      // Shortening the mask must not reclassify a credential prefix as prose.
+      assignmentIsMasked(key, sep, matchedValue, textAfter(text, matchEnd)),
   };
 }
 
@@ -1678,7 +1685,7 @@ function closesWithinReach(
  */
 const CLI_FLAG_AT = new RegExp(
   String
-    .raw`--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+(?!-)${CLI_FLAG_VALUE}`,
+    .raw`(--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}\s+)(?!-)${CLI_FLAG_VALUE}`,
   "iy",
 );
 
@@ -2125,6 +2132,75 @@ function flagQuoteReaches(
 }
 
 /**
+ * An upper bound on a credential flag's name: `--`, up to 63 name characters
+ * either side of the credential keyword, and the keyword itself. The tail of
+ * the value {@link flagSafeAssignmentEnd} reads is capped at this, so the read
+ * costs the same however long the value is (the linearity rule in the module
+ * header).
+ */
+const FLAG_NAME_SPAN = 150;
+
+/** A credential flag's name ending the text it is tested on (Issue #5608). */
+const FLAG_NAME_AT_END =
+  /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}$/i;
+
+/**
+ * End a `secret-assignment` value before a credential flag's name when the
+ * name ends it after other text and a value follows the flag (Issue #5608):
+ * `password: token=--token <value>`, `password: abc--token <value>`. The
+ * value then ends before the flag's name, which is left for the
+ * `secret-cli-flag` rule to keep while it masks the flag's value; masking the
+ * name with the outer value hid the flag from that rule and published the
+ * value. A flag at the value's start is {@link credentialFlagTakesValueAt}'s
+ * (Issue #5330). Only the value's last {@link FLAG_NAME_SPAN} characters are
+ * read. A flag whose own value, as the `secret-cli-flag` rule reads it, ends
+ * in another credential flag's name with a value after it is not cut: that
+ * rule would mask the second flag's name with the first flag's value and
+ * publish the second value. Instead, mask through both values, extending
+ * through successive overlapping flags. Each extension reads a bounded name
+ * tail and advances through the next value with {@link CLI_FLAG_AT} and
+ * {@link cliFlagEnd}, including shared-quote overlaps; the value reads are
+ * disjoint, so the work stays linear. Otherwise keep `end`.
+ */
+function flagSafeAssignmentEnd(
+  text: string,
+  valueStart: number,
+  end: number,
+): number {
+  const at = flagNameEndingAt(text, valueStart, end);
+  if (at <= valueStart || !credentialFlagTakesValueAt(text, at)) return end;
+  CLI_FLAG_AT.lastIndex = at;
+  const flag = CLI_FLAG_AT.exec(text);
+  CLI_FLAG_AT.lastIndex = 0;
+  if (flag === null) return end;
+  let through = cliFlagEnd(text, flag);
+  let from = end;
+  let overlaps = false;
+  while (true) {
+    const nested = flagNameEndingAt(text, from, through);
+    if (nested === -1 || !credentialFlagTakesValueAt(text, nested)) break;
+    CLI_FLAG_AT.lastIndex = nested;
+    const next = CLI_FLAG_AT.exec(text);
+    CLI_FLAG_AT.lastIndex = 0;
+    if (next === null) break;
+    from = through;
+    through = cliFlagEnd(text, next);
+    overlaps = true;
+  }
+  return overlaps ? through : at;
+}
+
+/**
+ * Where a credential flag's name ending `text` at `end` starts, no earlier than
+ * `start`, or -1 if none. Reads at most {@link FLAG_NAME_SPAN} characters.
+ */
+function flagNameEndingAt(text: string, start: number, end: number): number {
+  const from = Math.max(start, end - FLAG_NAME_SPAN);
+  const name = text.slice(from, end).match(FLAG_NAME_AT_END);
+  return name ? from + name.index! : -1;
+}
+
+/**
  * A credential flag with a value after it, read where a `secret-assignment`
  * value starts (Issue #5330): the `secret-cli-flag` rule's flag name and
  * whitespace, then a value that rule takes or has already masked. A bare `=` or
@@ -2177,12 +2253,8 @@ function throughFollowingFlag(
     let nameEnd = open;
     while (nameEnd > start && /\s/.test(text[nameEnd - 1]!)) nameEnd--;
     if (nameEnd === open) break;
-    const name = text.slice(Math.max(start, nameEnd - 150), nameEnd)
-      .match(
-        /--[A-Za-z0-9-]{0,63}(?:token|secret|password|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9-]{0,63}$/i,
-      );
-    if (!name) break;
-    const flagStart = nameEnd - name[0].length;
+    const flagStart = flagNameEndingAt(text, start, nameEnd);
+    if (flagStart === -1) break;
     if (flagStart <= start || !/\s/.test(text[flagStart - 1]!)) break;
     CLI_FLAG_AT.lastIndex = flagStart;
     const flag = CLI_FLAG_AT.exec(text);
@@ -2203,17 +2275,24 @@ function redactCliFlags(text: string): string {
     const prefix = match[1]!;
     const start = match.index + prefix.length;
     out += text.slice(last, start) + REDACTION_PLACEHOLDER;
-    const quote = text[start];
-    const end = pattern.lastIndex;
-    // The escape-aware reader widened the old first-quote match only
-    // when another quote of the same kind precedes its closing quote.
-    last = (quote === '"' || quote === "'") && text[end - 1] === quote &&
-        match[0].indexOf(quote, prefix.length + 1) < match[0].length - 1
-      ? throughFollowingFlag(text, start, end)
-      : end;
+    last = cliFlagEnd(text, match);
     pattern.lastIndex = last;
   }
   return out + text.slice(last);
+}
+
+/** The complete CLI value extent, shared by replacement and assignment masks. */
+function cliFlagEnd(text: string, match: RegExpExecArray): number {
+  const prefixLength = match[1]!.length;
+  const start = match.index + prefixLength;
+  const quote = text[start];
+  const end = match.index + match[0].length;
+  // The escape-aware reader widened the old first-quote match only
+  // when another quote of the same kind precedes its closing quote.
+  return (quote === '"' || quote === "'") && text[end - 1] === quote &&
+      match[0].indexOf(quote, prefixLength + 1) < match[0].length - 1
+    ? throughFollowingFlag(text, start, end)
+    : end;
 }
 
 /**

@@ -75,9 +75,11 @@ export interface ConflictAttemptRecord {
   /** Host that ran the attempt (Issue #2311). */
   host?: string;
   /**
-   * What the attempt made of the conflict, file by file (Issue #2311) — the
-   * account the `merge-fallback` flag reproduces. {@link reason} is the one
-   * line the ledger compares; this is the detail a reader needs.
+   * What the attempt made of the conflict. For a conflict escalation, the
+   * file-by-file account (Issue #2311); for a clean-merge gate refusal, the
+   * gate-repair account (Issue #5595). The `merge-fallback` flag reproduces
+   * it. {@link reason} is the one line the ledger compares; this is the detail
+   * a reader needs.
    */
   analysis?: string;
   /**

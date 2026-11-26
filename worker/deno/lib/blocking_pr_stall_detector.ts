@@ -14,7 +14,9 @@
  * stopped making progress:
  *
  * - **red CI** — a failing check whose run has not been superseded by a
- *   newer fleet push, older than the configured threshold;
+ *   newer fleet push, older than the configured threshold, on a PR that is
+ *   not a draft (a draft's gate fails closed by design; its issue run, not a
+ *   ci-fix lane, finishes it);
  * - **unanswered authorised comment** — the newest comment from an
  *   `authorized_commenters` login is newer than the newest fleet reply or
  *   push, by longer than the threshold; or
@@ -324,7 +326,16 @@ export function detectBlockingPrStall(
       undefined,
     );
 
-  if (newestFailure !== undefined) {
+  // A draft is never red-CI stalled (Issue #4146 follow-up). A repository's
+  // quality gate commonly skips every job on a draft and then fails closed
+  // ("mark it ready for review and that run decides"), so a draft's head is
+  // red by construction, not because its code is broken. The fleet's draft
+  // is a timed-out run's continuation: its issue stays `work-on`, the next
+  // run resumes the branch and marks it ready, and only then does CI decide.
+  // Treating that red as a stall syncs and reruns a ci-fix lane that has
+  // nothing to fix, then closes the draft and redoes the issue — throwing
+  // away the very work the draft exists to carry forward.
+  if (newestFailure !== undefined && observation.isDraft !== true) {
     // A push newer than the failing run means CI is re-running against new
     // code — that is progress, not a stall.
     const superseded = pushAt !== undefined && pushAt > newestFailure;

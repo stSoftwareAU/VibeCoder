@@ -9,11 +9,12 @@
  *   - existing repo state (PASSED — regression guard).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   collectMarkdownFiles,
   isSkippedMermaidFixturePath,
   runMermaidCheck,
+  type UnreadableDirectory,
 } from "../lib/mermaid_check.ts";
 import {
   extractMermaidBlocks,
@@ -21,6 +22,7 @@ import {
   validateMermaidBlock,
   validateMermaidFile,
 } from "../lib/mermaid_validator.ts";
+import { makeDeepTree, removeTree } from "./support/deep_tree.ts";
 
 async function makeTempRepo(
   files: Record<string, string>,
@@ -117,58 +119,6 @@ Deno.test(
   },
 );
 
-/** Name of each level in the deep `target/` chain (NAME_MAX is 255 bytes). */
-const DEEP_LEVEL_NAME = "d".repeat(200);
-/** 25 levels of 201 bytes each is about 5 KB, past Linux PATH_MAX (4096). */
-const DEEP_LEVEL_COUNT = 25;
-
-/**
- * Create a DEEP_LEVEL_COUNT-deep directory chain under `dir` with a `deep.md`
- * at the bottom. Each level is made relative to the previous one, so no single
- * syscall receives a path at or beyond PATH_MAX. Returns the absolute path of
- * the deepest directory.
- */
-async function makeDeepTree(dir: string): Promise<string> {
-  const script = [
-    "set -eu",
-    'for name in "$@"; do mkdir -- "$name"; cd -- "$name"; done',
-    "printf '# deep\\n' > deep.md",
-  ].join("\n");
-  const names = Array.from({ length: DEEP_LEVEL_COUNT }, () => DEEP_LEVEL_NAME);
-  const { code, stderr } = await new Deno.Command("bash", {
-    args: ["-c", script, "bash", ...names],
-    cwd: dir,
-    stdin: "null",
-    stdout: "null",
-    stderr: "piped",
-  }).output();
-  if (code !== 0) {
-    throw new Error(
-      `deep tree build failed: ${new TextDecoder().decode(stderr)}`,
-    );
-  }
-  return `${dir}/${names.join("/")}`;
-}
-
-/**
- * Remove a tree with `rm -rf`, which walks relative to each parent directory
- * and so copes with paths past PATH_MAX. Throws on failure rather than leaking
- * the temp tree silently.
- */
-async function removeTree(root: string): Promise<void> {
-  const { code, stderr } = await new Deno.Command("rm", {
-    args: ["-rf", "--", root],
-    stdin: "null",
-    stdout: "null",
-    stderr: "piped",
-  }).output();
-  if (code !== 0) {
-    throw new Error(
-      `rm -rf failed for ${root}: ${new TextDecoder().decode(stderr)}`,
-    );
-  }
-}
-
 Deno.test(
   "collectMarkdownFiles - skips target/ even when its tree exceeds PATH_MAX (#5506)",
   async () => {
@@ -204,6 +154,116 @@ Deno.test(
       assertEquals(files, ["docs/guide.md"]);
     } finally {
       await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+/**
+ * Run `fn` with `console.warn` captured, so the expected skip warnings from an
+ * unreadable directory do not spam the test output. Restores it in `finally`.
+ */
+async function captureWarnings<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; warnings: string[] }> {
+  const original = console.warn;
+  const warnings: string[] = [];
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    return { result: await fn(), warnings };
+  } finally {
+    console.warn = original;
+  }
+}
+
+Deno.test(
+  "collectMarkdownFiles - skips an over-long directory outside the skip list and keeps walking (#5593)",
+  async () => {
+    const root = await makeTempRepo({
+      "README.md": "# r\n",
+      "docs/guide.md": "# g\n",
+    });
+    try {
+      await Deno.mkdir(`${root}/build`);
+      const deepest = await makeDeepTree(`${root}/build`);
+      // Precondition: the tree really is past PATH_MAX, so the walk would fail.
+      assertEquals(deepest.length > 4096, true);
+
+      const unreadable: UnreadableDirectory[] = [];
+      const { result: files, warnings } = await captureWarnings(() =>
+        collectMarkdownFiles(root, unreadable)
+      );
+      assertEquals(files, ["README.md", "docs/guide.md"]);
+      assertEquals(unreadable.length, 1);
+      assertEquals(unreadable[0]!.dir.startsWith("build/"), true);
+      assertStringIncludes(unreadable[0]!.error, "File name too long");
+      assertEquals(warnings.some((w) => w.includes("build/")), true);
+    } finally {
+      await removeTree(root);
+    }
+  },
+);
+
+Deno.test(
+  "runMermaidCheck - reports an unreadable directory as not checked (#5593)",
+  async () => {
+    const root = await makeTempRepo({ "README.md": "# r\n" });
+    try {
+      await Deno.mkdir(`${root}/build`);
+      await makeDeepTree(`${root}/build`);
+
+      const { result } = await captureWarnings(() => runMermaidCheck(root));
+      assertEquals(result.status, "PASSED");
+      assertEquals(result.filesScanned, 1);
+      assertStringIncludes(result.output, "not checked");
+      assertStringIncludes(result.output, "build/");
+      assertStringIncludes(result.output, "File name too long");
+    } finally {
+      await removeTree(root);
+    }
+  },
+);
+
+Deno.test(
+  "runMermaidCheck - an unreadable directory does not mask a bad block elsewhere (#5593)",
+  async () => {
+    const root = await makeTempRepo({
+      "docs/bad.md": [
+        "# bad",
+        "",
+        "```mermaid",
+        "flowchart LR",
+        "  A{unclosed --> B",
+        "```",
+      ].join("\n"),
+    });
+    try {
+      await Deno.mkdir(`${root}/build`);
+      await makeDeepTree(`${root}/build`);
+
+      const { result } = await captureWarnings(() => runMermaidCheck(root));
+      assertEquals(result.status, "FAILED");
+      assertEquals(result.failures.length, 1);
+      assertEquals(result.failures[0]!.file, "docs/bad.md");
+      assertStringIncludes(result.output, "not checked");
+    } finally {
+      await removeTree(root);
+    }
+  },
+);
+
+Deno.test(
+  "collectMarkdownFiles - rejects when the root itself cannot be read (#5593)",
+  async () => {
+    const tmp = await Deno.makeTempDir({ prefix: "mermaid_missing_root_" });
+    try {
+      await assertRejects(
+        () => collectMarkdownFiles(`${tmp}/missing`),
+        Deno.errors.NotFound,
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
     }
   },
 );
@@ -390,6 +450,11 @@ Deno.test("runMermaidCheck - PASSES on clean repo", async () => {
     assertEquals(result.filesScanned, 2);
     assertEquals(result.blocksScanned, 2);
     assertStringIncludes(result.output, "PASSED");
+    assertEquals(result.output.includes("not checked"), false);
+    assertEquals(
+      result.output,
+      "mermaid: PASSED (2 file(s), 2 block(s) checked)",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

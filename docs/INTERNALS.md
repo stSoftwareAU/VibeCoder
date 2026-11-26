@@ -575,12 +575,18 @@ Every signal is also **identity-gated** (Issue #501). A pid is only a handle:
 the kernel re-issues it as soon as the process behind it is reaped, and a
 watchdog that fires in that window would signal — or sweep the children of — a
 stranger. `runClaudeWithTimeout` fingerprints the agent at spawn
-(`captureProcessIdentity`, the process's `ps -o lstart=` start time) and the
-terminate helpers re-read that start time immediately before every signal: the
+(`captureProcessIdentity`: kernel start ticks on Linux, `ps -o lstart=` on
+other platforms) and the terminate helpers re-read that token immediately
+before every signal: the
 parent before its descendants are swept, and each descendant before its TERM and
 again before its KILL. A pid that no longer matches its fingerprint is reported
 as skipped and never signalled, so the kill path cannot reach a process it
 cannot prove it started.
+
+Linux reads field 22 of `/proc/<pid>/stat` through a bounded `cat` command.
+That token survives calendar-clock and timezone adjustments; comparing
+calendar start times could refuse to terminate the same live agent after
+such a shift. An unreadable or malformed token still refuses signalling.
 
 ```mermaid
 flowchart LR
@@ -3831,7 +3837,7 @@ check_and_handle_milestone_completions(github_user)
   |   +-- check_milestone_complete() — all issues closed?
   |   +-- IF complete AND no existing summary PR:
   | +-- create_milestone_tracking_issue — tracking issue
-  |         +-- build_milestone_summary_body() — list all closed issues
+  |         +-- build_milestone_summary_body() — list classified closed work, including branch deliveries moved elsewhere
   |         +-- create_milestone_summary_pr() — milestone branch → default
   |         +-- enable_auto_merge()
   |
@@ -3843,8 +3849,7 @@ check_and_handle_milestone_completions(github_user)
 **Tracking issue** — when a milestone completes,
 `create_milestone_tracking_issue()` creates a GitHub issue titled "Merge
 milestone '&lt;name&gt;' to &lt;default&gt;". This provides a visible record of
-the milestone completion lifecycle. The tracking issue is labelled with the
-first configured issue label for automatic discovery.
+the milestone completion lifecycle. The tracking issue is created without a discovery label.
 `has_existing_milestone_tracking_issue()` prevents duplicates by searching for
 existing issues with the same title (across all states — open + closed). The
 summary PR body includes a `Closes #N` reference so the tracking issue is
@@ -3855,8 +3860,10 @@ for each claimed delivered issue, ascending and capped at 62
 (`MILESTONE_PROVENANCE_MAX_CHILDREN`: the reviewer's `MAX_GOVERNING_ISSUES` of 64
 less the tracking issue and the parent, both held in
 `worker/deno/lib/governing_issue_limits.ts` so they cannot drift), so the fleet
-reviewer can read the issues the rollup serves. Flagged issues get no line. The fingerprint version bump
-refreshes each open rollup once so it gains these lines.
+reviewer can read the issues the rollup serves. Flagged issues get no line.
+The Issue #4967 fingerprint version bump added these lines to existing open
+rollups. The Issue #5458 bump (`rollup-provenance-v3`) refreshes eligible open
+rollups again, including each claimed issue's moved-to-milestone note.
 
 **Closed-issue rollup classification** — each closed milestone issue is claimed
 when a merged PR either has the canonical `(Issue #N)` / `(#N)` title reference
@@ -3864,7 +3871,32 @@ or has a same-repository `issue-N` head branch. The branch lookup recovers
 adopted agent PRs whose titles predate canonical title repair; fork heads,
 other issue numbers and milestone sync branches do not claim the issue. The
 merged PR must also postdate the issue's latest reopen, and an unreadable issue
-timeline remains flagged for review.
+timeline remains flagged for review. A PR based on another milestone's branch
+(`milestone/…`) is excluded from delivery here (Issue #5458); other bases retain
+their previous eligibility, including the default branch.
+When every merged PR went into another milestone's branch, the issue is
+flagged `merged-into-other-milestone` ("every merged PR went into another
+milestone's branch"), or `merged-pr-search-unreadable` when a PR search was
+unreadable; otherwise the reopen check runs over the remaining PRs only. The
+closed-issue list also follows the branch: discovery reads up to 1,000 merged
+PRs based on `milestone/<slug>`, excluding fork heads and milestone sync PRs.
+An issue named by a remaining PR's `issue-N` head or trailing `(#N)` /
+`(Issue #N)` title, not already in the milestone's all-state list, is read
+over REST (`gh api repos/<repo>/issues/<N>`), and when it is closed, not a pull
+request and now in another milestone or none, it is added and classified like the
+rest. A claimed one is listed under "Issues addressed" with `(now in milestone
+"<title>")` or `(no longer in a milestone)`. The combined list is deduplicated
+by issue number; a live moved-issue row supersedes an overlapping cached
+milestone member, preserving its current title and milestone note.
+A failed `--base` list or issue read
+makes the whole closed-issue read fail (`null`), never a shorter list. Missing
+selected PR fields or a missing issue `milestone` field are malformed; only an
+explicit `milestone: null` means no milestone. The
+`--base` list is cached under `prs_base_merged_<branch>` for the issue cache's
+TTL; an unreadable one is not cached. The claim verdict is cached under
+`milestone_claim_verdict_v3_<N>`, served only for the same `updatedAt` and
+milestone branch (v2 and v1 entries are ignored), and a
+`merged-into-other-milestone` verdict is cached when both searches were readable.
 If either PR search fails and the other finds no delivery, the issue is flagged
 as an unreadable PR search. No verdict from partial search results is cached,
 even when the available delivery predates a reopen, so a later scan retries the
