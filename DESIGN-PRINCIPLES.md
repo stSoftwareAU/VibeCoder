@@ -1677,8 +1677,8 @@ post-creation path on a different issue and is untouched.
 **Every hand-off path runs the strip.** PR feedback, CI fix and issue
 work retain this defence against model-authored follow-ups. Originally only
 `pr_feedback_processor.ts` called the strip, so the other two paths had no
-post-hoc guard. `stripReservedLabelsFromModelFollowUp()` is the message-level entry point
-the other two use: it runs `detectEscapeHatch` over Claude's own text
+post-hoc guard. `stripReservedLabelsFromModelFollowUp()` is the message-level
+entry point the other two use: it runs `detectEscapeHatch` over Claude's own text
 (`.pr_response_message` for CI fix, the run output for issue work) and then
 performs the same strip. A reference to the issue/PR the run is *working on* is
 a self-reference, not a follow-up, and is never stripped — the guard must not

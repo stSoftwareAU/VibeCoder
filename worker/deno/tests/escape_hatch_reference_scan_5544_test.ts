@@ -94,6 +94,7 @@ Deno.test("detectEscapeHatch - failed name runs take linear character reads", ()
       (n: number) => "-.".repeat(n) + "!",
       (n: number) => "a/".repeat(n) + "!",
       (n: number) => "a/b#" + "1".repeat(n) + "!",
+      (n: number) => "a".repeat(n) + "/b#1",
     ]
   ) {
     const counts: number[] = [];
@@ -132,6 +133,8 @@ Deno.test("detectEscapeHatch - reference boundaries and ordering stay compatible
     ["éowner/repo#4", "owner/repo#4"],
     ["owner/repo#5suffix", "owner/repo#5"],
     ["(#6) [#7]", "#6"],
+    ["[#7]", "#7"],
+    ["\n#8", "#8"],
     ["foo#6 #7suffix", undefined],
     ["a/b#x #8", "#8"],
     ["o/r#", undefined],
@@ -147,4 +150,16 @@ Deno.test("detectEscapeHatch - reference boundaries and ordering stay compatible
       text,
     );
   }
+});
+
+Deno.test("detectEscapeHatch - wrapped hand-off wording keeps the existing heuristic", () => {
+  assertEquals(detectEscapeHatch("follow-up\nissue o/r#12", "o/r"), {
+    invoked: false,
+    needsHuman: false,
+  });
+  assertEquals(detectEscapeHatch("follow-up issue\no/r#12", "o/r"), {
+    invoked: true,
+    issueRef: "o/r#12",
+    needsHuman: false,
+  });
 });

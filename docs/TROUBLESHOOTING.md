@@ -274,8 +274,8 @@ completion lines and the subsequent worker activity before attributing the
 silence to it. Distinguish a watchdog kill from a later interrupted retry by
 container and run id; they can have different causes.
 
-A setup phase still running after 30 minutes for the clone, git, stream compaction
-and pre-setup command is abandoned (Issue #5128). A milestone issue adds two
+A setup phase still running after 30 minutes for the clone, git, stream
+compaction and pre-setup command is abandoned (Issue #5128). A milestone issue adds two
 agent budgets (`claude_timeout`, for the milestone pre-sync agent and its repair
 run), because only a milestone setup runs a full agent turn; a non-milestone
 setup's only agent run is the 180-second stream compaction, inside the 30
