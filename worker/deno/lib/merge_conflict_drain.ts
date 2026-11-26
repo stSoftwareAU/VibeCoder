@@ -576,12 +576,15 @@ export async function drainConflictingPrs(
           if (outcome.merged) merged++;
         }
         if (outcome && outcome.runEnded === true) {
-          // The run itself ended under this attempt (Issue #1693). Taking the
-          // next PR would open an attempt marker and withdraw it again, so
-          // the pass stops here and the queue keeps its place. Keyed on
-          // `runEnded`, never on "uncharged": a ruleset refusal is uncharged
-          // too and would otherwise starve every other conflicting PR in the
-          // cycle under a log line naming the wrong cause (Issue #1772).
+          // The attempt was cut short under this PR: the run itself ended
+          // (Issue #1693), the provider refused it (Issue #2613), or a
+          // protective stop ended it (Issue #5626). Taking the next PR would
+          // open an attempt marker and withdraw it again, or start an agent
+          // into the same low memory or full disk, so the pass stops here and
+          // the queue keeps its place. Keyed on `runEnded`, never on
+          // "uncharged": a ruleset refusal is uncharged too and would otherwise
+          // starve every other conflicting PR in the cycle under a log line
+          // naming the wrong cause (Issue #1772).
           cutShort = true;
         }
       } finally {
@@ -592,8 +595,9 @@ export async function drainConflictingPrs(
           ? deadlineEpochMs - now()
           : 0;
         logger.info(
-          "Merge-conflict drain stopping: the run ended under the last " +
-            "resolution, which was withdrawn rather than judged",
+          "Merge-conflict drain stopping: the last resolution was cut short " +
+            "(the run ending, the provider refusing it, or a protective stop) " +
+            "and withdrawn rather than judged",
           { taken: taken + 1, merged, remainingMs: remaining },
         );
         return { kind: "deadline", remainingMs: remaining };

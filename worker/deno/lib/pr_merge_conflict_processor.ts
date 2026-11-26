@@ -52,6 +52,7 @@ import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import {
   createMergeConflictReplyReader,
+  protectiveStopOf,
   runMergeConflictAgent,
 } from "./merge_conflict_agent.ts";
 import { endHandlerLandingStep } from "./handler_watchdog.ts";
@@ -198,9 +199,11 @@ export interface MergeConflictResult {
   attemptCharged?: boolean;
   /**
    * Explicitly `true` when the withdrawal happened because **the run itself**
-   * was ending (Issue #1693) — the one withdrawal the drain must stop on,
-   * because taking the next PR would open an attempt marker and withdraw it
-   * again. Kept apart from {@link MergeConflictResult.attemptCharged}
+   * was ending (Issue #1693), or a protective stop ended it (Issue #5626: the
+   * guest-memory floor or the host-disk park) — the withdrawals the drain must
+   * stop on. Taking the next PR would open an attempt marker and withdraw it
+   * again, or start an agent into the same low memory or full disk. Kept apart
+   * from {@link MergeConflictResult.attemptCharged}
    * (Issue #1772): a ruleset refusal is also uncharged, but it says nothing
    * about the run's remaining time, so the drain carries on to the next PR.
    */
@@ -1883,6 +1886,20 @@ async function resolveConflict(
       }
       if (!agentOutcome.ok) {
         await abortMerge(run, workDir);
+        // Issue #5626: a protective stop is no verdict on the PR, and the next
+        // PR's agent would start into the same low memory or full disk.
+        const protectiveStop = protectiveStopOf(agentOutcome.error);
+        if (protectiveStop !== undefined) {
+          return await withdrawCutShortAttempt(
+            input,
+            processorDeps,
+            attemptCommentId,
+            conflictedFiles,
+            attemptNumber,
+            timer,
+            cutShortByProtectiveStop(protectiveStop.message),
+          );
+        }
         return await failAttempt(
           input,
           processorDeps,
@@ -3068,6 +3085,15 @@ function cutShortByProvider(detail: string): CutShortCause {
   };
 }
 
+/** The guest-memory floor or host-disk park stopped the agent (Issue #5626). */
+function cutShortByProtectiveStop(detail: string): CutShortCause {
+  return {
+    markerReason:
+      "the worker stopped the agent to protect the guest (Issue #5626)",
+    phrase: `a protective stop (${detail})`,
+  };
+}
+
 /**
  * Withdraw an attempt the worker itself cut short (Issue #1693).
  *
@@ -3086,6 +3112,10 @@ function cutShortByProvider(detail: string): CutShortCause {
  * A provider that refused the agent run (a 402, an auth failure, an exhausted
  * 429/5xx) is withdrawn the same way: the conflict was never looked at, and
  * every later PR in the drain would hit the same wall (Issue #2613).
+ *
+ * A protective stop (Issue #5626: the guest-memory floor or the host-disk park)
+ * is withdrawn the same way, and the drain stops on it too: the next PR's agent
+ * would start into the same low memory or full disk.
  */
 async function withdrawCutShortAttempt(
   input: MergeConflictInput,

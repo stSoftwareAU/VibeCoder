@@ -1320,6 +1320,15 @@ separately: `DEFAULT_MAX_DISRUPTED_ATTEMPTS` disruptions on one PR means the
 disruption — not the conflict — is the problem, and it is logged loudly rather
 than asking a person: no label is applied and the PR is left queued.
 
+**A protective stop is not a conflict either** (Issue #5626). When the worker
+stops a PR's conflict agent to protect the guest — the guest-memory floor
+([CONTAINER.md](CONTAINER.md#a-running-agent-stops-at-the-guest-memory-floor-issue-4815))
+or the host-disk park — the conflict was never judged. The merge is aborted,
+the attempt is withdrawn without being charged, and no failed conclusion is
+posted: the attempt marker is deleted, as for a provider outage. The conflict
+drain then stops for that pass instead of starting the next PR's agent into the
+same low memory or full disk.
+
 For a **PR**, the ledger is the attempt/conclusion marker comments on the PR
 itself, so the bound holds across hosts and worker restarts. For a **milestone
 branch that heads an open PR** (the milestone → default-branch PR), the sync

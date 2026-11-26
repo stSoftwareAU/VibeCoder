@@ -75,6 +75,8 @@ import {
   verifyMergeBeforePush,
 } from "../lib/merge_fast_checks.ts";
 import type { LogContext, Logger } from "../types.ts";
+import { GuestMemoryFloorError } from "../lib/guest_memory_floor.ts";
+import { HostDiskParkError } from "../lib/heavy_build_gate.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -638,6 +640,8 @@ function makeClaude(
    */
   resultOverrides?: Partial<ClaudeRunResult>,
   replies?: string[],
+  /** The run fails with this error instead of succeeding (Issue #5626). */
+  claudeError?: Error,
 ): Partial<ClaudeDeps> {
   return {
     runClaudeWithRetry: (async (
@@ -662,6 +666,9 @@ function makeClaude(
       // a test to observe what happens *while* it runs (Issue #395).
       if (delayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      if (claudeError !== undefined) {
+        return { ok: false, error: claudeError };
       }
       return {
         ok: true,
@@ -704,6 +711,8 @@ async function runProcessor(
     crashHandling?: Partial<CrashHandlingDeps>;
     /** Fields merged over the agent result (Issue #1693). */
     claudeResult?: Partial<ClaudeRunResult>;
+    /** The agent run fails with this error (Issue #5626). */
+    claudeError?: Error;
     agentReplies?: string[];
     /** Id `gh pr comment` reports for each posted comment (Issue #1693). */
     postedCommentId?: number;
@@ -777,6 +786,7 @@ async function runProcessor(
       opts?.claudeDelayMs ?? 0,
       opts?.claudeResult,
       opts?.agentReplies,
+      opts?.claudeError,
     ),
     crashHandling: opts?.crashHandling,
   });
@@ -2436,6 +2446,87 @@ Deno.test("processMergeConflict - a provider outage withdraws the attempt instea
   );
   assertEquals(conclusions, []);
   assertEquals(captured.commitAndPushCalls, 0);
+});
+
+Deno.test("processMergeConflict - a guest-memory-floor stop withdraws the attempt and stops the drain (Issue #5626)", async () => {
+  // The worker stopped the agent so the guest keeps answering (Issue #4815).
+  // The next PR's agent would start into the same low memory, so the attempt
+  // is withdrawn uncharged, no failure is posted, and the drain stops.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterAgent: ["SECURITY.md"] }),
+    undefined,
+    {
+      claudeError: new GuestMemoryFloorError(
+        "[GUEST_MEMORY_FLOOR] guest memory stayed below its floor (490 MiB available, floor 806 MiB) for 2 readings in a row: the agent run was stopped so the guest keeps answering (Issue #4815)",
+      ),
+      postedCommentId: 9005,
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.runEnded, true);
+  assertEquals(result.value.escalated, false);
+  assertStringIncludes(result.value.summary, "protective stop");
+  assertEquals(captured.commentsDeleted, [9005]);
+  const conclusions = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER) || c.includes(CONFLICT_RESOLVED_MARKER)
+  );
+  assertEquals(conclusions, []);
+  assertEquals(captured.commitAndPushCalls, 0);
+  assert(
+    captured.gitArgs.some((args) =>
+      args[0] === "merge" && args.includes("--abort")
+    ),
+    "the half-resolved merge was not aborted",
+  );
+});
+
+Deno.test("processMergeConflict - a host-disk park withdraws the attempt and stops the drain (Issue #5626)", async () => {
+  // The host disk was too full to start the agent's build, so the worker
+  // parked the run. Like the memory floor, the attempt is not the PR's fault.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterAgent: ["SECURITY.md"] }),
+    undefined,
+    {
+      claudeError: new HostDiskParkError("host disk below its floor", true),
+      postedCommentId: 9007,
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.runEnded, true);
+  const conclusions = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER) || c.includes(CONFLICT_RESOLVED_MARKER)
+  );
+  assertEquals(conclusions, []);
+});
+
+Deno.test("processMergeConflict - an agent run that fails to spawn is still judged (Issue #5626)", async () => {
+  // The control for the two protective stops: an ordinary failed run keeps
+  // its attempt, its marker, and its failed conclusion.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterAgent: ["SECURITY.md"] }),
+    undefined,
+    {
+      claudeError: new Error("spawn failed: ENOENT"),
+      postedCommentId: 9006,
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.runEnded, undefined);
+  assertEquals(captured.commentsDeleted, [], "the marker is not withdrawn");
+  const failed = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER)
+  );
+  assertEquals(failed.length, 1);
+  assertStringIncludes(failed[0] ?? "", "agent run failed");
 });
 
 Deno.test("processMergeConflict - an agent that runs out its own timeout spends its attempt (Issue #2305)", async () => {

@@ -15,8 +15,10 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createMergeConflictReplyReader,
   type MergeConflictAgentRequest,
+  protectiveStopOf,
   runMergeConflictAgent,
 } from "../lib/merge_conflict_agent.ts";
+import { GuestMemoryFloorError } from "../lib/guest_memory_floor.ts";
 import {
   endHandlerLandingStep,
   handlerLandingStep,
@@ -422,6 +424,37 @@ Deno.test("merge conflict agent - a failed run surfaces the runner's error", asy
   assert(!outcome.ok);
   assertStringIncludes(outcome.error.message, "agent run failed");
   assertStringIncludes(outcome.error.message, "claude is unauthenticated");
+});
+
+Deno.test("merge conflict agent - a protective stop keeps its type under the failed run (Issue #5626)", async () => {
+  const captured = makeCaptured();
+  const stop = new GuestMemoryFloorError(
+    "[GUEST_MEMORY_FLOOR] guest memory stayed below its floor",
+  );
+  const runAgent: RunAgent = (options, retryOptions) => {
+    captured.runs++;
+    captured.prompts.push(options.prompt);
+    captured.options.push(options);
+    captured.retryOptions.push(retryOptions ?? {});
+    return Promise.resolve({ ok: false, error: stop });
+  };
+  const outcome = await runMergeConflictAgent(makeRequest(runAgent));
+
+  assertEquals(outcome.ok, false);
+  assert(!outcome.ok);
+  assertEquals(outcome.error.message, `agent run failed: ${stop.message}`);
+  assert(
+    protectiveStopOf(outcome.error) === stop,
+    "the protective stop is not recoverable from the failed run",
+  );
+});
+
+Deno.test("merge conflict agent - protectiveStopOf finds only a protective stop (Issue #5626)", () => {
+  assertEquals(protectiveStopOf(new Error("x")), undefined);
+  assertEquals(
+    protectiveStopOf(new Error("y", { cause: new Error("z") })),
+    undefined,
+  );
 });
 
 Deno.test("merge conflict agent - an unbuildable prompt fails before any agent runs", async () => {

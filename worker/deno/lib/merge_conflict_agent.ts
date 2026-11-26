@@ -29,6 +29,8 @@ import type { ConflictIssueContext } from "./conflict_issue_context.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { isProviderUnavailableFailure } from "./agent_output.ts";
 import { beginHandlerLandingStep } from "./handler_watchdog.ts";
+import { GuestMemoryFloorError } from "./guest_memory_floor.ts";
+import { HostDiskParkError } from "./heavy_build_gate.ts";
 
 export type {
   MergeConflictRepairContext,
@@ -130,11 +132,31 @@ export interface MergeConflictAgentOutcome {
 }
 
 /**
+ * The protective stop behind a failed agent run (Issue #5626): the guest-memory
+ * floor or the host-disk park, carried as the failed run's `cause`. Undefined
+ * for any other failure, so the caller keeps judging it as one.
+ *
+ * @param error - The error a failed {@link runMergeConflictAgent} returned
+ * @returns The protective stop, or undefined when the failure was not one
+ */
+export function protectiveStopOf(
+  error: Error,
+): GuestMemoryFloorError | HostDiskParkError | undefined {
+  if (error instanceof GuestMemoryFloorError) return error;
+  if (error instanceof HostDiskParkError) return error;
+  const { cause } = error;
+  if (cause instanceof GuestMemoryFloorError) return cause;
+  if (cause instanceof HostDiskParkError) return cause;
+  return undefined;
+}
+
+/**
  * Run the resolution agent against a conflicted working tree.
  *
  * @param request - The target, the conflicted paths and the run bounds
  * @returns An error result when the prompt could not be built, the agent could
- *   not run, or it timed out; otherwise whether the worker ended the run.
+ *   not run (a protective stop is its `cause`, see {@link protectiveStopOf}), or
+ *   it timed out; otherwise whether the worker ended the run.
  */
 export async function runMergeConflictAgent(
   request: MergeConflictAgentRequest,
@@ -213,9 +235,13 @@ export async function runMergeConflictAgent(
   );
 
   if (!claudeResult.ok) {
+    // Issue #5626: the cause keeps a protective stop's type for the PR pass;
+    // the message is unchanged for every other caller.
     return {
       ok: false,
-      error: new Error(`agent run failed: ${claudeResult.error.message}`),
+      error: new Error(`agent run failed: ${claudeResult.error.message}`, {
+        cause: claudeResult.error,
+      }),
     };
   }
   // Issue #1693: the worker ended this run — the handler was abandoned by the
