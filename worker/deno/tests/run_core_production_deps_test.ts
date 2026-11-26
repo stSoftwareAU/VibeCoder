@@ -39,6 +39,7 @@ import type { WorkerConfig } from "../types.ts";
 import { setRunProviderOverride } from "../lib/agent_provider.ts";
 import { healthCacheFilePath } from "../lib/health_check_cache.ts";
 import { envFrom } from "./support/env_lookup.ts";
+import { type FakeClock, fakeClock } from "./support/fake_clock.ts";
 import {
   runRepositoryCommand,
   setGateCredentialSource,
@@ -71,34 +72,25 @@ function repoFailureFilePath(tmpDir: string): string {
 /** No-op logger for tests — avoids opening file handles. */
 const testLogger = createLogger({ write: () => {} });
 
-/**
- * Run `action` with `globalThis.setTimeout` stubbed so it records every delay
- * requested and fires each callback immediately (no real wait). Returns the
- * captured delays in order. The original `setTimeout` is always restored.
- *
- * This lets a `sleep` test assert the duration it asks the timer to wait
- * deterministically, instead of measuring wall-clock elapsed time (Issue #2890).
- */
-async function captureSleepDelays(
-  action: () => Promise<unknown>,
-): Promise<number[]> {
-  const requestedDelays: number[] = [];
+/** Drive the production sleep's timer boundary without a wall-clock wait. */
+async function withSleepClock(
+  action: (clock: FakeClock) => Promise<void>,
+): Promise<void> {
+  const clock = fakeClock();
   const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
   try {
-    // deno-lint-ignore no-explicit-any
-    (globalThis as any).setTimeout = (
-      callback: (...args: unknown[]) => void,
-      ms?: number,
-    ): number => {
-      requestedDelays.push(ms ?? -1);
-      callback();
-      return 0;
-    };
-    await action();
+    globalThis.setTimeout = ((handler: () => void, ms?: number) =>
+      clock.setTimeout(handler, ms ?? 0)) as unknown as typeof setTimeout;
+    globalThis.clearTimeout = (handle) =>
+      clock.clearTimeout(handle === undefined ? undefined : Number(handle));
+    await action(clock);
   } finally {
+    // Release sleepers even if a regression leaves an assertion failing.
+    await clock.advance(300_000);
     globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
   }
-  return requestedDelays;
 }
 
 /**
@@ -636,44 +628,75 @@ Deno.test("createProductionRunCoreDeps - now returns current timestamp", async (
   assertEquals(now <= after, true);
 });
 
-// Issue #2890: these previously measured wall-clock elapsed time around a real
-// `await deps.sleep(...)` (`elapsed >= 40`), a HOW/timing anti-pattern that
-// asserts a property of the platform's timer rather than the worker's logic and
-// depends on machine speed and CI load (the same class removed under Issue
-// #2434). Replaced with deterministic assertions on observable behaviour: a
-// stubbed setTimeout captures the delay `sleep` asks the timer to wait and fires
-// the callback immediately, so the promise resolves with no real wait.
-Deno.test("createProductionRunCoreDeps - sleep waits for the requested duration", async () => {
-  const options = createTestOptions();
-  const { deps } = await createProductionRunCoreDeps(options);
+// Assert settlement at the public sleep boundary; timer requests are incidental.
+for (const delay of [50, undefined]) {
+  Deno.test(`createProductionRunCoreDeps - sleep resolves at ${delay ?? "the default 30000"}ms`, async () => {
+    const { deps, cleanup } = await createProductionRunCoreDeps(
+      createTestOptions(),
+    );
+    try {
+      await withSleepClock(async (clock) => {
+        let settled = false;
+        const sleeping = deps.sleep(delay).then(() => {
+          settled = true;
+        });
+        await clock.advance((delay ?? 30000) - 1);
+        assertEquals(settled, false);
+        await clock.advance(1);
+        assertEquals(settled, true);
+        await sleeping;
+      });
+    } finally {
+      cleanup();
+    }
+  });
+}
 
-  const requestedDelays = await captureSleepDelays(() => deps.sleep(50));
-
-  // A real-timer-backed sleep asks the timer for exactly the requested duration.
-  assertEquals(requestedDelays, [50]);
-});
-
-Deno.test("createProductionRunCoreDeps - sleep defaults to 30s when no delay given", async () => {
-  const options = createTestOptions();
-  const { deps } = await createProductionRunCoreDeps(options);
-
-  const requestedDelays = await captureSleepDelays(() => deps.sleep());
-
-  // The `ms ?? 30000` default is the observable contract for a no-arg sleep.
-  assertEquals(requestedDelays, [30000]);
-});
-
-Deno.test("createProductionRunCoreDeps - cancelled sleep never waits (Issue #5544)", async () => {
+Deno.test("createProductionRunCoreDeps - already-aborted sleep resolves without time advancing (Issue #5544)", async () => {
   const { deps, cleanup } = await createProductionRunCoreDeps(
     createTestOptions(),
   );
   try {
-    const sleep: (ms?: number, signal?: AbortSignal) => Promise<void> =
-      deps.sleep;
-    const requestedDelays = await captureSleepDelays(() =>
-      sleep(300_000, AbortSignal.abort())
-    );
-    assertEquals(requestedDelays, []);
+    await withSleepClock(async (clock) => {
+      let settled = false;
+      void deps.sleep(300_000, AbortSignal.abort()).then(() => {
+        settled = true;
+      });
+      await clock.advance(0);
+      assertEquals(settled, true);
+    });
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("createProductionRunCoreDeps - cancellation resolves an admitted sleep while an unaborted control waits (Issue #5544)", async () => {
+  const { deps, cleanup } = await createProductionRunCoreDeps(
+    createTestOptions(),
+  );
+  try {
+    await withSleepClock(async (clock) => {
+      const controller = new AbortController();
+      let cancelledSettled = false;
+      let controlSettled = false;
+      void deps.sleep(100, controller.signal).then(() => {
+        cancelledSettled = true;
+      });
+      void deps.sleep(100).then(() => {
+        controlSettled = true;
+      });
+      await clock.advance(1);
+      assertEquals(cancelledSettled, false);
+      assertEquals(controlSettled, false);
+      controller.abort();
+      await clock.advance(0);
+      assertEquals(cancelledSettled, true);
+      assertEquals(controlSettled, false);
+      await clock.advance(98);
+      assertEquals(controlSettled, false);
+      await clock.advance(1);
+      assertEquals(controlSettled, true);
+    });
   } finally {
     cleanup();
   }

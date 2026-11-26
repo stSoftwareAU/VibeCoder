@@ -41,7 +41,14 @@ original watchdog cause remains unidentified. Part of #5544.
 
 Backend/CLI only. #5544: Hard kill: container wedged in follow-up-label-strip
 (watchdog), checked with `gh issue view`; the final issue-body fetch used
-`gh api` after the shared GraphQL quota was exhausted.
+`gh api` after the shared GraphQL quota was exhausted. The retry independently
+read the issue through the connected GitHub service.
+
+Operator sections checked: Troubleshooting, hard kills; GH API Optimisation,
+budget pacing; Internals, idle-task filing. The branch updates those manuals,
+Configuration, the issue-processing and resilience workflows, and Design
+Principles to describe capped/cancellable end-of-cycle sleep and the scanner
+without attributing the archived wedge to an unproved cause.
 
 The archived 24 November 2026 timeline separates the main loop from slot tails:
 
@@ -96,66 +103,102 @@ flowchart TD
 
 ## Acceptance Criteria
 
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
 - **missing** — a container wedged and the launcher watchdog reaped it, so the
-  run never released its claim — reason: the archive records claim release and
-  completed strips, but lacks evidence identifying the original main-loop stall.
-  The reproduced defects do not establish that watchdog cause.
+  run never released its claim — reviewer: missing — reason: the executor and
+  independent Spec reviewer checked the incident archive and matching launcher
+  log. Both record claim release and completed strips, but neither identifies
+  the original main-loop stall. The narrower reproduced defects do not establish
+  that watchdog cause.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — internal character-read counts and an instrumentation-only
+  production parameter — evidence:
+  `worker/deno/tests/escape_hatch_reference_scan_5544_test.ts` and
+  `worker/deno/lib/escape_hatch.ts` — reason: fixed in this diff; tests assert
+  reference outcomes and the parameter is removed.
+- **violation** — breaker/sleep interactions and cleanup call order — evidence:
+  `worker/deno/tests/run_core_after_target_test.ts` — reason: fixed in this diff;
+  controlled-clock tests assert completion, returned results and released
+  agent/claim/PID state.
+- **violation** — timer-request assertions instead of sleep settlement — evidence:
+  `worker/deno/tests/run_core_production_deps_test.ts` — reason: fixed in this
+  diff; tests assert promise settlement for cancellation and deadlines.
+- **clean** — independent Standards reviewer checked the full diff against
+  `CODING-STANDARDS.md`: behavioural coverage, preservation of existing
+  assertions, KISS/DRY, reuse of the clock helper, no new dependencies or
+  test-only production seams, benchmark separation, Australian English and
+  relevant operator documentation. No outstanding code/test violation found.
 
 ## Test Plan
 
-- `worker/deno/tests/run_core_after_target_test.ts`: target reached, finish
-  exceeded, shutdown already requested and running controls, with/without
-  progress; one-millisecond remaining runway; SIGTERM/SIGINT during an admitted
-  sleep. Assertions cover callbacks, breaker accounting, completion text,
-  termination and claim/PID cleanup. Existing base assertions are retained.
-- `worker/deno/tests/run_core_production_deps_test.ts`: cancellation reaches the
-  real sleep adapter; existing requested-duration/default-duration controls
-  pass.
-- Against `origin/main` production files, the loop/adapter command produced 50
-  passes and 11 expected failures before correction. The fixed files pass all 61
-  cases. Four additional completion-message assertions failed before the wording
-  correction and passed afterwards.
-- `worker/deno/tests/escape_hatch_reference_scan_5544_test.ts`: hostile input
-  outcomes, reference boundaries/order and deterministic character-read bounds
-  for six families at N and 4N; wrapped wording preserves the existing
-  heuristic.
+- `worker/deno/tests/run_core_after_target_test.ts`: twelve #5544 cases cover
+  target reached, finish exceeded, shutdown already requested and a running
+  control, with/without progress; one-millisecond runway; SIGTERM/SIGINT during
+  an admitted sleep. Stateful external-boundary fakes start with live agents,
+  a claim and a held PID lock. Assertions establish completion at the controlled
+  instant, the returned shutdown result, final released state and completion
+  text. All eight pre-existing tests and their assertions remain unchanged.
+- `worker/deno/tests/run_core_production_deps_test.ts`: the production adapter's
+  sleep resolves immediately for an already-aborted signal and on cancellation
+  after admission. An unaborted control stays pending until its deadline.
+  Requested-duration and default-duration controls now assert settlement before
+  and at the deadline, replacing timer-request assertions.
+- `worker/deno/tests/escape_hatch_reference_scan_5544_test.ts`: hostile-input
+  outcomes, reference boundaries/order and six input families at N and 4N
+  remain covered. Only internal character-read assertions were removed;
+  wrapped wording retains the existing heuristic. No test timing gate replaces
+  those assertions. Historical performance reproduction is recorded separately
+  under Reproduction above; no benchmark was run in this retry because the
+  host runs parallel work. Timings belong behind the repository's benchmark
+  command on a quiet machine, per Coding Standards, Benchmarks.
 - `worker/deno/tests/escape_hatch_label_strip_test.ts`: long text reaches the
   real strip while retaining self-reference, repository and configured
-  label-applier guards. The fake now reflects successful label removal in its
-  state; no base assertions were removed. Existing escape-hatch, verification,
-  label-strip, loop, production-dependency, worker and clock suites also ran.
-- Final affected `deno task test:unit` command: 651 passed, zero failed (649
-  parallel, two serial). Formatting, lint and targeted type checks passed.
-  `deno task check:manifests` passed: 876 passed, one ignored by its existing
-  configuration; no new ignore was added.
-- Base/head compatibility corpus: 1,625 files and 3,250 comparisons per tree,
-  two repository slugs; zero mismatches and zero added positives/negatives
-  relative to the old detector. Corpus: PR summaries, prompt Markdown and
-  escape-hatch/reserved-label test sources. This checks compatibility, not
-  independent accuracy of the prose heuristic.
+  label-applier guards. The fake reflects successful label removal in its
+  state; no base assertions were removed.
+- Focused red checks in isolated copies with the base production files:
+  the loop suite passes its eight pre-existing cases and fails all twelve
+  #5544 cases on completion outcomes; the adapter suite passes 40 cases and
+  fails both cancellation regressions. These fail without hanging and pass
+  against the corrected head. No shared production files were reverted.
+- `deno task test:unit` over the scanner, label-strip, loop, production adapter
+  and real signal-cleanup suites, with stdin from `/dev/null`: 107 passed, zero
+  failed (105 parallel, two serial). The Spec reviewer independently reran this
+  command and confirmed the result. Formatting, lint and targeted type checks
+  passed. `deno task check:manifests` also passed; its existing ignored case was
+  retained, with no new ignore.
+- Earlier base/head compatibility corpus: 1,625 files and 3,250 comparisons
+  per tree, two repository slugs; zero mismatches and zero added
+  positives/negatives relative to the old detector. Corpus: PR summaries, prompt
+  Markdown and escape-hatch/reserved-label test sources. This checks
+  compatibility, not independent accuracy of the prose heuristic.
 - No twinned full-reference scanner or separate end-of-cycle sleep
   implementation was found. No new regex, persisted shape, destructive
   operation, failure ledger or privileged external operation was introduced.
-
-- `timeout 1080 ./quality.sh < /dev/null` passed on final code commit
-  `9e49966b6`, including both unit-test passes, lint, type/format, completeness,
-  Mermaid, Markdown lint, Semgrep and Gitleaks. Configuration integration was
-  skipped (`deno or .config.json not available`); Checkov was skipped because no
-  pinned binary or container image was available. Subsequent edits only finalise
-  operator documentation and this summary.
-
-- Final Markdown/Mermaid checks and `deno task pr-summary-check` passed: zero
-  blocked gates and zero not checked. Acceptance-criteria closure and two-axis
-  review were not applicable because the issue has no criteria list.
+- `timeout 1500 ./quality.sh < /dev/null` passed on the retry's final code and
+  tests: both unit passes, lint, whole-tree type/format checks, completeness,
+  Mermaid, Markdown lint, Semgrep and release-tag rules. Configuration
+  integration was skipped (`deno or .config.json not available`); Checkov was
+  skipped because neither the pinned binary nor its container image was
+  available. Gitleaks passed for the existing committed range; it does not scan
+  uncommitted changes. The worker's subsequent gate will include this retry's
+  commit. The only later edit records these results in this summary.
+- Final `deno task pr-summary-check` with the actual issue body and labels:
+  zero blocked gates and zero not checked. Independent two-axis review and
+  reproduction checks passed; the incident criterion above remains missing.
 
 ## Merge verification
 
-- Required CI and independent code review are not yet verified.
+- Required CI and fleet PR approval are not yet verified.
 
 ## Deno regression avoided
 
-The corpus and manual reproduction use `deno run --no-config --no-lock`;
-validation adds no Node tooling or dependency.
+The earlier corpus and manual reproduction used `deno run --no-config
+--no-lock`; this retry adds no Node tooling or dependency.
 
 ## Remaining risk
 

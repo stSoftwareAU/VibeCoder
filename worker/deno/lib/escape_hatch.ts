@@ -43,21 +43,17 @@ const NEGATIVE: EscapeHatchDetection = { invoked: false, needsHuman: false };
  *                  of `.pr_response_message`). May be `undefined`.
  * @param repo - Repository in `owner/repo` form. Used to recognise a
  *               same-repo full reference (`owner/repo#NNN`).
- * @param readCode - Character reader for the reference scan; defaults to the
- *                   string reader. Injectable for deterministic work counts.
  * @returns Detection result. `invoked: false` when no message is supplied.
  */
 export function detectEscapeHatch(
   message: string | undefined,
   repo: string,
-  readCode: (text: string, index: number) => number = (text, index) =>
-    text.charCodeAt(index),
 ): EscapeHatchDetection {
   if (!message) return NEGATIVE;
   const trimmed = message.trim();
   if (trimmed.length === 0) return NEGATIVE;
 
-  const issueRef = findIssueReference(trimmed, repo, readCode);
+  const issueRef = findIssueReference(trimmed, repo);
   if (!issueRef) return NEGATIVE;
 
   if (!hasFollowUpWording(trimmed)) return NEGATIVE;
@@ -88,9 +84,8 @@ function isNameCode(code: number): boolean {
  */
 function* fullReferences(
   message: string,
-  readCode: (text: string, index: number) => number,
 ): Generator<string> {
-  const codeAt = (index: number) => readCode(message, index);
+  const codeAt = (index: number) => message.charCodeAt(index);
   let i = 0;
   while (i < message.length) {
     if (!isAlnum(codeAt(i))) {
@@ -130,11 +125,10 @@ function* fullReferences(
 function findIssueReference(
   message: string,
   repo: string,
-  readCode: (text: string, index: number) => number,
 ): string | undefined {
   const repoLower = repo.toLowerCase();
   let firstFull: string | undefined;
-  for (const ref of fullReferences(message, readCode)) {
+  for (const ref of fullReferences(message)) {
     const slug = ref.slice(0, ref.indexOf("#"));
     if (slug.toLowerCase() === repoLower) {
       return ref;

@@ -25,6 +25,7 @@ import {
   createDefaultRunCoreConfig,
   type RunCoreDeps,
   runCoreLoop,
+  type RunCoreResult,
 } from "../lib/run_core.ts";
 import {
   DEFAULT_RUN_TARGET_SECONDS,
@@ -583,142 +584,200 @@ Deno.test(
   },
 );
 
+/**
+ * A run with live process, GitHub-claim and PID-lock services. Their state is
+ * visible before shutdown and cleanup changes it, so completion proves more
+ * than invoking a cleanup stub. The fake clock controls every cycle sleep.
+ */
+function startShutdownRun(progressed: boolean, livenessAt: number) {
+  const clock = fakeClock(START_MS);
+  const signals = new Map<string, () => void>();
+  const processes = new Set([7319]);
+  const claims = new Set(["owner/repo#1"]);
+  let pidHeld = false;
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const atLiveness = Promise.withResolvers<void>();
+  const continueCycle = Promise.withResolvers<void>();
+  const sleepAdmitted = Promise.withResolvers<void>();
+  let completed: { at: number; result: RunCoreResult } | undefined;
+  const config = { ...createDefaultRunCoreConfig(), maxConcurrentIssues: 1 };
+  const deps = createMockDeps({
+    now: clock.now,
+    sleep: (ms, signal) => {
+      const sleeping = clock.sleep(ms ?? 30_000, signal);
+      sleepAdmitted.resolve();
+      return sleeping;
+    },
+    log: (message) => logs.push(message),
+    logError: (message) => errors.push(message),
+    loadAndValidateConfig: () => Promise.resolve({ ok: true, value: config }),
+    findAndProcessPrFeedback: () =>
+      Promise.resolve({ ok: true, value: { processed: progressed } }),
+    addSignalListener: (signal, handler) => signals.set(signal, handler),
+    removeSignalListener: (signal) => signals.delete(signal),
+    claimPidFile: async () => {
+      pidHeld = true;
+    },
+    terminateActiveAgentRuns: async () => {
+      processes.clear();
+    },
+    cleanupInProgressIssue: async () => {
+      claims.clear();
+    },
+    releasePidFile: async () => {
+      pidHeld = false;
+    },
+    checkLivenessWindow: async () => {
+      await clock.advance(livenessAt - clock.now());
+      atLiveness.resolve();
+      await continueCycle.promise;
+    },
+  });
+  const run = runCoreLoop(config, deps).then((result) => {
+    completed = { at: clock.now(), result };
+    return result;
+  });
+  return {
+    clock,
+    logs,
+    errors,
+    ready: atLiveness.promise,
+    resume: () => continueCycle.resolve(),
+    signal: (name: "SIGTERM" | "SIGINT") => signals.get(name)!(),
+    state: () => ({
+      processes: [...processes],
+      claims: [...claims],
+      pidHeld,
+    }),
+    completion: () => completed,
+    // Synchronisation only: a broken implementation may admit a sleep when it
+    // should finish. Let either path reach an externally observable state.
+    cycleSettledOrSleeping: () => Promise.race([run, sleepAdmitted.promise]),
+    async dispose() {
+      continueCycle.resolve();
+      signals.get("SIGTERM")?.();
+      // Release an uncancelled/overshooting sleep even after a failed assertion.
+      await clock.advance(24 * 60 * 60 * 1000);
+      await run;
+      resetRunTimelineForTests();
+    },
+  };
+}
+
+const LIVE_SHUTDOWN_STATE = {
+  processes: [7319],
+  claims: ["owner/repo#1"],
+  pidHeld: true,
+};
+const RELEASED_SHUTDOWN_STATE = { processes: [], claims: [], pidHeld: false };
+
+/** Allow the immediate fake services' promise chains to settle without time passing. */
+async function flushShutdownPromises(
+  clock: ReturnType<typeof fakeClock>,
+): Promise<void> {
+  await clock.sleep(0);
+}
+
+function assertShutdownCompleted(
+  fixture: ReturnType<typeof startShutdownRun>,
+  at: number,
+  signalled: boolean,
+): void {
+  const completed = fixture.completion();
+  assertEquals(
+    completed?.at,
+    at,
+    "the loop completes at the controlled instant",
+  );
+  assertEquals(
+    completed?.result.exitReason,
+    signalled ? "Shutdown signal received" : "Run duration expired",
+  );
+  assertEquals(completed?.result.plannedShutdown, true);
+  assertEquals(completed?.result.fatalError, false);
+  assertEquals(completed?.result.durationSeconds, (at - START_MS) / 1000);
+  assertEquals(fixture.state(), RELEASED_SHUTDOWN_STATE);
+  assertEquals(fixture.errors, []);
+  assertEquals(
+    fixture.logs.includes("Shutdown signal received. Exiting for refresh."),
+    signalled,
+  );
+  assertEquals(
+    fixture.logs.includes("Run duration complete. Exiting for refresh."),
+    !signalled,
+  );
+}
+
 for (const progressed of [false, true]) {
   for (const stop of ["target", "deadline", "shutdown", "running"] as const) {
     Deno.test(`run_core - final cycle does not delay shutdown for ${stop}, progress=${progressed} (Issue #5544)`, async () => {
-      const clock: Clock = { now: START_MS };
-      let shutdown: (() => void) | undefined;
-      const sleeps: number[] = [];
-      const breakerUpdates: string[] = [];
-      const cycles: string[] = [];
-      const { logs, errors } = await runLoop(clock, {
-        findAndProcessPrFeedback: () =>
-          Promise.resolve({ ok: true, value: { processed: progressed } }),
-        addSignalListener: (signal, handler) => {
-          if (signal === "SIGTERM") shutdown = handler;
-        },
-        checkLivenessWindow: () => {
-          // The archived main loop reached liveness after its finish deadline.
-          if (stop === "target") clock.now = TARGET_MS;
-          if (stop === "deadline") clock.now = START_MS + 3 * 60 * 60 * 1000;
-          if (stop === "shutdown") shutdown!();
-          return Promise.resolve();
-        },
-        circuitBreakerReset: () => {
-          breakerUpdates.push("reset");
-          return Promise.resolve();
-        },
-        circuitBreakerRecordZeroProgress: () => {
-          breakerUpdates.push("zero-progress");
-          return Promise.resolve();
-        },
-        runCycleCallback: (cycle) => {
-          cycles.push(cycle.endReason);
-          return Promise.resolve();
-        },
-        sleep: (ms) => {
-          sleeps.push(ms ?? 0);
-          clock.now = PAST_TARGET_MS;
-          return Promise.resolve();
-        },
-      });
-      assertEquals(errors, []);
-      assertEquals(cycles, ["no_eligible_work"]);
-      assertEquals(breakerUpdates, [progressed ? "reset" : "zero-progress"]);
-      assertEquals(sleeps.length, stop === "running" ? 1 : 0);
-      assertEquals(
-        logs.includes(
-          stop === "shutdown"
-            ? "Shutdown signal received. Exiting for refresh."
-            : "Run duration complete. Exiting for refresh.",
-        ),
-        true,
-      );
+      const at = stop === "target"
+        ? TARGET_MS
+        : stop === "deadline"
+        ? START_MS + 3 * 60 * 60 * 1000
+        : TARGET_MS - 1000;
+      const fixture = startShutdownRun(progressed, at);
+      try {
+        await fixture.ready;
+        assertEquals(fixture.state(), LIVE_SHUTDOWN_STATE);
+        assertEquals(fixture.completion(), undefined);
+        if (stop === "shutdown") fixture.signal("SIGTERM");
+        fixture.resume();
+        await fixture.cycleSettledOrSleeping();
+        if (stop === "running") {
+          await fixture.clock.advance(999);
+          assertEquals(fixture.completion(), undefined);
+          assertEquals(fixture.state(), LIVE_SHUTDOWN_STATE);
+          await fixture.clock.advance(1);
+          await flushShutdownPromises(fixture.clock);
+        }
+        assertShutdownCompleted(
+          fixture,
+          stop === "running" ? TARGET_MS : at,
+          stop === "shutdown",
+        );
+      } finally {
+        await fixture.dispose();
+      }
     });
   }
 }
 
 for (const progressed of [false, true]) {
   Deno.test(`run_core - cycle sleep stops at the target, progress=${progressed} (Issue #5544)`, async () => {
-    const clock: Clock = { now: START_MS };
-    const sleeps: number[] = [];
-    const { errors, logs } = await runLoop(clock, {
-      findAndProcessPrFeedback: () =>
-        Promise.resolve({ ok: true, value: { processed: progressed } }),
-      checkLivenessWindow: async () => {
-        clock.now = TARGET_MS - 1;
-      },
-      sleep: async (ms) => {
-        sleeps.push(ms ?? 0);
-        clock.now += ms ?? 0;
-      },
-    });
-    assertEquals(errors, []);
-    assertEquals(sleeps, [1]);
-    assertEquals(clock.now, TARGET_MS);
-    assertEquals(
-      logs.includes("Run duration complete. Exiting for refresh."),
-      true,
-    );
+    const fixture = startShutdownRun(progressed, TARGET_MS - 1);
+    try {
+      await fixture.ready;
+      assertEquals(fixture.state(), LIVE_SHUTDOWN_STATE);
+      fixture.resume();
+      await fixture.cycleSettledOrSleeping();
+      assertEquals(fixture.completion(), undefined);
+      assertEquals(fixture.state(), LIVE_SHUTDOWN_STATE);
+      await fixture.clock.advance(1);
+      await flushShutdownPromises(fixture.clock);
+      assertShutdownCompleted(fixture, TARGET_MS, false);
+    } finally {
+      await fixture.dispose();
+    }
   });
 }
 
 for (const signalName of ["SIGTERM", "SIGINT"] as const) {
   Deno.test(`run_core - ${signalName} wakes an admitted cycle sleep (Issue #5544)`, async () => {
-    const clock: Clock = { now: START_MS };
-    const nap = fakeClock();
-    let shutdown = () => {};
-    const events: string[] = [];
-    const { errors, logs } = await runLoop(clock, {
-      addSignalListener: (signal, handler) => {
-        if (signal === signalName) shutdown = handler;
-      },
-      runCycleCallback: async (cycle) => {
-        events.push(cycle.endReason);
-      },
-      circuitBreakerRecordZeroProgress: async () => {
-        events.push("zero-progress");
-      },
-      sleep: async (ms, signal?: AbortSignal) => {
-        const sleeping = nap.sleep(ms ?? 0, signal);
-        shutdown();
-        // Abort resolves synchronously. Give its promise the same turn as the
-        // control, then release an uncancelled nap so a red run cannot hang.
-        const outcome = await Promise.race([
-          sleeping.then(() => "cancelled"),
-          Promise.resolve().then(() => "still sleeping"),
-        ]);
-        events.push(outcome);
-        if (outcome === "still sleeping") await nap.advance(ms ?? 0);
-        await sleeping;
-      },
-      terminateActiveAgentRuns: async (reason) => {
-        events.push(reason);
-      },
-      cleanupInProgressIssue: async () => {
-        events.push("release claim");
-      },
-      releasePidFile: async () => {
-        events.push("release pid");
-      },
-    });
-    assertEquals(errors, []);
-    assertEquals(events, [
-      "no_eligible_work",
-      "zero-progress",
-      "cancelled",
-      "run ending",
-      "release claim",
-      "release pid",
-    ]);
-    assertEquals(nap.armed, 0);
-    assertEquals(
-      logs.includes("Shutdown signal received. Exiting for refresh."),
-      true,
-    );
-    assertEquals(
-      logs.includes("Run duration complete. Exiting for refresh."),
-      false,
-    );
+    const fixture = startShutdownRun(false, TARGET_MS - 1000);
+    try {
+      await fixture.ready;
+      fixture.resume();
+      await fixture.cycleSettledOrSleeping();
+      await fixture.clock.advance(1);
+      assertEquals(fixture.completion(), undefined);
+      assertEquals(fixture.state(), LIVE_SHUTDOWN_STATE);
+      fixture.signal(signalName);
+      await flushShutdownPromises(fixture.clock);
+      assertShutdownCompleted(fixture, TARGET_MS - 999, true);
+    } finally {
+      await fixture.dispose();
+    }
   });
 }
