@@ -12,6 +12,8 @@
  *         (parser-drift guard),
  *       * empty baseline → no bypass.
  *   - `formatCarryoverFindings` output.
+ *   - `collectDiffableGateFindings` with the real mermaid runner over an
+ *     unreadable directory (Issue #5593).
  *
  * (Shellcheck was removed as a diffable check with worker-side shellcheck —
  * Issue #3129; the docs prompt-version check went with prompt versioning
@@ -30,6 +32,7 @@ import {
   mermaidFinding,
   workflowHygieneFinding,
 } from "../lib/baseline_gate.ts";
+import { makeDeepTree, removeTree } from "./support/deep_tree.ts";
 
 // ---------------------------------------------------------------------------
 // Key extraction — position-insensitive
@@ -157,6 +160,47 @@ Deno.test("collectDiffableGateFindings - all checks clean contributes no finding
     workflowHygiene: () => Promise.resolve({ violations: [], filesScanned: 0 }),
   });
   assertEquals(findings.length, 0);
+});
+
+Deno.test("collectDiffableGateFindings - an unreadable directory does not throw; the real mermaid runner still reports a bad block (#5593)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "baseline_gate_5593_" });
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  try {
+    await Deno.mkdir(`${root}/docs`, { recursive: true });
+    await Deno.writeTextFile(
+      `${root}/docs/bad.md`,
+      ["# bad", "", "```mermaid", "flowchart LR", "  A{unclosed --> B", "```"]
+        .join("\n"),
+    );
+    await Deno.mkdir(`${root}/build`);
+    const deepest = await makeDeepTree(`${root}/build`);
+    assertEquals(deepest.length > 4096, true);
+
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    const findings = await collectDiffableGateFindings(root, {
+      markdownlint: () =>
+        Promise.resolve({
+          status: "PASSED",
+          output: "",
+          violations: [],
+          filesChecked: 0,
+        }),
+      workflowHygiene: () =>
+        Promise.resolve({ violations: [], filesScanned: 0 }),
+    });
+    console.warn = originalWarn;
+
+    assertEquals(warnings.some((w) => w.includes("build/")), true);
+    assertEquals(findings.length, 1);
+    assertEquals(findings[0]?.check, "mermaid");
+    assertEquals(findings[0]?.display.startsWith("docs/bad.md:"), true);
+  } finally {
+    console.warn = originalWarn;
+    await removeTree(root);
+  }
 });
 
 // ---------------------------------------------------------------------------
