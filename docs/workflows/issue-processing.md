@@ -771,7 +771,10 @@ gitGraph
 
 ## 🔀 Decision points and exceptions
 
-- **No eligible issue:** Skip implementation this iteration; continue to sleep and next loop.
+- **No eligible issue:** Skip implementation this iteration; sleep before the
+  next loop while the run target is still ahead and no shutdown was requested.
+  End-of-cycle callbacks and circuit-breaker accounting still run when that
+  sleep is skipped; normal run-ending cleanup follows.
 - **Claim fails:** Log and skip; do not retry same issue this run (another worker may have won).
 - **Clarification requested:** Post questions, add `needs-human`, unassign; user removes label and responds; next run re-evaluates.
 - **Large scope alone:** The fleet does not apply `needs-human` or remove discovery labels because the clarity heuristic returned `too_complex`. Implementation proceeds; an actual decomposition decision uses the existing `vibe-needs-planning` path. Vague or missing-information results proceed too, with the agent stating its assumptions (Issue #4298). See [Clarification](planning-and-questions.md#-clarification).

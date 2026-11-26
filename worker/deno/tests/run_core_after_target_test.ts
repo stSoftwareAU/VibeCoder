@@ -581,3 +581,54 @@ Deno.test(
     assertEquals(slotRefusals.length, 1);
   },
 );
+
+for (const progressed of [false, true]) {
+  for (const stop of ["target", "deadline", "shutdown", "running"] as const) {
+    Deno.test(`run_core - final cycle does not delay shutdown for ${stop}, progress=${progressed} (Issue #5544)`, async () => {
+      const clock: Clock = { now: START_MS };
+      let shutdown: (() => void) | undefined;
+      const sleeps: number[] = [];
+      const breakerUpdates: string[] = [];
+      const cycles: string[] = [];
+      const { logs, errors } = await runLoop(clock, {
+        findAndProcessPrFeedback: () =>
+          Promise.resolve({ ok: true, value: { processed: progressed } }),
+        addSignalListener: (signal, handler) => {
+          if (signal === "SIGTERM") shutdown = handler;
+        },
+        checkLivenessWindow: () => {
+          // The archived main loop reached liveness after its finish deadline.
+          if (stop === "target") clock.now = TARGET_MS;
+          if (stop === "deadline") clock.now = START_MS + 3 * 60 * 60 * 1000;
+          if (stop === "shutdown") shutdown!();
+          return Promise.resolve();
+        },
+        circuitBreakerReset: () => {
+          breakerUpdates.push("reset");
+          return Promise.resolve();
+        },
+        circuitBreakerRecordZeroProgress: () => {
+          breakerUpdates.push("zero-progress");
+          return Promise.resolve();
+        },
+        runCycleCallback: (cycle) => {
+          cycles.push(cycle.endReason);
+          return Promise.resolve();
+        },
+        sleep: (ms) => {
+          sleeps.push(ms ?? 0);
+          clock.now = PAST_TARGET_MS;
+          return Promise.resolve();
+        },
+      });
+      assertEquals(errors, []);
+      assertEquals(cycles, ["no_eligible_work"]);
+      assertEquals(breakerUpdates, [progressed ? "reset" : "zero-progress"]);
+      assertEquals(sleeps.length, stop === "running" ? 1 : 0);
+      assertEquals(
+        logs.includes("Run duration complete. Exiting for refresh."),
+        true,
+      );
+    });
+  }
+}

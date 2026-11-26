@@ -7589,6 +7589,7 @@ export async function runCoreLoop(
 
           // --- End-of-cycle sleep ---
           await fireCycleCallback("no_eligible_work");
+          let cycleSleepSeconds: number;
           if (tracker.scanHadSuccess) {
             await deps.circuitBreakerReset();
             const jitteredSleep = sleepWithJitter(config.sleepInterval);
@@ -7597,13 +7598,23 @@ export async function runCoreLoop(
             // remaining window can afford per cycle, stretch the sleep so the
             // hour's quota lasts the hour; otherwise today's fixed sleep
             // stands, unchanged.
-            const pacedSleep = await pacedEndOfCycleSleepSeconds(jitteredSleep);
-            await deps.sleep(pacedSleep * 1000);
+            cycleSleepSeconds = await pacedEndOfCycleSleepSeconds(
+              jitteredSleep,
+            );
           } else {
             await deps.circuitBreakerRecordZeroProgress();
             const backoffInterval = await deps.circuitBreakerGetSleepInterval();
-            const jitteredSleep = sleepWithJitter(backoffInterval);
-            await deps.sleep(jitteredSleep * 1000);
+            cycleSleepSeconds = sleepWithJitter(backoffInterval);
+          }
+          // Pace another cycle, never delay an exit whose deadline already passed.
+          if (!shutdownRequested && deps.now() < endTime) {
+            await deps.sleep(cycleSleepSeconds * 1000);
+          } else {
+            deps.log(
+              `End-of-cycle sleep skipped — ${
+                shutdownRequested ? "shutdown requested" : "run target reached"
+              }.`,
+            );
           }
 
           // --- Fleet telemetry (Issue #855) ---
