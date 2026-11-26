@@ -11,11 +11,17 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
 import { gitOperationsCommand } from "../commands/git_operations.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { gitOk, setupGitRepoFixture } from "./support/git_repo_fixture.ts";
+import { runGitOperationsCommand } from "./support/git_operations_subprocess.ts";
 import {
   GIT_CONFIG_SHIELD,
   NO_HOST_GIT_CONFIG,
@@ -142,7 +148,7 @@ Deno.test(
   async () => {
     const fx = await setupRepo();
     try {
-      const result = await gitOperationsCommand.execute(
+      const result = await runGitOperationsCommand(
         {
           operation: "ensure-milestone-branch",
           "milestone-branch": "milestone/unbuildable",
@@ -150,12 +156,16 @@ Deno.test(
           cwd: fx.clone,
           env: GIT_CONFIG_SHIELD,
         },
-        config,
+        fx.root,
       );
 
       assertEquals(result.success, false);
       assertStringIncludes(result.message, "milestone/unbuildable");
       assertStringIncludes(result.message, "git push");
+      await assertRejects(
+        () => Deno.stat(`${fx.root}/audit`),
+        Deno.errors.NotFound,
+      );
     } finally {
       await fx.cleanup();
     }
@@ -167,7 +177,7 @@ Deno.test(
   async () => {
     const fx = await setupRepo();
     try {
-      const result = await gitOperationsCommand.execute(
+      const result = await runGitOperationsCommand(
         {
           operation: "ensure-milestone-branch",
           "milestone-branch": "milestone/recreated",
@@ -175,7 +185,7 @@ Deno.test(
           cwd: fx.clone,
           env: GIT_CONFIG_SHIELD,
         },
-        config,
+        fx.root,
       );
 
       assertEquals(result.success, true);
@@ -183,6 +193,10 @@ Deno.test(
         (await gitOk(["rev-parse", "milestone/recreated"], fx.remote)).trim();
       const mainSha = (await gitOk(["rev-parse", "main"], fx.remote)).trim();
       assertEquals(remoteSha, mainSha);
+      await assertRejects(
+        () => Deno.stat(`${fx.root}/audit`),
+        Deno.errors.NotFound,
+      );
     } finally {
       await fx.cleanup();
     }

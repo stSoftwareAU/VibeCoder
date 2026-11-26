@@ -19,6 +19,7 @@ import {
   milestoneSyncStreakPath,
 } from "../lib/milestone_sync_streak.ts";
 import type { Logger } from "../types.ts";
+import { runGitOperationsCommand } from "./support/git_operations_subprocess.ts";
 import {
   NO_HOST_GIT_CONFIG,
   NO_HOST_HOOKS_ARGS,
@@ -337,28 +338,7 @@ Deno.test("git-operations push honours an accepted caller config at the remote",
           GIT_CONFIG_GLOBAL: shield ? "/dev/null" : host.GIT_CONFIG_GLOBAL,
         },
       };
-      // The command accepts only Git config keys. Disable the journal in a
-      // private process so neither half can append to the fleet work directory.
-      const worker = new URL("../", import.meta.url);
-      const output = await new Deno.Command(Deno.execPath(), {
-        cwd: worker,
-        env: { ...NO_HOST_GIT_CONFIG, WORK_DIR: root },
-        args: [
-          "eval",
-          "--cached-only",
-          `
-          import { gitOperationsCommand } from "./commands/git_operations.ts";
-          import { buildDefaultWorkerConfig } from "./lib/config_defaults.ts";
-          const result = await gitOperationsCommand.execute(JSON.parse(Deno.args[0]), buildDefaultWorkerConfig());
-          console.log(JSON.stringify(result));
-        `,
-          JSON.stringify(request),
-        ],
-      }).output();
-      assertEquals(output.code, 0, new TextDecoder().decode(output.stderr));
-      const result = JSON.parse(
-        new TextDecoder().decode(output.stdout).trim().split("\n").at(-1)!,
-      );
+      const result = await runGitOperationsCommand(request, root);
       assertEquals(result.success, shield, result.message);
       if (!shield) {
         assertEquals(await Deno.readTextFile(root + "/hooks/ran"), "refused\n");
