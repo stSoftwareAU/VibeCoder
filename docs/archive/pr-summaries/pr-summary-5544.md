@@ -1,195 +1,138 @@
 ## Summary
 
-Add named progress records for the main loop's end-of-cycle waits and the
-production callback's allocation refresh. This fixes the diagnostic gap after
-the last liveness record; the historical stalled await remains unidentified.
-
-Part of #5544.
+Once no further claim can follow, a failing claim no longer runs the fresh auth
+probe or the consecutive-failure back-off. This covers both the slot pool and the
+serial scan. The GRQ-23 incident's last worker-log line was exactly that wait: slot
+s2 backing off 300s "before the next claim" while the pool was already draining
+and the finish deadline had passed. The live-container wedge as a whole is still
+not reproduced. Part of #5544.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The incident archive records completed label strips and released claims,
-  followed by silence from the main loop. Its last phase cannot identify the
-  operation that stalled.
-- Reuse the existing phase-progress ticker so a pending cycle-end operation
-  leaves start, periodic progress and settlement records in the worker log.
+- The incident log, as quoted in the GRQ-23 runs' session transcripts in the
+  shared `GRQ-VibeCoder-logs` mirror, shows this order:
+  - 09:31:12: s1 logged `stop reason=drain — the pool is draining; no further claims.`
+  - 09:39:57: s2 ran `Running Claude Code health check (30s timeout)...` (the
+    auth probe).
+  - 09:39:57: s2 then logged `2 consecutive issue failures — backing off 300s
+    before the next claim.`, the archive's `lastLogLine`.
+
+  The run's finish deadline (09:20:59) had already passed.
+- `runSlotIssue` and `runIssueScanLoop` in `worker/deno/lib/run_core.ts` applied
+  the probe and the back-off unconditionally. The slot loop's own stop check
+  only runs after the back-off, so a slot that would never claim again spent the
+  probe and the full `sleepInterval` first.
+- The fix reuses each loop's existing stop owner rather than adding a new rule.
+  The pool uses `slotShouldStop`. The serial loop uses a new helper,
+  `serialClaimStop`, which owns the deadline and runway-floor checks previously
+  inline at the loop top.
 
 ### Essential Design Decisions
 
-- Preserve #5623's capped, interruptible sleep and reference-scanner changes.
-  This diff adds diagnostics without changing timeout, cancellation, breaker,
-  quota-pacing or claim-release policy.
-- `withPhaseProgress` owns ticker cleanup and retains the wrapped result or
-  rejection. A completed dispatch can contain a handled fault; existing callback
-  and telemetry error records remain authoritative.
-- Scope the main-loop records to final callback dispatch, breaker reset or
-  zero-progress accounting/interval, the optional successful-cycle quota read,
-  admitted sleep and cycle summary. The production cycle callback also records
-  its allocation refresh, including callbacks on early cycle exits.
+- The failure is still counted (`consecutiveFailures` and
+  `pool.consecutiveFailures` are incremented first). Only the probe and the
+  sleep are skipped. The loop's next stop check then logs the existing stop
+  reason.
+- Assumption: skipping the auth probe there is safe. Its only effect is to stop
+  claims for the cycle, and claims are stopping anyway. The next cycle's health
+  gate re-checks the credential.
+- No timeout, cancellation or main-loop wait was changed. The main loop's
+  pending await after the 09:24:53 liveness line remains unidentified (see
+  Acceptance Criteria).
 
 ### Undiscoverable Facts
 
-- Read-only evidence was available on this run: GRQ-23's facts archive for
-  `vibe-coder-70601`, its rotated worker log and matching launcher log. The
-  build stamp is `1d5828280d7c`; that commit's callback and subprocess paths
-  were also inspected.
-- The matching `GRQ-VibeCoder-logs` metadata records no archived worker log; its
-  failure entry contains an agent session. It supplies no driver stack.
-- The worker automatically checkpointed the implementation during validation. No
-  manual push was assigned or performed.
+- The incident's log lines come from command output quoted in GRQ-23 session
+  transcripts for runs `vibe-mwwwcdg3-d90210` and `vibe-mwwt65ra-8a3ceb`. Those
+  transcripts are under `runs/GRQ-23/2026-11-26/` in the shared log mirror; this
+  run was on another host, and private log text is not committed.
+- The guest `ps` captured at reap time showed PID 1 with an elapsed time of
+  36:00, about 3h13m after the launch (`launch-1795504641`). The guest clock may
+  therefore have stopped for part of the run. This was observed only; it was not
+  investigated further.
 
 ## Evidence
 
-Backend/CLI diagnostics only. #5544: Hard kill: container wedged in
-follow-up-label-strip (watchdog), checked with `gh issue view`. PR #5623 was
-verified merged and its implementation remains on this branch unchanged. Private
-logs and transcripts are not committed.
-
-The incident's main-loop and slot activity are distinct:
-
-| UTC, 24 November 2026 | Observation                                       |
-| --------------------- | ------------------------------------------------- |
-| 09:23:29              | Drain records both claims abandoned/released      |
-| 09:24:53              | Last main-loop liveness record                    |
-| 09:26:53 and 09:31:05 | Each slot's follow-up label strip completes in 0s |
-| 09:39:57              | Slot 2 records a 300s backoff                     |
-| 10:31:11              | Launcher captures facts and reaps the container   |
-
-Inspection traced the remaining waits through `worker/deno/lib/run_core.ts` and
-`worker/deno/lib/run_core_production_deps.ts`:
-
-- `refreshSubscriptionAllocation` in
-  `worker/deno/lib/subscription_allocation_runtime.ts` precedes the optional
-  hook. Its evaluation reads evidence/state files and uses the existing file
-  lock, whose default acquisition timeout is 10s; that timeout does not bound
-  the entire evaluation.
-- `invokeCycleCallback` in `worker/deno/lib/run_callbacks.ts` logs hook entry
-  and uses `runWithTimeout`/`waitForChildExit` in
-  `worker/deno/lib/subprocess_timeout.ts`. Those existing subprocess bounds
-  remain intact.
-- `worker/deno/lib/circuit_breaker.ts` uses the in-process state mutex for
-  mutations and filesystem reads/writes. Successful-cycle quota pacing reads
-  through `probeGraphqlQuota` and the existing `gh_spawn.ts` runner.
-- None of those inspections establishes the incident's pending await. The new
-  records identify entered waits; they do not reconstruct the old stack or
-  distinguish an await from event-loop starvation inside that operation.
+Backend/CLI-only change. Issues cited in this diff: #5544: Hard kill: container
+wedged in follow-up-label-strip (watchdog).
 
 ```mermaid
 flowchart TD
-    L[Liveness check] --> C[Cycle callback and allocation refresh]
-    C --> P{Cycle made progress?}
-    P -->|yes| R[Reset breaker and optional quota probe]
-    P -->|no| B[Record zero progress and read backoff]
-    R --> S[Existing sleep admission and cancellation]
-    B --> S
-    S --> T[Cycle summary]
-    T --> E[Next cycle or normal run-ending cleanup]
+    F[Claim fails] --> C[Count consecutive failure]
+    C --> S{Next pass would claim?<br/>slotShouldStop / serialClaimStop}
+    S -->|no: draining, exiting, shutdown, deadline, runway floor| X[Skip auth probe and back-off]
+    X --> L[Loop logs its stop reason and ends]
+    S -->|yes| P[Auth probe after 2 failures]
+    P --> B[Back off sleepInterval, then claim again]
 ```
 
-The waits after liveness now use the existing phase-progress mechanism. Operator
-guidance and the step vocabulary are in `docs/TROUBLESHOOTING.md`. The run-loop
-and callback manual sections were checked for conflicting claims; no old timeout
-or shutdown statement required replacement. Both changed production callers use
-`withPhaseProgress`, which calls `startPhaseProgress`.
+Docs: `docs/TROUBLESHOOTING.md` (#5544 section) no longer says per-issue slot
+back-offs keep their bounds. It names the states that skip the probe and
+back-off, and records the archived run's last line.
 
 ## Reproduction
 
-- **symptom** — `The launcher's watchdog deadline expired.` with the last
-  recorded phase `follow-up-label-strip`, without a main-loop completion record.
-- **status** — `partial` — reason: controlled pending dependencies reproduce
-  missing diagnostic records, which fail on unfixed main and pass here. The
-  original live-container wedge and its triggering dependency are unreproduced.
+- **symptom** — after the pool began draining past the finish deadline, slot s2
+  logged `2 consecutive issue failures — backing off 300s before the next
+  claim.`. That was the last worker-log line before the 10:31:11 watchdog reap.
+- **status** — `partial` — reason: the regression test was observed failing
+  against the unfixed code and passing after the fix, for the post-drain probe
+  and back-off. The live-container wedge, and the main loop's pending await
+  after 09:24:53, are still unreproduced.
 - **regression test** —
-  `worker/deno/tests/run_core_after_target_test.ts::run_core - pending callback is identifiable after liveness, shutdown=false (Issue #5544)`.
-  The adjoining cases cover breaker reset, zero-progress accounting/interval,
-  quota probing, summary writing and admitted sleep.
+  `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot whose pool will not claim again skips the failure probe and back-off (Issue #5544)`
 
 ## Acceptance Criteria
 
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
 - **missing** — a container wedged and the launcher watchdog reaped it, so the
-  run never released its claim — reviewer: missing — reason: the independent
-  Spec reviewer confirmed that the diff adds diagnostics without establishing or
-  repairing the historical wedge. The executor rechecked the matching facts
-  archive, rotated worker log and launcher log; both claims were recorded
-  released before the last main-loop liveness record, but the pending operation
-  remains unidentified. Pending-dependency tests release their promises before
-  asserting cleanup and do not prove recovery from a permanently wedged await.
-  No speculative recovery policy was added on this retry.
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **clean** — The independent Standards reviewer checked phase-progress reuse,
-  preservation of results, errors and shutdown policy, retained test assertions,
-  deterministic pending-wait and cleanup checks, and documentation of diagnostic
-  scope and the unreproduced root cause. No code or test violation was found.
+  run never released its claim — reason: this diff removes the slot back-off
+  that was the run's last logged wait. It does not identify the main loop's
+  pending await after the 09:24:53 liveness line, and it does not reproduce the
+  guest-level wedge.
 
 ## Test Plan
 
-- `worker/deno/tests/run_core_after_target_test.ts`: adds 14 diagnostic cases.
-  Deferred dependencies establish that each named wait is pending before its
-  completion record; normal and SIGTERM controls assert returned shutdown
-  outcomes and cleared simulated agent, claim and PID-lock state. Callback
-  failure retains its specific error; SIGINT wakes an admitted sleep. The
-  existing 20 tests and their assertions remain intact.
-- `worker/deno/tests/subscription_allocation_3646_test.ts`: adds a production
-  cycle-callback test using real allocation evaluation and temporary files. It
-  checks progress on a successful hold and on missing evidence, retains the
-  held-state warning and proves the prior state file survives. Existing
-  assertions are unchanged.
-- `worker/deno/tests/phase_progress_test.ts`: adds return-value and rejection
-  controls, asserting pending/settled log output with an injected clock reading.
-  Deno's resource/operation sanitisation remains enabled. Existing assertions
-  are unchanged.
-- Before implementation, the core suite passed its 20 existing tests and failed
-  all 14 new diagnostic cases. The adapter suite passed 11 existing tests and
-  failed its new case. With the final test fixtures copied into an isolated
-  archive of unfixed main `f9fba9b34345`, the same command again passed 31 and
-  failed 15 on the missing records. On this head it passed all 46. No current
-  production files were reverted for that check.
-- Focused `deno task test:unit` run: 214 parallel and two serial tests passed
-  (216 total). Besides the three changed files, it included
-  `worker/deno/tests/run_core_production_deps_test.ts`,
-  `worker/deno/tests/escape_hatch_reference_scan_5544_test.ts`,
-  `worker/deno/tests/escape_hatch_label_strip_test.ts`,
-  `worker/deno/tests/claude_runner_model_unavailable_fallback_test.ts`,
-  `worker/deno/tests/run_core_signal_cleanup_test.ts`,
-  `worker/deno/tests/run_core_callbacks_test.ts`,
-  `worker/deno/tests/circuit_breaker_test.ts` and
-  `worker/deno/tests/budget_pacing_test.ts`.
-- This retry reran the three changed test files with
-  `deno task test tests/phase_progress_test.ts tests/run_core_after_target_test.ts tests/subscription_allocation_3646_test.ts < /dev/null`
-  from `worker/deno`: 51 passed, zero failed. Production code and tests were
-  unchanged; no new reproduction or red check of the historical wedge is
-  claimed.
-- Targeted formatting, lint and type checks passed. The foreground command
-  `timeout 900 ./quality.sh < /dev/null` returned
-  `Result: PASSED (with skipped checks)`. Its unit-test stage passed in 678.2s;
-  completeness, Markdown, Mermaid, Semgrep, gitleaks, lint, type checking and
-  formatting passed. Configuration integration was skipped with
-  `deno or .config.json not available`; Checkov was skipped because the pinned
-  binary/image was unavailable. No failed check remains.
-- This retry's `deno task pr-summary-check` with the actual issue body and
-  labels passed: zero blocked gates and zero not checked. Independent two-axis
-  review passed; acceptance-criteria closure reported not applicable because the
-  issue states no acceptance-criteria heading. The summary's own missing
-  criterion remains recorded above.
-- No new regex, persisted shape, destructive operation, failure ledger or
-  privileged operation was introduced. The diagnostic labels contain
-  worker-written names; no incident log text is added to the new records.
+- New tests, each observed red on the unmodified `run_core.ts` (`probes` 1,
+  expected 0) and green after the fix:
+  - `worker/deno/tests/run_core_auth_breaker_test.ts::failure back-off - a failure streak that ends past the deadline neither probes auth nor backs off (Issue #5544)`
+    (serial). It also asserts no back-off sleep and no `backing off` line, and,
+    as a positive control, that the loop stops at its `reached the cycle
+    deadline` gate.
+  - `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot whose pool will not claim again skips the failure probe and back-off (Issue #5544)`
+    (pool). It also asserts `stop reason=deadline`.
+- Controls, green on both trees: `failure back-off - a failure streak before the
+  deadline still probes and backs off (Issue #5544)` and `slot pool - a slot
+  that will claim again still probes and backs off (Issue #5544)`. Each asserts
+  one probe, one back-off sleep and the `backing off` line.
+- Edited test: in
+  `worker/deno/tests/run_core_spend_guards_3648_test.ts`, `SEC-769865133420 -
+  the failure path backs off before the next claim`. It used to end the cycle
+  inside the second claim and still expect the back-off. That behaviour is the
+  one this issue removes. The back-off sleep now ends the cycle instead. The
+  test still asserts that a consecutive failure backs off by
+  `sleepInterval * 1000` before the next claim. No assertion was removed.
+- The existing auth-breaker tests (#4167) pass unchanged. Their failures happen
+  inside the cycle, so they still reach the probe.
+- Ran `deno task test:unit` on the auth-breaker, slot-pool, after-target and
+  spend-guards test files: 105 passed, 0 failed.
+- Ran `timeout 1500 ./quality.sh < /dev/null` on the code commit:
+  `Result: PASSED (with skipped checks)`. Config integration was skipped
+  (`deno or .config.json not available`), and Checkov was skipped (no binary or
+  image on this host).
+- Twinned rule: the serial and pool failure paths are the two copies of the
+  back-off policy, and both changed. No other caller of `recheckAgentAuth` or
+  the `backing off` back-off was found.
 
 ## Merge verification
 
-Required CI and fleet approval have not been observed for this branch.
+Required CI and fleet review have not been observed for this branch.
 
 ## Remaining risk
 
-The original stuck await and live-container wedge remain unverified. The new
-records add observability and retain existing bounds; they do not abandon a
-pending dependency. Configuration integration and Checkov were not run; private
-incident evidence was not committed. No manual push was performed.
+- The main loop's pending await after 09:24:53, and the possible guest-clock
+  stall, are unexplained. This change does not prevent a repeat wedge from
+  another cause.
+- Checkov and config integration were not run locally.
+- Not pushed by this pass.
