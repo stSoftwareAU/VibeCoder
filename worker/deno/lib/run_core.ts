@@ -7755,7 +7755,11 @@ export async function runCoreLoop(
       tracker.issuesProcessed,
       (deps.now() - startTime) / 1000,
     );
-    deps.log("Run duration complete. Exiting for refresh.");
+    deps.log(
+      shutdownRequested
+        ? "Shutdown signal received. Exiting for refresh."
+        : "Run duration complete. Exiting for refresh.",
+    );
 
     return buildResult(
       rootFilesystemFault

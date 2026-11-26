@@ -282,6 +282,9 @@ circuit-breaker accounting. An admitted end-of-cycle sleep is capped at the
 time remaining to the target and wakes on SIGTERM or SIGINT. Other cycle
 operations and per-issue slot backoffs keep their existing bounds. A pending
 tail's backoff is not proof that the main loop is waiting on that backoff.
+When a signal-driven exit reaches normal completion reporting, it logs
+`Shutdown signal received. Exiting for refresh.` instead of reporting that the
+run duration expired.
 
 A setup phase still running after 30 minutes for the clone, git, stream
 compaction and pre-setup command is abandoned (Issue #5128). A milestone issue adds two

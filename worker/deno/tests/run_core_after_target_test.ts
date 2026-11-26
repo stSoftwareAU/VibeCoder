@@ -627,7 +627,11 @@ for (const progressed of [false, true]) {
       assertEquals(breakerUpdates, [progressed ? "reset" : "zero-progress"]);
       assertEquals(sleeps.length, stop === "running" ? 1 : 0);
       assertEquals(
-        logs.includes("Run duration complete. Exiting for refresh."),
+        logs.includes(
+          stop === "shutdown"
+            ? "Shutdown signal received. Exiting for refresh."
+            : "Run duration complete. Exiting for refresh.",
+        ),
         true,
       );
     });
@@ -709,8 +713,12 @@ for (const signalName of ["SIGTERM", "SIGINT"] as const) {
     ]);
     assertEquals(nap.armed, 0);
     assertEquals(
-      logs.includes("Run duration complete. Exiting for refresh."),
+      logs.includes("Shutdown signal received. Exiting for refresh."),
       true,
+    );
+    assertEquals(
+      logs.includes("Run duration complete. Exiting for refresh."),
+      false,
     );
   });
 }
