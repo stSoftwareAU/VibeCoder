@@ -85,13 +85,15 @@ export interface LinterCheckResult {
     compile: boolean;
   };
   /**
-   * Fail-safe flag (Issue #2881). `false` iff **zero** workflow files were
+   * Fail-safe flag (Issue #2881). `false` when **zero** workflow files were
    * loaded under `.github/workflows/` — a state more likely caused by a
    * scan glitch (wrong path, mid-clone, checkout race) than a genuine
-   * absence of CI. When `false`, the gate status is *unknown* rather than
-   * confirmed-missing, so the consumer must NOT file a `severity:high`
-   * "missing gate" finding off the back of it. Absent/`true` means
-   * workflows were present and the gate result is trustworthy.
+   * absence of CI — or when a gate was not found and at least one workflow
+   * was skipped as oversized or unparseable (Issue #5559), since the gate
+   * may live in the skipped file. When `false`, the gate status is
+   * *unknown* rather than confirmed-missing, so the consumer must NOT file
+   * a `severity:high` "missing gate" finding off the back of it.
+   * Absent/`true` means the gate result is trustworthy.
    */
   workflowsLoaded?: boolean;
 }
@@ -147,10 +149,35 @@ export async function checkLinterInCI(
   repoPath: string,
   language: LinterCheckLanguage,
 ): Promise<LinterCheckResult> {
-  const workflows = await loadWorkflows(repoPath);
+  const skipped: string[] = [];
+  const workflows = await loadWorkflows(repoPath, {
+    onUnparseable: (filename) => skipped.push(filename),
+  });
   const rootFiles = await listRootFiles(repoPath);
   const ctx: CheckContext = { repoPath, workflows, rootFiles };
+  const result = checkLanguage(ctx, language);
+  if (result.configured || skipped.length === 0) return result;
+  return {
+    ...result,
+    details: `${result.details} ${skippedWorkflowsDetail(skipped)}`,
+    workflowsLoaded: false,
+  };
+}
 
+/**
+ * Sentence explaining why a gate not found is *unknown* when workflows were
+ * skipped as oversized or unparseable (Issue #5559): the gate may live in
+ * one of them. Shared with the language-validity-gate detector.
+ */
+export function skippedWorkflowsDetail(skipped: readonly string[]): string {
+  return "Gate status is unknown: these workflows were skipped as " +
+    `oversized or unparseable: ${skipped.join(", ")}.`;
+}
+
+function checkLanguage(
+  ctx: CheckContext,
+  language: LinterCheckLanguage,
+): LinterCheckResult {
   switch (language) {
     case "rust":
       return checkRust(ctx);

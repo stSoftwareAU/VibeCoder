@@ -207,6 +207,42 @@ Deno.test("rust — no compile gate is flagged with a suggested invocation", asy
   );
 });
 
+Deno.test("rust — a gate only in an oversized workflow is unknown, not missing (#5559)", async () => {
+  await withTempRepo(
+    {
+      "Cargo.toml": '[package]\nname = "x"\n',
+      ".github/workflows/ci.yml": workflow("cargo clippy -- -D warnings"),
+      ".github/workflows/check.yml": `${workflow("cargo check")}\n#`.padEnd(
+        1024 * 1024 + 1,
+        "x",
+      ),
+    },
+    async (tmp) => {
+      const rust = byLang(
+        await checkLanguageValidityGates(tmp, langs({ Rust: 1 })),
+        "rust",
+      );
+      assertEquals(rust.present, false);
+      assertEquals(rust.workflowsLoaded, false);
+      assertStringIncludes(rust.details, "Gate status is unknown");
+      assertStringIncludes(rust.details, "check.yml");
+
+      // Control: at exactly the limit the same workflow loads and credits
+      // the gate.
+      await Deno.writeTextFile(
+        `${tmp}/.github/workflows/check.yml`,
+        `${workflow("cargo check")}\n#`.padEnd(1024 * 1024, "x"),
+      );
+      const control = byLang(
+        await checkLanguageValidityGates(tmp, langs({ Rust: 1 })),
+        "rust",
+      );
+      assertEquals(control.present, true);
+      assertEquals(control.workflowsLoaded, true);
+    },
+  );
+});
+
 // ---------------------------------------------------------------------------
 // TypeScript — reused compile-gate detection
 // ---------------------------------------------------------------------------

@@ -1242,9 +1242,18 @@ present but a gate truly missing (`workflowsLoaded` absent or `true`) — is
 actionlint (`github-actions`) check in the weekly
 [github-actions-audit scan](GITHUB-ACTIONS-AUDIT-SCAN.md).
 
+A gate not found while `loadWorkflows()` skipped at least one workflow — over 1
+MiB at stat time or failing YAML parse — is also _unknown_ (Issue #5559): the
+gate may live in the skipped file. `checkLinterInCI()` then sets
+`workflowsLoaded: false` and appends the skipped filenames to `details`, so a
+readable workflow beside an oversized one never turns the oversized file's gate
+into a false `BP-LINTER-<bucket>` finding. A gate found in a readable workflow
+is still credited. The language-validity-gate detector used by the
+[bash-syntax-audit scan](BASH-SYNTAX-AUDIT-SCAN.md) applies the same rule.
+
 This is defence in depth: deriving the checkout path via `repoCheckoutPath()`
 avoids the wrong-root cause; the fail-safe suppresses the finding when no
-eligible workflow loads, including when the files exceed the size limit.
+eligible workflow loads, or when a skipped workflow may hold the gate.
 
 ## Cross-bucket: verbose gate output check
 

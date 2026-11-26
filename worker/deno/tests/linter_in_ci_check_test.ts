@@ -101,6 +101,70 @@ Deno.test("loadWorkflows — skips valid YAML over 1 MiB with a size diagnostic"
   );
 });
 
+/** A workflow over the 1 MiB loader limit whose only step runs `cmd`. */
+function oversizedWorkflow(cmd: string): string {
+  return `jobs:\n  ci:\n    steps:\n      - run: ${cmd}\n#`.padEnd(
+    1024 * 1024 + 1,
+    "x",
+  );
+}
+
+Deno.test("checkLinterInCI — a gate only in an oversized workflow is unknown, not missing (#5559)", async () => {
+  await withTempRepo(
+    {
+      ".github/workflows/ci.yml":
+        "jobs:\n  ci:\n    steps:\n      - run: cargo check\n",
+      ".github/workflows/lint.yml": oversizedWorkflow("cargo clippy"),
+    },
+    async (tmp) => {
+      const result = await checkLinterInCI(tmp, "rust");
+      assertEquals(result.configured, false);
+      assertEquals(result.workflowsLoaded, false);
+      assertStringIncludes(result.details, "Gate status is unknown");
+      assertStringIncludes(result.details, "lint.yml");
+
+      // Control: without the oversized file the same readable workflow is a
+      // confirmed missing gate, so the unknown status above comes from the
+      // skipped file.
+      await Deno.remove(`${tmp}/.github/workflows/lint.yml`);
+      const control = await checkLinterInCI(tmp, "rust");
+      assertEquals(control.configured, false);
+      assertEquals(control.workflowsLoaded, undefined);
+    },
+  );
+});
+
+Deno.test("checkLinterInCI — actionlint only in an oversized workflow is unknown, not missing (#5559)", async () => {
+  await withTempRepo(
+    {
+      ".github/workflows/ci.yml":
+        "jobs:\n  ci:\n    steps:\n      - run: echo hi\n",
+      ".github/workflows/lint.yml": oversizedWorkflow("actionlint"),
+    },
+    async (tmp) => {
+      const result = await checkLinterInCI(tmp, "github-actions");
+      assertEquals(result.configured, false);
+      assertEquals(result.workflowsLoaded, false);
+      assertStringIncludes(result.details, "lint.yml");
+    },
+  );
+});
+
+Deno.test("checkLinterInCI — a gate found in a readable workflow stays configured beside an oversized one", async () => {
+  await withTempRepo(
+    {
+      ".github/workflows/ci.yml":
+        "jobs:\n  ci:\n    steps:\n      - run: actionlint\n",
+      ".github/workflows/big.yml": oversizedWorkflow("echo hi"),
+    },
+    async (tmp) => {
+      const result = await checkLinterInCI(tmp, "github-actions");
+      assertEquals(result.configured, true);
+      assertEquals(result.workflowsLoaded, undefined);
+    },
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Rust — cargo clippy
 // ---------------------------------------------------------------------------

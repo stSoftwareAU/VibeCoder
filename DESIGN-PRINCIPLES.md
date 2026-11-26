@@ -1886,8 +1886,11 @@ compileJava`). The two gates are checked independently;
 the bucket passes only when both are wired up. When either gate is missing, the
 template files a `severity:high` finding with stable id `BP-LINTER-<bucket>`
 whose title and body name which gate (linter, compile, or both) is missing; that
-pre-filed finding counts against the 6-issue cap. The check is a configuration
-audit — **no linter or compiler is actually invoked**. The compile half was
+pre-filed finding counts against the 6-issue cap. A gate not found is filed only
+when it is confirmed missing: when no workflow loaded, or a workflow was skipped
+as over 1 MiB or unparseable, its status is unknown and nothing is filed, since
+the gate may live in the skipped file. The check is a configuration audit — **no
+linter or compiler is actually invoked**. The compile half was
 added in (extending) after a Deno syntax error reached `main` in a
 monitored repo because no `deno check` ran in CI.
 

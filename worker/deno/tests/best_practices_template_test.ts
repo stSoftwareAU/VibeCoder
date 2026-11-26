@@ -2701,6 +2701,61 @@ Deno.test("runTask - oversized workflows suppress missing AWS wiring through the
   }
 });
 
+Deno.test("runTask - a linter gate only in an oversized workflow files no BP-LINTER through the real detector (#5559)", async () => {
+  const workDir = await Deno.makeTempDir();
+  try {
+    const repo = "org/repo";
+    const repoPath = repoCheckoutPath(workDir, repo);
+    await Deno.mkdir(`${repoPath}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${repoPath}/.github/workflows/ci.yml`,
+      "on: pull_request\njobs:\n  ci:\n    steps:\n      - run: cargo check\n",
+    );
+    const lintPath = `${repoPath}/.github/workflows/lint.yml`;
+    await Deno.writeTextFile(
+      lintPath,
+      "on: pull_request\njobs:\n  ci:\n    steps:\n      - run: cargo clippy\n#"
+        .padEnd(1024 * 1024 + 1, "x"),
+    );
+    for (const oversizedPresent of [true, false]) {
+      if (!oversizedPresent) await Deno.remove(lintPath);
+      const { gh, calls } = makeGhStub({
+        beforeSnapshot: [],
+        afterSnapshot: [],
+        knownOpen: [],
+        issueView: {
+          number: 50,
+          body: "**Bucket:** `rust`\n\n# Best-Practices Review",
+        },
+        fileMissingLinterReturnsNumber: 900,
+      });
+      const tpl = createBestPracticesTemplate({
+        checkAwsEmulatorFn: stubNoAws,
+        dedupAuthors: DEDUP_AUTHORS,
+        ghCommandFn: gh,
+        runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      });
+      const result = await tpl.runTask({
+        repo,
+        workDir,
+        idleTaskIssueNumber: 50,
+      });
+      assert(result.ok);
+      const created = readIssueCreate(calls);
+      if (oversizedPresent) {
+        // The clippy step is in the skipped file: status unknown, no filing.
+        assertEquals(created, null);
+      } else {
+        // Control: the readable workflow alone is a confirmed missing gate.
+        assert(created !== null);
+        assertStringIncludes(created.body, "BP-LINTER-rust");
+      }
+    }
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // AWS Emulator wiring migration (Issue #5112)
 // ---------------------------------------------------------------------------
