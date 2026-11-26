@@ -122,12 +122,12 @@ flowchart TD
   `worker/deno/lib/escape_hatch.ts` — reason: fixed in this diff; tests assert
   reference outcomes and the parameter is removed.
 - **violation** — breaker/sleep interactions and cleanup call order — evidence:
-  `worker/deno/tests/run_core_after_target_test.ts` — reason: fixed in this diff;
-  controlled-clock tests assert completion, returned results and released
+  `worker/deno/tests/run_core_after_target_test.ts` — reason: fixed in this
+  diff; controlled-clock tests assert completion, returned results and released
   agent/claim/PID state.
-- **violation** — timer-request assertions instead of sleep settlement — evidence:
-  `worker/deno/tests/run_core_production_deps_test.ts` — reason: fixed in this
-  diff; tests assert promise settlement for cancellation and deadlines.
+- **violation** — timer-request assertions instead of sleep settlement —
+  evidence: `worker/deno/tests/run_core_production_deps_test.ts` — reason: fixed
+  in this diff; tests assert promise settlement for cancellation and deadlines.
 - **clean** — independent Standards reviewer checked the full diff against
   `CODING-STANDARDS.md`: behavioural coverage, preservation of existing
   assertions, KISS/DRY, reuse of the clock helper, no new dependencies or
@@ -139,8 +139,8 @@ flowchart TD
 - `worker/deno/tests/run_core_after_target_test.ts`: twelve #5544 cases cover
   target reached, finish exceeded, shutdown already requested and a running
   control, with/without progress; one-millisecond runway; SIGTERM/SIGINT during
-  an admitted sleep. Stateful external-boundary fakes start with live agents,
-  a claim and a held PID lock. Assertions establish completion at the controlled
+  an admitted sleep. Stateful external-boundary fakes start with live agents, a
+  claim and a held PID lock. Assertions establish completion at the controlled
   instant, the returned shutdown result, final released state and completion
   text. All eight pre-existing tests and their assertions remain unchanged.
 - `worker/deno/tests/run_core_production_deps_test.ts`: the production adapter's
@@ -149,49 +149,52 @@ flowchart TD
   Requested-duration and default-duration controls now assert settlement before
   and at the deadline, replacing timer-request assertions.
 - `worker/deno/tests/escape_hatch_reference_scan_5544_test.ts`: hostile-input
-  outcomes, reference boundaries/order and six input families at N and 4N
-  remain covered. Only internal character-read assertions were removed;
-  wrapped wording retains the existing heuristic. No test timing gate replaces
-  those assertions. Historical performance reproduction is recorded separately
-  under Reproduction above; no benchmark was run in this retry because the
-  host runs parallel work. Timings belong behind the repository's benchmark
-  command on a quiet machine, per Coding Standards, Benchmarks.
+  outcomes, reference boundaries/order and six input families at N and 4N remain
+  covered. Only internal character-read assertions were removed; wrapped wording
+  retains the existing heuristic. No test timing gate replaces those assertions.
+  Historical performance reproduction is recorded separately under Reproduction
+  above; no benchmark was run in this retry because the host runs parallel work.
+  Timings belong behind the repository's benchmark command on a quiet machine,
+  per Coding Standards, Benchmarks.
 - `worker/deno/tests/escape_hatch_label_strip_test.ts`: long text reaches the
   real strip while retaining self-reference, repository and configured
-  label-applier guards. The fake reflects successful label removal in its
-  state; no base assertions were removed.
-- Focused red checks in isolated copies with the base production files:
-  the loop suite passes its eight pre-existing cases and fails all twelve
-  #5544 cases on completion outcomes; the adapter suite passes 40 cases and
-  fails both cancellation regressions. These fail without hanging and pass
-  against the corrected head. No shared production files were reverted.
+  label-applier guards. The fake reflects successful label removal in its state;
+  no base assertions were removed.
+- Focused red checks in isolated copies with the base production files: the loop
+  suite passes its eight pre-existing cases and fails all twelve #5544 cases on
+  completion outcomes; the adapter suite passes 40 cases and fails both
+  cancellation regressions. These fail without hanging and pass against the
+  corrected head. No shared production files were reverted.
 - `deno task test:unit` over the scanner, label-strip, loop, production adapter
   and real signal-cleanup suites, with stdin from `/dev/null`: 107 passed, zero
   failed (105 parallel, two serial). The Spec reviewer independently reran this
   command and confirmed the result. Formatting, lint and targeted type checks
   passed. `deno task check:manifests` also passed; its existing ignored case was
   retained, with no new ignore.
-- Earlier base/head compatibility corpus: 1,625 files and 3,250 comparisons
-  per tree, two repository slugs; zero mismatches and zero added
-  positives/negatives relative to the old detector. Corpus: PR summaries, prompt
-  Markdown and escape-hatch/reserved-label test sources. This checks
-  compatibility, not independent accuracy of the prose heuristic.
+- Earlier base/head compatibility corpus: 1,625 files and 3,250 comparisons per
+  tree, two repository slugs; zero mismatches and zero added positives/negatives
+  relative to the old detector. Corpus: PR summaries, prompt Markdown and
+  escape-hatch/reserved-label test sources. This checks compatibility, not
+  independent accuracy of the prose heuristic.
 - No twinned full-reference scanner or separate end-of-cycle sleep
   implementation was found. No new regex, persisted shape, destructive
   operation, failure ledger or privileged external operation was introduced.
-- An earlier attempt's pre-push gate reported `deno task test:unit (2103
-  files)` failing with exit code 1 on another host; that host's test output was
-  not available here. On this branch head, a full `deno task test:unit
-  < /dev/null` passed (36,871 parallel and 940 serial tests, 0 failed), and
-  the four #5544 test files passed 105 of 105 on each of three repeated runs.
-  The earlier failure was not reproduced, so its cause is unknown.
+- An earlier attempt's pre-push gate reported
+  `deno task test:unit (2103
+  files)` failing with exit code 1 on another host;
+  that host's test output was not available here. On this branch head, a full
+  `deno task test:unit
+  < /dev/null` passed (36,871 parallel and 940 serial
+  tests, 0 failed), and the four #5544 test files passed 105 of 105 on each of
+  three repeated runs. The earlier failure was not reproduced, so its cause is
+  unknown.
 - `timeout 2400 ./quality.sh < /dev/null` on the branch head gave
   `Result: PASSED (with skipped checks)`. Configuration integration was skipped
   (`deno or .config.json not available`), and Checkov was skipped because
   neither the pinned binary nor its container image was available. The only
   later edit records these results in this summary.
-- Final `deno task pr-summary-check` with the actual issue body and labels:
-  zero blocked gates and zero not checked. Independent two-axis review and
+- Final `deno task pr-summary-check` with the actual issue body and labels: zero
+  blocked gates and zero not checked. Independent two-axis review and
   reproduction checks passed; the incident criterion above remains missing.
 
 ## Merge verification
@@ -200,7 +203,8 @@ flowchart TD
 
 ## Deno regression avoided
 
-The earlier corpus and manual reproduction used `deno run --no-config
+The earlier corpus and manual reproduction used
+`deno run --no-config
 --no-lock`; this retry adds no Node tooling or dependency.
 
 ## Remaining risk
