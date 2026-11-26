@@ -114,11 +114,21 @@ finish deadline had passed.
 
 ## Acceptance Criteria
 
-- **missing** — a container wedged and the launcher watchdog reaped it, so the
-  run never released its claim — reason: this diff removes the slot back-off
-  that was the run's last logged wait. It does not identify the main loop's
-  pending await after the 09:24:53 liveness line, and it does not reproduce the
-  guest-level wedge.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — a container wedged and the launcher watchdog reaped it, so the
+  run never released its claim — evidence:
+  `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot whose pool will not claim again skips the failure probe and back-off (Issue #5544)`
+  — reviewer: partial — reason: the diff removes the slot back-off that was the
+  run's last logged wait, but the main loop's end-of-cycle path, where the run
+  actually stalled, is unchanged, so a run in this state still has nothing that
+  makes it exit on its own. The archived log shows the main loop's last line was
+  `[liveness] tick=1` at 09:24:53. No `End-of-cycle sleep skipped` or
+  `Run ending with N slot run(s)` line followed. The 300s back-off logged at
+  09:39:57 should have ended by 09:44:57 with `[s2] stop reason=drain`, which
+  never appeared either. Both claims were logged as released (09:23:29, and
+  09:31:06 / 09:31:29). The pending await is still unidentified, and the
+  guest-level wedge is not reproduced.
 
 ## Test Plan
 
