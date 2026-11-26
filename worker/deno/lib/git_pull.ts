@@ -52,6 +52,7 @@ import {
 import {
   describeRepairEscalation,
   runGateWithRepair,
+  summariseRepairOutcome,
 } from "./milestone_gate_repair.ts";
 import {
   analyseConflictedFile,
@@ -77,8 +78,10 @@ import {
 import { verifyResolvedTree } from "./milestone_resolution_gate.ts";
 import {
   checkMergedTree,
+  isMergeGateFailure,
   MERGE_GATE_UNVERIFIED_CAUSES,
   mergeGateFailureCause,
+  type MergeGateFailureError,
   mergeGateFailureError,
   type MergeGateFn,
   type MergeGateOutcome,
@@ -946,8 +949,17 @@ async function syncMilestoneBranchWithDefaultBody(
       verified.amendFailure ? new Error(verified.amendFailure) : undefined,
     );
     timer.stop();
-    recordTimings();
+    const timings = recordTimings();
     if (!gated.ok) {
+      // A refused clean merge carries its timings and repair account too
+      // (Issue #5595), so the ledger and the merge-fallback flag keep them.
+      if (isMergeGateFailure(gated.error)) {
+        const refusal = gated.error as MergeGateFailureError;
+        refusal.timings = timings;
+        if (verified.repair) {
+          refusal.repairOutcome = summariseRepairOutcome(verified.repair);
+        }
+      }
       if (verified.repair) {
         gated.error.message += `\n\n${
           describeRepairEscalation(verified.firstGate, verified.repair)

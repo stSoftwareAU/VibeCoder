@@ -661,3 +661,28 @@ export function describeRepairEscalation(
     `still refuses it (Issue #1965): ${outcome.detail}.\n\n` +
     `${rounds || "- (no repair round completed)"}\n\n${first}`;
 }
+
+/**
+ * A short account of the gate-repair rounds, for the ledger and the
+ * merge-fallback flag (Issue #5595).
+ *
+ * Unlike {@link describeRepairEscalation} this is one block with no gate
+ * output in it, so it can be kept beside the timings on a concluded attempt.
+ * No line it returns starts with the concluded-attempt prefix, which the
+ * ledger reader parses.
+ *
+ * @param outcome - What the repair loop left behind
+ * @returns The account, ready to store as the refusal's repair outcome
+ */
+export function summariseRepairOutcome(outcome: GateRepairOutcome): string {
+  if (outcome.status === "not-attempted") {
+    return `Gate repair: not attempted — ${outcome.detail}.`;
+  }
+  const rounds = listGateRepairRounds(outcome.record.rounds, { code: true });
+  const count = outcome.record.rounds.length;
+  if (outcome.status === "repaired") {
+    return `Gate repair: the check passed after ${count} round(s).\n\n${rounds}`;
+  }
+  return `Gate repair: ${count} round(s) ran and the check still refused ` +
+    `the merged tree.\n\n${rounds || "- (no repair round completed)"}`;
+}

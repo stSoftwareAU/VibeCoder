@@ -31,14 +31,26 @@ import {
   isMergeGateFailure,
   type MergeGateCause,
   mergeGateFailureCause,
+  mergeGateFailureRecord,
   type MergeGateFn,
 } from "../lib/milestone_merge_gate.ts";
-import { judgeSyncFailure } from "../lib/milestone_branch_sync.ts";
+import {
+  judgeSyncFailure,
+  type MilestoneBranchSyncDeps,
+  syncMilestoneBranches,
+} from "../lib/milestone_branch_sync.ts";
 import type {
   MilestoneConflictAgentFn,
   MilestoneConflictAgentRequest,
 } from "../lib/milestone_conflict_ladder.ts";
 import { gateRepairBudgetExhausted } from "../lib/milestone_gate_repair.ts";
+import { fallbackRun } from "../lib/milestone_fallback_flag.ts";
+import { presyncMilestoneBranch } from "../lib/milestone_presync.ts";
+import {
+  loadSyncStreaks,
+  milestoneSyncStreakPath,
+  syncStreakKey,
+} from "../lib/milestone_sync_streak.ts";
 
 async function git(
   args: string[],
@@ -563,6 +575,198 @@ Deno.test("syncMilestoneBranchWithDefault - a clean merge with no repair grant s
     assertEquals(
       (await gitOk(["rev-parse", "origin/milestone/1965"], fx.clone)).trim(),
       original,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+/**
+ * A repair agent that spends ten seconds of the injected clock per round and
+ * never makes the gate pass (Issue #5595).
+ */
+function stallingRepairAgent(advance: () => void): MilestoneConflictAgentFn {
+  return async (request) => {
+    advance();
+    await Deno.writeTextFile(
+      `${request.workDir}/worker.ts`,
+      `${IMPLEMENTATION}\n// repair attempt ${request.repair?.round}\n`,
+    );
+    return { ok: true, value: { terminated: false } };
+  };
+}
+
+/**
+ * The gh answers a one-milestone sweep needs (Issue #5595). The milestone is
+ * titled `1965`, so its branch is the fixture's `milestone/1965`.
+ */
+function sweepGhAnswer(args: string[]): string {
+  const key = args.join(" ");
+  if (key.includes("repos/owner/repo/milestones")) {
+    return JSON.stringify([{ title: "1965", number: 1 }]);
+  }
+  if (key.includes("default_branch")) return "main";
+  if (key.includes("branches/milestone")) {
+    return args[2]!.split("/").slice(-2).join("/");
+  }
+  return "[]";
+}
+
+Deno.test("syncMilestoneBranchWithDefault - a clean-merge refusal carries its stage timings and repair outcome (Issue #5595)", async () => {
+  const fx = await setupCleanMerge();
+  try {
+    let clock = 0;
+    const result = await syncMilestoneBranchWithDefault(
+      "milestone/1965",
+      "main",
+      { cwd: fx.clone },
+      undefined,
+      denoGate,
+      undefined,
+      stallingRepairAgent(() => {
+        clock += 10_000;
+      }),
+      undefined,
+      () => clock,
+    );
+    assert(!result.ok);
+    const record = mergeGateFailureRecord(result.error);
+    assertStringIncludes(record.timings ?? "", "agent 20s");
+    assertStringIncludes(record.repairOutcome ?? "", "2 round(s) ran");
+    assertStringIncludes(record.repairOutcome ?? "", "`worker.ts`");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("syncMilestoneBranches - a clean-merge refusal concludes its ledger attempt with its timings and repair (Issue #5595)", async () => {
+  const fx = await setupCleanMerge();
+  const dir = await Deno.makeTempDir({ prefix: "issue-5595-sweep-" });
+  try {
+    const defaultSha = (await gitOk(["rev-parse", "main"], fx.clone)).trim();
+    const streakPath = milestoneSyncStreakPath(dir);
+    const now = Date.now();
+    let clock = 0;
+    const deps: MilestoneBranchSyncDeps = {
+      repos: ["owner/repo"],
+      ghCommandFn: (args: string[]) => Promise.resolve(sweepGhAnswer(args)),
+      syncBranchFn: (_repo, milestoneBranch, defaultBranch, options) =>
+        syncMilestoneBranchWithDefault(
+          milestoneBranch,
+          defaultBranch,
+          { cwd: fx.clone },
+          undefined,
+          denoGate,
+          undefined,
+          options.agentAllowed
+            ? stallingRepairAgent(() => {
+              clock += 10_000;
+            })
+            : undefined,
+          undefined,
+          () => clock,
+        ),
+      defaultTipShaFn: () =>
+        Promise.resolve({ ok: true as const, value: defaultSha }),
+      now: () => now,
+      deadlineEpochMs: now + 60 * 60 * 1000,
+      streakPath,
+      log: () => undefined,
+    };
+    await syncMilestoneBranches(deps);
+    const attempt = (await loadSyncStreaks(streakPath))[
+      syncStreakKey("owner/repo", "milestone/1965")
+    ]?.lastAttempt;
+    assert(attempt !== undefined, "the refusal concluded a ledger attempt");
+    assertStringIncludes(attempt.timings ?? "", "agent 20s");
+    assertStringIncludes(attempt.analysis ?? "", "2 round(s) ran");
+    const run = fallbackRun(attempt, 1);
+    assert((run.timings?.length ?? 0) > 0, "the run carries its timings");
+    assertEquals(
+      run.timings?.find((t) => t.stage === "agent"),
+      { stage: "agent", seconds: 20 },
+    );
+  } finally {
+    await fx.cleanup();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("presyncMilestoneBranch - a clean-merge refusal concludes its ledger attempt with its timings and repair (Issue #5595)", async () => {
+  const fx = await setupCleanMerge();
+  const dir = await Deno.makeTempDir({ prefix: "issue-5595-presync-" });
+  try {
+    const defaultSha = (await gitOk(["rev-parse", "main"], fx.clone)).trim();
+    const milestoneSha = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+    const streakPath = milestoneSyncStreakPath(dir);
+    let clock = 0;
+    await presyncMilestoneBranch(
+      {
+        repo: "owner/repo",
+        milestoneBranch: "milestone/1965",
+        defaultBranch: "main",
+        streakPath,
+        grant: { agentAllowed: true },
+        nowMs: Date.now(),
+      },
+      {
+        countBehind: () => Promise.resolve({ ok: true as const, value: 1 }),
+        defaultTipSha: () =>
+          Promise.resolve({ ok: true as const, value: defaultSha }),
+        milestoneTipSha: () =>
+          Promise.resolve({ ok: true as const, value: milestoneSha }),
+        syncBranch: (grant) =>
+          syncMilestoneBranchWithDefault(
+            "milestone/1965",
+            "main",
+            { cwd: fx.clone },
+            undefined,
+            denoGate,
+            undefined,
+            grant.agentAllowed
+              ? stallingRepairAgent(() => {
+                clock += 10_000;
+              })
+              : undefined,
+            undefined,
+            () => clock,
+          ),
+        log: () => undefined,
+      },
+    );
+    const attempt = (await loadSyncStreaks(streakPath))[
+      syncStreakKey("owner/repo", "milestone/1965")
+    ]?.lastAttempt;
+    assert(attempt !== undefined, "the refusal concluded a ledger attempt");
+    assertStringIncludes(attempt.timings ?? "", "agent 20s");
+    assertStringIncludes(attempt.analysis ?? "", "2 round(s) ran");
+  } finally {
+    await fx.cleanup();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranchWithDefault - a clean-merge refusal with no repair granted records its timings and that no repair ran (Issue #5595)", async () => {
+  const fx = await setupCleanMerge();
+  try {
+    const result = await syncMilestoneBranchWithDefault(
+      "milestone/1965",
+      "main",
+      { cwd: fx.clone },
+      undefined,
+      denoGate,
+      undefined,
+      async () => ({
+        ok: false,
+        error: gateRepairBudgetExhausted("30s left; repair needs 120s"),
+      }),
+    );
+    assert(!result.ok);
+    const record = mergeGateFailureRecord(result.error);
+    assertStringIncludes(record.timings ?? "", "Timings (host");
+    assert(
+      record.repairOutcome?.startsWith("Gate repair: not attempted"),
+      `the repair outcome says it was not attempted: ${record.repairOutcome}`,
     );
   } finally {
     await fx.cleanup();
