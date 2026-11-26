@@ -152,7 +152,10 @@ flowchart TD
   gave `ok | 171 passed | 0 failed`.
 - `deno fmt --check`, `deno lint` and `deno check` on the changed TypeScript
   files are clean.
-- `./quality.sh`: see the result line below, added after the gate ran.
+- `./quality.sh < /dev/null` on the head: `Result: PASSED (with skipped
+  checks)`. Config integration and checkov were skipped by the gate itself;
+  deno tests, lint, type check, fmt, semgrep, gitleaks and markdownlint all
+  passed.
 
 ### Not done or not checked
 
