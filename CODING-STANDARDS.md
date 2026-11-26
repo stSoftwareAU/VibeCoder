@@ -120,13 +120,36 @@ summarise, authorised.
   the condition that lifts it after `upgrade when` — so
   `grep -r SIMPLE-ON-PURPOSE` lists every cut:
   `// SIMPLE-ON-PURPOSE: linear scan, fine to 10,000 rows — upgrade when a table exceeds 10,000 rows`.
-- **DRY** — Avoid code duplication; maintain a single source of truth.
+- **DRY: one owner per rule.** Every business rule (a formula, a limit, an
+  eligibility or affordability check) is computed by exactly one function, and
+  every caller uses it: the main path, previews, reports, the API and the UI.
+  Never restate a rule because the owner is private or lives where you cannot
+  call it: widen its visibility, or move it to a module both sides already
+  depend on. A test that proves two copies agree does not replace having one
+  copy, because every change still has to land twice. Duplicated text is not
+  duplicated knowledge: extract only what every copy would need the same edit
+  for if the rule changed.
+- **Replacing a rule deletes the old one.** When an issue changes a rule, the
+  new rule replaces the old one in the same PR. Do not keep the old rule as a
+  fallback, and do not combine the two (`min`, `max`, "whichever is
+  stricter") unless the issue says so in the owner's words. Keeping both is
+  how a fix goes out working in one path and blocked by the leftover rule in
+  another. Example: a spending limit changed from "funds less a cushion" to
+  "buying power less a reserve" was added beside the old limit and the
+  smaller of the two was taken, so the balance screen showed the new figure
+  while every order was refused against the old one.
+- **Name the owner.** A PR that changes a rule names the function that owns
+  it and lists every call site moved to it in the Test Plan. Its tests check
+  that every path (for example the order path and the display) gives the same
+  answer for the same inputs. An issue that asks for a rule change names the
+  owner, or asks the PR to establish one.
 - **Change every copy of a twinned rule** — Before changing a rule, gate,
   matcher or check, search for text that declares a second copy of it
   ("mirrors", "runs the same gate as", "shared copy of", "both carry") and for
-  its function or rule name. Change every copy in the same PR, or make one call
-  the other. If both copies must stay, add a test that fails when they
-  disagree. The Test Plan names the copies found, or says none was found. This
+  its function or rule name. Make one call the other (see **DRY: one owner
+  per rule**). Only where a copy cannot call the owner, such as a prompt
+  restating code or a second language, change every copy in the same PR and
+  add a test that fails when they disagree. The Test Plan names the copies found, or says none was found. This
   document and `prompts/coding_guidelines/prompt.md` are one such pair (see
   [Language-Agnostic Standards vs Per-Language Buckets](#language-agnostic-standards-vs-per-language-buckets)),
   and the completion phase's PR-summary gates and `deno task pr-summary-check`
