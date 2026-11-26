@@ -68,9 +68,14 @@ flowchart LR
 
 ## Test Plan
 
-- New: `worker/deno/tests/pre_push_gate_untracked_validation_5538_test.ts`, six
-  real-git tests through `runPrePushGate`, each with a stub runner that fails a
-  markdownlint command only when it names the file with the violation:
+- New: `worker/deno/tests/pre_push_gate_untracked_validation_5538_test.ts`,
+  seven real-git tests through `runPrePushGate`. The markdownlint tests use a
+  stub runner that fails a markdownlint command only when it names the file with
+  the violation; the unit tests use a process-boundary fake of the `test:unit`
+  task that fails a selected `tests/<name>_test.ts` when `src/<name>.ts`, read
+  from the directory the command runs in, is broken. The tests pass at the base,
+  so a failure is newly introduced by the branch, not a base failure the gate
+  warns about:
   - `markdownlint leaves out a pushed Markdown file git no longer tracks (Issue #5538)`:
     the gate passes, and its one markdownlint command names `notes/kept.md` but
     not `scratch.md`. Control:
@@ -80,23 +85,23 @@ flowchart LR
     with no binary found, the gate passes and runs no markdownlint. Control:
     `a tracked Markdown file with no markdownlint binary is still refused (Issue #5538 control)`
     is refused with `markdownlint-cli2 could not be found`.
-  - `unit-test selection leaves out a pushed source git no longer tracks (Issue #5538)`:
-    the `deno task test:unit` command names `tests/kept_test.ts` but not
-    `tests/gen_test.ts`. Control:
-    `unit-test selection still names the test for a tracked source (Issue #5538 control)`
-    names both.
-- Red on base: against the unfixed `pre_push_gate.ts`, the three index-removed
-  tests failed and the three controls passed. The markdownlint command named
-  `notes/scratch.md` and blocked, the no-binary case was refused, and the unit
-  command named `tests/gen_test.ts`. All six pass at the head.
-- No existing test was edited. `deno task test:unit` over the 26 test files that
-  name `runPrePushGate`, `planChangedFileChecks` or `pre_push_gate`, including
-  the new file, `worker/deno/tests/repo_formatters_5410_test.ts` and
-  `worker/deno/tests/pre_push_gate_test.ts` (from `worker/deno`, stdin from
-  `/dev/null`): 664 passed, 0 failed.
-- `./quality.sh < /dev/null` at `acc4b9d60` (later commits edit only this
-  summary): `Result: PASSED (with skipped
-  checks)`. Config integration and
-  checkov were skipped, and every other stage, `deno tests` included, passed.
+  - `a failing sibling test of a source git no longer tracks does not block the push (Issue #5538)`:
+    the untracked `src/gen.ts` is broken, so `tests/gen_test.ts` would fail if
+    selected; the gate passes and `tests/kept_test.ts` ran. Control:
+    `a newly failing sibling test of a tracked source blocks the push (Issue #5538 control)`
+    is refused with a `PreFlightGateError` naming `tests/gen_test.ts`.
+  - `a failing test of the tracked source still blocks when another source is untracked (Issue #5538)`:
+    the gate is refused naming `tests/kept_test.ts` and not `tests/gen_test.ts`.
+- Red on base: with only `validationChanged: formatterCandidates` reverted to
+  `contained.value` in `pre_push_gate.ts`, four tests failed (both markdownlint
+  index-removed tests and both unit-test index-removed tests) and the three
+  controls passed. All seven pass at the head.
+- No existing test was edited. `deno test -A` from `worker/deno` over the new
+  file, `worker/deno/tests/repo_formatters_5410_test.ts` and
+  `worker/deno/tests/pre_push_gate_test.ts` (stdin from `/dev/null`): 223
+  passed, 0 failed.
+- `./quality.sh < /dev/null` was last run at `acc4b9d60`, before the unit tests
+  were rewritten to assert gate outcomes; it is not re-run at this head.
+  Targeted checks at this head: `deno fmt`, `deno lint` and the test run above.
 
-Not checked: none beyond the two gate stages `./quality.sh` itself skipped.
+Not checked: the full `./quality.sh` gate at this head.

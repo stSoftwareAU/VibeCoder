@@ -245,13 +245,48 @@ Deno.test("a tracked Markdown file with no markdownlint binary is still refused 
 });
 
 /**
+ * A process-boundary fake of the repo's `test:unit` task. Each named test
+ * imports its source (`tests/<name>_test.ts` -> `src/<name>.ts`) and fails when
+ * that source, read from the working directory the command runs in, is broken.
+ * Any other command passes. Reading the files keeps the verdict the task's own:
+ * it depends on which tests the gate selected and on the tree they ran in.
+ */
+function unitTaskRunner(seen: string[]): PreFlightRunner {
+  return async (command, options) => {
+    seen.push(command);
+    if (!command.startsWith("deno task test:unit")) {
+      return { started: true, code: 0, stdout: "", stderr: "" };
+    }
+    const failed: string[] = [];
+    for (const m of command.matchAll(/tests\/(\w+)_test\.ts/g)) {
+      try {
+        const src = await Deno.readTextFile(
+          `${options.cwd}/src/${m[1]}.ts`,
+        );
+        if (src.includes("broken")) failed.push(m[0]);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+    return {
+      started: true,
+      code: failed.length > 0 ? 1 : 0,
+      stdout: "",
+      stderr: failed.map((f) => `${f} ... FAILED (broken source)`).join("\n"),
+    };
+  };
+}
+
+/**
  * Base tracks a `test:unit` deno.json and two tests that name neither source,
  * so only the changed-file selection (not the referenced-test scan) can pick
- * them. The branch adds both sources, then optionally untracks `src/gen.ts`.
+ * them. The tests pass at the base (no source yet). The branch adds both
+ * sources, each optionally broken so its test fails, then optionally untracks
+ * `src/gen.ts` (it stays on disk).
  */
 async function unitFixture(
   root: string,
-  untrackGen: boolean,
+  opts: { untrackGen: boolean; genBroken: boolean; keptBroken: boolean },
 ): Promise<{ repo: string; head: string; baseRef: string }> {
   const repo = await initRepo(root);
   await writeFile(
@@ -264,11 +299,19 @@ async function unitFixture(
   await git(repo, ["add", "."]);
   await git(repo, ["commit", "-m", "base"]);
   const baseRef = (await git(repo, ["rev-parse", "HEAD"])).trim();
-  await writeFile(repo, "src/gen.ts", "export const gen = 1;\n");
-  await writeFile(repo, "src/kept.ts", "export const kept = 2;\n");
+  await writeFile(
+    repo,
+    "src/gen.ts",
+    `export const gen = "${opts.genBroken ? "broken" : "fine"}";\n`,
+  );
+  await writeFile(
+    repo,
+    "src/kept.ts",
+    `export const kept = "${opts.keptBroken ? "broken" : "fine"}";\n`,
+  );
   await git(repo, ["add", "."]);
   await git(repo, ["commit", "-m", "add sources"]);
-  if (untrackGen) {
+  if (opts.untrackGen) {
     await git(repo, ["rm", "--cached", "src/gen.ts"]);
     await git(repo, ["commit", "-m", "untrack gen"]);
   }
@@ -276,48 +319,76 @@ async function unitFixture(
   return { repo, head, baseRef };
 }
 
-Deno.test("unit-test selection leaves out a pushed source git no longer tracks (Issue #5538)", async () => {
+Deno.test("a failing sibling test of a source git no longer tracks does not block the push (Issue #5538)", async () => {
   const root = await Deno.makeTempDir({ prefix: "gate5538-unit-" });
   try {
-    const { repo, head, baseRef } = await unitFixture(root, true);
+    const { repo, head, baseRef } = await unitFixture(root, {
+      untrackGen: true,
+      genBroken: true,
+      keptBroken: false,
+    });
     const seen: string[] = [];
     const gate = await gateFor(
       repo,
       head,
       baseRef,
-      recordingRunner(seen),
+      unitTaskRunner(seen),
       () => Promise.resolve(null),
     );
     assert(gate.ok, gate.ok ? "" : gate.error.message);
-    const unit = seen.filter((c) => c.includes("deno task test:unit"));
-    assert(unit.length > 0, seen.join("\n"));
-    assert(unit.some((c) => c.includes("tests/kept_test.ts")), unit.join("\n"));
-    assertEquals(
-      unit.some((c) => c.includes("tests/gen_test.ts")),
-      false,
-      unit.join("\n"),
+    // Positive control: the retained tracked source's test did run.
+    assert(
+      gate.value.checksRun.some((c) => c.includes("tests/kept_test.ts")),
+      gate.value.checksRun.join("\n"),
     );
   } finally {
     await Deno.remove(root, { recursive: true });
   }
 });
 
-Deno.test("unit-test selection still names the test for a tracked source (Issue #5538 control)", async () => {
+Deno.test("a newly failing sibling test of a tracked source blocks the push (Issue #5538 control)", async () => {
   const root = await Deno.makeTempDir({ prefix: "gate5538-unit-ctl-" });
   try {
-    const { repo, head, baseRef } = await unitFixture(root, false);
-    const seen: string[] = [];
+    const { repo, head, baseRef } = await unitFixture(root, {
+      untrackGen: false,
+      genBroken: true,
+      keptBroken: false,
+    });
     const gate = await gateFor(
       repo,
       head,
       baseRef,
-      recordingRunner(seen),
+      unitTaskRunner([]),
       () => Promise.resolve(null),
     );
-    assert(gate.ok, gate.ok ? "" : gate.error.message);
-    const unit = seen.filter((c) => c.includes("deno task test:unit"));
-    assert(unit.some((c) => c.includes("tests/gen_test.ts")), unit.join("\n"));
-    assert(unit.some((c) => c.includes("tests/kept_test.ts")), unit.join("\n"));
+    assert(!gate.ok, "a newly failing selected test must block the push");
+    assertInstanceOf(gate.error, PreFlightGateError);
+    assertStringIncludes(gate.error.command, "tests/gen_test.ts");
+    assertStringIncludes(gate.error.message, "tests/gen_test.ts");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("a failing test of the tracked source still blocks when another source is untracked (Issue #5538)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "gate5538-unit-kept-" });
+  try {
+    const { repo, head, baseRef } = await unitFixture(root, {
+      untrackGen: true,
+      genBroken: true,
+      keptBroken: true,
+    });
+    const gate = await gateFor(
+      repo,
+      head,
+      baseRef,
+      unitTaskRunner([]),
+      () => Promise.resolve(null),
+    );
+    assert(!gate.ok, "the tracked source's failing test must block");
+    assertInstanceOf(gate.error, PreFlightGateError);
+    assertStringIncludes(gate.error.message, "tests/kept_test.ts");
+    assertEquals(gate.error.message.includes("tests/gen_test.ts"), false);
   } finally {
     await Deno.remove(root, { recursive: true });
   }
