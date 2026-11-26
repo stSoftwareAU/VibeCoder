@@ -2,6 +2,7 @@
 
 Keep a trailing credential flag name visible to the CLI redactor so it masks the
 next value too. Preserve complete assignment masks and shared-quote overlaps.
+
 Closes #5614.
 
 ## Spec
