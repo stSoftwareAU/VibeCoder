@@ -17,8 +17,9 @@ presync subprocess invocation through a shared test helper. Closes #5602.
   decodes the last stdout line as the command result. Non-zero child exits
   report both output streams.
 - The child clears inherited environment, retains HOME, PATH and the existing
-  Deno cache setting, and sets `NO_HOST_GIT_CONFIG`, TMPDIR and WORK_DIR explicitly.
-  Command requests retain their Git config settings and production validation.
+  Deno cache setting, and sets `NO_HOST_GIT_CONFIG`, TMPDIR and WORK_DIR
+  explicitly. Command requests retain their Git config settings and production
+  validation.
 - The two refusal tests remain in-process: their invalid env is refused before
   git runs. The success and push-failure cases use the isolated helper.
 
@@ -27,8 +28,8 @@ presync subprocess invocation through a shared test helper. Closes #5602.
 - Before the fix, running only the existing branch-recreation test with auditing
   enabled passed its remote-SHA assertion and wrote one successful `git-push`
   row targeting `origin/main:refs/heads/milestone/recreated`.
-- Reproduction used private WORK_DIR, VIBE_AUDIT_DIR and TMPDIR paths and removed
-  its owned temporary root afterwards; no live journal was used.
+- Reproduction used private WORK_DIR, VIBE_AUDIT_DIR and TMPDIR paths and
+  removed its owned temporary root afterwards; no live journal was used.
 
 ## Evidence
 
@@ -57,9 +58,9 @@ flowchart LR
   branch's remote-SHA equality and the failed push's failure-message assertions;
   added checks that neither case creates an audit directory in its private
   WORK_DIR. No existing behaviour assertion was removed.
-- `worker/deno/tests/milestone_presync_git_test.ts`: retained the accepted-config
-  test's hook marker, refusal/success and remote-SHA assertions. Its child-exit
-  assertion and JSON decoding moved into the shared helper.
+- `worker/deno/tests/milestone_presync_git_test.ts`: retained the
+  accepted-config test's hook marker, refusal/success and remote-SHA assertions.
+  Its child-exit assertion and JSON decoding moved into the shared helper.
 - `worker/deno/tests/git_operations_subprocess_test.ts`: both hostile ambient
   audit cases were red on the unfixed suite and green after the fix. Each child
   runs the four command tests, including both env-validation refusals.
@@ -68,16 +69,17 @@ flowchart LR
   populated default cache: passed, 15 tests.
 - Targeted `deno fmt`, `deno lint` and `deno check --frozen`: passed for the
   three test files and both changed support modules.
-- Related isolation comments in `worker/deno/tests/support/no_host_git_config.ts`
-  now explain the subprocess helper. The old summary's accepted residual is a
-  historical record; this change removes it for the affected command tests.
+- Related isolation comments in
+  `worker/deno/tests/support/no_host_git_config.ts` now explain the subprocess
+  helper. The old summary's accepted residual is a historical record; this
+  change removes it for the affected command tests.
 - Shared copies: the presync invocation was extracted and both milestone suites
   call it; no production rule or matcher changed.
 - `timeout 900 ./quality.sh < /dev/null`: passed with skipped checks. Both full
   unit-test passes, lint, type check, formatting, completeness checks,
   markdownlint, Mermaid, semgrep and gitleaks passed.
-- `deno task pr-summary-check --base origin/main` with the issue body and labels:
-  passed, zero blocked and zero not checked.
+- `deno task pr-summary-check --base origin/main` with the issue body and
+  labels: passed, zero blocked and zero not checked.
 
 ## Merge verification
 
@@ -86,5 +88,6 @@ flowchart LR
 ## Not checked and remaining risks
 
 - Live journals were not accessed. CI and macOS execution were not run here.
-- The full gate skipped config integration (`deno or .config.json not available`)
-  and Checkov (no pinned binary or cached container image available).
+- The full gate skipped config integration
+  (`deno or .config.json not available`) and Checkov (no pinned binary or cached
+  container image available).
