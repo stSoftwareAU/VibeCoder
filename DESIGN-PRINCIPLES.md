@@ -1639,7 +1639,7 @@ owner, preserving nested forms such as `a/b/c#1`. Character reads grow
 linearly with message length. Selection prefers the first full reference
 matching the current repository case-insensitively, then the first other full
 reference, then a bare `#NNN`. Detection scans the trimmed message without a
-length cap; the downstream self-reference, repository and label-applier
+length cap; the downstream self-reference, repository and configured label-applier
 guards still decide whether labels can be removed.
 
 **The hand-off needs an unforgeable signal, not just prose.** Both
