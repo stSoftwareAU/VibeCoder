@@ -2876,7 +2876,9 @@ async function deferClaimForAdaptiveFloor(
  * Two guards close that: the `endTime` deadline is re-checked before every
  * pass, the first included (Issue #4243: the Priority ladder may cross the
  * target after the outer loop's own `while (now < endTime)` check), and a run
- * of consecutive failures backs off for `sleepInterval` before the next claim.
+ * of consecutive failures backs off for `sleepInterval` before the next claim
+ * — unless no further claim follows (deadline or runway floor reached), when
+ * the fresh auth probe and the back-off are skipped (Issue #5544).
  * An isolated failure still continues immediately, so normal scan throughput
  * is unchanged.
  *
@@ -2982,17 +2984,16 @@ async function runIssueScanLoop(
     // check and this scan and may cross the target, so the first pass is no
     // longer in time by construction. It stops *new claims* only — a claim
     // already taken keeps its full budget (Issue #420).
-    const pastDeadline = deps.now() >= endTime;
+    const stop = serialClaimStop(deps, endTime, runwayFloor);
     // Minimum-runway floor (Issues #4304/#425/#4245): a claim the finish
     // deadline (or, with no timeline, the supervisor hard cap) will end
     // before setup finishes is not taken. Measured against that instant,
     // not the one-hour cycle — cycle runway stopped bounding an execute
     // at #420. Applies on EVERY pass, including the outer loop's re-entry
     // after a success.
-    const belowFloor = belowClaimRunwayFloor(runwayFloor, deps.now());
-    if (pastDeadline || belowFloor) {
+    if (stop) {
       deps.log(
-        !pastDeadline
+        stop === "hard-cap"
           ? `Issue scan loop stopping before the next claim: ${
             hardCapRunwaySeconds(runwayFloor, deps.now())
           }s of runway left to ${
@@ -3286,6 +3287,9 @@ async function runIssueScanLoop(
     // become consecutive; a single isolated failure still continues straight
     // to the next issue so normal throughput is unaffected.
     consecutiveFailures++;
+    // The loop top stops the scan, so a pass that will not claim again skips
+    // the auth probe and the back-off (Issue #5544).
+    if (serialClaimStop(deps, endTime, runwayFloor)) continue;
 
     // Auth-outage breaker (Issue #4167): after two consecutive claim
     // failures, one fresh (uncached) auth probe decides whether the
@@ -3322,6 +3326,21 @@ async function runIssueScanLoop(
 
   noteSlotRetired("serial", deps.now());
   return { exitOuterLoop: false, eligibilityScanCompleted };
+}
+
+/**
+ * Why the serial scan will not take another claim, if it will not: the cycle
+ * deadline, else the claim-runway floor (Issue #5544). One owner for the loop
+ * top and the failure path, so the back-off never outlives the loop.
+ */
+function serialClaimStop(
+  deps: RunCoreDeps,
+  endTime: number,
+  runwayFloor: ClaimRunwayFloor,
+): "deadline" | "hard-cap" | undefined {
+  if (deps.now() >= endTime) return "deadline";
+  if (belowClaimRunwayFloor(runwayFloor, deps.now())) return "hard-cap";
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -5373,6 +5392,9 @@ async function runSlotIssue(
   // per host): the auth-outage probe and the back-off see every slot's
   // failures, so N slots do not multiply the budget.
   pool.consecutiveFailures++;
+  // The slot loop logs the stop reason; a slot that will not claim again
+  // skips the auth probe and the back-off (Issue #5544).
+  if (await slotShouldStop(deps, endTime, pool)) return "failure";
   if (pool.consecutiveFailures >= 2 && deps.recheckAgentAuth) {
     const probe = await deps.recheckAgentAuth();
     if (probe.authFailed) {

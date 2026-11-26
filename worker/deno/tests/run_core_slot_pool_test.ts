@@ -2811,3 +2811,79 @@ Deno.test("slot pool - the finish deadline checkpoints, releases, and the next s
     resetRunTimelineForTests();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Issue #5544 — a slot that will not claim again skips the probe and back-off
+// ---------------------------------------------------------------------------
+
+const SLOT_PROBE_LATENCY_MS = 5_000;
+
+/**
+ * One slot of failing claims on a clock that advances only by the waits taken:
+ * `sleep` adds its duration and the auth probe takes `SLOT_PROBE_LATENCY_MS`.
+ * The second failure ends at `afterSecondFailure`; a third ends the cycle.
+ */
+function failureBackoffPool(afterSecondFailure: "past" | "inside") {
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  const backoffMs = config.sleepInterval * 1000;
+  const claimStarts: number[] = [];
+  const claimEnds: number[] = [];
+  let now = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    slotCeiling: { effectiveSlots: () => Promise.resolve(1) },
+    findNextIssue: issueQueue([
+      issue("o/a", 1),
+      issue("o/b", 2),
+      issue("o/c", 3),
+      issue("o/d", 4),
+    ]),
+    processIssue: () => {
+      claimStarts.push(now);
+      const n = claimStarts.length;
+      if (n === 2) now = afterSecondFailure === "past" ? cycleMs + 1 : 1000;
+      if (n >= 3) now = cycleMs + 1;
+      claimEnds.push(now);
+      return Promise.resolve({ ok: true, value: { success: false } });
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 0;
+      return Promise.resolve();
+    },
+    recheckAgentAuth: () => {
+      now += SLOT_PROBE_LATENCY_MS;
+      return Promise.resolve({ authFailed: false });
+    },
+  });
+  return { deps, claimStarts, claimEnds, backoffMs, cycleMs, clock: () => now };
+}
+
+Deno.test("slot pool - a slot whose pool will not claim again spends no probe or back-off time (Issue #5544)", async () => {
+  const { deps, claimStarts, cycleMs, clock } = failureBackoffPool("past");
+
+  await runOneCycle(deps, 2);
+
+  assertEquals(claimStarts.length, 2, "no claim after the deadline");
+  assertEquals(
+    clock(),
+    cycleMs + 1,
+    "no probe or back-off time may elapse once the deadline has passed",
+  );
+});
+
+Deno.test("slot pool - a slot that will claim again waits the back-off before its next claim (Issue #5544)", async () => {
+  const { deps, claimStarts, claimEnds, backoffMs } = failureBackoffPool(
+    "inside",
+  );
+
+  await runOneCycle(deps, 2);
+
+  assertEquals(claimStarts.length, 3, "the streak still reaches a third claim");
+  const gapMs = (claimStarts[2] ?? NaN) - (claimEnds[1] ?? NaN);
+  assert(
+    gapMs >= backoffMs,
+    `the third claim started ${gapMs}ms after the second ended; ` +
+      `the back-off is ${backoffMs}ms`,
+  );
+});

@@ -180,15 +180,19 @@ Deno.test(
 Deno.test(
   "SEC-769865133420 - the failure path backs off before the next claim",
   async () => {
-    const sleeps: number[] = [];
+    const claimStarts: number[] = [];
+    const claimEnds: number[] = [];
     let now = 0;
-    let claims = 0;
     const config = createDefaultRunCoreConfig();
+    const cycleMs = config.runDurationSeconds * 1000;
+    const backoffMs = config.sleepInterval * 1000;
+    assert(backoffMs > 0, "the back-off must be enabled");
 
     const deps = createMockDeps({
       now: () => now,
+      // The clock advances only by the wait actually taken, whatever its split.
       sleep: (ms?: number) => {
-        sleeps.push(ms ?? 0);
+        now += ms ?? 0;
         return Promise.resolve();
       },
       findNextIssue: () =>
@@ -202,20 +206,29 @@ Deno.test(
           },
         }),
       processIssue: () => {
-        claims++;
-        // Two failures, then stop the loop by exhausting the cycle.
-        if (claims >= 2) now += config.runDurationSeconds * 1000;
+        claimStarts.push(now);
+        const n = claimStarts.length;
+        // The second failure stays inside the cycle (Issue #5544: the back-off
+        // is only taken while a claim follows); a third claim ends the cycle.
+        if (n === 2) now = 1000;
+        if (n >= 3) now = cycleMs + 1;
+        claimEnds.push(now);
         return Promise.resolve({ ok: true, value: { success: false } });
       },
     });
 
     await runCoreLoop(config, deps);
 
+    assertEquals(
+      claimStarts.length,
+      3,
+      "the streak still reaches a third claim",
+    );
+    const gapMs = (claimStarts[2] ?? NaN) - (claimEnds[1] ?? NaN);
     assert(
-      sleeps.includes(config.sleepInterval * 1000),
-      `failure path must sleep the configured scan interval, saw: ${
-        sleeps.join(", ")
-      }`,
+      gapMs >= backoffMs,
+      `the third claim started ${gapMs}ms after the second ended; ` +
+        `the back-off is ${backoffMs}ms`,
     );
   },
 );
