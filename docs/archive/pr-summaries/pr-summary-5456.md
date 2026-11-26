@@ -133,7 +133,7 @@ Issue numbers cited:
 ## Test Plan
 
 - Added `worker/deno/tests/secret_redaction_outer_mask_flag_quote_5456_test.ts`
-  with 45 tests. Each one asserts the exact `redactSecrets` output, that
+  with 47 tests. Each one asserts the exact `redactSecrets` output, that
   `containsSecret` is false on the output, that a second pass changes nothing,
   and that the named leaked words are gone. The cases cover:
   - the issue's shape, mid-line, after a command word, with no inner label, and
@@ -156,9 +156,12 @@ Issue numbers cited:
     holds an inner `password:` or `TOKEN=` assignment, the same through
     `redactGhBodyArgs` as an outbound `--body`, an unclosed such value, a
     credential flag after such a value, and 20,000 repetitions of the shape;
+  - the PR #5607 review round 4 regressions: a 3-unit chain of glued quoted
+    values that reach each other, followed by a later flag, masked whole;
   - four controls (a non-flag quote, an earlier-closed flag, a later quoted
     assignment, a flag opener inside a quoted assignment);
-  - three output-only size cases of 20,000 repetitions, with no stopwatch.
+  - four output-only size cases, with no stopwatch: three of 20,000
+    repetitions and one 8,000-repetition chain from round 4.
 - Red on base: with `worker/deno/lib/secret_redaction.ts` restored from
   `origin/main` and the new test file kept, 32 of the 39 tests failed. With the
   module from the commit before the glued-name fix, 16 failed; with the
