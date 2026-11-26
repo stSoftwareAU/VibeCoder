@@ -33,6 +33,17 @@ export interface MermaidCheckResult {
   blocksScanned: number;
 }
 
+/**
+ * A subdirectory the walk could not read, so its Markdown was not checked
+ * (Issue #5593).
+ */
+export interface UnreadableDirectory {
+  /** Path relative to the scanned root, without a trailing slash. */
+  dir: string;
+  /** Error message, or `String(err)` for a non-Error throw. */
+  error: string;
+}
+
 /** Directories that are never scanned (build artefacts, vendored code). */
 const SKIP_DIRECTORIES = new Set([
   ".git",
@@ -78,44 +89,78 @@ export function isSkippedMermaidFixturePath(relPath: string): boolean {
  * Skips `.git`, `node_modules`, and other build/vendor directories, plus
  * intentional known-bad Mermaid fixtures. Returns paths relative to
  * `rootDir`, sorted for deterministic output.
+ *
+ * An unreadable subdirectory is skipped, not thrown: it is appended to
+ * `unreadable` and the walk carries on, so the caller can report it as not
+ * checked (Issue #5593). An unreadable root rejects, because nothing could be
+ * checked.
  */
-export async function collectMarkdownFiles(rootDir: string): Promise<string[]> {
+export async function collectMarkdownFiles(
+  rootDir: string,
+  unreadable: UnreadableDirectory[] = [],
+): Promise<string[]> {
   const files: string[] = [];
-  await walkMarkdown(rootDir, "", files);
+  await walkMarkdown(rootDir, "", files, unreadable);
   return files.sort();
 }
 
+/**
+ * Walk one directory. `Deno.readDir` is lazy, so a failure to open the
+ * directory surfaces on the first `for await` step; both are inside the try.
+ * A subdirectory that fails is recorded in `unreadable` and skipped (Issue
+ * #5593). The root (`relDir === ""`) rethrows.
+ */
 async function walkMarkdown(
   absDir: string,
   relDir: string,
   acc: string[],
+  unreadable: UnreadableDirectory[],
 ): Promise<void> {
-  let entries: AsyncIterable<Deno.DirEntry>;
   try {
-    entries = Deno.readDir(absDir);
-  } catch {
-    return;
-  }
-
-  for await (const entry of entries) {
-    if (SKIP_DIRECTORIES.has(entry.name)) continue;
-    const absPath = `${absDir}/${entry.name}`;
-    const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
-    if (entry.isDirectory) {
-      // Skip the whole known-bad fixture tree so we never even open it.
-      if (isSkippedMermaidFixturePath(`${relPath}/`)) continue;
-      await walkMarkdown(absPath, relPath, acc);
-    } else if (entry.isFile && MARKDOWN_EXT_PATTERN.test(entry.name)) {
-      if (isSkippedMermaidFixturePath(relPath)) continue;
-      acc.push(relPath);
+    for await (const entry of Deno.readDir(absDir)) {
+      if (SKIP_DIRECTORIES.has(entry.name)) continue;
+      const absPath = `${absDir}/${entry.name}`;
+      const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
+      if (entry.isDirectory) {
+        // Skip the whole known-bad fixture tree so we never even open it.
+        if (isSkippedMermaidFixturePath(`${relPath}/`)) continue;
+        await walkMarkdown(absPath, relPath, acc, unreadable);
+      } else if (entry.isFile && MARKDOWN_EXT_PATTERN.test(entry.name)) {
+        if (isSkippedMermaidFixturePath(relPath)) continue;
+        acc.push(relPath);
+      }
     }
+  } catch (err) {
+    if (relDir === "") throw err;
+    const error = err instanceof Error ? err.message : String(err);
+    unreadable.push({ dir: relDir, error });
+    console.warn(`mermaid: skipped unreadable directory ${relDir}: ${error}`);
   }
+}
+
+/** Summary suffix naming directories not checked; empty when none were skipped. */
+function notCheckedSuffix(unreadable: UnreadableDirectory[]): string {
+  const n = unreadable.length;
+  if (n === 0) return "";
+  return `; ${n} ${n === 1 ? "directory" : "directories"} not checked`;
+}
+
+/** Lines listing directories not checked; empty when none were skipped. */
+function notCheckedLines(unreadable: UnreadableDirectory[]): string[] {
+  if (unreadable.length === 0) return [];
+  return [
+    "",
+    "Directories not checked (could not be read):",
+    ...unreadable.map((u) => `  ${u.dir}/: ${u.error}`),
+  ];
 }
 
 /**
  * Run the mermaid check across every `.md` file in `rootDir`.
  *
  * - Scans recursively, skipping common build/vendor directories.
+ * - Reports unreadable subdirectories as not checked, without failing (Issue
+ *   #5593).
  * - Validates every Mermaid block found.
  * - Returns SKIPPED when no `.md` files exist, PASSED when none fail,
  *   FAILED otherwise.
@@ -123,11 +168,17 @@ async function walkMarkdown(
 export async function runMermaidCheck(
   rootDir: string,
 ): Promise<MermaidCheckResult> {
-  const files = await collectMarkdownFiles(rootDir);
+  const unreadable: UnreadableDirectory[] = [];
+  const files = await collectMarkdownFiles(rootDir, unreadable);
+  const suffix = notCheckedSuffix(unreadable);
+  const notChecked = notCheckedLines(unreadable);
   if (files.length === 0) {
     return {
       status: "SKIPPED",
-      output: "mermaid: SKIPPED (no .md files found)",
+      output: [
+        `mermaid: SKIPPED (no .md files found)${suffix}`,
+        ...notChecked,
+      ].join("\n"),
       failures: [],
       filesScanned: 0,
       blocksScanned: 0,
@@ -156,8 +207,10 @@ export async function runMermaidCheck(
   if (failures.length === 0) {
     return {
       status: "PASSED",
-      output:
-        `mermaid: PASSED (${files.length} file(s), ${blocksScanned} block(s) checked)`,
+      output: [
+        `mermaid: PASSED (${files.length} file(s), ${blocksScanned} block(s) checked)${suffix}`,
+        ...notChecked,
+      ].join("\n"),
       failures: [],
       filesScanned: files.length,
       blocksScanned,
@@ -165,7 +218,7 @@ export async function runMermaidCheck(
   }
 
   const lines = [
-    `mermaid: FAILED (${failures.length} block(s) failed in ${files.length} file(s) scanned)`,
+    `mermaid: FAILED (${failures.length} block(s) failed in ${files.length} file(s) scanned)${suffix}`,
     "",
     "Mermaid blocks with syntax errors:",
     ...failures.map((f) =>
@@ -178,7 +231,7 @@ export async function runMermaidCheck(
 
   return {
     status: "FAILED",
-    output: lines.join("\n"),
+    output: [...lines, ...notChecked].join("\n"),
     failures,
     filesScanned: files.length,
     blocksScanned,
