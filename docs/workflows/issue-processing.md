@@ -773,6 +773,8 @@ gitGraph
 
 - **No eligible issue:** Skip implementation this iteration; sleep before the
   next loop while the run target is still ahead and no shutdown was requested.
+  That end-of-cycle sleep is capped at the time remaining to the target and
+  wakes on SIGTERM or SIGINT.
   End-of-cycle callbacks and circuit-breaker accounting still run when that
   sleep is skipped; normal run-ending cleanup follows.
 - **Claim fails:** Log and skip; do not retry same issue this run (another worker may have won).

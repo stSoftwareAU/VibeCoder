@@ -278,8 +278,10 @@ Slot-prefixed messages can continue after the main loop abandons its drain.
 Trace unprefixed post-scan, liveness and shutdown activity separately from those
 slot tails. The main loop skips its end-of-cycle sleep when its target has
 passed or shutdown was requested, while retaining cycle callbacks and
-circuit-breaker accounting. A pending tail's backoff is not proof that the
-main loop is waiting on that backoff.
+circuit-breaker accounting. An admitted end-of-cycle sleep is capped at the
+time remaining to the target and wakes on SIGTERM or SIGINT. Other cycle
+operations and per-issue slot backoffs keep their existing bounds. A pending
+tail's backoff is not proof that the main loop is waiting on that backoff.
 
 A setup phase still running after 30 minutes for the clone, git, stream
 compaction and pre-setup command is abandoned (Issue #5128). A milestone issue adds two

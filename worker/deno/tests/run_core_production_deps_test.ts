@@ -663,6 +663,22 @@ Deno.test("createProductionRunCoreDeps - sleep defaults to 30s when no delay giv
   assertEquals(requestedDelays, [30000]);
 });
 
+Deno.test("createProductionRunCoreDeps - cancelled sleep never waits (Issue #5544)", async () => {
+  const { deps, cleanup } = await createProductionRunCoreDeps(
+    createTestOptions(),
+  );
+  try {
+    const sleep: (ms?: number, signal?: AbortSignal) => Promise<void> =
+      deps.sleep;
+    const requestedDelays = await captureSleepDelays(() =>
+      sleep(300_000, AbortSignal.abort())
+    );
+    assertEquals(requestedDelays, []);
+  } finally {
+    cleanup();
+  }
+});
+
 Deno.test("createProductionRunCoreDeps - loadAndValidateConfig returns ok", async () => {
   const options = createTestOptions();
   const { deps } = await createProductionRunCoreDeps(options);

@@ -1470,7 +1470,8 @@ export interface RunCoreDeps {
 
   // Misc
   touchPidFile: () => Promise<void>;
-  sleep: (ms?: number) => Promise<void>;
+  /** An optional signal wakes a between-cycle sleep on shutdown. */
+  sleep: (ms?: number, signal?: AbortSignal) => Promise<void>;
   now: () => number;
 
   /**
@@ -6193,6 +6194,7 @@ export async function runCoreLoop(
   // Set only on the unhandled-error path below (Issue #563).
   let fatalError = false;
   let shutdownRequested = false;
+  const cycleSleepAbort = new AbortController();
   /** Set when the daily spend ceiling stopped the cycle (Issue #3648). */
   let spendCeilingReached = false;
   /** Set once the low host disk has been reported this cycle (Issue #226). */
@@ -6507,6 +6509,7 @@ export async function runCoreLoop(
   // --- Signal handling ---
   const shutdownHandler = () => {
     shutdownRequested = true;
+    cycleSleepAbort.abort();
   };
   deps.addSignalListener("SIGTERM", shutdownHandler);
   deps.addSignalListener("SIGINT", shutdownHandler);
@@ -7607,8 +7610,12 @@ export async function runCoreLoop(
             cycleSleepSeconds = sleepWithJitter(backoffInterval);
           }
           // Pace another cycle, never delay an exit whose deadline already passed.
-          if (!shutdownRequested && deps.now() < endTime) {
-            await deps.sleep(cycleSleepSeconds * 1000);
+          const cycleRunwayMs = endTime - deps.now();
+          if (!shutdownRequested && cycleRunwayMs > 0) {
+            await deps.sleep(
+              Math.min(cycleSleepSeconds * 1000, cycleRunwayMs),
+              cycleSleepAbort.signal,
+            );
           } else {
             deps.log(
               `End-of-cycle sleep skipped — ${

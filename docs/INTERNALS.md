@@ -861,7 +861,10 @@ When the priority dispatch completes a full cycle without processing any work
 (`tracker.scanHadSuccess === false`), `runCoreLoop()` invokes the optional
 `runIdleTaskFiler` hook before the between-cycle sleep. That sleep is skipped
 when the run target has passed or shutdown was requested; cycle callbacks and
-circuit-breaker accounting still run. The production wiring in
+circuit-breaker accounting still run. An admitted end-of-cycle sleep is capped
+at the remaining time to the target, and SIGTERM or SIGINT wakes it so the
+normal run-ending cleanup can proceed. This does not interrupt other cycle
+operations or per-issue slot backoffs. The production wiring in
 [run_core_production_deps.ts](../worker/deno/lib/run_core_production_deps.ts)
 delegates to the `maybe-file-idle-task` Deno command
 ([maybe_file_idle_task.ts](../worker/deno/commands/maybe_file_idle_task.ts)),

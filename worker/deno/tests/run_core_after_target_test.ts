@@ -30,6 +30,7 @@ import {
   DEFAULT_RUN_TARGET_SECONDS,
   resetRunTimelineForTests,
 } from "../lib/run_timeline.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -631,4 +632,85 @@ for (const progressed of [false, true]) {
       );
     });
   }
+}
+
+for (const progressed of [false, true]) {
+  Deno.test(`run_core - cycle sleep stops at the target, progress=${progressed} (Issue #5544)`, async () => {
+    const clock: Clock = { now: START_MS };
+    const sleeps: number[] = [];
+    const { errors, logs } = await runLoop(clock, {
+      findAndProcessPrFeedback: () =>
+        Promise.resolve({ ok: true, value: { processed: progressed } }),
+      checkLivenessWindow: async () => {
+        clock.now = TARGET_MS - 1;
+      },
+      sleep: async (ms) => {
+        sleeps.push(ms ?? 0);
+        clock.now += ms ?? 0;
+      },
+    });
+    assertEquals(errors, []);
+    assertEquals(sleeps, [1]);
+    assertEquals(clock.now, TARGET_MS);
+    assertEquals(
+      logs.includes("Run duration complete. Exiting for refresh."),
+      true,
+    );
+  });
+}
+
+for (const signalName of ["SIGTERM", "SIGINT"] as const) {
+  Deno.test(`run_core - ${signalName} wakes an admitted cycle sleep (Issue #5544)`, async () => {
+    const clock: Clock = { now: START_MS };
+    const nap = fakeClock();
+    let shutdown = () => {};
+    const events: string[] = [];
+    const { errors, logs } = await runLoop(clock, {
+      addSignalListener: (signal, handler) => {
+        if (signal === signalName) shutdown = handler;
+      },
+      runCycleCallback: async (cycle) => {
+        events.push(cycle.endReason);
+      },
+      circuitBreakerRecordZeroProgress: async () => {
+        events.push("zero-progress");
+      },
+      sleep: async (ms, signal?: AbortSignal) => {
+        const sleeping = nap.sleep(ms ?? 0, signal);
+        shutdown();
+        // Abort resolves synchronously. Give its promise the same turn as the
+        // control, then release an uncancelled nap so a red run cannot hang.
+        const outcome = await Promise.race([
+          sleeping.then(() => "cancelled"),
+          Promise.resolve().then(() => "still sleeping"),
+        ]);
+        events.push(outcome);
+        if (outcome === "still sleeping") await nap.advance(ms ?? 0);
+        await sleeping;
+      },
+      terminateActiveAgentRuns: async (reason) => {
+        events.push(reason);
+      },
+      cleanupInProgressIssue: async () => {
+        events.push("release claim");
+      },
+      releasePidFile: async () => {
+        events.push("release pid");
+      },
+    });
+    assertEquals(errors, []);
+    assertEquals(events, [
+      "no_eligible_work",
+      "zero-progress",
+      "cancelled",
+      "run ending",
+      "release claim",
+      "release pid",
+    ]);
+    assertEquals(nap.armed, 0);
+    assertEquals(
+      logs.includes("Run duration complete. Exiting for refresh."),
+      true,
+    );
+  });
 }

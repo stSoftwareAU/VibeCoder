@@ -679,7 +679,8 @@ budget-pacing: remaining=4000 affordable/cycle=200 spent=300 sleep=450s (last cy
 Before taking that sleep the loop rechecks its target and shutdown flag.
 If it is stopping, an `End-of-cycle sleep skipped` line follows instead of
 delaying cleanup. The pacing calculation and circuit-breaker accounting still
-run on that final cycle.
+run on that final cycle. An admitted end-of-cycle sleep is capped at the time
+remaining to the target and wakes on SIGTERM or SIGINT.
 
 The decision lives in `worker/deno/lib/budget_pacing.ts`
 (`computePacedSleepSeconds`), pure so every input is a number and the
