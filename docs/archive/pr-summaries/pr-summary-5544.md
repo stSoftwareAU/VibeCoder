@@ -1,11 +1,11 @@
 ## Summary
 
 Once no further claim can follow, a failing claim no longer runs the fresh auth
-probe or the consecutive-failure back-off. This covers both the slot pool and the
-serial scan. The GRQ-23 incident's last worker-log line was exactly that wait: slot
-s2 backing off 300s "before the next claim" while the pool was already draining
-and the finish deadline had passed. The live-container wedge as a whole is still
-not reproduced. Part of #5544.
+probe or the consecutive-failure back-off. This covers both the slot pool and
+the serial scan. The GRQ-23 incident's last worker-log line was exactly that
+wait: slot s2 backing off 300s "before the next claim" while the pool was
+already draining and the finish deadline had passed. The live-container wedge as
+a whole is still not reproduced. Part of #5544.
 
 ## Spec
 
@@ -13,11 +13,14 @@ not reproduced. Part of #5544.
 
 - The incident log, as quoted in the GRQ-23 runs' session transcripts in the
   shared `GRQ-VibeCoder-logs` mirror, shows this order:
-  - 09:31:12: s1 logged `stop reason=drain — the pool is draining; no further claims.`
+  - 09:31:12: s1 logged
+    `stop reason=drain — the pool is draining; no further claims.`
   - 09:39:57: s2 ran `Running Claude Code health check (30s timeout)...` (the
     auth probe).
-  - 09:39:57: s2 then logged `2 consecutive issue failures — backing off 300s
-    before the next claim.`, the archive's `lastLogLine`.
+  - 09:39:57: s2 then logged
+    `2 consecutive issue failures — backing off 300s
+    before the next claim.`,
+    the archive's `lastLogLine`.
 
   The run's finish deadline (09:20:59) had already passed.
 - `runSlotIssue` and `runIssueScanLoop` in `worker/deno/lib/run_core.ts` applied
@@ -75,8 +78,10 @@ back-off, and records the archived run's last line.
 ## Reproduction
 
 - **symptom** — after the pool began draining past the finish deadline, slot s2
-  logged `2 consecutive issue failures — backing off 300s before the next
-  claim.`. That was the last worker-log line before the 10:31:11 watchdog reap.
+  logged
+  `2 consecutive issue failures — backing off 300s before the next
+  claim.`.
+  That was the last worker-log line before the 10:31:11 watchdog reap.
 - **status** — `partial` — reason: the regression test was observed failing
   against the unfixed code and passing after the fix, for the post-drain probe
   and back-off. The live-container wedge, and the main loop's pending await
@@ -98,20 +103,24 @@ back-off, and records the archived run's last line.
   expected 0) and green after the fix:
   - `worker/deno/tests/run_core_auth_breaker_test.ts::failure back-off - a failure streak that ends past the deadline neither probes auth nor backs off (Issue #5544)`
     (serial). It also asserts no back-off sleep and no `backing off` line, and,
-    as a positive control, that the loop stops at its `reached the cycle
+    as a positive control, that the loop stops at its
+    `reached the cycle
     deadline` gate.
   - `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot whose pool will not claim again skips the failure probe and back-off (Issue #5544)`
     (pool). It also asserts `stop reason=deadline`.
-- Controls, green on both trees: `failure back-off - a failure streak before the
-  deadline still probes and backs off (Issue #5544)` and `slot pool - a slot
-  that will claim again still probes and backs off (Issue #5544)`. Each asserts
-  one probe, one back-off sleep and the `backing off` line.
-- Edited test: in
-  `worker/deno/tests/run_core_spend_guards_3648_test.ts`, `SEC-769865133420 -
-  the failure path backs off before the next claim`. It used to end the cycle
-  inside the second claim and still expect the back-off. That behaviour is the
-  one this issue removes. The back-off sleep now ends the cycle instead. The
-  test still asserts that a consecutive failure backs off by
+- Controls, green on both trees:
+  `failure back-off - a failure streak before the
+  deadline still probes and backs off (Issue #5544)`
+  and
+  `slot pool - a slot
+  that will claim again still probes and backs off (Issue #5544)`.
+  Each asserts one probe, one back-off sleep and the `backing off` line.
+- Edited test: in `worker/deno/tests/run_core_spend_guards_3648_test.ts`,
+  `SEC-769865133420 -
+  the failure path backs off before the next claim`. It
+  used to end the cycle inside the second claim and still expect the back-off.
+  That behaviour is the one this issue removes. The back-off sleep now ends the
+  cycle instead. The test still asserts that a consecutive failure backs off by
   `sleepInterval * 1000` before the next claim. No assertion was removed.
 - The existing auth-breaker tests (#4167) pass unchanged. Their failures happen
   inside the cycle, so they still reach the probe.
