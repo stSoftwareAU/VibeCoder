@@ -10,11 +10,12 @@ reaches the execute phase, which releases the run as `interrupted` (or
 
 ### Intent and Rationale
 
-- The issue's failure, `Claude execution failed: executor call failed after 2
-  attempt(s): [GUEST_MEMORY_FLOOR] …`, comes from
-  `worker/deno/lib/orchestration/issue_run_gate.ts`. Its `invoke` closure
-  turned every failed runner result into a retryable `kind: "error"`. The
-  orchestrator therefore started the executor again into the same low memory
+- The issue's failure,
+  `Claude execution failed: executor call failed after 2
+  attempt(s): [GUEST_MEMORY_FLOOR] …`,
+  comes from `worker/deno/lib/orchestration/issue_run_gate.ts`. Its `invoke`
+  closure turned every failed runner result into a retryable `kind: "error"`.
+  The orchestrator therefore started the executor again into the same low memory
   (the "2 attempt(s)"), and `runOrchestratedIssueRun` returned a new plain
   `Error`. That lost the `GuestMemoryFloorError` type, which
   `worker/deno/lib/phases/execute_phase.ts` checks with `instanceof` to release
@@ -25,20 +26,20 @@ reaches the execute phase, which releases the run as `interrupted` (or
 
 ### Essential Design Decisions
 
-- A protective stop is marked `retryable: false` using the existing
-  orchestrator contract (Issue #4584). The orchestrator itself is unchanged.
+- A protective stop is marked `retryable: false` using the existing orchestrator
+  contract (Issue #4584). The orchestrator itself is unchanged.
 - After the `timed_out` and `done` returns, the gate returns the original typed
   error. Other runner failures keep the retry and the
   `<role> call failed after N attempt(s):` wrapping.
 - Assumption: `HostDiskParkError` gets the same treatment. It is the other typed
-  protective stop that the execute phase handles by `instanceof`
-  (Issue #5077), and the orchestrated path lost its type the same way.
+  protective stop that the execute phase handles by `instanceof` (Issue #5077),
+  and the orchestrated path lost its type the same way.
 
 ### Undiscoverable Facts
 
 - The failing run was the #5544 run on host
-  `vibe-coder-65924-7f0d4fcd-2d69-4016-8437-e6dd361b4ccb`, which died in
-  execute after 4204s (release comment linked from the issue).
+  `vibe-coder-65924-7f0d4fcd-2d69-4016-8437-e6dd361b4ccb`, which died in execute
+  after 4204s (release comment linked from the issue).
 
 ## Evidence
 
@@ -70,16 +71,18 @@ Docs updated:
 
 ## Reproduction
 
-- **symptom** — `Claude execution failed: executor call failed after 2
+- **symptom** —
+  `Claude execution failed: executor call failed after 2
   attempt(s): [GUEST_MEMORY_FLOOR] guest memory stayed below its floor (460 MiB
-  available, floor 806 MiB) for 2 readings in a row …`. The run was released as
-  `internal_error`, classified `worker-crash` and auto-filed.
-- **status** — `verified` — the regression test was observed failing against the unfixed code and passing after the fix. Against the base
-  `issue_run_gate.ts`, the new tests failed:
+  available, floor 806 MiB) for 2 readings in a row …`.
+  The run was released as `internal_error`, classified `worker-crash` and
+  auto-filed.
+- **status** — `verified` — the regression test was observed failing against the
+  unfixed code and passing after the fix. Against the base `issue_run_gate.ts`,
+  the new tests failed:
   - the guest-floor gate test failed its `instanceof GuestMemoryFloorError`
     assertion;
-  - the host-disk gate test failed its `instanceof HostDiskParkError`
-    assertion;
+  - the host-disk gate test failed its `instanceof HostDiskParkError` assertion;
   - the end-to-end execute-phase test got category `internal_error` instead of
     `interrupted`.
 
@@ -99,8 +102,8 @@ figures, and `inFlightParkReason(judgeHostDiskForBuild(…))`. Orchestrator
 - **Gate, host disk:** the error is `HostDiskParkError` with
   `agentStarted: true` and an unchanged message, and the executor is called
   once.
-- **Gate control:** a plain `Error("boom")` is still retried (2 executor
-  calls) and wrapped as `executor call failed after 2 attempt(s): boom`.
+- **Gate control:** a plain `Error("boom")` is still retried (2 executor calls)
+  and wrapped as `executor call failed after 2 attempt(s): boom`.
 - **End to end:** the test runs the real `runOrchestratedIssueRun` under the
   real `workOnIssueExecuteClaude`. The result is category `interrupted`, the
   reason opens with `[GUEST_MEMORY_FLOOR]` with no `call failed after` prefix,
@@ -111,17 +114,19 @@ No existing test was edited. Results:
 - `deno task test:unit` on the new file,
   `worker/deno/tests/orchestration_3642_gate_test.ts`,
   `worker/deno/tests/codex_safety_refusal_5506_test.ts` and
-  `worker/deno/tests/orchestration_3642_orchestrator_test.ts`: 85 passed,
-  0 failed.
-- `timeout 1500 ./quality.sh < /dev/null` on the head: `Result: PASSED (with
-  skipped checks)`. The first run failed one markdownlint MD018: an `#5618`
-  wrapped to the start of a line in `docs/CONTAINER.md`. That line was
-  re-wrapped, and the gate re-run passed. Config integration and Checkov were
-  skipped because they are unavailable on this host.
+  `worker/deno/tests/orchestration_3642_orchestrator_test.ts`: 85 passed, 0
+  failed.
+- `timeout 1500 ./quality.sh < /dev/null` on the head:
+  `Result: PASSED (with
+  skipped checks)`. The first run failed one
+  markdownlint MD018: an `#5618` wrapped to the start of a line in
+  `docs/CONTAINER.md`. That line was re-wrapped, and the gate re-run passed.
+  Config integration and Checkov were skipped because they are unavailable on
+  this host.
 - Twinned rules: the execute phase's `instanceof` release branches and
   `quality_gate_remediation_phase.ts` were read. The remediation phase does not
-  use the orchestrated path, so it needed no change. No other copy of the
-  gate's runner-error mapping was found.
+  use the orchestrated path, so it needed no change. No other copy of the gate's
+  runner-error mapping was found.
 
 ## Remaining risk
 
