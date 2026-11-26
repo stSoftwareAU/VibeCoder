@@ -65,13 +65,13 @@ export interface TerminationResult {
  * process and a reused pid reports a different one, so re-reading it
  * immediately before a signal proves the target is still ours.
  *
- * One-second resolution is enough: reusing a pid within the same second would
- * take a full wrap of the pid space (32768 spawns at the Linux minimum).
+ * Linux uses kernel start ticks, independent of calendar-clock adjustments.
+ * Other platforms retain `ps -o lstart=` with one-second resolution.
  */
 export interface ProcessIdentity {
   /** The pid the process held when it was fingerprinted. */
   pid: number;
-  /** Absolute start time as `ps -o lstart=` reports it. */
+  /** Opaque start token: Linux kernel ticks, otherwise `ps -o lstart=`. */
   startedAt: string;
 }
 
@@ -278,25 +278,45 @@ export async function readElapsedClock(
 }
 
 /**
- * Read a process's absolute start time (`ps -o lstart=`).
+ * Read a process's start token: Linux kernel ticks, otherwise `ps -o lstart=`.
+ *
+ * Linux `lstart` includes the boot-time calendar offset, which can change
+ * while a VM lives. `/proc/<pid>/stat` field 22 stays fixed for that process.
+ * Read through a bounded command because Deno restricts direct procfs reads
+ * under the worker's `--allow-read` permissions.
  *
  * @param pid - The process ID to query
- * @returns The start time, or an empty string when the pid holds no process
- *   (or `ps` cannot report it)
+ * @param timeoutMs - Bound on the process probe
+ * @param runProbe - Process-reader seam; defaults to the bounded OS command
+ * @returns The token, or an empty string when the process cannot be identified
  */
 export async function getStartTime(
   pid: number,
   timeoutMs: number = PID_PROBE_TIMEOUT_MS,
+  runProbe: typeof runPidProbe = runPidProbe,
 ): Promise<string> {
+  if (!Number.isInteger(pid) || pid <= 0) return "";
   try {
-    const output = await runPidProbe(
-      "ps",
-      ["-p", String(pid), "-o", "lstart="],
+    const linux = Deno.build.os === "linux";
+    const output = await runProbe(
+      linux ? "cat" : "ps",
+      linux ? [`/proc/${pid}/stat`] : ["-p", String(pid), "-o", "lstart="],
       "piped",
       timeoutMs,
     );
     if (!output.success) return "";
-    return trim(new TextDecoder().decode(output.stdout));
+    const text = trim(new TextDecoder().decode(output.stdout));
+    if (!linux) return text;
+    // comm (field 2) can contain spaces, newlines and closing parentheses.
+    const close = text.lastIndexOf(")");
+    const ticks = text.slice(close + 1).trim().split(/\s+/)[19];
+    if (
+      !text.startsWith(`${pid} (`) || close < 0 ||
+      ticks === undefined || !/^[0-9]{1,20}$/.test(ticks)
+    ) {
+      throw new Error(`Malformed process stat for PID ${pid}`);
+    }
+    return `linux:${ticks}`;
   } catch (err) {
     rethrowPidTimeout(err);
     console.debug(
@@ -498,7 +518,7 @@ export async function sendSignal(
 export interface TerminateDescendantsDeps {
   /** Descendants of a pid, bottom-up (deepest first). */
   getDescendants: (pid: number) => Promise<number[]>;
-  /** A process's absolute start time; "" when the pid holds nothing. */
+  /** A process's start token; "" when the pid holds nothing identifiable. */
   getStartTime: (pid: number) => Promise<string>;
   /** Send a signal to a single pid (never a group). */
   sendSignal: (pid: number, signal: string) => Promise<void>;
@@ -675,7 +695,7 @@ export interface TerminateProcessTreeDeps {
    * child with pgid 1, every process on the box).
    */
   selfPid?: number;
-  /** A process's absolute start time; "" when the pid holds nothing. */
+  /** A process's start token; "" when the pid holds nothing identifiable. */
   getStartTime: (pid: number) => Promise<string>;
   /** Send a signal to a PID (a negative PID targets the process group). */
   sendSignal: (pid: number, signal: string) => Promise<void>;

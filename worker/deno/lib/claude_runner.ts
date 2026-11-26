@@ -748,7 +748,7 @@ export interface RunClaudeOptions {
   memoryGuardKill?: (pid: number) => void;
   /**
    * The start-time reader the memory guard proves identities with (Issue
-   * #5529). Defaults to `ps -o lstart=` (`pid_guard.ts`). Tests only.
+   * #5529). Defaults to the start token from `pid_guard.ts`. Tests only.
    */
   memoryGuardReadStartTime?: (pid: number) => Promise<string>;
   /**
