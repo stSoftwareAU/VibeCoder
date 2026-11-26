@@ -280,8 +280,11 @@ slot tails. The main loop skips its end-of-cycle sleep when its target has
 passed or shutdown was requested, while retaining cycle callbacks and
 circuit-breaker accounting. An admitted end-of-cycle sleep is capped at the
 time remaining to the target and wakes on SIGTERM or SIGINT. Other cycle
-operations and per-issue slot backoffs keep their existing bounds. A pending
-tail's backoff is not proof that the main loop is waiting on that backoff.
+operations keep their existing bounds. A slot or serial scan whose next pass
+will not claim (the pool is draining or exiting, shutdown was requested, the
+cycle target has passed, or the claim-runway floor is reached) skips the
+consecutive-failure auth probe and back-off (Issue #5544). A pending tail's
+backoff is not proof that the main loop is waiting on that backoff.
 When a signal-driven exit reaches normal completion reporting, it logs
 `Shutdown signal received. Exiting for refresh.` instead of reporting that the
 run duration expired.
@@ -311,7 +314,11 @@ they do not change the report's last-phase signature into a stack trace.
 The archived GRQ-23 run `vibe-mwud88ss-874459` predates these records: its
 09:24:53 UTC liveness line on 24 November 2026 is followed by slot tails, with
 no record identifying the main loop's pending await. Both recorded follow-up
-label strips completed. The historical cause remains unverified.
+label strips completed. Its last worker-log line is slot s2's `2 consecutive
+issue failures — backing off 300s before the next claim.` at 09:39:57 UTC,
+logged after s1's `stop reason=drain` at 09:31:12 and after the run's 09:20:59
+finish deadline; a slot no longer probes or backs off in that state. The
+historical cause remains unverified.
 
 A setup phase still running after 30 minutes for the clone, git, stream
 compaction and pre-setup command is abandoned (Issue #5128). A milestone issue adds two

@@ -303,6 +303,8 @@ async function defaultRunScan(
   async function filedByWrapper(): Promise<number[]> {
     const raw = await gh([
       "api",
+      "--method",
+      "GET",
       "--paginate",
       "--slurp",
       `repos/${opts.repo}/issues?labels=duplicated-knowledge&state=all&per_page=100`,
