@@ -2771,10 +2771,11 @@ Five stages, in the order a claim meets them:
    grace and the 120 s WIP reserve (Issue #4246). At the finish they terminate
    in-flight agents so the execute path can commit and push; a slot still
    running when the grace ends has its claim released, and one line names
-   each abandoned item. The run then exits through `Run duration complete.
-   Exiting for refresh.`, and the cycle heartbeat and the success and always
-   run hooks fire as they do on any other end. A SIGTERM shutdown still bounds
-   its own wait with `slotDrainGraceSeconds`.
+   each abandoned item. Duration expiry reports `Run duration complete.
+   Exiting for refresh.`; signal shutdown reports `Shutdown signal received.
+   Exiting for refresh.`. The cycle heartbeat and the success and always run
+   hooks fire as they do on any other end. A SIGTERM shutdown still bounds its
+   own wait with `slotDrainGraceSeconds`.
 
 ```mermaid
 flowchart TD

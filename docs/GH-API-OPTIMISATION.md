@@ -682,7 +682,7 @@ delaying cleanup. The pacing calculation and circuit-breaker accounting still
 run on that final cycle. An admitted end-of-cycle sleep is capped at the time
 remaining to the target and wakes on SIGTERM or SIGINT.
 
-The decision lives in `worker/deno/lib/budget_pacing.ts`
+The pacing decision lives in `worker/deno/lib/budget_pacing.ts`
 (`computePacedSleepSeconds`), pure so every input is a number and the
 output is derived from them:
 
