@@ -53,6 +53,12 @@ interface StubClaude {
   path: string;
   /** Path the stub appends each invocation's --model value to. */
   modelLog: string;
+  /**
+   * The stub's own temporary directory, passed as `workDir` so the runner
+   * reads its cooldown and limit signals there, never from the host's
+   * `WORK_DIR` (Issue #5544).
+   */
+  workDir: string;
 }
 
 /** Basename of the file the stub records each invocation's model in. */
@@ -115,7 +121,12 @@ function withStub<T>(
 ): Promise<T> {
   return withAgentStub(
     body,
-    (stub) => fn({ path: stub.path, modelLog: `${stub.dir}/${MODEL_LOG}` }),
+    (stub) =>
+      fn({
+        path: stub.path,
+        modelLog: `${stub.dir}/${MODEL_LOG}`,
+        workDir: stub.dir,
+      }),
     { prefix: "claude_unavail_stub_" },
   );
 }
@@ -190,6 +201,7 @@ for (const phase of ["planning", "grill_me"] as const) {
                 prompt: "test",
                 phase,
                 agentBinaryPath: stub.path,
+                workDir: stub.workDir,
                 env: FABLE_PINNED_ENV,
                 enableModelFallback: true,
                 timeoutSeconds: 30,
@@ -237,6 +249,7 @@ Deno.test({
               prompt: "test",
               phase: "issue",
               agentBinaryPath: stub.path,
+              workDir: stub.workDir,
               env: emptyEnv,
               enableModelFallback: true,
               timeoutSeconds: 30,
@@ -278,6 +291,7 @@ Deno.test({
               prompt: "test",
               phase: "planning",
               agentBinaryPath: stub.path,
+              workDir: stub.workDir,
               env: FABLE_PINNED_ENV,
               enableModelFallback: true,
               timeoutSeconds: 30,
@@ -320,6 +334,7 @@ Deno.test({
               prompt: "test",
               phase: "grill_me",
               agentBinaryPath: stub.path,
+              workDir: stub.workDir,
               env: FABLE_PINNED_ENV,
               enableModelFallback: false,
               timeoutSeconds: 30,

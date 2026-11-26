@@ -265,9 +265,29 @@ that step; it is the last step the log reported, so the wedge is in or after it,
 and it is not part of the dedup signature), then moves the file to
 `${LOG_DIR}/hard-kill-archive/`, where it is kept for up to 30 days or 2,000
 files. The archive, not the issue, holds the evidence (see
-[a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)). A
-setup phase still running after 30 minutes for the clone, git, stream compaction
-and pre-setup command is abandoned (Issue #5128). A milestone issue adds two
+[a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)).
+
+The report's phase is the last phase named in the worker log, including a
+phase that already completed. A `follow-up-label-strip` signature therefore
+does not establish that the strip stalled. Read its archived start and
+completion lines and the subsequent worker activity before attributing the
+silence to it. Distinguish a watchdog kill from a later interrupted retry by
+container and run id; they can have different causes.
+
+Slot-prefixed messages can continue after the main loop abandons its drain.
+Trace unprefixed post-scan, liveness and shutdown activity separately from those
+slot tails. The main loop skips its end-of-cycle sleep when its target has
+passed or shutdown was requested, while retaining cycle callbacks and
+circuit-breaker accounting. An admitted end-of-cycle sleep is capped at the
+time remaining to the target and wakes on SIGTERM or SIGINT. Other cycle
+operations and per-issue slot backoffs keep their existing bounds. A pending
+tail's backoff is not proof that the main loop is waiting on that backoff.
+When a signal-driven exit reaches normal completion reporting, it logs
+`Shutdown signal received. Exiting for refresh.` instead of reporting that the
+run duration expired.
+
+A setup phase still running after 30 minutes for the clone, git, stream
+compaction and pre-setup command is abandoned (Issue #5128). A milestone issue adds two
 agent budgets (`claude_timeout`, for the milestone pre-sync agent and its repair
 run), because only a milestone setup runs a full agent turn; a non-milestone
 setup's only agent run is the 180-second stream compaction, inside the 30

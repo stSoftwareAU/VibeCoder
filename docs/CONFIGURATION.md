@@ -2022,7 +2022,7 @@ unless explicitly overridden.
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
 | Claude kill-after              | `claude_kill_after`              | `30`       | Grace period after timeout before force-kill                                                                                                                                                         |
-| Sleep interval                 | `sleep_interval`                 | `300`      | Seconds between scans. Raised from `120` to reduce the shared GraphQL quota consumed by fixed per-cycle work. Set it explicitly to scan more often.                                                                                                                                                             |
+| Sleep interval                 | `sleep_interval`                 | `300`      | Base seconds between scans; the end-of-cycle sleep is capped at the run target and wakes on SIGTERM or SIGINT. Raised from `120` to reduce the shared GraphQL quota consumed by fixed per-cycle work. Set it explicitly to scan more often.                                                                                                                                                             |
 | PR repair scans | `pr_scanning_enabled` | `true` | Set to `false` on a host using an external babysitter to disable periodic PR feedback, spelling, CI repair, branch update, conflict, CI nudge and blocking-PR stall scans. Auto-merge and issue processing remain enabled. Other hosts keep scanning unless configured separately. Restart the worker after changing the setting. |
 | Max concurrent issues | `max_concurrent_issues` | `2` | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). Above `1` the agent-backed PR passes also run in a **maintenance lane** beside the pool instead of ahead of it, so a long CI fix no longer idles the slots — see [Maintenance lane](workflows/README.md#%EF%B8%8F-maintenance-lane-agent-backed-pr-passes-beside-the-pool) (Issue #213). |
 | Credit wait interval           | `credit_wait_interval`           | `300`      | Seconds to wait when credits are exhausted                                                                                                                                                           |
@@ -2771,10 +2771,11 @@ Five stages, in the order a claim meets them:
    grace and the 120 s WIP reserve (Issue #4246). At the finish they terminate
    in-flight agents so the execute path can commit and push; a slot still
    running when the grace ends has its claim released, and one line names
-   each abandoned item. The run then exits through `Run duration complete.
-   Exiting for refresh.`, and the cycle heartbeat and the success and always
-   run hooks fire as they do on any other end. A SIGTERM shutdown still bounds
-   its own wait with `slotDrainGraceSeconds`.
+   each abandoned item. Duration expiry reports `Run duration complete.
+   Exiting for refresh.`; signal shutdown reports `Shutdown signal received.
+   Exiting for refresh.`. The cycle heartbeat and the success and always run
+   hooks fire as they do on any other end. A SIGTERM shutdown still bounds its
+   own wait with `slotDrainGraceSeconds`.
 
 ```mermaid
 flowchart TD
