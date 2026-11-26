@@ -185,8 +185,8 @@ progress survives.
 - **Change every copy of a twinned rule** — Before changing a rule, gate,
   matcher or check, search for text that declares a second copy of it
   ("mirrors", "runs the same gate as", "shared copy of", "both carry") and for
-  its function or rule name. Make one call the other (see **DRY: one owner
-  per rule**). Only where a copy cannot call the owner, such as a prompt
+  its function or rule name. By default, make one call the other (see
+  **DRY: one owner per rule**). Only where a copy cannot call the owner, such as a prompt
   restating code or a second language, change every copy in the same PR and
   add a test that fails when they disagree. The Test Plan names the copies found, or says none was found. In
   the Vibe Coder repository, `CODING-STANDARDS.md` and this guidelines template
