@@ -179,14 +179,17 @@ flowchart TD
 - No twinned full-reference scanner or separate end-of-cycle sleep
   implementation was found. No new regex, persisted shape, destructive
   operation, failure ledger or privileged external operation was introduced.
-- `timeout 1500 ./quality.sh < /dev/null` passed on the retry's final code and
-  tests: both unit passes, lint, whole-tree type/format checks, completeness,
-  Mermaid, Markdown lint, Semgrep and release-tag rules. Configuration
-  integration was skipped (`deno or .config.json not available`); Checkov was
-  skipped because neither the pinned binary nor its container image was
-  available. Gitleaks passed for the existing committed range; it does not scan
-  uncommitted changes. The worker's subsequent gate will include this retry's
-  commit. The only later edit records these results in this summary.
+- An earlier attempt's pre-push gate reported `deno task test:unit (2103
+  files)` failing with exit code 1 on another host; that host's test output was
+  not available here. On this branch head, a full `deno task test:unit
+  < /dev/null` passed (36,871 parallel and 940 serial tests, 0 failed), and
+  the four #5544 test files passed 105 of 105 on each of three repeated runs.
+  The earlier failure was not reproduced, so its cause is unknown.
+- `timeout 2400 ./quality.sh < /dev/null` on the branch head gave
+  `Result: PASSED (with skipped checks)`. Configuration integration was skipped
+  (`deno or .config.json not available`), and Checkov was skipped because
+  neither the pinned binary nor its container image was available. The only
+  later edit records these results in this summary.
 - Final `deno task pr-summary-check` with the actual issue body and labels:
   zero blocked gates and zero not checked. Independent two-axis review and
   reproduction checks passed; the incident criterion above remains missing.
