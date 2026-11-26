@@ -435,36 +435,32 @@ Deno.test("a usable untrusted account runs the command dropped, with the cargo t
 });
 
 Deno.test("a command dropped to the untrusted account keeps the guest's cargo job cap (Issue #5626)", async () => {
-  const dropped = async (source: Record<string, string>) => {
-    let args: string[] = [];
-    await withCheckout(async (cwd) => {
-      await withCheckout(async (root) => {
-        const { calls, spawn } = recordingSpawn();
-        await runRepositoryCommand(
-          "cargo",
-          ["test"],
-          { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
-          { spawn, drop: agentDrop, source, trimRefused: true, root },
-        );
-        args = callAt(calls, calls.length - 1).args;
-      });
-    });
-    return args;
+  // Model sudo's environment reset, then execute the probe and child for real.
+  const spawn: typeof runWithTimeout = (command, args, options) => {
+    assertEquals(command, "sudo");
+    assertEquals(args.slice(0, 4), ["-n", "-u", "agent", "--"]);
+    return runWithTimeout(
+      "env",
+      ["-i", "PATH=/usr/bin:/bin", ...args.slice(4)],
+      options,
+    );
   };
-
-  const capped = await dropped({ ...SOURCE, CARGO_BUILD_JOBS: "2" });
-  const envAt = capped.indexOf("env");
-  const jobsAt = capped.indexOf("CARGO_BUILD_JOBS=2");
-  assert(envAt >= 0, `${capped}`);
-  assert(jobsAt > envAt, `${capped}`);
-  assert(jobsAt < capped.indexOf("cargo"), `${capped}`);
-  assertEquals(capped.slice(-2), ["cargo", "test"]);
-
-  const uncapped = await dropped(SOURCE);
-  assert(
-    !uncapped.some((a) => a.startsWith("CARGO_BUILD_JOBS=")),
-    `${uncapped}`,
-  );
+  await withCheckout(async (cwd) => {
+    for (const cap of ["2", undefined]) {
+      const source = cap === undefined
+        ? SOURCE
+        : { ...SOURCE, CARGO_BUILD_JOBS: cap };
+      const result = await runRepositoryCommand(
+        "printenv",
+        ["CARGO_BUILD_JOBS"],
+        { cwd, timeoutMs: 10_000 },
+        { spawn, drop: agentDrop, source, trimRefused: false },
+      );
+      assert(result.ok);
+      assertEquals(result.value.code, cap === undefined ? 1 : 0);
+      assertEquals(result.value.stdout.trim(), cap ?? "");
+    }
+  });
 });
 
 const PROBE_FAILURES: [string, Spawned][] = [
