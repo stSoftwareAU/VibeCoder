@@ -160,8 +160,8 @@ Issue numbers cited:
     values that reach each other, followed by a later flag, masked whole;
   - four controls (a non-flag quote, an earlier-closed flag, a later quoted
     assignment, a flag opener inside a quoted assignment);
-  - four output-only size cases, with no stopwatch: three of 20,000
-    repetitions and one 8,000-repetition chain from round 4.
+  - four output-only size cases, with no stopwatch: three of 20,000 repetitions
+    and one 8,000-repetition chain from round 4.
 - Red on base: with `worker/deno/lib/secret_redaction.ts` restored from
   `origin/main` and the new test file kept, 32 of the 39 tests failed. With the
   module from the commit before the glued-name fix, 16 failed; with the
