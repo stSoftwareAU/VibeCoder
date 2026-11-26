@@ -1471,8 +1471,8 @@ execute phase with its own reason, not wrapped as an `internal_error`
 ("execute was stopped at the guest memory floor …") with a handover note. In
 the quality-fix loop the run is released as `interrupted` with the same reason,
 and no further quality pass, infrastructure retry or bump audit starts. In the
-pre-PR verifier the stop makes that pass `not checked`; it does not block. In a
-PR merge-conflict resolution the merge is aborted, the attempt is withdrawn
+pre-PR verifier the stop makes that pass `not checked`; it does not block.
+In a PR merge-conflict resolution the merge is aborted, the attempt is withdrawn
 without being charged, and the conflict drain stops for that pass rather than
 starting the next PR's agent into the same low memory (Issue #5626); a
 milestone-branch sync still reports the stop as an agent error.

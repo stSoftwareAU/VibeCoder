@@ -3089,7 +3089,7 @@ function cutShortByProvider(detail: string): CutShortCause {
 function cutShortByProtectiveStop(detail: string): CutShortCause {
   return {
     markerReason:
-      "the worker stopped the agent to protect the guest (Issue #5626)",
+      "the worker stopped the agent to protect the guest's memory or the host's disk (Issue #5626)",
     phrase: `a protective stop (${detail})`,
   };
 }
