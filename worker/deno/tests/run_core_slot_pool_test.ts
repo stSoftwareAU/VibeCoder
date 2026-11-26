@@ -2811,3 +2811,76 @@ Deno.test("slot pool - the finish deadline checkpoints, releases, and the next s
     resetRunTimelineForTests();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Issue #5544 — a slot that will not claim again skips the probe and back-off
+// ---------------------------------------------------------------------------
+
+function failureBackoffPool(afterSecondFailure: "past" | "inside") {
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  const backoffMs = config.sleepInterval * 1000;
+  const state = {
+    failures: 0,
+    probes: 0,
+    sleeps: [] as number[],
+    logs: [] as string[],
+  };
+  let now = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => state.logs.push(m),
+    slotCeiling: { effectiveSlots: () => Promise.resolve(1) },
+    findNextIssue: issueQueue([
+      issue("o/a", 1),
+      issue("o/b", 2),
+      issue("o/c", 3),
+    ]),
+    processIssue: () => {
+      state.failures++;
+      if (state.failures === 2) {
+        now = afterSecondFailure === "past" ? cycleMs + 1 : 1000;
+      }
+      return Promise.resolve({ ok: true, value: { success: false } });
+    },
+    sleep: (ms?: number) => {
+      state.sleeps.push(ms ?? 0);
+      if (ms === backoffMs) now = cycleMs + 1;
+      return Promise.resolve();
+    },
+    recheckAgentAuth: () => {
+      state.probes++;
+      return Promise.resolve({ authFailed: false });
+    },
+  });
+  return { deps, state, backoffMs };
+}
+
+Deno.test("slot pool - a slot whose pool will not claim again skips the failure probe and back-off (Issue #5544)", async () => {
+  const { deps, state, backoffMs } = failureBackoffPool("past");
+
+  await runOneCycle(deps, 2);
+
+  assertEquals(state.failures, 2);
+  assertEquals(state.probes, 0);
+  assert(
+    !state.sleeps.includes(backoffMs),
+    `no back-off sleep expected: ${state.sleeps.join(",")}`,
+  );
+  assert(!state.logs.some((m) => m.includes("backing off")));
+  assert(
+    state.logs.some((m) => m.includes("stop reason=deadline")),
+    `expected the deadline stop: ${state.logs.join(" | ")}`,
+  );
+});
+
+Deno.test("slot pool - a slot that will claim again still probes and backs off (Issue #5544)", async () => {
+  const { deps, state, backoffMs } = failureBackoffPool("inside");
+
+  await runOneCycle(deps, 2);
+
+  assertEquals(state.failures, 2);
+  assertEquals(state.probes, 1);
+  assertEquals(state.sleeps.filter((ms) => ms === backoffMs).length, 1);
+  assert(state.logs.some((m) => m.includes("backing off")));
+});

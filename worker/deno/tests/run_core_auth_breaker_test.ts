@@ -220,3 +220,87 @@ Deno.test("auth breaker - absent dep keeps the breaker inert (Issue #4167)", asy
     `without the dep nothing changes (claims: ${counters.claims})`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Issue #5544 — no probe or back-off when the loop will not claim again
+// ---------------------------------------------------------------------------
+
+/** Two failing claims; the second leaves the clock at `afterSecondClaim`. */
+function backoffHarness(afterSecondClaim: "past" | "inside") {
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  const backoffMs = config.sleepInterval * 1000;
+  const state = {
+    claims: 0,
+    probes: 0,
+    sleeps: [] as number[],
+    logs: [] as string[],
+  };
+  let now = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => state.logs.push(m),
+    findNextIssue: () =>
+      Promise.resolve({
+        ok: true,
+        value: {
+          repo: "o/r",
+          issueNumber: state.claims + 1,
+          issueTitle: "always fails",
+          milestoneTitle: "",
+        },
+      }),
+    processIssue: () => {
+      state.claims++;
+      if (state.claims === 2) {
+        now = afterSecondClaim === "past" ? cycleMs + 1 : 1000;
+      }
+      return Promise.resolve({ ok: true, value: { success: false } });
+    },
+    sleep: (ms?: number) => {
+      state.sleeps.push(ms ?? 0);
+      // Only the back-off moves the clock past the deadline (control case).
+      if (ms === backoffMs) now = cycleMs + 1;
+      return Promise.resolve();
+    },
+    recheckAgentAuth: () => {
+      state.probes++;
+      return Promise.resolve({ authFailed: false });
+    },
+  });
+  return { config, deps, state, backoffMs };
+}
+
+Deno.test("failure back-off - a failure streak that ends past the deadline neither probes auth nor backs off (Issue #5544)", async () => {
+  const { config, deps, state, backoffMs } = backoffHarness("past");
+  assert(config.sleepInterval > 0, "the back-off must be enabled");
+
+  await runCoreLoop(config, deps);
+
+  assertEquals(state.claims, 2);
+  assertEquals(state.probes, 0, "no probe when no further claim follows");
+  assert(
+    !state.sleeps.includes(backoffMs),
+    `no back-off sleep expected: ${state.sleeps.join(",")}`,
+  );
+  assert(
+    !state.logs.some((m) => m.includes("backing off")),
+    "no back-off line expected",
+  );
+  assert(
+    state.logs.some((m) => m.includes("reached the cycle deadline")),
+    "the loop must stop at its deadline gate",
+  );
+});
+
+Deno.test("failure back-off - a failure streak before the deadline still probes and backs off (Issue #5544)", async () => {
+  const { config, deps, state, backoffMs } = backoffHarness("inside");
+  assert(config.sleepInterval > 0, "the back-off must be enabled");
+
+  await runCoreLoop(config, deps);
+
+  assertEquals(state.claims, 2);
+  assertEquals(state.probes, 1);
+  assertEquals(state.sleeps.filter((ms) => ms === backoffMs).length, 1);
+  assert(state.logs.some((m) => m.includes("backing off")));
+});

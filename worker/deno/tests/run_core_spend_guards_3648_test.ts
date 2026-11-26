@@ -189,6 +189,11 @@ Deno.test(
       now: () => now,
       sleep: (ms?: number) => {
         sleeps.push(ms ?? 0);
+        // The back-off ends the cycle: it is only taken while a claim follows
+        // (Issue #5544), so the clock must still be inside the cycle for it.
+        if (ms === config.sleepInterval * 1000) {
+          now += config.runDurationSeconds * 1000;
+        }
         return Promise.resolve();
       },
       findNextIssue: () =>
@@ -203,8 +208,6 @@ Deno.test(
         }),
       processIssue: () => {
         claims++;
-        // Two failures, then stop the loop by exhausting the cycle.
-        if (claims >= 2) now += config.runDurationSeconds * 1000;
         return Promise.resolve({ ok: true, value: { success: false } });
       },
     });
