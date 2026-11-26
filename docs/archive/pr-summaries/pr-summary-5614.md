@@ -19,7 +19,7 @@ overlaps. Closes #5614.
 - `cliFlagEnd` keeps its complete-extent contract for assignment callers.
   Shared-quote overlaps are extended before the CLI boundary is shortened.
 - The name probe reads at most 150 characters. Resuming at the trailing name
-  revisits a bounded suffix; values and the input remain untruncated.
+  revisits a bounded suffix; the input remains untruncated.
 
 ### Undiscoverable Facts
 
@@ -83,15 +83,36 @@ overlaps. Closes #5614.
   `deno task test:unit tests/parallel_safety_cap_test.ts
   tests/cache_secret_redaction_1261_test.ts`: passed, 9 tests, including the
   timing-budget check. No test or threshold was altered for these retries.
+- Third and final `./quality.sh < /dev/null`, on identical commit `160bdc5f7`
+  outside `/tmp`: failed its unit-test timing budget. Both parallel and serial
+  assertion passes succeeded; every other executed gate stage passed. The
+  remaining failures were in
+  `worker/deno/tests/git_operations_subprocess_test.ts` and
+  `worker/deno/tests/parallel_safety_cap_test.ts`:
+
+  ```text
+  FAIL: every test in tests/git_operations_subprocess_test.ts (2, 2.79s) is over the 1.00s unit-test budget
+  FAIL: every test in tests/parallel_safety_cap_test.ts (2, 4.24s) is over the 1.00s unit-test budget
+  Deno tests: FAILED (unit-test time budget)
+  Result: FAILED
+  ```
+
+  No fourth gate attempt was made. No unrelated source, test or threshold was
+  changed to bypass these failures.
+- `deno task pr-summary-check --base origin/main --issue-body-file <body>
+  --labels work-on` on this summary: passed, 0 gates blocked and 0 not checked.
+  Acceptance-criteria, independent-review and bug-label reproduction gates are
+  not applicable to this issue.
 
 ## Merge verification
 
-The final full quality gate is running on identical commit `160bdc5f7` in a
-temporary worktree outside `/tmp` on the container's other filesystem. CI and
-independent code review are pending.
+The full quality gate remains failed on the timing-budget checks above. CI and
+independent code review are pending. No pull request was created in this
+executor phase.
 
 ## Limitations
 
 Config integration was skipped because `.config.json` was unavailable. Checkov
 was skipped because its pinned binary/container was unavailable. Pushing is
-left to the assigned delivery phase. Remaining implementation gaps: none.
+left to the assigned delivery phase. The implementation is complete; the full
+gate remains failed on timing budgets.
