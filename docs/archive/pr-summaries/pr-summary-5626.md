@@ -241,11 +241,14 @@ flowchart TD
   gave `ok | 262 passed | 0 failed`.
 - `deno fmt --check`, `deno lint` and `deno check` on the changed TypeScript
   files are clean.
-- `./quality.sh < /dev/null` on the head:
-  `Result: PASSED (with skipped
-  checks)`. Config integration and checkov were
-  skipped by the gate itself; deno tests, lint, type check, fmt, semgrep,
-  gitleaks and markdownlint all passed.
+- `./quality.sh < /dev/null` on the head after the repair-round fix:
+  `Result: PASSED (with skipped checks)`. Config integration and checkov were
+  skipped by the gate itself (no `.config.json`; no checkov on PATH). The
+  completeness checks, deno tests, lint, type check, fmt, semgrep, gitleaks and
+  markdownlint all passed. An earlier run of the gate on this fix failed twice,
+  and both are fixed: the new module had no sweep slice, and a rewrapped line
+  in `docs/CONTAINER.md` began with `#5626`, which markdownlint read as a
+  heading.
 
 ### Not done or not checked
 
