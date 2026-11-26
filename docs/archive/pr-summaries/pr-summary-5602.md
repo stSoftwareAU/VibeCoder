@@ -17,9 +17,8 @@ presync subprocess invocation through a shared test helper. Closes #5602.
   decodes the last stdout line as the command result. Non-zero child exits
   report both output streams.
 - The child clears inherited environment, retains HOME, PATH, DENO_DIR and
-  XDG_CACHE_HOME, and sets `NO_HOST_GIT_CONFIG`, TMPDIR and WORK_DIR
-  explicitly. Command requests retain their Git config settings and production
-  validation.
+  XDG_CACHE_HOME, and sets `NO_HOST_GIT_CONFIG`, TMPDIR and WORK_DIR explicitly.
+  Command requests retain their Git config settings and production validation.
 - The two refusal tests remain in-process: their invalid env is refused before
   git runs. The success and push-failure cases use the isolated helper.
 
@@ -50,10 +49,11 @@ flowchart LR
   `command tests wrote audit state: anchors,audit-…jsonl`. Production code and
   fixtures were unchanged during that red run.
 - The verifier's cache regression was reproduced with DENO_DIR unset, a
-  populated XDG cache and an empty default HOME cache: the accepted-caller-config
-  presync test failed to load cached `@std/yaml`. Both updated audit regressions
-  also failed against the original cache helper. Preserving XDG_CACHE_HOME
-  through `denoCacheEnv` fixes both cleared-environment subprocess paths.
+  populated XDG cache and an empty default HOME cache: the
+  accepted-caller-config presync test failed to load cached `@std/yaml`. Both
+  updated audit regressions also failed against the original cache helper.
+  Preserving XDG_CACHE_HOME through `denoCacheEnv` fixes both
+  cleared-environment subprocess paths.
 - #5602: milestone_branch_ensure_test.ts drives a real `git-operations` push
   that can write a `git-push` row to the live audit journal.
 
@@ -78,8 +78,8 @@ flowchart LR
 - Targeted `deno test --cached-only --frozen` with DENO_DIR unset, a populated
   XDG cache and an empty default HOME cache: passed, 15 tests. The default HOME
   cache remained empty, including during the accepted-caller-config test.
-- Targeted `deno fmt --check`, `deno lint` and `deno check --frozen`: passed
-  for the updated subprocess tests and shared cache helper.
+- Targeted `deno fmt --check`, `deno lint` and `deno check --frozen`: passed for
+  the updated subprocess tests and shared cache helper.
 - The cache helper's other callers (`babysitter_provider_choice_4738_test.ts`,
   `issue_assignment_test.ts` and `pr_summary_ci_workflow_3768_test.ts`): passed,
   66 tests. `deno task check:manifests`: passed, 876 tests and one ignored.
@@ -88,20 +88,20 @@ flowchart LR
   helper. The old summary's accepted residual is a historical record; this
   change removes it for the affected command tests.
 - Shared copies: the presync invocation was extracted and both milestone suites
-  call it. Both subprocess paths use `denoCacheEnv` and receive its XDG fix;
-  no production rule or matcher changed.
-- Before the cache-environment follow-up,
-  `timeout 900 ./quality.sh < /dev/null` passed with skipped checks. Both full
-  unit-test passes, lint, type check, formatting, completeness checks,
-  markdownlint, Mermaid, semgrep and gitleaks passed.
+  call it. Both subprocess paths use `denoCacheEnv` and receive its XDG fix; no
+  production rule or matcher changed.
+- Before the cache-environment follow-up, `timeout 900 ./quality.sh < /dev/null`
+  passed with skipped checks. Both full unit-test passes, lint, type check,
+  formatting, completeness checks, markdownlint, Mermaid, semgrep and gitleaks
+  passed.
 - Before the cache-environment follow-up,
   `deno task pr-summary-check --base origin/main` with the issue body and labels
   passed, zero blocked and zero not checked.
 
 ## Merge verification
 
-- Full quality-gate and verifier reruns for the cache fix, CI and independent
-  PR review remain pending.
+- Full quality-gate and verifier reruns for the cache fix, CI and independent PR
+  review remain pending.
 
 ## Not checked and remaining risks
 
