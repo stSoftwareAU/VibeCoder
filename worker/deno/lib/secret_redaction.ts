@@ -2561,24 +2561,31 @@ function maskLeads(
       ? gluedName(text, close + 1, a.end, starts[f])
       : null;
     let end = glued ? gluedValueEnd(text, glued, a.end, from) : a.end;
+    let next = i + 1;
     if (end !== a.end && end > from) {
       // A quoted value can close past later masks that lie inside it; the
       // extension takes them over, through any further extension of theirs.
+      // A mask already extended over later masks has them marked, and its end
+      // reaches past them, so the walk jumps to its `next` instead of
+      // revisiting them: each mask is a jump target once, which keeps the
+      // pass linear on a chain of glued values (PR #5607 review round 4).
       let j = i + 1;
       while (
         j < masked.length && (masked[j] as AssignmentVerdict).index < end
       ) {
         const covered = leads[j] as MaskLead;
         end = Math.max(end, covered.end);
-        leads[j++] = { ...covered, covered: true };
+        leads[j] = { ...covered, covered: true };
+        j = covered.next;
       }
-      const next = j < masked.length
+      next = j;
+      const nextStart = j < masked.length
         ? (masked[j] as AssignmentVerdict).index
         : text.length;
       const resume = j < masked.length ? survivors[j] : undefined;
       later["'"] = resume?.["'"] ?? Infinity;
       later['"'] = resume?.['"'] ?? Infinity;
-      note(text.slice(end, next), end);
+      note(text.slice(end, nextStart), end);
     } else if (end !== a.end) {
       // The extended mask hides the quotes it now covers, so only those past
       // it survive for the earlier masks' pairing decisions.
@@ -2586,7 +2593,7 @@ function maskLeads(
       later['"'] = before['"'];
       note(text.slice(end, from), end);
     }
-    leads[i] = { lead, end };
+    leads[i] = { lead, end, next };
     // Emitted quotes lie within this mask, before any later unmasked flag.
     note(`${lead}${quote}`, start);
     note(`${a.key}${a.sep}`, a.index);
@@ -2610,6 +2617,8 @@ interface MaskLead {
    * then writes nothing (PR #5607 review round 3).
    */
   readonly covered?: boolean;
+  /** The index of the first mask this mask's extension does not cover. */
+  readonly next: number;
 }
 
 /**

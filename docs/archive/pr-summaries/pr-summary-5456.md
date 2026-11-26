@@ -67,8 +67,12 @@ written back. Closes #5456.
   through `labelEndingAt`, and `gluedValueEnd` reads the gap up to the next
   mask, or up to a glued quoted value's close when that lies further. The close
   is found by a plain character loop that stops at the next unescaped quote of
-  the same kind, so the scans of different glued values do not overlap. The pass
-  stays linear, as the module header requires. No regex quantifier was added.
+  the same kind, so the scans of different glued values do not overlap. An
+  extension that covers a mask jumps to the first mask that mask's own extension
+  did not cover (`MaskLead.next`) instead of revisiting the masks in between, so
+  a chain of glued quoted values that each reach the next is not rescanned from
+  every earlier mask (PR #5607 review round 4). The pass stays linear, as the
+  module header requires. No regex quantifier was added.
 - The shared `assertRedacts` helper moved from the #5363 test into
   `worker/deno/tests/support/secret_redaction_asserts.ts` so both suites call
   one copy.
@@ -160,15 +164,15 @@ Issue numbers cited:
   module from the commit before the glued-name fix, 16 failed; with the
   write-back version, 20 failed; with the first in-place version (one-word
   scanner), the 7 round-2 regressions failed. With the module from the merged
-  tree before the round-3 fix, the 6 round-3 regressions failed. On the head all
-  45 pass.
+  tree before the round-3 fix, the 6 round-3 regressions failed. On the head
+  every test in that file passes.
 - Edited `worker/deno/tests/secret_redaction_flag_closing_quote_5363_test.ts`.
   Its local `assertRedacts` moved unchanged to
   `worker/deno/tests/support/secret_redaction_asserts.ts` and is now imported.
   No assertion was removed or changed.
-- Regression: `deno test -A tests/secret_redaction*_test.ts` at the head gave
-  658 passed and 0 failed. That run includes the Issue #5310 round 13 cases in
-  `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`.
+- Regression: `deno test -A tests/secret_redaction*_test.ts` at the round 2 head
+  gave 658 passed and 0 failed. That run includes the Issue #5310 round 13 cases
+  in `worker/deno/tests/secret_redaction_label_as_value_5310_test.ts`.
 - PR #5607 review: the earlier fuzz claim did not hold. The write-back version
   published keyword runs (`mypassword=` after a kept quote) that the base
   masked, and the review's differential run found 7,376 such inputs in 120,000.
@@ -188,19 +192,30 @@ Issue numbers cited:
   same kept-quote shape, now also drawing escaped quotes, found no input where
   the head publishes a generated word that the merged tree before the round-3
   fix masked.
-- Round 3 regression: `deno test -A tests/secret_redaction*_test.ts` gave 702
-  passed and 0 failed. The redaction-using test files that load without JSR
-  packages (14 files, 249 tests) passed; the other 37 need `jsr:@std/yaml` or
-  `jsr:@std/crypto`, which could not be fetched where round 3 was run, and the
-  worker's gate runs them.
+- Round 3 regression (at that round's head):
+  `deno test -A tests/secret_redaction*_test.ts` gave 702 passed and 0 failed.
+  The redaction-using test files that load without JSR packages (14 files, 249
+  tests) passed; the other 37 need `jsr:@std/yaml` or `jsr:@std/crypto`, which
+  could not be fetched where round 3 was run, and the worker's gate runs them.
+- PR #5607 review round 4: the chained-overlap regression
+  (`--token 'alpha credentials: TOKEN='password: "mike password: x` repeated)
+  was quadratic before the jump (503,000 bytes: 814 ms at 8,000 repeats, and
+  about 4 times that per doubling, measured outside the unit tests on a shared
+  host) and linear after it (52 ms). The output is the same before and after, so
+  the two new tests in the 5456 test file (a 3-unit chain with a later flag, and
+  an 8,000-unit chain, both output only) are green on the earlier head too; they
+  pin the output, and the scaling was measured with a throwaway script.
+  `deno test -A tests/secret_redaction*_test.ts tests/gh_body*_test.ts` at the
+  head gave 758 passed and 0 failed.
 - `./quality.sh < /dev/null` on the merged head, before the glued-name fix,
   passed. `config integration` was skipped because there was no `.config.json`,
   and `checkov` was skipped because it is not installed.
 
 Not checked: beyond the two skipped gate stages above, `./quality.sh` was not
 re-run after the glued-name fix. `deno fmt`, `deno lint` and `deno check` on the
-changed files passed. The redaction suite gave 658 passed, and the 1,046 other
-tests in files that use `redactSecrets` passed. The worker re-runs the gate.
+changed files passed at the round 4 head, where the redaction and gh-body suites
+gave 758 passed. The 1,046 other tests in files that use `redactSecrets` passed
+at the round 2 head and were not re-run. The worker re-runs the gate.
 
 The shape the earlier version listed as a known gap (a kept quote, a glued
 `password:`, then a newline and `TOKEN=--password w0q x`) is now masked: the

@@ -354,6 +354,29 @@ Deno.test("Issue #5456: repeated glued values holding inner assignments are mask
   );
 });
 
+// PR #5607 review round 4: a chain of glued quoted values that each reach the
+// next one is masked once, through the line end, with each later mask taken over
+// by the first. The scale test checks the output only; the work bound is that an
+// extension jumps over the masks an earlier extension already covered.
+
+const CHAINED_UNIT =
+  `--token 'alpha credentials: TOKEN='password: "mike password: x `;
+
+Deno.test("Issue #5456: a chain of glued quoted values reaching each other is masked whole", () => {
+  assertRedacts(
+    `${CHAINED_UNIT.repeat(3)}tail secretword\nafter --password 'q r' end`,
+    `--token ${R}${R}\nafter --password ${R} end`,
+    ["mike", "alpha", "secretword", "tail"],
+  );
+});
+
+Deno.test("Issue #5456: a long chain of glued quoted values is masked whole (output only)", () => {
+  assertEquals(
+    redactSecrets(`${CHAINED_UNIT.repeat(8_000)}tail secretword\nafter`),
+    `--token ${R}${R}\nafter`,
+  );
+});
+
 // Controls: these pass on the unfixed code as well. They pin that only a
 // flag's closing quote is kept in front of the placeholder.
 
