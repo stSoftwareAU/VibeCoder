@@ -100,6 +100,9 @@ flowchart LR
 - `deno fmt`, `deno lint` and `deno check` pass on the changed files.
 - `deno task test:unit tests/milestone_sync_gate_repair_test.ts tests/milestone_sync_refusal_ladder_4328_test.ts tests/milestone_fallback_flag_test.ts tests/milestone_branch_sync_test.ts`:
   160 passed, 0 failed.
+- `./quality.sh` on the final code: `Result: PASSED (with skipped checks)`. The
+  gate itself skipped `config integration` and `checkov`; every other stage,
+  including the deno tests and semgrep, passed.
 - Twinned rules: none found. `pr_summary_check.ts` and the completion phase are
   not touched.
 - Docs sweep: README, `DESIGN-PRINCIPLES.md` and `docs/` hold no sentence that
