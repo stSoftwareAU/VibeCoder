@@ -503,6 +503,77 @@ Deno.test("production terminal issue callback refreshes allocation even without 
   }
 });
 
+Deno.test("production cycle callback identifies allocation refresh and retains held-state reporting (Issue #5544)", async () => {
+  const dir = await Deno.makeTempDir();
+  let cleanup: (() => void) | undefined;
+  try {
+    const ledger = `${dir}/ledger.jsonl`;
+    await Deno.writeTextFile(ledger, "");
+    const config = buildDefaultWorkerConfig({
+      workDir: `${dir}/work`,
+      repos: [],
+      subscriptionAllocation: policy({
+        ledger_paths: [ledger],
+        auto_routing: true,
+      }),
+    });
+    const preview = await evaluateSubscriptionAllocation(config);
+    const messages: string[] = [];
+    const production = await createProductionRunCoreDeps({
+      repoDir: dir,
+      workDir: config.workDir,
+      githubUser: "worker",
+      config,
+      logger: createLogger({ write: (message) => messages.push(message) }),
+    });
+    cleanup = production.cleanup;
+    const cycle = {
+      startedAtEpochMs: 1,
+      finishedAtEpochMs: 2,
+      issuesScanned: 0,
+      claimsAttempted: 0,
+      claimsTaken: 0,
+      endReason: "no_eligible_work" as const,
+      fleetSummary: {
+        claims: 0,
+        successes: 0,
+        failures: 0,
+        skips: 0,
+        idleSeconds: 0,
+        occupiedSeconds: 0,
+        rateLimitedSeconds: 0,
+        tokenBlockedSeconds: 0,
+      },
+    };
+    const phase = "[phase] cycle_end_allocation_refresh:";
+    const progressLines = () => messages.filter((line) => line.includes(phase));
+    await production.deps.runCycleCallback!(cycle);
+    assertEquals(progressLines().length, 2);
+    assert(progressLines()[0]!.includes(`${phase} started`));
+    assert(progressLines()[1]!.includes(`${phase} completed in `));
+    assert(
+      messages.some((line) => line.includes("[subscription-allocation] hold:")),
+    );
+
+    const state = await Deno.readTextFile(preview.stateFile);
+    await Deno.remove(ledger);
+    messages.length = 0;
+    await production.deps.runCycleCallback!(cycle);
+    assertEquals(progressLines().length, 2);
+    assert(progressLines()[0]!.includes(`${phase} started`));
+    assert(progressLines()[1]!.includes(`${phase} completed in `));
+    assert(
+      messages.some((line) =>
+        line.includes("[subscription-allocation] refresh held:")
+      ),
+    );
+    assertEquals(await Deno.readTextFile(preview.stateFile), state);
+  } finally {
+    cleanup?.();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("a cohort is assigned once and survives retries under another treatment", async () => {
   const dir = await Deno.makeTempDir();
   try {

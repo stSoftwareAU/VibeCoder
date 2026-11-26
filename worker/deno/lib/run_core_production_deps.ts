@@ -23,6 +23,7 @@ import type {
   WorkerConfig,
 } from "../types.ts";
 import { systemClock } from "./clock.ts";
+import { withPhaseProgress } from "./phase_progress.ts";
 import {
   isExpectedSkipResult,
   type IssueContext,
@@ -6095,9 +6096,16 @@ export async function createProductionRunCoreDeps(
       );
     },
     async runCycleCallback(cycle) {
-      await refreshSubscriptionAllocation(
-        config,
-        (message) => logger.info(message),
+      await withPhaseProgress(
+        {
+          label: "cycle_end_allocation_refresh",
+          log: (message) => logger.info(message),
+        },
+        () =>
+          refreshSubscriptionAllocation(
+            config,
+            (message) => logger.info(message),
+          ),
       );
       if (!hasCycleCallback(config.callbacks)) return;
       await invokeCycleCallback({
