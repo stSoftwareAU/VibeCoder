@@ -1464,7 +1464,10 @@ stopped run is handled as below.
 
 The stop reason opens with `[GUEST_MEMORY_FLOOR]` and names both figures. In
 the execute phase the run is released as `interrupted`, logged at WARNING, and
-not retried in-process. Its work stays on the issue branch in a `wip:` commit
+not retried in-process. This holds for an externally orchestrated run too: the
+orchestrator does not retry the stopped role call, and the stop reaches the
+execute phase with its own reason, not wrapped as an `internal_error`
+(Issue #5618). Its work stays on the issue branch in a `wip:` commit
 ("execute was stopped at the guest memory floor …") with a handover note. In
 the quality-fix loop the run is released as `interrupted` with the same reason,
 and no further quality pass, infrastructure retry or bump audit starts. In the

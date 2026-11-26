@@ -1134,7 +1134,8 @@ agent output does not. When the park stops an issue run's agent in the execute
 phase, it is logged at WARNING and the run is released as `host_disk` (outcome
 `no_pr:host_disk:execute`), not `internal_error`. The work stays on the issue
 branch in a `wip:` commit with a handover note, so the next claim resumes it
-(Issue #5077).
+(Issue #5077). An externally orchestrated role call parked this way is not
+retried and is released the same way (Issue #5618).
 
 A reason that opens with `[GUEST_MEMORY_FLOOR]` means the worker stopped the
 agent because the guest's available memory stayed below its floor for two

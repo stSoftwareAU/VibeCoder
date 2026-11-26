@@ -110,7 +110,7 @@ export type OrchestrationState =
 
 /** The limits one run may not exceed. Retries and depth are per the contract. */
 export interface OrchestrationBounds {
-  /** Extra attempts after a failed `error` or `timeout` call. An abandoned call (no answer within the call timeout), or a call marked `retryable: false`, is never retried. */
+  /** Extra attempts after a failed `error` or `timeout` call. An abandoned call (no answer within the call timeout), or a call marked `retryable: false` (a run-ending release, or a stop to protect the host), is never retried. */
   maxRetries: number;
   /** How many delegation levels below the manager may run (contract section 6). */
   maxDelegationDepth: number;
@@ -147,7 +147,7 @@ export type AgentCallResult =
     ok: false;
     kind: AgentCallFailureKind;
     message: string;
-    /** false when the run is ending, so a retry cannot help; the orchestrator does not retry the call. */
+    /** false when the run is ending, or the call was stopped to protect the host (guest memory floor, host-disk park), so a retry cannot help; the orchestrator does not retry the call. */
     retryable?: false;
   };
 
