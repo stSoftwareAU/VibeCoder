@@ -89,6 +89,29 @@ back-off, and records the archived run's last line.
 - **regression test** —
   `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot whose pool will not claim again skips the failure probe and back-off (Issue #5544)`
 
+## Original trigger closed
+
+The original trigger is closed, and static reasoning over the changed code path
+finds no trivial bypass. The trigger was a failing claim that ran the auth probe
+and the `sleepInterval` back-off after the pool had begun draining and the
+finish deadline had passed.
+
+- **Pool:** `runSlotIssue` now calls `slotShouldStop` right after it counts the
+  failure. It returns before `recheckAgentAuth` and the back-off `deps.sleep`.
+  `slotShouldStop` covers exit, shutdown, draining, the deadline and the runway
+  floor, so the incident's state (draining, past the deadline) can no longer
+  reach either call.
+- **Serial:** `runIssueScanLoop` calls `serialClaimStop` (deadline, then runway
+  floor) at the same point, before its probe and back-off. The loop-top check
+  uses the same helper, so the two checks cannot disagree.
+- **Other callers:** a search of `worker/deno/lib/` found only these two calls
+  to `recheckAgentAuth()` and these two `backing off … before the next claim`
+  back-offs. No other path reaches them.
+- **Remaining window:** this is not a bypass of the original trigger, but a
+  drain or deadline that begins _during_ a probe or back-off that has already
+  started still waits for that call to finish. The wait is at most
+  `sleepInterval` and is not interrupted.
+
 ## Acceptance Criteria
 
 - **missing** — a container wedged and the launcher watchdog reaped it, so the
