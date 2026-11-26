@@ -2136,6 +2136,12 @@ GUEST_SILENCE_CHECK_SECONDS="${VIBE_GUEST_SILENCE_CHECK_SECONDS:-300}"
 if ! [[ "${GUEST_SILENCE_CHECK_SECONDS}" =~ ^[0-9]+$ ]]; then
   GUEST_SILENCE_CHECK_SECONDS=300
 fi
+# The smallest guest suspension the watchdog credits back to its deadline
+# (Issue #5544). 0 turns the credit off.
+WATCHDOG_SUSPEND_MIN_SECONDS="${VIBE_WATCHDOG_SUSPEND_MIN_SECONDS:-120}"
+if ! [[ "${WATCHDOG_SUSPEND_MIN_SECONDS}" =~ ^[0-9]+$ ]]; then
+  WATCHDOG_SUSPEND_MIN_SECONDS=120
+fi
 # Status `container-reap --if-silent` exits with when it did nothing (disabled,
 # not silent, no log, or the guest answered). Kept in step with
 # GUEST_ANSWERING_EXIT in worker/deno/lib/guest_silence_watch.ts.
@@ -2168,6 +2174,33 @@ refresh_host_disk_while_running() {
   done
 }
 
+# How many seconds the guest was suspended by its host, out of the <elapsed>
+# seconds since launch (Issue #5544): the elapsed time less the guest's own
+# uptime from /proc/uptime. On a Docker or Podman host /proc/uptime is the
+# shared host kernel's uptime, which is never below the elapsed time, so the
+# result is 0 there. The guest boots a little after the watchdog starts; the
+# minimum credit (VIBE_WATCHDOG_SUSPEND_MIN_SECONDS) absorbs that. Any failure
+# of the probe echoes 0, so the watchdog reaps as it did before.
+# shellcheck disable=SC2317,SC2329
+guest_suspended_seconds() {
+  local elapsed="$1"
+  local output field uptime
+  output="$(bounded 10 "${RUNTIME}" exec "${CONTAINER_NAME}" cat /proc/uptime \
+    </dev/null 2>/dev/null)" || output=""
+  field="${output%%[[:space:]]*}"
+  uptime="${field%%.*}"
+  if ! [[ "${uptime}" =~ ^[0-9]+$ ]]; then
+    echo 0
+    return 0
+  fi
+  uptime=$((10#${uptime}))
+  if ((elapsed > uptime)); then
+    echo $((elapsed - uptime))
+  else
+    echo 0
+  fi
+}
+
 # The outer watchdog (Issue #4173). The runtime client is waited on under the
 # plan's deadline instead of for ever: on expiry the reaper kills the container
 # and, when the runtime refuses ("running and can not be deleted"), SIGKILLs
@@ -2180,7 +2213,10 @@ refresh_host_disk_while_running() {
 # That marker records the decision, not a finished reap: when the early command
 # exits non-zero after writing it (cut short by the remaining-deadline bound,
 # or the container survived), this watchdog completes the reap below instead
-# of trusting the marker.
+# of trusting the marker. When the deadline passes with the client still
+# running, the watchdog asks the guest how long it has been up (Issue #5544):
+# time the host suspended the VM is credited back to the deadline, up to one
+# more deadline in total, before the reap.
 # shellcheck disable=SC2317,SC2329
 watchdog_reap_on_deadline() {
   # Runs only as a background job, so it drops the launcher's EXIT trap for its
@@ -2201,63 +2237,94 @@ watchdog_reap_on_deadline() {
   local waited=0
   local since_check=0
   local last_check=$SECONDS
+  local deadline=${WATCHDOG_SECONDS}
+  local credited=0
+  local elapsed suspended credit
+  local poll_interval=${poll}
   local remaining check_budget
   local check_status
   local early_reap_unfinished=""
-  while ((waited < WATCHDOG_SECONDS)); do
-    kill -0 "${client_pid}" 2>/dev/null || return 0
-    # The sleep's own streams are detached: when this watchdog is stopped after
-    # a clean run, an orphaned sleep must not hold the launcher's stdout pipe
-    # open and stall whoever is reading it.
-    remaining=$((WATCHDOG_SECONDS - (SECONDS - started)))
-    ((remaining < poll)) && poll=$remaining
-    ((poll > 0)) || break
-    sleep "${poll}" >/dev/null 2>&1
-    waited=$((SECONDS - started))
-    ((waited < WATCHDOG_SECONDS)) || break
-    since_check=$((SECONDS - last_check))
-    if [[ -n "${TIMEOUT_CMD}" ]] && ((GUEST_SILENCE_CHECK_SECONDS > 0 &&
-      since_check >= GUEST_SILENCE_CHECK_SECONDS)) &&
-      kill -0 "${client_pid}" 2>/dev/null; then
-      last_check=$SECONDS
-      check_status=0
-      check_budget=$((WATCHDOG_SECONDS - waited))
-      ((check_budget > 300)) && check_budget=300
-      bounded "${check_budget}" "${DENO_CMD}" run \
-        --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
-        --allow-env --allow-read --allow-write --allow-run \
-        --allow-sys=hostname,systemMemoryInfo \
-        "${BASE_DIR}/worker/deno/mod.ts" container-reap \
-        --runtime "${RUNTIME}" \
-        --name "${CONTAINER_NAME}" \
-        --client-pid "${client_pid}" \
-        --evidence-dir "${RUN_CORE_LOG_DIR}" \
-        --if-silent \
-        --wedge-marker "${WEDGE_MARKER}" \
-        </dev/null >&2 || check_status=$?
-      if [[ -s "${WEDGE_MARKER}" ]]; then
-        if ((check_status == 0)); then
-          echo "[run.sh] watchdog: ${CONTAINER_NAME} stopped answering after" \
-            "its log went silent - reaped it early (Issue #5161)" >&2
-          kill -KILL "${client_pid}" 2>/dev/null || true
-          return 0
+  while :; do
+    poll=${poll_interval}
+    while ((waited < deadline)); do
+      kill -0 "${client_pid}" 2>/dev/null || return 0
+      # The sleep's own streams are detached: when this watchdog is stopped after
+      # a clean run, an orphaned sleep must not hold the launcher's stdout pipe
+      # open and stall whoever is reading it.
+      remaining=$((deadline - (SECONDS - started)))
+      ((remaining < poll)) && poll=$remaining
+      ((poll > 0)) || break
+      sleep "${poll}" >/dev/null 2>&1
+      waited=$((SECONDS - started))
+      ((waited < deadline)) || break
+      since_check=$((SECONDS - last_check))
+      if [[ -n "${TIMEOUT_CMD}" ]] && ((GUEST_SILENCE_CHECK_SECONDS > 0 &&
+        since_check >= GUEST_SILENCE_CHECK_SECONDS)) &&
+        kill -0 "${client_pid}" 2>/dev/null; then
+        last_check=$SECONDS
+        check_status=0
+        check_budget=$((deadline - waited))
+        ((check_budget > 300)) && check_budget=300
+        bounded "${check_budget}" "${DENO_CMD}" run \
+          --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+          --allow-env --allow-read --allow-write --allow-run \
+          --allow-sys=hostname,systemMemoryInfo \
+          "${BASE_DIR}/worker/deno/mod.ts" container-reap \
+          --runtime "${RUNTIME}" \
+          --name "${CONTAINER_NAME}" \
+          --client-pid "${client_pid}" \
+          --evidence-dir "${RUN_CORE_LOG_DIR}" \
+          --if-silent \
+          --wedge-marker "${WEDGE_MARKER}" \
+          </dev/null >&2 || check_status=$?
+        if [[ -s "${WEDGE_MARKER}" ]]; then
+          if ((check_status == 0)); then
+            echo "[run.sh] watchdog: ${CONTAINER_NAME} stopped answering after" \
+              "its log went silent - reaped it early (Issue #5161)" >&2
+            kill -KILL "${client_pid}" 2>/dev/null || true
+            return 0
+          fi
+          # The marker only records the decision to reap: the command writes it
+          # before the evidence capture and the kill. A non-zero status means the
+          # reap was cut short (the remaining-deadline bound) or left the
+          # container standing, so finish it below with a full cleanup budget.
+          early_reap_unfinished=${check_status}
+          echo "[run.sh] warning: the early reap of ${CONTAINER_NAME} exited" \
+            "${check_status} before it finished - completing it now" \
+            "(Issue #5161)" >&2
+          break
+        elif ((check_status != GUEST_ANSWERING_EXIT)); then
+          echo "[run.sh] warning: the early silent-guest check exited" \
+            "${check_status} without reaping ${CONTAINER_NAME}; the" \
+            "deadline still stands (Issue #5161)" >&2
         fi
-        # The marker only records the decision to reap: the command writes it
-        # before the evidence capture and the kill. A non-zero status means the
-        # reap was cut short (the remaining-deadline bound) or left the
-        # container standing, so finish it below with a full cleanup budget.
-        early_reap_unfinished=${check_status}
-        echo "[run.sh] warning: the early reap of ${CONTAINER_NAME} exited" \
-          "${check_status} before it finished - completing it now" \
-          "(Issue #5161)" >&2
-        break
-      elif ((check_status != GUEST_ANSWERING_EXIT)); then
-        echo "[run.sh] warning: the early silent-guest check exited" \
-          "${check_status} without reaping ${CONTAINER_NAME}; the" \
-          "deadline still stands (Issue #5161)" >&2
       fi
+      waited=$((SECONDS - started))
+    done
+    # The deadline has passed with the client alive. An early reap cut short
+    # is completed below as it always was; otherwise the guest's suspended time
+    # is credited back to the deadline (Issue #5544) before the reap.
+    if [[ -n "${early_reap_unfinished}" ]]; then
+      break
     fi
-    waited=$((SECONDS - started))
+    kill -0 "${client_pid}" 2>/dev/null || return 0
+    if [[ -z "${TIMEOUT_CMD}" ]] ||
+      ((WATCHDOG_SUSPEND_MIN_SECONDS == 0 || waited < WATCHDOG_SUSPEND_MIN_SECONDS)); then
+      break
+    fi
+    elapsed=$((SECONDS - started))
+    suspended="$(guest_suspended_seconds "${elapsed}")"
+    credit=$((suspended - credited))
+    if ((credit > WATCHDOG_SECONDS - credited)); then
+      credit=$((WATCHDOG_SECONDS - credited))
+    fi
+    if ((credit > 0 && credit >= WATCHDOG_SUSPEND_MIN_SECONDS)); then
+      credited=$((credited + credit))
+      deadline=$((deadline + credit))
+      echo "[run.sh] watchdog: ${CONTAINER_NAME}'s guest was suspended for ${credit}s (its uptime is below the ${elapsed}s elapsed) - extending the deadline to ${deadline}s (Issue #5544)" >&2
+      continue
+    fi
+    break
   done
   if [[ -z "${early_reap_unfinished}" ]]; then
     kill -0 "${client_pid}" 2>/dev/null || return 0
@@ -2269,9 +2336,9 @@ watchdog_reap_on_deadline() {
     reap_reason="the launcher's early silent-guest reap exited ${early_reap_unfinished} before it finished"
   else
     echo "[run.sh] watchdog: ${CONTAINER_NAME} is still running after" \
-      "${WATCHDOG_SECONDS}s - reaping it (Issue #4173)" >&2
+      "${deadline}s - reaping it (Issue #4173)" >&2
     printf 'container_wedged\n' >"${WEDGE_MARKER}"
-    reap_reason="the launcher's ${WATCHDOG_SECONDS}s watchdog deadline expired"
+    reap_reason="the launcher's ${deadline}s watchdog deadline expired"
   fi
 
   # Issue #4253: the reaper writes hard-kill evidence into the worker log

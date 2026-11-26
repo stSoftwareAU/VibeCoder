@@ -1028,6 +1028,181 @@ Deno.test("run.sh - a silent guest that still answers is left to the deadline (I
   }
 });
 
+Deno.test("run.sh - a guest the host suspended gets its lost time back before the deadline (Issue #5544)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    // Longer than the six-second deadline but shorter than the extended one,
+    // so the container exits on its own once the lost time is given back.
+    STUB_RUN_SLEEP: "10",
+    STUB_KILL_EXIT: "1",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "6",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "0",
+    VIBE_WATCHDOG_SUSPEND_MIN_SECONDS: "1",
+    // An uptime of zero: the host held the VM suspended for the whole run, so
+    // every elapsed second is lost time the guest never spent.
+    STUB_GUEST_UPTIME: "0",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    assertStringIncludes(
+      outcome.stderr,
+      "was suspended for",
+      "the watchdog must say it credited the lost time",
+    );
+    assertEquals(
+      await recorded(harness, "kill"),
+      null,
+      "a guest that finished inside its extended deadline must not be killed",
+    );
+    assertEquals(
+      await hardKillRecords(harness.logDir, "hard-kill-"),
+      [],
+      "a guest that finished must leave no hard-kill record",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a guest whose uptime covers the elapsed time is reaped at the deadline (Issue #5544)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "900",
+    STUB_KILL_EXIT: "1",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "6",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "0",
+    VIBE_WATCHDOG_SUSPEND_MIN_SECONDS: "1",
+    // The guest has been up for longer than the launcher has existed, so
+    // nothing was suspended and nothing is credited.
+    STUB_GUEST_UPTIME: "99999",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(
+      outcome.code,
+      CONTAINER_WEDGED_EXIT_STATUS,
+      outcome.stderr,
+    );
+    assertEquals(
+      outcome.stderr.includes("was suspended for"),
+      false,
+      "a guest that was not suspended must get no extension",
+    );
+
+    const args = await recorded(harness, "run");
+    assert(args, "the container never started");
+    const name = args[args.indexOf("--name") + 1]!;
+    const records = await hardKillRecords(
+      harness.logDir,
+      `hard-kill-${name}-`,
+    );
+    assertEquals(records.length, 1, outcome.stderr);
+    const evidence: Record<string, unknown> = JSON.parse(
+      await Deno.readTextFile(records[0]!),
+    );
+    assertEquals(
+      evidence.reason,
+      "the launcher's 6s watchdog deadline expired",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a guest suspended for ever is still reaped after one extra deadline (Issue #5544)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "900",
+    STUB_KILL_EXIT: "1",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "4",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "0",
+    VIBE_WATCHDOG_SUSPEND_MIN_SECONDS: "1",
+    // Suspended for ever: the uptime never moves, so the first deadline's
+    // worth of lost time is credited and the second deadline must still end
+    // the wait.
+    STUB_GUEST_UPTIME: "0",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(
+      outcome.code,
+      CONTAINER_WEDGED_EXIT_STATUS,
+      outcome.stderr,
+    );
+
+    const args = await recorded(harness, "run");
+    assert(args, "the container never started");
+    const name = args[args.indexOf("--name") + 1]!;
+    const records = await hardKillRecords(
+      harness.logDir,
+      `hard-kill-${name}-`,
+    );
+    assertEquals(records.length, 1, outcome.stderr);
+    const evidence: Record<string, unknown> = JSON.parse(
+      await Deno.readTextFile(records[0]!),
+    );
+    assertEquals(
+      evidence.reason,
+      "the launcher's 8s watchdog deadline expired",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a deadline shorter than the suspension minimum reaps without probing the guest (Issue #5544)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "900",
+    STUB_KILL_EXIT: "1",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "6",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "0",
+    // No VIBE_WATCHDOG_SUSPEND_MIN_SECONDS: the default minimum (120s) is
+    // longer than this six-second deadline, so no credit is ever considered.
+    STUB_GUEST_UPTIME: "0",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(
+      outcome.code,
+      CONTAINER_WEDGED_EXIT_STATUS,
+      outcome.stderr,
+    );
+    assertEquals(
+      outcome.stderr.includes("was suspended for"),
+      false,
+      "a deadline shorter than the minimum must not be extended",
+    );
+
+    const args = await recorded(harness, "run");
+    assert(args, "the container never started");
+    const name = args[args.indexOf("--name") + 1]!;
+    const records = await hardKillRecords(
+      harness.logDir,
+      `hard-kill-${name}-`,
+    );
+    assertEquals(records.length, 1, outcome.stderr);
+    const evidence: Record<string, unknown> = JSON.parse(
+      await Deno.readTextFile(records[0]!),
+    );
+    assertEquals(
+      evidence.reason,
+      "the launcher's 6s watchdog deadline expired",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 Deno.test("run.sh - a healthy run is never reaped", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
