@@ -3,17 +3,16 @@
 ## Summary
 
 Repository gate commands that the worker drops to the `agent` account now keep
-the guest's cargo job cap. The container entrypoint exports
-`CARGO_BUILD_JOBS=2` (Issue #4225) so that cargo cannot exhaust the swapless
-guest's memory. But the worker runs a repository's own commands as
-`sudo -n -u agent -- …`, and the sudo rule has no `SETENV` or `env_keep`, so
-`env_reset` strips the child environment. Only what `sudoCarriedEnv`
-(`worker/deno/lib/quality_gate_phase.ts`) returns travels in argv, and it
-carried only `CARGO_TARGET_DIR` and the egress proxy. Every dropped
-`cargo check` and `cargo test` therefore ran with one job per vCPU: the milestone
-merge and resolution gates, the merge fast checks (both through
-`runRepositoryCommand` in `worker/deno/lib/untrusted_gate_spawn.ts`) and the
-quality gate. `sudoCarriedEnv` now also carries `CARGO_BUILD_JOBS`, but only
+the guest's cargo job cap. The container entrypoint exports `CARGO_BUILD_JOBS=2`
+(Issue #4225) so that cargo cannot exhaust the swapless guest's memory. But the
+worker runs a repository's own commands as `sudo -n -u agent -- …`, and the sudo
+rule has no `SETENV` or `env_keep`, so `env_reset` strips the child environment.
+Only what `sudoCarriedEnv` (`worker/deno/lib/quality_gate_phase.ts`) returns
+travels in argv, and it carried only `CARGO_TARGET_DIR` and the egress proxy.
+Every dropped `cargo check` and `cargo test` therefore ran with one job per
+vCPU: the milestone merge and resolution gates, the merge fast checks (both
+through `runRepositoryCommand` in `worker/deno/lib/untrusted_gate_spawn.ts`) and
+the quality gate. `sudoCarriedEnv` now also carries `CARGO_BUILD_JOBS`, but only
 when its value is a positive whole number. Closes #5626.
 
 ## Spec
@@ -38,8 +37,8 @@ when its value is a positive whole number. Closes #5626.
   `Connection reset by peer`, and the watchdog reaped the container. An uncapped
   cargo build of a large workspace fits all of this. Issue #5529's evidence also
   fits: six `/usr/bin/ld` linkers ran at once under a cap of 2.
-- The guards that exist do not cover this step. The guest memory floor
-  (Issue #4815) and the early-OOM guard (Issue #5529) watch only agent runs in
+- The guards that exist do not cover this step. The guest memory floor (Issue
+  #4815) and the early-OOM guard (Issue #5529) watch only agent runs in
   `claude_runner.ts`, and `docs/CONTAINER.md` says quality-gate commands are not
   watched. The fix restores the cap that was meant to apply, at the one helper
   that decides what crosses sudo. It adds no new guard.
@@ -128,8 +127,8 @@ flowchart TD
   - `a command dropped to the untrusted account keeps the guest's cargo job cap (Issue #5626)`.
     It calls the real `runRepositoryCommand("cargo", ["test"])` with the agent
     drop, and asserts that `CARGO_BUILD_JOBS=2` sits after `env` and before
-    `cargo test` in the spawned argv. The control, a source without the cap,
-    has no `CARGO_BUILD_JOBS=` element.
+    `cargo test` in the spawned argv. The control, a source without the cap, has
+    no `CARGO_BUILD_JOBS=` element.
 - No existing test was edited. The quality gate's own spawn reads the process
   environment and has no injected-source harness, so that caller is covered
   through the shared helper's tests, not through its own spawn.
@@ -153,5 +152,5 @@ flowchart TD
 
 - The guest wedge was not reproduced on a real guest (see Reproduction).
 - The GRQ-25 recurrence's archive was not read.
-- The memory guards still watch only agent runs. A gate's cargo now runs at
-  the guest's cap, but it is not itself watched for memory.
+- The memory guards still watch only agent runs. A gate's cargo now runs at the
+  guest's cap, but it is not itself watched for memory.
