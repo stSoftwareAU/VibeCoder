@@ -84,6 +84,8 @@ failures; an optional `onUnparseable` callback receives the filename and a
 size-limit or parser diagnostic. Files exactly at the limit remain eligible.
 Symlink entries are skipped. The stat check does not bound a file that grows
 between the check and the read.
+The zero-loaded diagnostic uses `console.warn` by default; callers can supply
+an `opts.warn` callback to capture it without replacing the global console.
 
 The two cross-bucket checks added from v3 onward — **dead dependencies** and
 **deprecated config on framework bump** — are also **static-evidence only**. The
@@ -1242,9 +1244,9 @@ present but a gate truly missing (`workflowsLoaded` absent or `true`) — is
 actionlint (`github-actions`) check in the weekly
 [github-actions-audit scan](GITHUB-ACTIONS-AUDIT-SCAN.md).
 
-This is defence in depth: the sibling root-cause fix (parent) makes the
-zero-load _stop happening_; this fail-safe makes a zero-load _harmless_ if it
-ever recurs.
+This is defence in depth: deriving the checkout path via `repoCheckoutPath()`
+avoids the wrong-root cause; the fail-safe suppresses the finding when no
+eligible workflow loads, including when the files exceed the size limit.
 
 ## Cross-bucket: verbose gate output check
 

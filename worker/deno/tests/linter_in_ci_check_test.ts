@@ -79,19 +79,17 @@ Deno.test("loadWorkflows — skips valid YAML over 1 MiB with a size diagnostic"
       assertEquals(workflows.map((w) => w.filename), ["readable.yml"]);
       assertEquals(diagnostics.length, 1);
       assertEquals(diagnostics[0]?.[0], "oversized.yml");
-      assertStringIncludes(diagnostics[0]![1], "exceeds");
-      assertStringIncludes(diagnostics[0]![1], "1048576");
-      assertStringIncludes(diagnostics[0]![1], "bytes");
+      assertEquals(
+        diagnostics[0]![1],
+        "Workflow size 1048577 bytes exceeds the 1048576 bytes limit",
+      );
 
       await Deno.remove(`${tmp}/.github/workflows/readable.yml`);
       const warnings: string[] = [];
-      const originalWarn = console.warn;
-      console.warn = (message: string) => warnings.push(message);
-      try {
-        assertEquals(await loadWorkflows(tmp), []);
-      } finally {
-        console.warn = originalWarn;
-      }
+      assertEquals(
+        await loadWorkflows(tmp, { warn: (message) => warnings.push(message) }),
+        [],
+      );
       assertEquals(warnings, [
         `[linter-in-ci] loaded 0 workflows from "${tmp}/.github/workflows" ` +
         "(directory present but none loaded)",

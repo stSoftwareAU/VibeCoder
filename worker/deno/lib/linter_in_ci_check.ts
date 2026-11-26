@@ -210,10 +210,14 @@ const MAX_WORKFLOW_BYTES = 1024 * 1024;
  * when missing. Symlink entries are skipped.
  * `opts.onUnparseable` receives the filename and size-limit or parser
  * diagnostic for each skipped oversized or unparseable workflow.
+ * `opts.warn` defaults to `console.warn` for zero-loaded diagnostics.
  */
 export async function loadWorkflows(
   repoPath: string,
-  opts?: { onUnparseable?: (filename: string, message: string) => void },
+  opts?: {
+    onUnparseable?: (filename: string, message: string) => void;
+    warn?: (message: string) => void;
+  },
 ): Promise<LoadedWorkflow[]> {
   const dir = `${repoPath}/.github/workflows`;
   const out: LoadedWorkflow[] = [];
@@ -265,7 +269,7 @@ export async function loadWorkflows(
     // whether the directory existed tells the two apart — a missing
     // directory at scan time usually means the wrong path was passed
     // (e.g. the parent work dir instead of the repo checkout root).
-    console.warn(
+    (opts?.warn ?? console.warn)(
       `[linter-in-ci] loaded 0 workflows from "${dir}" ` +
         `(directory ${dirMissing ? "missing" : "present but none loaded"})`,
     );
