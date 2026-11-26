@@ -112,8 +112,8 @@ or shutdown statement required replacement. Both changed production callers use
 
 - **missing** — a container wedged and the launcher watchdog reaped it, so the
   run never released its claim — reviewer: missing — reason: the independent
-  Spec reviewer confirmed that the diff adds diagnostics without establishing
-  or repairing the historical wedge. The executor rechecked the matching facts
+  Spec reviewer confirmed that the diff adds diagnostics without establishing or
+  repairing the historical wedge. The executor rechecked the matching facts
   archive, rotated worker log and launcher log; both claims were recorded
   released before the last main-loop liveness record, but the pending operation
   remains unidentified. Pending-dependency tests release their promises before
@@ -176,8 +176,8 @@ or shutdown statement required replacement. Both changed production callers use
   binary/image was unavailable. No failed check remains.
 - This retry's `deno task pr-summary-check` with the actual issue body and
   labels passed: zero blocked gates and zero not checked. Independent two-axis
-  review passed; acceptance-criteria closure reported not applicable because
-  the issue states no acceptance-criteria heading. The summary's own missing
+  review passed; acceptance-criteria closure reported not applicable because the
+  issue states no acceptance-criteria heading. The summary's own missing
   criterion remains recorded above.
 - No new regex, persisted shape, destructive operation, failure ledger or
   privileged operation was introduced. The diagnostic labels contain
