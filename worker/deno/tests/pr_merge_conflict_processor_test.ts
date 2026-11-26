@@ -2529,6 +2529,108 @@ Deno.test("processMergeConflict - an agent run that fails to spawn is still judg
   assertStringIncludes(failed[0] ?? "", "agent run failed");
 });
 
+/**
+ * A verifier that runs one repair round and, like the real one, turns a failed
+ * repair run into a refusal (`merge_fast_checks.ts`, Issue #5626).
+ */
+const refusingOnFailedRepair: VerifierFixture = async (verifyOpts) => {
+  const repaired = await verifyOpts.runRepairAgent({
+    round: 1,
+    maxRounds: 2,
+    failingCommand: "cargo test",
+    output: "test failed",
+    mergedCommitSubjects: [],
+  });
+  return repaired.ok
+    ? { kind: "passed", ran: ["cargo test"], leftToCi: [], repairRounds: 1 }
+    : {
+      kind: "refused",
+      detail: `repair agent failed: ${repaired.error.message}`,
+    };
+};
+
+Deno.test("processMergeConflict - a guest-memory-floor stop in a repair round withdraws the attempt and stops the drain (Issue #5626)", async () => {
+  // The repair round runs the failing builds and tests, the most
+  // memory-hungry part of a PR's conflict pass. A floor stop there is no
+  // verdict on the PR either.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ mergeCode: 0, unmergedAfterMerge: [] }),
+    undefined,
+    {
+      claudeError: new GuestMemoryFloorError(
+        "[GUEST_MEMORY_FLOOR] guest memory stayed below its floor (490 MiB available, floor 806 MiB) for 2 readings in a row: the agent run was stopped so the guest keeps answering (Issue #4815)",
+      ),
+      postedCommentId: 9008,
+      verifier: refusingOnFailedRepair,
+    },
+  );
+
+  assert(result.ok, JSON.stringify(result));
+  assertEquals(captured.agentRuns, 1, "only the repair round ran");
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.runEnded, true);
+  assertStringIncludes(result.value.summary, "protective stop");
+  assertEquals(captured.commentsDeleted, [9008]);
+  const conclusions = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER) || c.includes(CONFLICT_RESOLVED_MARKER)
+  );
+  assertEquals(conclusions, []);
+  assertEquals(captured.commitAndPushCalls, 0);
+  assertEquals(
+    captured.resets,
+    [CONFLICT_HEAD],
+    "the local merge is discarded",
+  );
+});
+
+Deno.test("processMergeConflict - a host-disk park in a repair round withdraws the attempt (Issue #5626)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ mergeCode: 0, unmergedAfterMerge: [] }),
+    undefined,
+    {
+      claudeError: new HostDiskParkError("host disk below its floor", true),
+      postedCommentId: 9009,
+      verifier: refusingOnFailedRepair,
+    },
+  );
+
+  assert(result.ok, JSON.stringify(result));
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.runEnded, true);
+  assertEquals(captured.commentsDeleted, [9009]);
+  const conclusions = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER) || c.includes(CONFLICT_RESOLVED_MARKER)
+  );
+  assertEquals(conclusions, []);
+});
+
+Deno.test("processMergeConflict - a repair round that fails to spawn is still judged (Issue #5626)", async () => {
+  // The control for the two repair-round stops: an ordinary failed repair run
+  // is a refusal, charged with a failed conclusion.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ mergeCode: 0, unmergedAfterMerge: [] }),
+    undefined,
+    {
+      claudeError: new Error("spawn failed: ENOENT"),
+      postedCommentId: 9010,
+      verifier: refusingOnFailedRepair,
+    },
+  );
+
+  assert(result.ok, JSON.stringify(result));
+  assertEquals(result.value.runEnded, undefined);
+  assertEquals(captured.commentsDeleted, [], "the marker is not withdrawn");
+  const failed = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER)
+  );
+  assertEquals(failed.length, 1);
+  assertStringIncludes(failed[0] ?? "", "repair agent failed");
+});
+
 Deno.test("processMergeConflict - an agent that runs out its own timeout spends its attempt (Issue #2305)", async () => {
   // The other ending of an agent run: the agent's own 30-minute ceiling, not
   // the handler deadline. The rung was climbed and the conflict beat it, so

@@ -1323,9 +1323,11 @@ than asking a person: no label is applied and the PR is left queued.
 **A protective stop is not a conflict either** (Issue #5626). When the worker
 stops a PR's conflict agent to protect the guest — the guest-memory floor
 ([CONTAINER.md](CONTAINER.md#a-running-agent-stops-at-the-guest-memory-floor-issue-4815))
-or the host-disk park — the conflict was never judged. The merge is aborted, the
-attempt is withdrawn without being charged, and no failed conclusion is posted:
-the attempt marker is deleted, as for a provider outage. The conflict drain then
+or the host-disk park — the conflict was never judged. This holds for the
+resolution run and for a pre-push gate-repair round alike. The merge is aborted
+(or, in a repair round, the local merge is discarded), the attempt is withdrawn
+without being charged, and no failed conclusion is posted: the attempt marker is
+deleted, as for a provider outage. The conflict drain then
 stops for that pass instead of starting the next PR's agent into the same low
 memory or full disk.
 

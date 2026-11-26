@@ -15,10 +15,11 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createMergeConflictReplyReader,
   type MergeConflictAgentRequest,
-  protectiveStopOf,
   runMergeConflictAgent,
 } from "../lib/merge_conflict_agent.ts";
+import { protectiveStopOf } from "../lib/protective_stop.ts";
 import { GuestMemoryFloorError } from "../lib/guest_memory_floor.ts";
+import { HostDiskParkError } from "../lib/heavy_build_gate.ts";
 import {
   endHandlerLandingStep,
   handlerLandingStep,
@@ -69,7 +70,7 @@ interface Captured {
 
 function makeRunner(
   captured: Captured,
-  result: Partial<ClaudeRunResult> | { failure: string } = {},
+  result: Partial<ClaudeRunResult> | { failure: string | Error } = {},
 ): RunAgent {
   return (
     options: RunAgentOptions,
@@ -80,7 +81,11 @@ function makeRunner(
     captured.options.push(options);
     captured.retryOptions.push(retryOptions ?? {});
     if ("failure" in result) {
-      return Promise.resolve({ ok: false, error: new Error(result.failure) });
+      const { failure } = result;
+      return Promise.resolve({
+        ok: false,
+        error: failure instanceof Error ? failure : new Error(failure),
+      });
     }
     return Promise.resolve({
       ok: true,
@@ -431,14 +436,9 @@ Deno.test("merge conflict agent - a protective stop keeps its type under the fai
   const stop = new GuestMemoryFloorError(
     "[GUEST_MEMORY_FLOOR] guest memory stayed below its floor",
   );
-  const runAgent: RunAgent = (options, retryOptions) => {
-    captured.runs++;
-    captured.prompts.push(options.prompt);
-    captured.options.push(options);
-    captured.retryOptions.push(retryOptions ?? {});
-    return Promise.resolve({ ok: false, error: stop });
-  };
-  const outcome = await runMergeConflictAgent(makeRequest(runAgent));
+  const outcome = await runMergeConflictAgent(
+    makeRequest(makeRunner(captured, { failure: stop })),
+  );
 
   assertEquals(outcome.ok, false);
   assert(!outcome.ok);
@@ -450,6 +450,8 @@ Deno.test("merge conflict agent - a protective stop keeps its type under the fai
 });
 
 Deno.test("merge conflict agent - protectiveStopOf finds only a protective stop (Issue #5626)", () => {
+  const stop = new HostDiskParkError("host disk below its floor", true);
+  assert(protectiveStopOf(stop) === stop, "an unwrapped stop is itself");
   assertEquals(protectiveStopOf(new Error("x")), undefined);
   assertEquals(
     protectiveStopOf(new Error("y", { cause: new Error("z") })),

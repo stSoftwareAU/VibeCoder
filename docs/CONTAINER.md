@@ -1386,7 +1386,10 @@ handover note, so the next claim resumes it. The run is not retried in-process
 and charges no attempt. As with the park described above, it keeps the
 `disk-full` class, is not code-fixable, and earns no `failed-once` or escalating
 cooldown. Other steps that park (quality gate, security-fix discrimination,
-merge fast checks) still report `internal_error` with the park note.
+merge fast checks) still report `internal_error` with the park note. The
+exception is a PR merge-conflict agent run, the resolution run or a gate-repair
+round inside the merge fast checks: its attempt is withdrawn without being
+charged and the conflict drain stops for that pass (Issue #5626).
 
 A dip that babysitter reservations (live, or released and not yet reflected in a fresh launcher reading) explain is a wait, not a kill (Issue #5105). The fleet PR
 babysitter records each running repair container's, and each Chromium self-check container's, host footprint in `${HOME}/logs/host-disk-reservations` (one file per container).
@@ -1472,10 +1475,11 @@ execute phase with its own reason, not wrapped as an `internal_error`
 the quality-fix loop the run is released as `interrupted` with the same reason,
 and no further quality pass, infrastructure retry or bump audit starts. In the
 pre-PR verifier the stop makes that pass `not checked`; it does not block.
-In a PR merge-conflict resolution the merge is aborted, the attempt is withdrawn
-without being charged, and the conflict drain stops for that pass rather than
-starting the next PR's agent into the same low memory (Issue #5626); a
-milestone-branch sync still reports the stop as an agent error.
+In a PR merge-conflict resolution, whether the stop ends the resolution run or a
+gate-repair round, the merge is discarded, the attempt is withdrawn without
+being charged, and the conflict drain stops for that pass rather than
+starting the next PR's agent into the same low memory or full disk
+(Issue #5626); a milestone-branch sync still reports the stop as an agent error.
 
 ### HOST_DISK_BUDGET merges without the build (Issue #4326)
 

@@ -52,9 +52,9 @@ import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import {
   createMergeConflictReplyReader,
-  protectiveStopOf,
   runMergeConflictAgent,
 } from "./merge_conflict_agent.ts";
+import { protectiveStopOf } from "./protective_stop.ts";
 import { endHandlerLandingStep } from "./handler_watchdog.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import type { RunStats } from "./run_stats.ts";
@@ -190,18 +190,20 @@ export interface MergeConflictResult {
   summary: string;
   /**
    * Explicitly `false` when this pass opened an attempt and then withdrew it:
-   * the watchdog SIGTERMed the agent because the cycle ended (Issue #1693),
-   * or a repository ruleset refused the push (Issue #1772). Neither is the
-   * PR's fault, so the attempt marker is deleted and the PR's budget is
-   * untouched. Absent everywhere else — those paths either concluded their
+   * the watchdog SIGTERMed the agent because the cycle ended (Issue #1693), a
+   * repository ruleset refused the push (Issue #1772), the provider refused
+   * the agent run (Issue #2613), the pre-push gate was deferred, or a
+   * protective stop ended the agent (Issue #5626). None is the PR's fault, so
+   * the attempt marker is deleted and the PR's budget is untouched. Absent everywhere else — those paths either concluded their
    * attempt or never opened one.
    */
   attemptCharged?: boolean;
   /**
    * Explicitly `true` when the withdrawal happened because **the run itself**
-   * was ending (Issue #1693), or a protective stop ended it (Issue #5626: the
-   * guest-memory floor or the host-disk park) — the withdrawals the drain must
-   * stop on. Taking the next PR would open an attempt marker and withdraw it
+   * was ending (Issue #1693), the provider refused the agent run (Issue
+   * #2613), the pre-push gate was deferred, or a protective stop ended it
+   * (Issue #5626: the guest-memory floor or the host-disk park) — the
+   * withdrawals the drain must stop on. Taking the next PR would open an attempt marker and withdraw it
    * again, or start an agent into the same low memory or full disk. Kept apart
    * from {@link MergeConflictResult.attemptCharged}
    * (Issue #1772): a ruleset refusal is also uncharged, but it says nothing
@@ -1990,6 +1992,10 @@ async function resolveConflict(
     processorDeps.repoConfigs?.[repo]?.qualityCredentials,
   );
   timer.start("gate");
+  // Issue #5626: a protective stop that ends a repair round reaches the
+  // verifier as a failed run, which it reports as a refusal. Kept here so the
+  // refusal below is withdrawn as a cut-short attempt instead of charged.
+  let repairProtectiveStop: Error | undefined;
   const verification = await (processorDeps.verifyMergeBeforePushFn ??
     verifyMergeBeforePush)({
       repoCredentialEnv: credentials.ok ? credentials.value.env : {},
@@ -2042,11 +2048,14 @@ async function resolveConflict(
           logger,
         )();
         if (repairReply) replies.push(repairReply);
+        if (!repairOutcome.ok) {
+          repairProtectiveStop = protectiveStopOf(repairOutcome.error);
+        }
         return repairOutcome;
       },
     });
   timer.stop();
-  if (verification.kind === "refused") {
+  if (verification.kind === "refused" && repairProtectiveStop === undefined) {
     // Nothing here is pushed. The local branch goes back to the tip the
     // attempt started from, so the merge commit (or repair commit) is not kept
     // locally either. A failed restore is reported in the failure detail.
@@ -2069,7 +2078,18 @@ async function resolveConflict(
       headBeforeMerge,
     );
   }
-  if (verification.kind === "cut-short" || verification.kind === "deferred") {
+  // A gate the worker cut short is withdrawn, not judged. That covers a repair
+  // round stopped by the guest-memory floor or the host-disk park, which the
+  // verifier reports as a refusal (Issue #5626): the next PR's agent would
+  // start into the same low memory or full disk.
+  if (verification.kind !== "passed") {
+    const gateCutShort: CutShortCause = verification.kind === "refused"
+      ? cutShortByProtectiveStop(repairProtectiveStop?.message ?? "")
+      : verification.kind === "deferred"
+      ? { markerReason: verification.detail, phrase: verification.detail }
+      : verification.outcome.providerUnavailable === undefined
+      ? CUT_SHORT_BY_RUN_END
+      : cutShortByProvider(verification.outcome.providerUnavailable);
     const localReset = await discardLocalMerge(
       run,
       workDir,
@@ -2093,11 +2113,7 @@ async function resolveConflict(
       conflictedFiles,
       attemptNumber,
       timer,
-      verification.kind === "deferred"
-        ? { markerReason: verification.detail, phrase: verification.detail }
-        : verification.outcome.providerUnavailable === undefined
-        ? CUT_SHORT_BY_RUN_END
-        : cutShortByProvider(verification.outcome.providerUnavailable),
+      gateCutShort,
     );
   }
 
