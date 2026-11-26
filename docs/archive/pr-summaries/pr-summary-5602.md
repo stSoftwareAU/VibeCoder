@@ -64,6 +64,8 @@ flowchart LR
   audit cases were red on the unfixed suite and green after the fix. Each child
   runs the four command tests, including both env-validation refusals.
 - Targeted `deno task test:unit` over those three files: passed, 15 tests.
+- The same targeted run with DENO_DIR unset and a private HOME linked to the
+  populated default cache: passed, 15 tests.
 - Targeted `deno fmt`, `deno lint` and `deno check --frozen`: passed for the
   three test files and both changed support modules.
 - Related isolation comments in `worker/deno/tests/support/no_host_git_config.ts`
@@ -71,6 +73,11 @@ flowchart LR
   historical record; this change removes it for the affected command tests.
 - Shared copies: the presync invocation was extracted and both milestone suites
   call it; no production rule or matcher changed.
+- `timeout 900 ./quality.sh < /dev/null`: passed with skipped checks. Both full
+  unit-test passes, lint, type check, formatting, completeness checks,
+  markdownlint, Mermaid, semgrep and gitleaks passed.
+- `deno task pr-summary-check --base origin/main` with the issue body and labels:
+  passed, zero blocked and zero not checked.
 
 ## Merge verification
 
@@ -79,3 +86,5 @@ flowchart LR
 ## Not checked and remaining risks
 
 - Live journals were not accessed. CI and macOS execution were not run here.
+- The full gate skipped config integration (`deno or .config.json not available`)
+  and Checkov (no pinned binary or cached container image available).
