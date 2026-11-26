@@ -44,8 +44,8 @@ another host. Part of #5626.
   more consumers, and no evidence ties a milestone sync to this incident.
   `docs/CONTAINER.md` says so.
 - A protective stop sets `runEnded: true`, so the drain returns
-  `{ kind: "deadline" }` and records the next PR as left behind by the
-  deadline bound. That is the same accounting a provider refusal already gets.
+  `{ kind: "deadline" }` and records the next PR as left behind by the deadline
+  bound. That is the same accounting a provider refusal already gets.
 
 ### Undiscoverable Facts
 
@@ -79,8 +79,8 @@ flowchart TD
     G --> H[drain takes the next PR]
 ```
 
-- `worker/deno/lib/merge_conflict_agent.ts`: `protectiveStopOf`, and the
-  `cause` on the failed-run error.
+- `worker/deno/lib/merge_conflict_agent.ts`: `protectiveStopOf`, and the `cause`
+  on the failed-run error.
 - `worker/deno/lib/pr_merge_conflict_processor.ts`: the tracked-PR path
   withdraws on a protective stop (`cutShortByProtectiveStop`).
 - `worker/deno/lib/merge_conflict_drain.ts`: the stop log line and its comment
@@ -134,8 +134,9 @@ flowchart TD
     deleted, no failed or resolved conclusion is posted, nothing is pushed, and
     `merge --abort` runs.
   - `a host-disk park withdraws the attempt and stops the drain (Issue #5626)`.
-  - The control, `an agent run that fails to spawn is still judged (Issue #5626)`.
-    An ordinary failed run keeps its marker and posts one failed conclusion
+  - The control,
+    `an agent run that fails to spawn is still judged (Issue #5626)`. An
+    ordinary failed run keeps its marker and posts one failed conclusion
     containing "agent run failed", and `runEnded` stays undefined.
 - Added to `worker/deno/tests/merge_conflict_agent_test.ts`:
   - `a protective stop keeps its type under the failed run (Issue #5626)`: the
@@ -145,17 +146,20 @@ flowchart TD
 - No existing test was edited. The harness option is additive, and no test
   asserted the reworded drain log text (`merge_conflict_drain_test.ts` checks
   only its prefix).
-- Red run against the unfixed code: `deno task test:unit tests/pr_merge_conflict_processor_test.ts`
-  gave `111 passed | 2 failed`. The two protective-stop tests failed on
+- Red run against the unfixed code:
+  `deno task test:unit tests/pr_merge_conflict_processor_test.ts` gave
+  `111 passed | 2 failed`. The two protective-stop tests failed on
   `attemptCharged`, and the control passed.
-- Green run at the head: `deno task test:unit tests/pr_merge_conflict_processor_test.ts tests/merge_conflict_agent_test.ts tests/merge_conflict_drain_test.ts tests/merge_conflict_drain_fairness_test.ts`
+- Green run at the head:
+  `deno task test:unit tests/pr_merge_conflict_processor_test.ts tests/merge_conflict_agent_test.ts tests/merge_conflict_drain_test.ts tests/merge_conflict_drain_fairness_test.ts`
   gave `ok | 171 passed | 0 failed`.
 - `deno fmt --check`, `deno lint` and `deno check` on the changed TypeScript
   files are clean.
-- `./quality.sh < /dev/null` on the head: `Result: PASSED (with skipped
-  checks)`. Config integration and checkov were skipped by the gate itself;
-  deno tests, lint, type check, fmt, semgrep, gitleaks and markdownlint all
-  passed.
+- `./quality.sh < /dev/null` on the head:
+  `Result: PASSED (with skipped
+  checks)`. Config integration and checkov were
+  skipped by the gate itself; deno tests, lint, type check, fmt, semgrep,
+  gitleaks and markdownlint all passed.
 
 ### Not done or not checked
 
