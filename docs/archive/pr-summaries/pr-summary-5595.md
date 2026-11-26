@@ -16,14 +16,14 @@ the pre-cut sync both read the refusal through one shared helper. Closes #5595.
 
 ### Intent and Rationale
 
-- The clean-merge exit in `worker/deno/lib/git_pull.ts` called
-  `recordTimings()` and discarded the result. Carrying the rendered line on the
+- The clean-merge exit in `worker/deno/lib/git_pull.ts` called `recordTimings()`
+  and discarded the result. Carrying the rendered line on the
   `MergeGateFailureError` it returns (the issue's suggested fix) needs no new
   ledger field.
 - Both conclude sites (`worker/deno/lib/milestone_branch_sync.ts` sweep and
   `worker/deno/lib/milestone_presync.ts`) now call one helper,
-  `failedAttemptDetails`, in `worker/deno/lib/milestone_fallback_flag.ts`.
-  The two paths cannot drift apart again.
+  `failedAttemptDetails`, in `worker/deno/lib/milestone_fallback_flag.ts`. The
+  two paths cannot drift apart again.
 
 ### Essential Design Decisions
 
@@ -71,17 +71,16 @@ flowchart LR
   `"Timings (host"` for the no-repair control).
 - Second red: restoring only the two conclude sites made the sweep and pre-cut
   sync tests fail the same way. That shows each site's change is load-bearing.
-- Issue numbers this diff adds as provenance: #5595: Merge-fallback record for
-  a clean-merge gate refusal carries no stage timings or analysis.
+- Issue numbers this diff adds as provenance: #5595: Merge-fallback record for a
+  clean-merge gate refusal carries no stage timings or analysis.
 
 ## Test Plan
 
-- `worker/deno/tests/milestone_sync_gate_repair_test.ts` (new tests; no
-  existing test edited). These drive the real producer on the real-git
-  clean-merge fixture:
+- `worker/deno/tests/milestone_sync_gate_repair_test.ts` (new tests; no existing
+  test edited). These drive the real producer on the real-git clean-merge
+  fixture:
   - `syncMilestoneBranchWithDefault - a clean-merge refusal carries its stage timings and repair outcome (Issue #5595)`
-    asserts `agent 20s`, `2 round(s) ran` and `` `worker.ts` `` on the
-    refusal.
+    asserts `agent 20s`, `2 round(s) ran` and `` `worker.ts` `` on the refusal.
   - `syncMilestoneBranches - a clean-merge refusal concludes its ledger attempt with its timings and repair (Issue #5595)`
     goes through the sweep to the ledger. It asserts the attempt's timings and
     analysis, and that `fallbackRun` yields `{ stage: "agent", seconds: 20 }`
