@@ -71,8 +71,12 @@ written back. Closes #5456.
   extension that covers a mask jumps to the first mask that mask's own extension
   did not cover (`MaskLead.next`) instead of revisiting the masks in between, so
   a chain of glued quoted values that each reach the next is not rescanned from
-  every earlier mask (PR #5607 review round 4). The pass stays linear, as the
-  module header requires. No regex quantifier was added.
+  every earlier mask (PR #5607 review round 4). The quotes that survive after a
+  mask's end are stored per mask (`afterEnd`); an extension that ends where a
+  covered mask ends reuses them instead of reading the gap after the chain once
+  per mask, so a long chain followed by a long tail stays linear (round 5). The
+  pass stays linear, as the module header requires. No regex quantifier was
+  added.
 - The shared `assertRedacts` helper moved from the #5363 test into
   `worker/deno/tests/support/secret_redaction_asserts.ts` so both suites call
   one copy.
@@ -133,7 +137,7 @@ Issue numbers cited:
 ## Test Plan
 
 - Added `worker/deno/tests/secret_redaction_outer_mask_flag_quote_5456_test.ts`
-  with 47 tests. Each one asserts the exact `redactSecrets` output, that
+  with 48 tests. Each one asserts the exact `redactSecrets` output, that
   `containsSecret` is false on the output, that a second pass changes nothing,
   and that the named leaked words are gone. The cases cover:
   - the issue's shape, mid-line, after a command word, with no inner label, and
@@ -209,15 +213,25 @@ Issue numbers cited:
   an 8,000-unit chain, both output only) are green on the earlier head too; they
   pin the output, and the scaling was measured with a throwaway script.
   `deno test -A tests/secret_redaction*_test.ts tests/gh_body*_test.ts` at the
-  head gave 758 passed and 0 failed.
+  round 4 head gave 758 passed and 0 failed.
+- PR #5607 review round 5: a chain followed by a tail (`CHAINED_UNIT` repeated,
+  a newline, then `word` repeated 25 times per unit) measured outside the unit
+  tests on a shared host: 4,000 / 8,000 / 16,000 units (752,001 / 1,504,001 /
+  3,008,001 bytes) took 132 / 191 / 330 ms, linear. The output matches the round
+  4 head on 60,000 random inputs built from the chain's own fragments. The new
+  test in the 5456 test file ('a long chain followed by a long tail is masked
+  whole (output only)') checks output only and is green on the round 4 head too;
+  the scaling was measured with a throwaway script.
+  `deno test -A tests/secret_redaction*_test.ts tests/gh_body*_test.ts` at the
+  round 5 head gave 759 passed and 0 failed.
 - `./quality.sh < /dev/null` on the merged head, before the glued-name fix,
   passed. `config integration` was skipped because there was no `.config.json`,
   and `checkov` was skipped because it is not installed.
 
 Not checked: beyond the two skipped gate stages above, `./quality.sh` was not
 re-run after the glued-name fix. `deno fmt`, `deno lint` and `deno check` on the
-changed files passed at the round 4 head, where the redaction and gh-body suites
-gave 758 passed. The 1,046 other tests in files that use `redactSecrets` passed
+changed files passed at the round 5 head, where the redaction and gh-body suites
+gave 759 passed. The 1,046 other tests in files that use `redactSecrets` passed
 at the round 2 head and were not re-run. The worker re-runs the gate.
 
 The shape the earlier version listed as a known gap (a kept quote, a glued

@@ -2536,10 +2536,17 @@ function maskLeads(
   const survivors: Array<{ "'": number; '"': number }> = new Array(
     masked.length,
   );
+  // The surviving quotes from each mask's end onwards, so a covering extension
+  // that ends where a covered mask ends reuses them instead of re-reading the
+  // same gap once per mask of a chain (PR #5607 review round 5).
+  const afterEnd: Array<{ "'": number; '"': number }> = new Array(
+    masked.length,
+  );
   for (let i = masked.length - 1; i >= 0; i--) {
     const a = masked[i] as AssignmentVerdict;
     const before = { ...later };
     note(text.slice(a.end, from), a.end);
+    afterEnd[i] = { ...later };
     while (f >= 0 && (starts[f] ?? -1) >= a.end) {
       nextFlag = starts[f--] as number;
     }
@@ -2570,11 +2577,15 @@ function maskLeads(
       // revisiting them: each mask is a jump target once, which keeps the
       // pass linear on a chain of glued values (PR #5607 review round 4).
       let j = i + 1;
+      let reuse = -1;
       while (
         j < masked.length && (masked[j] as AssignmentVerdict).index < end
       ) {
         const covered = leads[j] as MaskLead;
-        end = Math.max(end, covered.end);
+        if (covered.end >= end) {
+          end = covered.end;
+          reuse = j;
+        }
         leads[j] = { ...covered, covered: true };
         j = covered.next;
       }
@@ -2582,16 +2593,26 @@ function maskLeads(
       const nextStart = j < masked.length
         ? (masked[j] as AssignmentVerdict).index
         : text.length;
-      const resume = j < masked.length ? survivors[j] : undefined;
-      later["'"] = resume?.["'"] ?? Infinity;
-      later['"'] = resume?.['"'] ?? Infinity;
-      note(text.slice(end, nextStart), end);
+      if (reuse !== -1) {
+        // `end` is where a covered mask ends and `j` is that mask's `next`, so
+        // the quotes after `end` are the ones it already worked out.
+        const known = afterEnd[reuse] as { "'": number; '"': number };
+        later["'"] = known["'"];
+        later['"'] = known['"'];
+      } else {
+        const resume = j < masked.length ? survivors[j] : undefined;
+        later["'"] = resume?.["'"] ?? Infinity;
+        later['"'] = resume?.['"'] ?? Infinity;
+        note(text.slice(end, nextStart), end);
+      }
+      afterEnd[i] = { ...later };
     } else if (end !== a.end) {
       // The extended mask hides the quotes it now covers, so only those past
       // it survive for the earlier masks' pairing decisions.
       later["'"] = before["'"];
       later['"'] = before['"'];
       note(text.slice(end, from), end);
+      afterEnd[i] = { ...later };
     }
     leads[i] = { lead, end, next };
     // Emitted quotes lie within this mask, before any later unmasked flag.

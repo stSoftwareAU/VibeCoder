@@ -377,6 +377,19 @@ Deno.test("Issue #5456: a long chain of glued quoted values is masked whole (out
   );
 });
 
+// PR #5607 review round 5: a chain followed by a long tail. Every extension of
+// the chain ends at the same place, so each reuses the quotes the covered mask
+// already found after that end instead of reading the tail again. Output only;
+// the work bound is measured outside the unit tests.
+Deno.test("Issue #5456: a long chain followed by a long tail is masked whole (output only)", () => {
+  assertEquals(
+    redactSecrets(
+      `${CHAINED_UNIT.repeat(4_000)}\n${"word ".repeat(100_000)}`,
+    ),
+    `--token ${R}${R}\n${"word ".repeat(100_000)}`,
+  );
+});
+
 // Controls: these pass on the unfixed code as well. They pin that only a
 // flag's closing quote is kept in front of the placeholder.
 
