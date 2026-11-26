@@ -155,8 +155,11 @@ export const EGRESS_ENV_NAMES: readonly string[] = [
 
 /**
  * The entries of a built environment that must travel through `sudo` in
- * argv: the cargo target placement (Issue #2247) and the egress proxy
- * (Issue #4877). Every one is non-secret; a proxy URL that carries
+ * argv: the cargo target placement (Issue #2247), the guest's cargo job cap
+ * `CARGO_BUILD_JOBS` (Issue #4225, carried since Issue #5626) and the egress
+ * proxy (Issue #4877). `env_reset` would strip the job cap, and the dropped
+ * cargo would then run uncapped, one rustc and linker per vCPU. The cap
+ * travels only as a positive whole number. Every one is non-secret; a proxy URL that carries
  * credentials (`user:pass@`) is left out, because argv is visible to `ps`
  * and to the sudo logs.
  */
@@ -166,6 +169,10 @@ export function sudoCarriedEnv(
   const carried: Record<string, string> = {};
   const target = env["CARGO_TARGET_DIR"];
   if (target !== undefined) carried["CARGO_TARGET_DIR"] = target;
+  const jobs = env["CARGO_BUILD_JOBS"];
+  if (jobs !== undefined && /^[1-9][0-9]{0,3}$/.test(jobs)) {
+    carried["CARGO_BUILD_JOBS"] = jobs;
+  }
   for (const name of EGRESS_ENV_NAMES) {
     const value = env[name];
     if (value !== undefined && CARRIED_ENV_VALUE.test(value)) {
@@ -240,8 +247,9 @@ export function gitWorktreeRoot(cwd: string): string {
  * repository's own command. `--preserve-env` needs the tag the rule does not
  * grant. The value therefore travels in **argv** instead:
  * `sudo -n -u agent -- env NAME=value <cmd>`, which `env_reset` cannot touch.
- * Only non-secret values travel this way: the placement and the egress proxy
- * ({@link sudoCarriedEnv}, Issue #4877), and the git safe.directory entry
+ * Only non-secret values travel this way: the placement, the cargo job cap
+ * (Issues #4225, #5626) and the egress proxy ({@link sudoCarriedEnv}, Issue
+ * #4877), and the git safe.directory entry
  * ({@link gitSafeDirectoryEnv}, Issues #4927, #5011).
  *
  * Declared credentials are never carried here. They ride the stdin channel of

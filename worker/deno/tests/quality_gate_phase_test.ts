@@ -1513,6 +1513,26 @@ Deno.test("sudoCarriedEnv - a proxy URL with credentials stays out of argv (Issu
   );
 });
 
+Deno.test("sudoCarriedEnv - the cargo job cap travels through sudo (Issue #5626)", () => {
+  assertEquals(
+    sudoCarriedEnv({
+      PATH: "/usr/bin",
+      CARGO_BUILD_JOBS: "2",
+      GH_TOKEN: "ghs_secret",
+    }),
+    { CARGO_BUILD_JOBS: "2" },
+  );
+});
+
+Deno.test("sudoCarriedEnv - a job cap that is not a positive whole number stays out of argv (Issue #5626)", () => {
+  assertEquals(sudoCarriedEnv({ CARGO_BUILD_JOBS: "2" }), {
+    CARGO_BUILD_JOBS: "2",
+  });
+  for (const bad of ["2; rm -rf /", "0", "-1", "", "02", "2 ", "99999"]) {
+    assertEquals(sudoCarriedEnv({ CARGO_BUILD_JOBS: bad }), {}, `"${bad}"`);
+  }
+});
+
 Deno.test("gitSafeDirectoryEnv - a relative path gets no entry (Issue #4927)", () => {
   assertEquals(gitSafeDirectoryEnv("relative/checkout"), {});
 });

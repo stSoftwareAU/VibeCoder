@@ -1837,6 +1837,10 @@ build artefacts.
   sudo rule carries no `SETENV` tag, so `env_reset` strips a variable handed to
   `sudo` in the child environment; the quality gate's spawn therefore becomes
   `sudo -n -u agent -- env CARGO_TARGET_DIR=… bash -c './quality.sh'`.
+  The guest's cargo job cap `CARGO_BUILD_JOBS` (Issue #4225) travels the same
+  way (Issue #5626). Before that, `env_reset` stripped it, so every cargo a
+  gate dropped to `agent` (the quality gate, the milestone merge and
+  resolution gates, the merge fast checks) ran with one job per vCPU.
   A repository's declared `quality_credentials` are the exception: they do not
   travel in argv. They travel on the stdin of the same dropped command, where a
   fixed `sh -c` wrapper inside `sudo` reads them, exports them and `exec`s the
