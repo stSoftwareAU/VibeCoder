@@ -1104,6 +1104,30 @@ export function mergeGateFailureError(
 export interface MergeGateFailureError extends Error {
   /** The cause the gate named. Read it through {@link mergeGateFailureCause}. */
   gateCause?: MergeGateCause;
+  /** The attempt's stage timings, as `formatStageTimings` rendered them (Issue #5595). */
+  timings?: string;
+  /** A short account of the gate-repair rounds, when a repair was offered (Issue #5595). */
+  repairOutcome?: string;
+}
+
+/**
+ * The timings and repair account a merge-gate refusal carries (Issue #5595),
+ * or `{}` when the error is not a refusal. A field is included only when it
+ * holds non-empty text, so a whitespace-only value reads as absent.
+ */
+export function mergeGateFailureRecord(
+  err: unknown,
+): { timings?: string; repairOutcome?: string } {
+  if (!isMergeGateFailure(err)) return {};
+  const refusal = err as MergeGateFailureError;
+  const text = (value: unknown): string | undefined =>
+    typeof value === "string" && value.trim().length > 0 ? value : undefined;
+  const timings = text(refusal.timings);
+  const repairOutcome = text(refusal.repairOutcome);
+  return {
+    ...(timings !== undefined ? { timings } : {}),
+    ...(repairOutcome !== undefined ? { repairOutcome } : {}),
+  };
 }
 
 /**

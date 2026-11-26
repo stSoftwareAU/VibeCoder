@@ -140,7 +140,7 @@ import {
   type MergeFallbackOutcome,
 } from "./merge_fallback_issue.ts";
 import {
-  describeConflictAnalyses,
+  failedAttemptDetails,
   type FallbackContext,
   fileFallbackFlag,
   readBehindSince,
@@ -3394,7 +3394,8 @@ export async function syncMilestoneBranches(
             // Conclude the ledger attempt this failure ends (Issue #1778),
             // recording what the run cost and what it made of the conflict —
             // the `merge-fallback` flag reports both runs from these records
-            // (Issue #2311).
+            // (Issue #2311). A clean-merge gate refusal carries its timings and
+            // repair outcome too (Issue #5595).
             if (streakPath && entry) {
               entry = concludeConflictAttempt(
                 entry,
@@ -3404,12 +3405,7 @@ export async function syncMilestoneBranches(
                 now(),
                 {
                   host: hostName,
-                  ...(conflictError?.timings
-                    ? { timings: conflictError.timings }
-                    : {}),
-                  ...(conflictError
-                    ? { analysis: describeConflictAnalyses(conflictError) }
-                    : {}),
+                  ...failedAttemptDetails(syncResult.error),
                   refusal: verdict.refusal === true,
                   exhaust: verdict.exhaust === true,
                 },

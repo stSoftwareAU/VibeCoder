@@ -22,10 +22,12 @@
 
 import type { Result } from "../types.ts";
 import { parseStageTimings } from "./conflict_stage_timer.ts";
-import type {
-  FileAnalysis,
-  FileDecision,
+import {
+  type FileAnalysis,
+  type FileDecision,
+  isConflictEscalation,
 } from "./milestone_conflict_triage.ts";
+import { mergeGateFailureRecord } from "./milestone_merge_gate.ts";
 import {
   MERGE_FALLBACK_TARGET_REPO,
   type MergeFallbackFiling,
@@ -89,6 +91,36 @@ export function describeConflictAnalyses(
       ? ["", "Files the ladder did settle:", ...settled]
       : []),
   ].join("\n").trim();
+}
+
+/**
+ * The timings and account a failed attempt carries into the ledger
+ * (Issue #5595).
+ *
+ * A conflict escalation carries its stage timings and the file-by-file
+ * account. A clean-merge gate refusal carries its stage timings and the
+ * gate-repair account, so its run is not reported as `not recorded`. Any other
+ * error carries nothing.
+ *
+ * @param error - The error the attempt failed with
+ * @returns The fields the concluded attempt should record, when present
+ */
+export function failedAttemptDetails(
+  error: Error,
+): { timings?: string; analysis?: string } {
+  if (isConflictEscalation(error)) {
+    return {
+      ...(error.timings ? { timings: error.timings } : {}),
+      analysis: describeConflictAnalyses(error),
+    };
+  }
+  const record = mergeGateFailureRecord(error);
+  return {
+    ...(record.timings !== undefined ? { timings: record.timings } : {}),
+    ...(record.repairOutcome !== undefined
+      ? { analysis: record.repairOutcome }
+      : {}),
+  };
 }
 
 /**

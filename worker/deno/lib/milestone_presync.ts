@@ -40,7 +40,7 @@ import {
   type GateRefusalConclusion,
 } from "./milestone_gate_wedge.ts";
 import { currentHost } from "./conflict_stage_timer.ts";
-import { describeConflictAnalyses } from "./milestone_fallback_flag.ts";
+import { failedAttemptDetails } from "./milestone_fallback_flag.ts";
 import {
   conflictAttemptDue,
   escalateRepeatedRefusal,
@@ -543,7 +543,8 @@ export async function presyncMilestoneBranch(
   const conflict = isConflictEscalation(sync.error) ? sync.error : undefined;
   // The same record the sweep writes (Issue #2311): a run charged here is a
   // run the `merge-fallback` flag reports, so it carries its host, its stage
-  // timings and what it made of the conflict.
+  // timings and what it made of the conflict. A clean-merge gate refusal
+  // carries its timings and repair outcome too (Issue #5595).
   entry = concludeConflictAttempt(
     entry,
     verdict.outcome,
@@ -552,8 +553,7 @@ export async function presyncMilestoneBranch(
     nowMs,
     {
       host: currentHost(),
-      ...(conflict?.timings ? { timings: conflict.timings } : {}),
-      ...(conflict ? { analysis: describeConflictAnalyses(conflict) } : {}),
+      ...failedAttemptDetails(sync.error),
       refusal: verdict.refusal === true,
       exhaust: verdict.exhaust === true,
     },
