@@ -2671,6 +2671,35 @@ Deno.test("checkAwsEmulatorInCI - an unparseable workflow is listed in unreadabl
   assertEquals(onlyBroken.workflowsLoaded, false);
 });
 
+Deno.test("checkAwsEmulatorInCI - oversized workflows are unreadable while readable wiring is assessed", async () => {
+  const workflow = prWorkflow(stepYaml(RUNNER_STEP)) + "#";
+  const oversized = workflow.padEnd(1024 * 1024 + 1, "x");
+  const mixed = await checkRepoWith({
+    ".github/workflows/oversized.yml": oversized,
+    ".github/workflows/ci.yml": prWorkflow(stepYaml(RUNNER_STEP)),
+  });
+  assertEquals(mixed.unreadableWorkflows, ["oversized.yml"]);
+  assertEquals(mixed.wiring, "official-server");
+  assertEquals(mixed.wiringEvidence, [
+    "`ci.yml` job `test`: `aws-emulator-run -- ./test.sh`",
+  ]);
+  assertEquals(mixed.workflowsLoaded, true);
+
+  const onlyOversized = await checkRepoWith({
+    ".github/workflows/oversized.yml": oversized,
+  });
+  assertEquals(onlyOversized.unreadableWorkflows, ["oversized.yml"]);
+  assertEquals(onlyOversized.wiring, "missing");
+  assertEquals(onlyOversized.workflowsLoaded, false);
+
+  const boundary = await checkRepoWith({
+    ".github/workflows/oversized.yml": workflow.padEnd(1024 * 1024, "x"),
+  });
+  assertEquals(boundary.unreadableWorkflows, []);
+  assertEquals(boundary.wiring, "official-server");
+  assertEquals(boundary.workflowsLoaded, true);
+});
+
 Deno.test("checkAwsEmulatorInCI - a trailing & after a runner is refused, but a plain trailing newline is not", async () => {
   // Pinned directly on the command list: the separator after the last command.
   const background = reachableCommands(RUNNER_STEP + " &");

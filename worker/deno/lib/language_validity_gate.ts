@@ -40,6 +40,7 @@ import {
   COMPILE_GATE_PATTERNS,
   type LoadedWorkflow,
   loadWorkflows,
+  skippedWorkflowsDetail,
 } from "./linter_in_ci_check.ts";
 import { isReactRepo } from "./best_practices_bucket_picker.ts";
 import type { RepoLanguages } from "./language_detector.ts";
@@ -80,10 +81,12 @@ export interface LanguageValidityResult {
   details: string;
   /**
    * Fail-safe flag (mirrors {@link LinterCheckResult.workflowsLoaded},
-   * Issue #2881). `false` iff **zero** workflow files were loaded under
-   * `.github/workflows/` — the gate status is then *unknown* rather than
-   * confirmed-missing, so the consumer must NOT file a high-severity
-   * "missing gate" finding off the back of it.
+   * Issue #2881). `false` when **zero** workflow files were loaded under
+   * `.github/workflows/`, or when the gate was not found and at least one
+   * workflow was skipped as oversized or unparseable (Issue #5559) — the
+   * gate status is then *unknown* rather than confirmed-missing, so the
+   * consumer must NOT file a high-severity "missing gate" finding off the
+   * back of it.
    */
   workflowsLoaded: boolean;
 }
@@ -207,8 +210,19 @@ export async function checkLanguageValidityGates(
   const languages = detectValidityGateLanguages(langs);
   if (languages.length === 0) return [];
 
-  const workflows = await loadWorkflows(repoPath);
-  return languages.map((language) => checkOne(language, workflows));
+  const skipped: string[] = [];
+  const workflows = await loadWorkflows(repoPath, {
+    onUnparseable: (filename) => skipped.push(filename),
+  });
+  return languages.map((language) => {
+    const result = checkOne(language, workflows);
+    if (result.present || skipped.length === 0) return result;
+    return {
+      ...result,
+      details: `${result.details} ${skippedWorkflowsDetail(skipped)}`,
+      workflowsLoaded: false,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
