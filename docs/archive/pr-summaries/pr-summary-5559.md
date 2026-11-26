@@ -23,9 +23,9 @@ missing-wiring finding. Closes #5559.
 
 ### Undiscoverable Facts
 
-- The oversized regression failed against the unchanged base production code:
-  `oversized.yml` appeared in the loaded filenames. The exact-limit control
-  passed in that run (48 passed, 1 failed).
+- The oversized regression fails against the base production loader, where
+  `oversized.yml` appears in the loaded filenames. The exact-limit control
+  passes in that run (48 passed, 1 failed).
 
 ## Evidence
 
@@ -63,13 +63,17 @@ flowchart LR
   The production detector suppresses filing and logs unknown wiring with an
   oversized file; reducing that file to the limit permits the missing-wiring
   finding. The scan continues in both cases.
-- The four-file targeted `deno task test:unit` run, including existing
-  `worker/deno/tests/language_validity_gate_test.ts` regressions: **472 passed,
-  0 failed** after the fix. The loader regression was observed red before it.
-- Targeted `deno fmt --check`, `deno lint` and frozen `deno check`: passed.
-- `timeout 1200 ./quality.sh < /dev/null`: **passed with skipped checks**.
-  Deno unit tests (parallel and serial), lint, type checking, formatting,
-  completeness, Mermaid, Markdown, Semgrep and gitleaks passed.
+- `deno task test:unit` on the three test files above: **447 passed, 0
+  failed** at the head. With only `worker/deno/lib/linter_in_ci_check.ts`
+  restored from `origin/main`, the loader test file ran 48 passed, 1 failed
+  (the over-1 MiB test).
+- The zero-loaded diagnostic still goes to `console.warn`; the test stubs and
+  restores it rather than adding a test-only option to `loadWorkflows`.
+- Every test file that reads the changed docs or modules (25 files): **1,866
+  passed, 0 failed**.
+- `timeout 1500 ./quality.sh < /dev/null` on the head: **passed with skipped
+  checks**. Deno unit tests, lint, type checking, formatting, completeness,
+  Mermaid, Markdown, Semgrep and gitleaks passed.
 - Workflow-size corpus audit at base and head: 15 files on each, largest
   39,945 bytes; none exceeded the cap. No invocation matcher changed.
 - `deno task pr-summary-check --base origin/main` with the fetched issue body
@@ -88,5 +92,4 @@ The stat-before-read check does not bound a file that grows after the stat.
 The full gate skipped configuration integration because local configuration
 was unavailable, and Checkov because neither its pinned binary nor container
 image was available. Its unit-test runner excludes integration suites.
-No memory-exhaustion benchmark or concurrent-growth test was run. This executor
-was not assigned a push and did not push.
+No memory-exhaustion benchmark or concurrent-growth test was run.
