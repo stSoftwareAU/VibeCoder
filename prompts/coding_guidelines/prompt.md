@@ -163,8 +163,8 @@ progress survives.
   eligibility or affordability check) is computed by exactly one function, and
   every caller uses it: the main path, previews, reports, the API and the UI.
   Never restate a rule because the owner is private or lives where you cannot
-  call it: widen its visibility, or move it to a module both sides already
-  depend on. A test that proves two copies agree does not replace having one
+  call it: export it or move it to a shared module, and switch the old callers
+  to it. A test that proves two copies agree does not replace having one
   copy, because every change still has to land twice. Duplicated text is not
   duplicated knowledge: extract only what every copy would need the same edit
   for if the rule changed.
