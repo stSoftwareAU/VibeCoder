@@ -52,11 +52,23 @@ written back. Closes #5456.
   escaped quotes and multiline quoted values after the label was already masked,
   publishing those values (PR #5607 review round 2); the walk's own grammar now
   reads them.
+- A glued label's quoted value can hold an inner assignment that the walk masks
+  on its own, as in `x'password: "mike password: hidden secretword"`. The read
+  used to stop at that inner mask, so the value looked unclosed and the words
+  after the inner mask were published (PR #5607 review round 3).
+  `quotedValueReach` now finds where the quoted value really closes (the escaped
+  forms the assignment pattern accepts, or the line end for a value that never
+  closes), the walk reads the value up to there, and the extended mask takes
+  over every later mask it covers (`MaskLead.covered`), so none of them writes
+  its text out again. The quotes that survive for earlier masks resume from the
+  first mask past the extension.
 - `maskLeads` walks the masks, closes and flag starts once, backwards, and scans
   each unmasked gap once. `gluedName` reads at most one bounded label per mask
-  through `labelEndingAt`, and `gluedValueEnd` reads only the gap up to the next
-  mask. The pass stays linear, as the module header requires. No regex
-  quantifier was added.
+  through `labelEndingAt`, and `gluedValueEnd` reads the gap up to the next
+  mask, or up to a glued quoted value's close when that lies further. The close
+  is found by a plain character loop that stops at the next unescaped quote of
+  the same kind, so the scans of different glued values do not overlap. The pass
+  stays linear, as the module header requires. No regex quantifier was added.
 - The shared `assertRedacts` helper moved from the #5363 test into
   `worker/deno/tests/support/secret_redaction_asserts.ts` so both suites call
   one copy.
@@ -69,6 +81,12 @@ written back. Closes #5456.
   `origin/main`, which had added Issues #5435 and #5457 to the same module. The
   only conflict was the `SECURITY.md` paragraph, and the 651 redaction tests
   pass on the merged tree.
+- A later merge of `origin/main` brought Issue #5608, which ends an assignment
+  value before a credential flag name that has a value after it. For
+  `--token 'a b credentials: x'--password mike --token z it's` the outer mask
+  now ends before `--password`, so the flag rule shows the flag's name and masks
+  its value, as it does for every flag. This PR's test for that shape now
+  expects `--password` to be shown; `mike` and `credentials` stay masked.
 
 ## Evidence
 
@@ -111,7 +129,7 @@ Issue numbers cited:
 ## Test Plan
 
 - Added `worker/deno/tests/secret_redaction_outer_mask_flag_quote_5456_test.ts`
-  with 39 tests. Each one asserts the exact `redactSecrets` output, that
+  with 45 tests. Each one asserts the exact `redactSecrets` output, that
   `containsSecret` is false on the output, that a second pass changes nothing,
   and that the named leaked words are gone. The cases cover:
   - the issue's shape, mid-line, after a command word, with no inner label, and
@@ -130,14 +148,20 @@ Issue numbers cited:
   - the PR #5607 review round 2 regressions: a glued label's bare value with
     `=`, `:`, an internal hyphen and a leading hyphen, a double-quoted value
     with an escaped quote, and a closed multiline quoted value;
+  - the PR #5607 review round 3 regressions: a glued label's quoted value that
+    holds an inner `password:` or `TOKEN=` assignment, the same through
+    `redactGhBodyArgs` as an outbound `--body`, an unclosed such value, a
+    credential flag after such a value, and 20,000 repetitions of the shape;
   - four controls (a non-flag quote, an earlier-closed flag, a later quoted
     assignment, a flag opener inside a quoted assignment);
-  - two output-only size cases of 20,000 repetitions, with no stopwatch.
+  - three output-only size cases of 20,000 repetitions, with no stopwatch.
 - Red on base: with `worker/deno/lib/secret_redaction.ts` restored from
   `origin/main` and the new test file kept, 32 of the 39 tests failed. With the
   module from the commit before the glued-name fix, 16 failed; with the
   write-back version, 20 failed; with the first in-place version (one-word
-  scanner), the 7 round-2 regressions failed. On the head all 39 pass.
+  scanner), the 7 round-2 regressions failed. With the module from the merged
+  tree before the round-3 fix, the 6 round-3 regressions failed. On the head all
+  45 pass.
 - Edited `worker/deno/tests/secret_redaction_flag_closing_quote_5363_test.ts`.
   Its local `assertRedacts` moved unchanged to
   `worker/deno/tests/support/secret_redaction_asserts.ts` and is now imported.
@@ -160,6 +184,15 @@ Issue numbers cited:
   quote with a distant one (such as the apostrophe in `it's`). The commit before
   the glued-name fix publishes the same words, so they come from keeping the
   quote, which is the shell's own reading of where the flag value ends.
+- PR #5607 review round 3: a differential fuzz of 260,000 random inputs of the
+  same kept-quote shape, now also drawing escaped quotes, found no input where
+  the head publishes a generated word that the merged tree before the round-3
+  fix masked.
+- Round 3 regression: `deno test -A tests/secret_redaction*_test.ts` gave 702
+  passed and 0 failed. The redaction-using test files that load without JSR
+  packages (14 files, 249 tests) passed; the other 37 need `jsr:@std/yaml` or
+  `jsr:@std/crypto`, which could not be fetched where round 3 was run, and the
+  worker's gate runs them.
 - `./quality.sh < /dev/null` on the merged head, before the glued-name fix,
   passed. `config integration` was skipped because there was no `.config.json`,
   and `checkov` was skipped because it is not installed.

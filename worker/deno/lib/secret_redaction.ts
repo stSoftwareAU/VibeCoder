@@ -2482,8 +2482,11 @@ function redactAssignmentsOnce(text: string): string {
   let out = "";
   let last = 0;
   masked.forEach((a, i) => {
+    const { lead, end, covered } = leads[i] as MaskLead;
+    // A mask an earlier glued value's extension covers is part of that mask
+    // and writes nothing of its own (PR #5607 review round 3).
+    if (covered) return;
     const quote = QUOTED_VALUE.test(a.value) ? a.value.charAt(0) : "";
-    const { lead, end } = leads[i] as MaskLead;
     out += text.slice(last, a.index) +
       `${a.key}${a.sep}${lead}${REDACTION_PLACEHOLDER}${quote}`;
     last = end;
@@ -2528,6 +2531,11 @@ function maskLeads(
   let c = closes.length - 1;
   let f = starts.length - 1;
   let nextFlag = Infinity;
+  // The surviving quotes from each mask's start onwards, for an extension that
+  // covers later masks to resume from.
+  const survivors: Array<{ "'": number; '"': number }> = new Array(
+    masked.length,
+  );
   for (let i = masked.length - 1; i >= 0; i--) {
     const a = masked[i] as AssignmentVerdict;
     const before = { ...later };
@@ -2552,8 +2560,26 @@ function maskLeads(
     const glued = lead !== quote
       ? gluedName(text, close + 1, a.end, starts[f])
       : null;
-    const end = glued ? gluedValueEnd(text, glued, a.end, from) : a.end;
-    if (end !== a.end) {
+    let end = glued ? gluedValueEnd(text, glued, a.end, from) : a.end;
+    if (end !== a.end && end > from) {
+      // A quoted value can close past later masks that lie inside it; the
+      // extension takes them over, through any further extension of theirs.
+      let j = i + 1;
+      while (
+        j < masked.length && (masked[j] as AssignmentVerdict).index < end
+      ) {
+        const covered = leads[j] as MaskLead;
+        end = Math.max(end, covered.end);
+        leads[j++] = { ...covered, covered: true };
+      }
+      const next = j < masked.length
+        ? (masked[j] as AssignmentVerdict).index
+        : text.length;
+      const resume = j < masked.length ? survivors[j] : undefined;
+      later["'"] = resume?.["'"] ?? Infinity;
+      later['"'] = resume?.['"'] ?? Infinity;
+      note(text.slice(end, next), end);
+    } else if (end !== a.end) {
       // The extended mask hides the quotes it now covers, so only those past
       // it survive for the earlier masks' pairing decisions.
       later["'"] = before["'"];
@@ -2564,6 +2590,7 @@ function maskLeads(
     // Emitted quotes lie within this mask, before any later unmasked flag.
     note(`${lead}${quote}`, start);
     note(`${a.key}${a.sep}`, a.index);
+    survivors[i] = { ...later };
     from = a.index;
   }
   return leads;
@@ -2578,6 +2605,11 @@ interface MaskLead {
    * credential label or flag name glued after a kept quote (Issue #5456).
    */
   readonly end: number;
+  /**
+   * Set when an earlier mask's glued-value extension covers this mask, which
+   * then writes nothing (PR #5607 review round 3).
+   */
+  readonly covered?: boolean;
 }
 
 /**
@@ -2598,7 +2630,13 @@ function gluedValueEnd(
   end: number,
   limit: number,
 ): number {
-  const region = text.slice(name.start, limit);
+  // A label's quoted value can hold a later mask (an inner assignment), so it
+  // is read through its real closing quote, not cut at that mask (PR #5607
+  // review round 3); the extension then takes the covered masks over.
+  const reach = name.kind === "label"
+    ? Math.max(limit, quotedValueReach(text, end))
+    : limit;
+  const region = text.slice(name.start, reach);
   let extent = 0;
   if (name.kind === "flag") {
     const m = execFlagRuleAt(region, 0);
@@ -2613,7 +2651,7 @@ function gluedValueEnd(
   if (valueEnd <= end) return end;
   // A credential flag inside the extent whose value runs past it keeps its
   // name visible, so its rule masks that value instead.
-  const tail = text.slice(end, limit);
+  const tail = text.slice(end, reach);
   for (let at = 0; at < valueEnd - end;) {
     const m = execFlagRuleAt(tail, at);
     if (m === null || end + m.index >= valueEnd) break;
@@ -2623,7 +2661,39 @@ function gluedValueEnd(
     }
     at = m.index + m[0].length;
   }
-  return Math.max(end, Math.min(valueEnd, limit));
+  return Math.max(end, Math.min(valueEnd, reach));
+}
+
+/**
+ * Where a quoted value that opens after `from` (past any white space) stops
+ * being read, or `from` when no quote opens there (PR #5607 review round 3).
+ * That is just past the first closing quote the assignment pattern's escaped
+ * forms accept (a backslash escape, and `''` or `'\''` in single quotes), or,
+ * for a value that never closes, the end of its line, where the pattern's
+ * unclosed fallback stops. It only bounds the text the walk reads; the walk
+ * still decides the extent. A plain loop with no regex keeps the scan linear:
+ * the next unescaped quote of the same kind ends it, so the scans of different
+ * glued values do not overlap.
+ */
+function quotedValueReach(text: string, from: number): number {
+  let open = from;
+  while (open < text.length && /\s/.test(text.charAt(open))) open++;
+  const quote = text.charAt(open);
+  if (quote !== "'" && quote !== '"') return from;
+  for (let i = open + 1; i < text.length; i++) {
+    const ch = text.charAt(i);
+    if (ch === "\\") {
+      i++;
+    } else if (ch === quote) {
+      if (quote === "'" && text.charAt(i + 1) === "'") i++;
+      else if (quote === "'" && text.startsWith("\\''", i + 1)) i += 3;
+      else return i + 1;
+    }
+  }
+  for (let i = open + 1; i < text.length; i++) {
+    if ("\n\r\u2028\u2029".includes(text.charAt(i))) return i;
+  }
+  return text.length;
 }
 
 /** Run {@link CLI_FLAG_RULE_G} once from `from`, restoring `lastIndex`. */

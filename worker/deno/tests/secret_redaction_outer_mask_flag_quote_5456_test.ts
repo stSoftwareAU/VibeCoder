@@ -24,8 +24,9 @@
  * `worker/deno/tests/secret_redaction_redos_test.ts`.
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { redactSecrets } from "../lib/secret_redaction.ts";
+import { redactGhBodyArgs } from "../lib/gh_body_redaction.ts";
 import { assertRedacts } from "./support/secret_redaction_asserts.ts";
 
 const R = "***REDACTED***";
@@ -153,8 +154,10 @@ Deno.test("Issue #5456: a label glued after the kept quote has its quoted value 
 Deno.test("Issue #5456: a flag name glued after the kept quote has its value masked", () => {
   assertRedacts(
     "--token 'a b credentials: x'--password mike --token z it's",
-    `--token ${R}${R} --token ${R} it's`,
-    ["mike", "credentials", "--password", "z it"],
+    // Since Issue #5608 the outer value ends before the flag's name, so the
+    // flag rule keeps the name and masks its value.
+    `--token ${R}${R}--password ${R} --token ${R} it's`,
+    ["mike", "credentials", "z it"],
   );
 });
 
@@ -294,6 +297,60 @@ Deno.test("Issue #5456: a glued label's closed multiline quoted value is masked 
     `--token 'alpha beta credentials: TOKEN='password: "mike\nsecretword" --token z it's`,
     `--token ${R}${R} --token ${R} it's`,
     ["mike", "secretword", "beta"],
+  );
+});
+
+// PR #5607 review round 3: a glued label's quoted value can hold an inner
+// assignment the walk masks on its own. The value is read through its real
+// closing quote, not cut at that inner mask, and the extended mask takes the
+// inner one over, so nothing after the inner mask is published.
+
+const INNER_ASSIGNMENT =
+  `--token 'alpha beta credentials: TOKEN='password: "mike password: hidden secretword" --token z it's`;
+
+Deno.test("Issue #5456: a glued label's quoted value holding an inner assignment is masked whole", () => {
+  assertRedacts(
+    INNER_ASSIGNMENT,
+    `--token ${R}${R} --token ${R} it's`,
+    ["mike", "hidden", "secretword", "beta", "z it"],
+  );
+});
+
+Deno.test("Issue #5456: the outbound body masks a glued quoted value holding an inner assignment", () => {
+  const args = redactGhBodyArgs(["pr", "create", "--body", INNER_ASSIGNMENT]);
+  const body = args[args.indexOf("--body") + 1] ?? "";
+  assertEquals(body, `--token ${R}${R} --token ${R} it's`);
+  assert(!body.includes("secretword"), body);
+});
+
+Deno.test("Issue #5456: a glued quoted value holding an inner TOKEN= assignment is masked whole", () => {
+  assertRedacts(
+    `--token 'alpha beta credentials: TOKEN='password: "mike TOKEN=abc def" --token z it's`,
+    `--token ${R}${R} --token ${R} it's`,
+    ["mike", "abc", "def", "beta"],
+  );
+});
+
+Deno.test("Issue #5456: an unclosed glued quoted value holding an inner assignment is masked to its line end", () => {
+  assertRedacts(
+    `--token 'alpha beta credentials: TOKEN='password: "mike password: hidden secretword\nnext line`,
+    `--token ${R}${R}\nnext line`,
+    ["mike", "hidden", "secretword", "beta"],
+  );
+});
+
+Deno.test("Issue #5456: a credential flag after a glued value holding an inner assignment is still masked", () => {
+  assertRedacts(
+    `--token 'alpha beta credentials: TOKEN='password: "mike password: hidden" plain --password 'q r' after`,
+    `--token ${R}${R} plain --password ${R} after`,
+    ["mike", "hidden", "q r"],
+  );
+});
+
+Deno.test("Issue #5456: repeated glued values holding inner assignments are masked (output only)", () => {
+  assertEquals(
+    redactSecrets(`${INNER_ASSIGNMENT}\n`.repeat(20_000)),
+    `--token ${R}${R} --token ${R} it's\n`.repeat(20_000),
   );
 });
 
