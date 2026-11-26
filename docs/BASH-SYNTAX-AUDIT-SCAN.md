@@ -86,9 +86,10 @@ Both detectors distinguish **missing** from **unknown**:
 - A repo with **no bash scripts** is *not applicable* — no bash finding.
 - A language below the **main-language share threshold** above is *not
   applicable* — no validity-gate finding for an incidental helper script.
-- A repo with **no loaded workflows** or an **unparseable workflow** leaves the
-  affected gate *unknown* — no false "missing gate" finding (the
-  zero-workflow fail-safe).
+- A repo with **no loaded workflows**, or an **unparseable or oversized (over 1
+  MiB) workflow** when the gate is not found in the readable ones, leaves the
+  affected gate *unknown* — no false "missing gate" finding (the zero-workflow
+  fail-safe, extended by Issue #5559).
 
 Only a *definite* missing gate yields a finding.
 

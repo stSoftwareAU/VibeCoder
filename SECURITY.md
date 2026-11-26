@@ -561,9 +561,9 @@ assignment's value ends before the flag's name, so `secret-cli-flag` keeps the
 name and masks its value. An exception is a flag whose own value ends in
 another credential flag's name followed by a value, as in
 `password: token=--token first--password second`: the assignment masks through
-both values, extending through successive overlaps. Keeping the first flag
-would otherwise mask the second flag's name and publish its value. These
-extensions use the CLI redactor's complete value extent, including a quoted
+both values, extending through successive overlaps. This retains the outer
+assignment's mask over its inner text. These extensions use the CLI value
+reader's complete extent, including a quoted
 value with an escaped quote whose apparent closing quote also opens a later
 flag's value. The assignment masks that later value as well. The name
 checks read at most 150 characters, and each overlap advances through the next
@@ -586,6 +586,19 @@ opens its quoted value at the apparent closing quote of a flag or assignment,
 the mask extends through the later value. Before
 Issue #5435 the flag value ended at the escaped quote and the rest of the
 credential was published.
+
+A CLI value whose extent ends in another credential flag's name followed by
+whitespace and a value accepted by the value-presence check ends its mask
+before that name (Issue #5614). The scan
+resumes at the name and masks its value too, including successive overlaps.
+This covers an unclosed quote such as `--api-key "tail'--password <value>`:
+masking the name with the first value previously published the second value.
+The check reuses the assignment walk's bounded name and value-presence checks;
+it reads at most 150 name characters and does not truncate the input. A
+non-credential flag or a flag with no accepted value stays inside the first mask:
+another flag or a bare `=` or `:` is not an accepted value.
+Shared-quote overlaps are extended before this boundary check; assignment masks
+keep their complete overlap extent as described above.
 
 A bare value that starts at, or contains, the closing quote of a credential
 flag's quoted value can keep that quote in front of the placeholder
