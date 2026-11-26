@@ -71,7 +71,7 @@ export interface AwsEmulatorCheckResult {
   wiringEvidence: string[];
   /** Why wiring that was found was not credited, one line each, naming the workflow file and job. Also floci-only: "`ci.yml` job `x` runs floci/floci". */
   wiringDiagnostics: string[];
-  /** Workflow files that failed to parse: whether they wire the emulator is unknown. */
+  /** Workflow files exceeding 1 MiB at stat time or failing YAML parse: their emulator wiring is unknown. */
   unreadableWorkflows: string[];
   /** False when `loadWorkflows` returned none (Issue #2880 diagnostic guard). */
   workflowsLoaded: boolean;
@@ -1997,8 +1997,9 @@ async function readFileOrSkip(
  * rejects rather than reading as "no AWS" — a wrong path must never be
  * mistaken for a genuine absence. An unreadable repository script referenced
  * by a `run:` step (one that exists but cannot be read, such as permission
- * denied) rejects too; a missing one does not count. A workflow that fails to
- * parse is listed in `unreadableWorkflows`, not treated as missing wiring.
+ * denied) rejects too; a missing one does not count. A workflow exceeding
+ * 1 MiB at stat time or failing YAML parse is listed in `unreadableWorkflows`,
+ * not treated as missing wiring.
  */
 export async function checkAwsEmulatorInCI(
   repoPath: string,

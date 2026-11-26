@@ -202,11 +202,14 @@ interface CheckContext {
 // Loaders
 // ---------------------------------------------------------------------------
 
+const MAX_WORKFLOW_BYTES = 1024 * 1024;
+
 /**
- * Load every workflow under `.github/workflows/`. Empty when missing.
- * `opts.onUnparseable` is called with the filename and parser message for each
- * workflow that fails YAML parse; that workflow is still skipped from the
- * result, exactly as without the option.
+ * Load regular `.yml` / `.yaml` files under `.github/workflows/`, skipping
+ * files whose stat size exceeds 1 MiB or whose YAML fails to parse. Empty
+ * when missing. Symlink entries are skipped.
+ * `opts.onUnparseable` receives the filename and size-limit or parser
+ * diagnostic for each skipped oversized or unparseable workflow.
  */
 export async function loadWorkflows(
   repoPath: string,
@@ -222,6 +225,14 @@ export async function loadWorkflows(
         continue;
       }
       const path = `${dir}/${entry.name}`;
+      const stat = await Deno.stat(path);
+      if (stat.size > MAX_WORKFLOW_BYTES) {
+        opts?.onUnparseable?.(
+          entry.name,
+          `Workflow size ${stat.size} bytes exceeds the ${MAX_WORKFLOW_BYTES} bytes limit`,
+        );
+        continue;
+      }
       const rawContent = await Deno.readTextFile(path);
       let parsed: unknown = null;
       try {
@@ -256,7 +267,7 @@ export async function loadWorkflows(
     // (e.g. the parent work dir instead of the repo checkout root).
     console.warn(
       `[linter-in-ci] loaded 0 workflows from "${dir}" ` +
-        `(directory ${dirMissing ? "missing" : "present but empty"})`,
+        `(directory ${dirMissing ? "missing" : "present but none loaded"})`,
     );
   }
   out.sort((a, b) => a.filename.localeCompare(b.filename));

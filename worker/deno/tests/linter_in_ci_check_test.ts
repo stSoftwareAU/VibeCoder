@@ -13,6 +13,7 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   checkLinterInCI,
   type LinterCheckLanguage,
+  loadWorkflows,
 } from "../lib/linter_in_ci_check.ts";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +38,67 @@ async function withTempRepo(
     await Deno.remove(tmp, { recursive: true });
   }
 }
+
+Deno.test("loadWorkflows — loads valid YAML at exactly 1 MiB", async () => {
+  const content = "jobs:\n  lint:\n    steps:\n      - run: deno lint\n#"
+    .padEnd(
+      1024 * 1024,
+      "x",
+    );
+  await withTempRepo(
+    { ".github/workflows/boundary.yaml": content },
+    async (tmp) => {
+      const diagnostics: Array<[string, string]> = [];
+      const workflows = await loadWorkflows(tmp, {
+        onUnparseable: (filename, message) =>
+          diagnostics.push([filename, message]),
+      });
+      assertEquals(workflows.map((w) => w.filename), ["boundary.yaml"]);
+      assertEquals(workflows[0]?.rawContent, content);
+      assertEquals(workflows[0]?.invocations, "deno lint");
+      assertEquals(diagnostics, []);
+    },
+  );
+});
+
+Deno.test("loadWorkflows — skips valid YAML over 1 MiB with a size diagnostic", async () => {
+  await withTempRepo(
+    {
+      ".github/workflows/oversized.yml": "jobs: {}\n#".padEnd(
+        1024 * 1024 + 1,
+        "x",
+      ),
+      ".github/workflows/readable.yml": "jobs: {}\n",
+    },
+    async (tmp) => {
+      const diagnostics: Array<[string, string]> = [];
+      const workflows = await loadWorkflows(tmp, {
+        onUnparseable: (filename, message) =>
+          diagnostics.push([filename, message]),
+      });
+      assertEquals(workflows.map((w) => w.filename), ["readable.yml"]);
+      assertEquals(diagnostics.length, 1);
+      assertEquals(diagnostics[0]?.[0], "oversized.yml");
+      assertStringIncludes(diagnostics[0]![1], "exceeds");
+      assertStringIncludes(diagnostics[0]![1], "1048576");
+      assertStringIncludes(diagnostics[0]![1], "bytes");
+
+      await Deno.remove(`${tmp}/.github/workflows/readable.yml`);
+      const warnings: string[] = [];
+      const originalWarn = console.warn;
+      console.warn = (message: string) => warnings.push(message);
+      try {
+        assertEquals(await loadWorkflows(tmp), []);
+      } finally {
+        console.warn = originalWarn;
+      }
+      assertEquals(warnings, [
+        `[linter-in-ci] loaded 0 workflows from "${tmp}/.github/workflows" ` +
+        "(directory present but none loaded)",
+      ]);
+    },
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Rust — cargo clippy

@@ -34,8 +34,8 @@
  *     Runs on every bucket (unlike the linter pre-check, which is
  *     language-targeted): calls `checkAwsEmulatorInCI()` and, when the repo
  *     uses AWS, a workflow loaded, no workflow wires AWS tests to the official
- *     AWS Emulator, and no workflow fails to parse, files a
- *     `BP-AWS-EMULATOR-MISSING` finding as a standalone `best-practices`
+ *     AWS Emulator, and no workflow exceeds the size limit or fails to parse,
+ *     files a `BP-AWS-EMULATOR-MISSING` finding as a standalone `best-practices`
  *     issue at `severity:medium`. The title says which: no test wiring at all
  *     (`missing`), or Floci-only tests to migrate (`floci-only`). Static
  *     wiring that is credited (`official-server`, `official-embedded`) or a

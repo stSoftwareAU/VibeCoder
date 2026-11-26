@@ -1931,8 +1931,9 @@ A repo that uses AWS and does not pass, with no valid
 Emulator" for a Floci-only repo). It is deduplicated through the same
 `fileFindingOnce` mechanism as `BP-LINTER-<bucket>` and added to the known-open
 list passed to Claude. No finding is filed when the repo does not use AWS; when
-no workflow loaded, or any workflow failed to parse (status unknown, so an
-unreadable workflow is never read as a missing gate, and the next scheduled scan
+no workflow loaded, or any workflow exceeded 1 MiB at stat time or failed to
+parse (status unknown, so an unreadable workflow is never read as a missing
+gate, and the next scheduled scan
 retries it); when wiring or a documented gap passes; when a valid waiver exists;
 or when an open fleet-authored issue already covers it, including an open
 fleet-authored issue whose title contains "AWS Emulator". Only fleet-authored

@@ -76,7 +76,14 @@ non-existent `.github/workflows`, load zero workflows, and file a false
 `BP-LINTER-<bucket>` finding even when the repo's workflows ran both gates. The
 call site now derives the checkout path via `repoCheckoutPath()`, and
 `loadWorkflows()` logs a `[linter-in-ci] loaded 0 workflows …` diagnostic
-distinguishing a missing directory from a genuinely workflow-free repo.
+distinguishing a missing directory from an existing one with no workflows loaded.
+
+`loadWorkflows()` checks each regular `.yml` / `.yaml` file's stat size before
+reading it. Files over 1 MiB (1,048,576 bytes) are skipped, as are YAML parse
+failures; an optional `onUnparseable` callback receives the filename and a
+size-limit or parser diagnostic. Files exactly at the limit remain eligible.
+Symlink entries are skipped. The stat check does not bound a file that grows
+between the check and the read.
 
 The two cross-bucket checks added from v3 onward — **dead dependencies** and
 **deprecated config on framework bump** — are also **static-evidence only**. The
@@ -590,8 +597,9 @@ pass and has not judged whether they cover the behaviour that matters.
 - no workflow loaded (status unknown, the same fail-safe reasoning as the
   [zero-workflows rule](#fail-safe--zero-workflows-loaded) for
   `BP-LINTER-<bucket>`);
-- any workflow failed to parse (status unknown, not a missing-gate claim; the
-  next scheduled scan retries it, the same fail-safe spirit as Issue #5009's
+- any workflow exceeded 1 MiB at stat time or failed to parse (status unknown,
+  not a missing-gate claim; the next scheduled scan retries it, the same
+  fail-safe spirit as Issue #5009's
   incomplete-read handling);
 - official server or embedded wiring is found, or a Floci documented gap is
   found (logged as static wiring evidence, with no CI result observed);
@@ -676,7 +684,7 @@ flowchart TD
     A[Every best-practices scan] --> B{Repo uses AWS?<br/>Terraform: AWS provider only}
     B -- no --> Z[No finding]
     B -- yes --> C{All workflows loaded and parsed?}
-    C -- zero loaded or a parse failure --> Z
+    C -- zero loaded, oversized or a parse failure --> Z
     C -- yes --> D{Official wiring or<br/>documented Floci gap?}
     D -- yes --> Z
     D -- no --> E{Valid waiver, or open finding<br/>or AWS Emulator issue?}
