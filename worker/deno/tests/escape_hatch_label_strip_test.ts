@@ -90,6 +90,10 @@ function fakeClient(opts: {
       label: string,
     ): Promise<void> {
       removeCalls.push({ repo, issue: issueNumber, label });
+      const key = `${repo}#${issueNumber}`;
+      opts.labelsByIssue[key] = (opts.labelsByIssue[key] ?? []).filter((l) =>
+        l !== label
+      );
       return Promise.resolve();
     },
   };
@@ -698,4 +702,132 @@ Deno.test("describeUnresolvedFollowUp - names the repo the reference failed to r
     ),
     "follow-up reference owner/dep#5 not found in owner/dep",
   );
+});
+
+// Long model output reaches the same strip and its existing safety guards.
+Deno.test("model follow-up - long failed runs still strip the detected follow-up", async () => {
+  for (
+    const message of [
+      "follow-up issue " + "a".repeat(1_000_000) + " #909",
+      "out of scope x/" + "b".repeat(1_000_000) + " owner/repo#909",
+      "follow-up issue other/dep#8 " + "a/".repeat(10_000) + " owner/repo#909",
+    ]
+  ) {
+    const labelsByIssue = {
+      "owner/repo#909": [RESERVED, "bug"],
+      "other/dep#8": [RESERVED, "enhancement"],
+    };
+    const { ghClient } = fakeClient({ labelsByIssue });
+    const { logger } = recordingLogger();
+    const result = await stripReservedLabelsFromModelFollowUp({
+      message,
+      currentRepo: "owner/repo",
+      excludeIssueNumber: 12,
+      ghClient,
+      logger,
+    });
+    assert(result.ok);
+    assertEquals(result.value.stripped, [{
+      repo: "owner/repo",
+      issueNumber: 909,
+      label: RESERVED,
+    }]);
+    assertEquals(labelsByIssue["owner/repo#909"], ["bug"]);
+    assertEquals(labelsByIssue["other/dep#8"], [RESERVED, "enhancement"]);
+  }
+});
+
+Deno.test("model follow-up - long output preserves self-reference exclusion", async () => {
+  for (const excludeIssueNumber of [909, 12]) {
+    const labelsByIssue = { "owner/repo#909": [RESERVED, "bug"] };
+    const { ghClient } = fakeClient({ labelsByIssue });
+    const { logger } = recordingLogger();
+    const result = await stripReservedLabelsFromModelFollowUp({
+      message: "follow-up issue " + "a".repeat(10_000) + " #909",
+      currentRepo: "owner/repo",
+      excludeIssueNumber,
+      ghClient,
+      logger,
+    });
+    assert(result.ok);
+    assertEquals(
+      result.value.skipped,
+      excludeIssueNumber === 909 ? [{ repo: "owner/repo", number: 909 }] : [],
+    );
+    assertEquals(
+      labelsByIssue["owner/repo#909"],
+      excludeIssueNumber === 909 ? [RESERVED, "bug"] : ["bug"],
+    );
+  }
+});
+
+Deno.test("model follow-up - long output preserves repository restrictions", async () => {
+  for (const allowed of [false, true]) {
+    const labelsByIssue = { "other/dep#909": [RESERVED, "bug"] };
+    const { ghClient } = fakeClient({ labelsByIssue });
+    const { logger } = recordingLogger();
+    const result = await stripReservedLabelsFromModelFollowUp({
+      message: "follow-up issue " + "a".repeat(10_000) + " other/dep#909",
+      currentRepo: "owner/repo",
+      ghClient,
+      logger,
+      ...(allowed
+        ? { loadAllowedRepos: () => Promise.resolve(["other/dep"]) }
+        : {}),
+    });
+    assert(result.ok);
+    assertEquals(
+      result.value.skipped,
+      allowed ? [] : [{ repo: "other/dep", number: 909 }],
+    );
+    assertEquals(
+      labelsByIssue["other/dep#909"],
+      allowed ? ["bug"] : [RESERVED, "bug"],
+    );
+  }
+});
+
+Deno.test("model follow-up - long output preserves human-applied labels", async () => {
+  const labelsByIssue = { "owner/repo#909": [RESERVED, "work-on", "bug"] };
+  const { ghClient } = fakeClient({ labelsByIssue });
+  const { logger } = recordingLogger();
+  const result = await stripReservedLabelsFromModelFollowUp({
+    message: "follow-up issue " + "a".repeat(10_000) + " #909",
+    currentRepo: "owner/repo",
+    ghClient,
+    logger,
+    applier: {
+      fleetAuthors: ["worker"],
+      lastAddedBy: (_repo, _number, label) =>
+        Promise.resolve(label === RESERVED ? "maintainer" : "worker"),
+    },
+  });
+  assert(result.ok);
+  assertEquals(result.value.kept, [{
+    repo: "owner/repo",
+    issueNumber: 909,
+    label: RESERVED,
+    appliedBy: "maintainer",
+  }]);
+  assertEquals(result.value.stripped, [{
+    repo: "owner/repo",
+    issueNumber: 909,
+    label: "work-on",
+  }]);
+  assertEquals(labelsByIssue["owner/repo#909"], [RESERVED, "bug"]);
+});
+
+Deno.test("model follow-up - long output without hand-off wording keeps labels", async () => {
+  const labelsByIssue = { "owner/repo#909": [RESERVED, "bug"] };
+  const { ghClient } = fakeClient({ labelsByIssue });
+  const { logger } = recordingLogger();
+  const result = await stripReservedLabelsFromModelFollowUp({
+    message: "a".repeat(1_000_000) + " #909",
+    currentRepo: "owner/repo",
+    ghClient,
+    logger,
+  });
+  assert(result.ok);
+  assertEquals(result.value.stripped, []);
+  assertEquals(labelsByIssue["owner/repo#909"], [RESERVED, "bug"]);
 });

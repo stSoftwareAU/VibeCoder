@@ -1470,7 +1470,8 @@ export interface RunCoreDeps {
 
   // Misc
   touchPidFile: () => Promise<void>;
-  sleep: (ms?: number) => Promise<void>;
+  /** An optional signal wakes a between-cycle sleep on shutdown. */
+  sleep: (ms?: number, signal?: AbortSignal) => Promise<void>;
   now: () => number;
 
   /**
@@ -6193,6 +6194,7 @@ export async function runCoreLoop(
   // Set only on the unhandled-error path below (Issue #563).
   let fatalError = false;
   let shutdownRequested = false;
+  const cycleSleepAbort = new AbortController();
   /** Set when the daily spend ceiling stopped the cycle (Issue #3648). */
   let spendCeilingReached = false;
   /** Set once the low host disk has been reported this cycle (Issue #226). */
@@ -6507,6 +6509,7 @@ export async function runCoreLoop(
   // --- Signal handling ---
   const shutdownHandler = () => {
     shutdownRequested = true;
+    cycleSleepAbort.abort();
   };
   deps.addSignalListener("SIGTERM", shutdownHandler);
   deps.addSignalListener("SIGINT", shutdownHandler);
@@ -7589,6 +7592,7 @@ export async function runCoreLoop(
 
           // --- End-of-cycle sleep ---
           await fireCycleCallback("no_eligible_work");
+          let cycleSleepSeconds: number;
           if (tracker.scanHadSuccess) {
             await deps.circuitBreakerReset();
             const jitteredSleep = sleepWithJitter(config.sleepInterval);
@@ -7597,13 +7601,27 @@ export async function runCoreLoop(
             // remaining window can afford per cycle, stretch the sleep so the
             // hour's quota lasts the hour; otherwise today's fixed sleep
             // stands, unchanged.
-            const pacedSleep = await pacedEndOfCycleSleepSeconds(jitteredSleep);
-            await deps.sleep(pacedSleep * 1000);
+            cycleSleepSeconds = await pacedEndOfCycleSleepSeconds(
+              jitteredSleep,
+            );
           } else {
             await deps.circuitBreakerRecordZeroProgress();
             const backoffInterval = await deps.circuitBreakerGetSleepInterval();
-            const jitteredSleep = sleepWithJitter(backoffInterval);
-            await deps.sleep(jitteredSleep * 1000);
+            cycleSleepSeconds = sleepWithJitter(backoffInterval);
+          }
+          // Pace another cycle, never delay an exit whose deadline already passed.
+          const cycleRunwayMs = endTime - deps.now();
+          if (!shutdownRequested && cycleRunwayMs > 0) {
+            await deps.sleep(
+              Math.min(cycleSleepSeconds * 1000, cycleRunwayMs),
+              cycleSleepAbort.signal,
+            );
+          } else {
+            deps.log(
+              `End-of-cycle sleep skipped — ${
+                shutdownRequested ? "shutdown requested" : "run target reached"
+              }.`,
+            );
           }
 
           // --- Fleet telemetry (Issue #855) ---
@@ -7737,7 +7755,11 @@ export async function runCoreLoop(
       tracker.issuesProcessed,
       (deps.now() - startTime) / 1000,
     );
-    deps.log("Run duration complete. Exiting for refresh.");
+    deps.log(
+      shutdownRequested
+        ? "Shutdown signal received. Exiting for refresh."
+        : "Run duration complete. Exiting for refresh.",
+    );
 
     return buildResult(
       rootFilesystemFault

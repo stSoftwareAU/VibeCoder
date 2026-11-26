@@ -1,18 +1,12 @@
 /**
  * Escape-hatch detection for PR feedback / CI fix / issue work (Issue #1826).
  *
- * When a Claude task is genuinely too large or out of scope, the prompts
- * instruct it to:
- *   1. Open a follow-up GitHub issue capturing what was learnt.
- *   2. Post one comment naming the follow-up issue (e.g. `org/repo#NNN`),
- *      explaining briefly why this could not be resolved in-line, and
- *      optionally adding the `needs-human` label.
- *   3. Exit cleanly without retrying the original change.
+ * Models can still emit follow-up references and hand-off wording even
+ * though the issue and PR-feedback prompts require finishing approved work.
+ * Detection is retained for follow-up label stripping and legacy PR-feedback
+ * hand-off handling; it does not itself verify the referenced issue.
  *
- * The worker treats such a response as a **successful resolution** rather
- * than a failure to retry — the work has been handed off, not abandoned.
- *
- * Detection is heuristic: we look for a same-repo issue link in the
+ * Detection is heuristic: we look for an issue reference in the
  * response message. The detector is deliberately conservative — false
  * negatives just lose the optimisation, but false positives would suppress
  * the regular no-changes reply.
@@ -37,7 +31,7 @@ const NEGATIVE: EscapeHatchDetection = { invoked: false, needsHuman: false };
  * Detect whether a Claude-authored response message invoked the escape hatch.
  *
  * Heuristics:
- *   - Presence of a same-repo issue reference (`owner/repo#NNN`) or a
+ *   - Presence of a full issue reference (`owner/repo#NNN`) or a
  *     bare `#NNN` reference somewhere in the message.
  *   - Presence of follow-up wording such as "follow-up issue", "raised
  *     issue", "opened issue", or "out of scope".
@@ -71,27 +65,71 @@ export function detectEscapeHatch(
   };
 }
 
+/** ASCII letters and digits, as accepted at the start of an owner. */
+function isAlnum(code: number): boolean {
+  return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122);
+}
+
+/** ASCII name characters shared by owners and repositories. */
+function isNameCode(code: number): boolean {
+  return isAlnum(code) || code === 46 || code === 95 || code === 45;
+}
+
+/**
+ * Yield the old global regex's `owner/repo#NNN` matches in order.
+ * A failed start skips its whole owner run: every suffix fails at the same
+ * separator. The following run can still be an owner (e.g. `a/b/c#1`), so
+ * leave it for the next iteration. Each name run is read at most twice.
+ */
+function* fullReferences(
+  message: string,
+): Generator<string> {
+  const codeAt = (index: number) => message.charCodeAt(index);
+  let i = 0;
+  while (i < message.length) {
+    if (!isAlnum(codeAt(i))) {
+      i++;
+      continue;
+    }
+    const start = i++;
+    while (i < message.length && isNameCode(codeAt(i))) i++;
+    const ownerEnd = i;
+    if (codeAt(i) !== 47) continue; // `/`
+
+    const repoStart = ++i;
+    while (i < message.length && isNameCode(codeAt(i))) i++;
+    if (i > repoStart && codeAt(i) === 35) { // `#`
+      const digitsStart = ++i;
+      while (i < message.length) {
+        const code = codeAt(i);
+        if (code < 48 || code > 57) break;
+        i++;
+      }
+      if (i > digitsStart) {
+        yield message.slice(start, i);
+        continue;
+      }
+    }
+    i = ownerEnd + 1;
+  }
+}
+
 /**
  * Find the first plausible follow-up issue reference in a message.
  *
  * Prefers a fully-qualified `owner/repo#NNN` reference matching the
- * supplied repo. Falls back to any `owner/repo#NNN` (e.g. when the LLM
- * gets the slug right but capitalises it differently). Last resort is a
- * bare `#NNN` reference.
+ * supplied repo (case-insensitive). Falls back to the first other full
+ * reference. Last resort is a bare `#NNN` reference.
  */
 function findIssueReference(
   message: string,
   repo: string,
 ): string | undefined {
-  // Match owner/repo#NNN (case-insensitive owner/repo)
-  const fullPattern = /([A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+)#(\d+)/g;
   const repoLower = repo.toLowerCase();
   let firstFull: string | undefined;
-  for (const m of message.matchAll(fullPattern)) {
-    const slug = m[1];
-    const number = m[2];
-    if (!slug || !number) continue;
-    const ref = `${slug}#${number}`;
+  for (const ref of fullReferences(message)) {
+    const slug = ref.slice(0, ref.indexOf("#"));
     if (slug.toLowerCase() === repoLower) {
       return ref;
     }

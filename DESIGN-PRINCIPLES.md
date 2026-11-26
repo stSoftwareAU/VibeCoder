@@ -1618,7 +1618,7 @@ or rebuts a request with reasons; the issue run lost its hatch earlier
 model can still write a hand-off message and file the issue it names.
 
 **Worker-side detection.** `worker/deno/lib/escape_hatch.ts` provides
-`detectEscapeHatch()`, which inspects the message body for a same-repo issue
+`detectEscapeHatch()`, which inspects the message body for an issue
 reference plus follow-up wording (`out of scope`, `follow-up
 issue`,
 `escape hatch`, etc.). When the escape hatch is detected,
@@ -1632,6 +1632,15 @@ hatch (org/repo#NNN)`.
 The relief valve only fires when both signals (issue link + follow-up wording)
 are present, so an incidental issue mention in a normal fix reply will not
 trigger it.
+
+The reference scan skips a failed owner-name run rather than retrying at
+its every suffix. It can revisit the following repository-name run as an
+owner, preserving nested forms such as `a/b/c#1`. Character reads grow
+linearly with message length. Selection prefers the first full reference
+matching the current repository case-insensitively, then the first other full
+reference, then a bare `#NNN`. Detection scans the trimmed message without a
+length cap; the downstream self-reference, repository and configured label-applier
+guards still decide whether labels can be removed.
 
 **The hand-off needs an unforgeable signal, not just prose.** Both
 detection signals are model-authored text, and any actor whose content reaches
@@ -1665,11 +1674,11 @@ from that follow-up via the shared `stripReservedLabelsFromIssues` helper
 `needs-human` to an *existing* issue is a separate,
 post-creation path on a different issue and is untouched.
 
-**Every hand-off path runs the strip.** The hatch is offered to
-PR feedback, CI fix *and* issue work, but only `pr_feedback_processor.ts` called
-the strip, so the two paths that also drive `gh issue create` had no post-hoc
-guard. `stripReservedLabelsFromModelFollowUp()` is the message-level entry point
-the other two use: it runs `detectEscapeHatch` over Claude's own text
+**Every hand-off path runs the strip.** PR feedback, CI fix and issue
+work retain this defence against model-authored follow-ups. Originally only
+`pr_feedback_processor.ts` called the strip, so the other two paths had no
+post-hoc guard. `stripReservedLabelsFromModelFollowUp()` is the message-level
+entry point the other two use: it runs `detectEscapeHatch` over Claude's own text
 (`.pr_response_message` for CI fix, the run output for issue work) and then
 performs the same strip. A reference to the issue/PR the run is *working on* is
 a self-reference, not a follow-up, and is never stripped — the guard must not

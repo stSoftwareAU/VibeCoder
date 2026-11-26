@@ -22,6 +22,7 @@ import type {
   RepoConfig,
   WorkerConfig,
 } from "../types.ts";
+import { systemClock } from "./clock.ts";
 import {
   isExpectedSkipResult,
   type IssueContext,
@@ -6244,8 +6245,8 @@ export async function createProductionRunCoreDeps(
 
     // -- Misc --
     touchPidFile: () => Promise.resolve(),
-    sleep: (ms?: number) =>
-      new Promise((resolve) => setTimeout(resolve, ms ?? 30000)),
+    sleep: (ms?: number, signal?: AbortSignal) =>
+      systemClock.sleep(ms ?? 30000, signal),
     now: () => Date.now(),
 
     // Issue #2473: watchdog timer for the per-handler hard timeout. The timer
