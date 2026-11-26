@@ -447,7 +447,7 @@ export type RouteClaimRun<T> =
 export async function runWithRouteClaim<T>(
   input: ClaimRoutedIssueInput,
   deps: RouteClaimDeps,
-  run: () => Promise<T>,
+  run: (claim: Extract<RoutedIssueClaim, { claimed: true }>) => Promise<T>,
 ): Promise<RouteClaimRun<T>> {
   const claimFn = deps.claimRouteFn ?? claimRoutedIssue;
   const stopHeartbeatFn = deps.stopHeartbeatFn ?? defaultStopHeartbeat;
@@ -463,7 +463,7 @@ export async function runWithRouteClaim<T>(
     };
   }
   try {
-    return { claimed: true, value: await run() };
+    return { claimed: true, value: await run(claim) };
   } finally {
     if (claim.heartbeat) await stopHeartbeatFn(claim.heartbeat);
   }

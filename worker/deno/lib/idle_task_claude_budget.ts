@@ -174,16 +174,11 @@ export interface IdleTaskRunContext {
   logger?: Logger;
 }
 
-/**
- * Live run contexts, innermost last. An array rather than a single slot so
- * two concurrent slots (Issue #4177) each drop only their own entry — a
- * sibling finishing first must not leave the other one unbounded.
- */
-const runContexts: IdleTaskRunContext[] = [];
+/** Each concurrent scan owns its own deadline and logger across awaits. */
+const runContext = new AsyncLocalStorage<IdleTaskRunContext>();
 
-/** The context an idle-task scan starting now belongs to. */
 export function getIdleTaskRunContext(): IdleTaskRunContext {
-  return { ...(runContexts[runContexts.length - 1] ?? {}) };
+  return { ...runContext.getStore() };
 }
 
 /**
@@ -200,14 +195,7 @@ export async function withIdleTaskRunContext<T>(
   context: IdleTaskRunContext,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const entry: IdleTaskRunContext = { ...context };
-  runContexts.push(entry);
-  try {
-    return await fn();
-  } finally {
-    const index = runContexts.lastIndexOf(entry);
-    if (index >= 0) runContexts.splice(index, 1);
-  }
+  return await runContext.run(context, fn);
 }
 
 /** The invocation list of the innermost active collector, per async scope. */
