@@ -318,7 +318,7 @@ Deno.test("runTask - happy path ensures the label and diffs the snapshot", async
   assertEquals(ensureCalls, ["acme/widget"]);
   assertEquals(scanCalls.length, 1);
   assertEquals(scanCalls[0]!.knownOpenFindingIds, ["BP-existing0001"]);
-  assertEquals(scanCalls[0]!.workDir, "/tmp/widget");
+  assertEquals(scanCalls[0]!.workDir, "/tmp/widget/widget");
   assert(
     calls.some((c) =>
       c.includes("--label") && c.includes(DUPLICATED_KNOWLEDGE_LABEL)

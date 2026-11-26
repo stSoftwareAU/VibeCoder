@@ -58,6 +58,7 @@ import type {
 } from "./run_callbacks.ts";
 import { ensureRepoClone as defaultEnsureRepoClone } from "./ensure_repo_clone.ts";
 import { finaliseIdleTaskWrapper } from "./idle_task_wrapper_closure.ts";
+import { openDuplicateScanJournal } from "./duplicate_scan_checkpoint.ts";
 import { decideOptInClaim } from "./idle_task_opt_in.ts";
 
 /** Input describing the issue under consideration. */
@@ -187,6 +188,18 @@ export async function routeIdleTaskInProcessIssue(
   // standard pipeline's setup phase claims it, as it always has.
   if (template === undefined) return await scan();
 
+  if (
+    template.name === "duplicated-knowledge" &&
+    input.issueLabels.includes("needs-human")
+  ) {
+    return {
+      routed: true,
+      success: false,
+      claimLost: true,
+      claimReason: "blocking_label",
+      claimDetail: "The scan is paused for human attention.",
+    };
+  }
   // Issue #1757: decide BEFORE the claim whether the run could be a scan at
   // all. Issue #186 bounds a scan to the cycle deadline after the claim, so
   // near the end of a cycle the two rules used to combine into "claim it,
@@ -233,7 +246,36 @@ export async function routeIdleTaskInProcessIssue(
       pushCapableAuthors: input.pushCapableAuthors,
     },
     deps,
-    scan,
+    async (claim) => {
+      if (template.name !== "duplicated-knowledge") return await scan();
+      // The claim code already rejects a live sibling. Require our own
+      // refresh timer before starting a potentially long paid scan.
+      try {
+        const journal = await openDuplicateScanJournal(
+          input.repo,
+          input.issueNumber,
+          [...input.fleetIdentityLogins, input.githubUser],
+          ghCommand,
+        );
+        await journal.begin("checkout and heartbeat");
+        if (!claim.heartbeat) {
+          throw new Error("The claim heartbeat did not start");
+        }
+        return await runRoutedScan(input, deps, template, {
+          handleIdleTask,
+          ghCommand,
+          ensureClone,
+        }, () => journal.finish("checkout and heartbeat"));
+      } catch (error) {
+        await finaliseIdleTaskWrapper({
+          repo: input.repo,
+          issueNumber: input.issueNumber,
+          ok: false,
+          summary: String(error),
+        }, { logger: deps.logger, ghCommandFn: ghCommand });
+        return { routed: true as const, success: false };
+      }
+    },
   );
   return held.claimed
     ? held.value
@@ -250,6 +292,7 @@ async function runRoutedScan(
     ghCommand: typeof defaultRunGhCommand;
     ensureClone: typeof defaultEnsureRepoClone;
   },
+  checkoutReady?: () => Promise<void>,
 ): Promise<RouteIdleTaskOutcome> {
   const { handleIdleTask, ghCommand, ensureClone } = fns;
   if (template !== undefined) {
@@ -321,6 +364,7 @@ async function runRoutedScan(
           : {}),
       };
     }
+    await checkoutReady?.();
     if (clone.cloned) {
       deps.logger.info("Cloned repo for idle-task scan", {
         repo: input.repo,

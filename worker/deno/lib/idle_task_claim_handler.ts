@@ -57,7 +57,10 @@ import {
   seedWriteRepoAllowlist,
 } from "./write_repo_allowlist.ts";
 import { parseWrapperModelTier } from "./idle_task_model_tier.ts";
-import { withIdleTaskRunContext } from "./idle_task_claude_budget.ts";
+import {
+  IDLE_TASK_TIMEOUT_SECONDS,
+  withIdleTaskRunContext,
+} from "./idle_task_claude_budget.ts";
 
 // Importing the bundled templates for their registration side-effect
 // keeps the production set wired up regardless of which call site
@@ -206,7 +209,6 @@ export async function handleIdleTaskIssue(
   deps: HandleIdleTaskIssueDeps,
 ): Promise<HandleIdleTaskIssueResult> {
   const { repo, issueNumber, issueTitle, issueBody, workDir } = opts;
-  const { cycleDeadlineEpochMs } = opts;
   const listTemplates = deps.listTemplatesFn ?? defaultListTemplates;
 
   // Issue #2077: dispatch by title. The first template whose
@@ -250,6 +252,15 @@ export async function handleIdleTaskIssue(
     logger: deps.logger,
     context: { repo, issueNumber, template: template.name },
   });
+
+  // A batched review shares one scan budget across all calls, including CLI
+  // runs that have no outer cycle deadline.
+  const cycleDeadlineEpochMs = template.name === "duplicated-knowledge"
+    ? Math.min(
+      opts.cycleDeadlineEpochMs ?? Infinity,
+      Date.now() + IDLE_TASK_TIMEOUT_SECONDS * 1000,
+    )
+    : opts.cycleDeadlineEpochMs;
 
   let result: IdleTaskRunResult;
   try {

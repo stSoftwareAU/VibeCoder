@@ -77,8 +77,7 @@ export interface FinaliseIdleTaskWrapperResult {
  * reading the wrapper knows the issue is deliberately still open.
  */
 export const IDLE_TASK_FAILURE_COMMENT_PREFIX =
-  "⚠️ Idle-task scan did not complete — leaving this wrapper **open** so a " +
-  "later claim retries it after the failure cooldown (Issue #179).";
+  "⚠️ Idle-task scan did not complete — leaving this wrapper **open** for investigation or retry after the failure cooldown (Issue #179).";
 
 /** Build the comment body posted on a failed scan. */
 export function buildIdleTaskFailureComment(summary: string): string {

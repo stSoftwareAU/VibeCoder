@@ -555,3 +555,20 @@ Deno.test("runIdleTaskClaude outside a collector still runs the runner", async (
   );
   assertEquals(result.ok && result.value.exitCode, 7);
 });
+
+Deno.test("interleaved scan batches keep distinct deadlines while both slots are live", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => release = resolve);
+  const first = withIdleTaskRunContext(
+    { cycleDeadlineEpochMs: 100 },
+    async () => {
+      await gate;
+      assertEquals(getIdleTaskRunContext().cycleDeadlineEpochMs, 100);
+    },
+  );
+  await withIdleTaskRunContext({ cycleDeadlineEpochMs: 200 }, async () => {
+    release();
+    await first;
+    assertEquals(getIdleTaskRunContext().cycleDeadlineEpochMs, 200);
+  });
+});
