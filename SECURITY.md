@@ -587,16 +587,36 @@ the mask extends through the later value. Before
 Issue #5435 the flag value ended at the escaped quote and the rest of the
 credential was published.
 
-A bare value that starts at the closing quote of a credential flag's quoted
-value keeps that quote in front of the placeholder (Issue #5363). In
-`--password 'alpha beta TOKEN='tail` the `TOKEN=` value opens at that quote;
-masking the quote with the value left the `secret-cli-flag` rule no closing
-quote, so it masked only `'alpha` and published `beta`. The quote is kept only
-when the flag's opening quote lies outside every assignment mask, so the flag
-rule really pairs the two. One form is not covered: when the quote sits inside
-an outer label's value that is masked whole, as in
-`--token 'alpha beta credentials: TOKEN='tail`, the base behaviour applies and
-`beta credentials:` is still published.
+A bare value that starts at, or contains, the closing quote of a credential
+flag's quoted value can keep that quote in front of the placeholder
+(Issues #5363 and #5456). In `--password 'alpha beta TOKEN='tail` the `TOKEN=`
+value opens at that quote; masking it with the value left the `secret-cli-flag` rule
+no closing quote, so it masked only `'alpha` and published `beta`. The quote is
+kept only when the flag's opening quote lies outside every assignment mask. When
+the quote sits inside an outer label's value that is masked whole, it is kept
+when no later quote of that kind survives, or when the first such quote lies
+past another credential flag whose value starts outside every assignment mask.
+For `--token 'alpha beta credentials: TOKEN='tail`, the outer value keeps its
+whole mask, the quote is kept in front of it, and the result is
+`--token ***REDACTED******REDACTED***` rather than publishing
+`beta credentials:`. Otherwise the quote is masked with the value and the flag
+rule pairs with the later quote and masks through it (the Issue #5310 round 13
+cases pin that outcome). Keeping the quote before a later flag prevents that
+flag's name being swallowed and the remainder of its value being published. A
+kept quote ends the flag's value, so when the masked text after it ends in a
+credential label or flag name glued to the quote, as in
+`credentials: x'password: <value>` or `credentials: x'--password <value>`, that
+name stays inside the mask and the mask is extended through the value it labels.
+That value's extent is read with the grammar that would read the name outside a
+mask: the assignment walk for a label (punctuation, hyphens, escaped quotes and
+multiline quoted values included) and the `secret-cli-flag` pattern for a flag.
+Only a credential flag that starts inside the value and whose own value runs
+past it ends the extension early, at its `--`, so the flag rule masks that
+value. A label's quoted value is read through its real closing quote even when
+it holds an inner assignment masked on its own, as in
+`x'password: "mike password: hidden secretword"`, and the extended mask takes
+the inner mask over, so the words after it are not published (PR #5607).
+Nothing masked is written back.
 
 A quoted value whose closing quote is where the `secret-cli-flag` rule opens a
 credential flag's value is masked through that flag's value (Issue #5457).
