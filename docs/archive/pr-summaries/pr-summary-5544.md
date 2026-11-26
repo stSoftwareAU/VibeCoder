@@ -3,6 +3,7 @@
 Add named progress records for the main loop's end-of-cycle waits and the
 production callback's allocation refresh. This fixes the diagnostic gap after
 the last liveness record; the historical stalled await remains unidentified.
+
 Part of #5544.
 
 ## Spec
@@ -34,30 +35,30 @@ Part of #5544.
   `vibe-coder-70601`, its rotated worker log and matching launcher log. The
   build stamp is `1d5828280d7c`; that commit's callback and subprocess paths
   were also inspected.
-- The matching `GRQ-VibeCoder-logs` metadata records no archived worker log;
-  its failure entry contains an agent session. It supplies no driver stack.
-- The worker automatically checkpointed the implementation during validation.
-  No manual push was assigned or performed.
+- The matching `GRQ-VibeCoder-logs` metadata records no archived worker log; its
+  failure entry contains an agent session. It supplies no driver stack.
+- The worker automatically checkpointed the implementation during validation. No
+  manual push was assigned or performed.
 
 ## Evidence
 
 Backend/CLI diagnostics only. #5544: Hard kill: container wedged in
 follow-up-label-strip (watchdog), checked with `gh issue view`. PR #5623 was
-verified merged and its implementation remains on this branch unchanged.
-Private logs and transcripts are not committed.
+verified merged and its implementation remains on this branch unchanged. Private
+logs and transcripts are not committed.
 
 The incident's main-loop and slot activity are distinct:
 
-| UTC, 24 November 2026 | Observation |
-| --- | --- |
-| 09:23:29 | Drain records both claims abandoned/released |
-| 09:24:53 | Last main-loop liveness record |
+| UTC, 24 November 2026 | Observation                                       |
+| --------------------- | ------------------------------------------------- |
+| 09:23:29              | Drain records both claims abandoned/released      |
+| 09:24:53              | Last main-loop liveness record                    |
 | 09:26:53 and 09:31:05 | Each slot's follow-up label strip completes in 0s |
-| 09:39:57 | Slot 2 records a 300s backoff |
-| 10:31:11 | Launcher captures facts and reaps the container |
+| 09:39:57              | Slot 2 records a 300s backoff                     |
+| 10:31:11              | Launcher captures facts and reaps the container   |
 
-Inspection traced the remaining waits through `worker/deno/lib/run_core.ts`
-and `worker/deno/lib/run_core_production_deps.ts`:
+Inspection traced the remaining waits through `worker/deno/lib/run_core.ts` and
+`worker/deno/lib/run_core_production_deps.ts`:
 
 - `refreshSubscriptionAllocation` in
   `worker/deno/lib/subscription_allocation_runtime.ts` precedes the optional
@@ -87,11 +88,11 @@ flowchart TD
     T --> E[Next cycle or normal run-ending cleanup]
 ```
 
-The waits after liveness now use the existing phase-progress mechanism.
-Operator guidance and the step vocabulary are in `docs/TROUBLESHOOTING.md`.
-The run-loop and callback manual sections were checked for conflicting claims;
-no old timeout or shutdown statement required replacement. Both changed
-production callers use `withPhaseProgress`, which calls `startPhaseProgress`.
+The waits after liveness now use the existing phase-progress mechanism. Operator
+guidance and the step vocabulary are in `docs/TROUBLESHOOTING.md`. The run-loop
+and callback manual sections were checked for conflicting claims; no old timeout
+or shutdown statement required replacement. Both changed production callers use
+`withPhaseProgress`, which calls `startPhaseProgress`.
 
 ## Reproduction
 
@@ -122,8 +123,8 @@ production callers use `withPhaseProgress`, which calls `startPhaseProgress`.
   failure retains its specific error; SIGINT wakes an admitted sleep. The
   existing 20 tests and their assertions remain intact.
 - `worker/deno/tests/subscription_allocation_3646_test.ts`: adds a production
-  cycle-callback test using real allocation evaluation and temporary files.
-  It checks progress on a successful hold and on missing evidence, retains the
+  cycle-callback test using real allocation evaluation and temporary files. It
+  checks progress on a successful hold and on missing evidence, retains the
   held-state warning and proves the prior state file survives. Existing
   assertions are unchanged.
 - `worker/deno/tests/phase_progress_test.ts`: adds return-value and rejection
@@ -156,8 +157,8 @@ production callers use `withPhaseProgress`, which calls `startPhaseProgress`.
 - `deno task pr-summary-check` with the actual issue body and labels passed:
   zero blocked gates and zero not checked. The criteria/reviewer gates reported
   not applicable because the issue states no acceptance-criteria heading.
-- No new regex, persisted shape, destructive operation, failure
-  ledger or privileged operation was introduced. The diagnostic labels contain
+- No new regex, persisted shape, destructive operation, failure ledger or
+  privileged operation was introduced. The diagnostic labels contain
   worker-written names; no incident log text is added to the new records.
 
 ## Merge verification
