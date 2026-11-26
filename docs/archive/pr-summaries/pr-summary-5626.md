@@ -7,10 +7,11 @@ next PR. When the guest-memory floor (`GuestMemoryFloorError`, Issue #4815) or
 the host-disk park (`HostDiskParkError`) stops a PR's conflict agent, the
 attempt is withdrawn uncharged, the merge is discarded, and the conflict drain
 stops for the pass. This covers both agent runs of a PR attempt: the first
-resolution run and a pre-push gate-repair round. Before this change the stop was wrapped as a plain
-`agent run failed:` error. `failAttempt` then charged the PR and posted a failed
-conclusion, and `drainConflictingPrs` started the next PR's agent into the same
-low memory. This is the merge-conflict twin of the issue-path fix in #5618.
+resolution run and a pre-push gate-repair round. Before this change the stop was
+wrapped as a plain `agent run failed:` error. `failAttempt` then charged the PR
+and posted a failed conclusion, and `drainConflictingPrs` started the next PR's
+agent into the same low memory. This is the merge-conflict twin of the
+issue-path fix in #5618.
 
 The wedge on GRQ-23 itself (`vibe-coder-2582`, run `vibe-mwx93j4f-71ac3e`) is
 not diagnosed. Its worker log and agent transcript were never mirrored, and the
@@ -73,10 +74,10 @@ related hardening, not a proven fix for that kill. Part of #5626.
   00:41:05 `[GUEST_MEMORY_FLOOR]` line is from Issue #4815, and the Issue #5529
   `Guest memory critically low` kills also appear in the GRQ-23 logs. So a
   missing guard does not explain this wedge.
-- In the mirror, a later GRQ-23 session (#5544, run `vibe-mwxcrl17-7d30a0`)
-  read the facts file `hard-kill-vibe-coder-2582-1795680883.facts.json`. Its
-  guest probe reads "container exec did not answer: no answer within
-  10000ms", so it has no guest process list or memory reading.
+- In the mirror, a later GRQ-23 session (#5544, run `vibe-mwxcrl17-7d30a0`) read
+  the facts file `hard-kill-vibe-coder-2582-1795680883.facts.json`. Its guest
+  probe reads "container exec did not answer: no answer within 10000ms", so it
+  has no guest process list or memory reading.
 - GRQ-23 was short of resources about 17 minutes before the wedge's last log
   line (07:57:54). At 07:40:32 both slots of another container,
   `vibe-coder-56863`, were parked because the host disk was below its floor
@@ -108,19 +109,18 @@ flowchart TD
   error.
 - `worker/deno/lib/pr_merge_conflict_processor.ts`: the tracked-PR path
   withdraws on a protective stop (`cutShortByProtectiveStop`), in both the
-  resolution run and the gate-repair round. The `attemptCharged` and
-  `runEnded` TSDoc now list every withdrawal.
+  resolution run and the gate-repair round. The `attemptCharged` and `runEnded`
+  TSDoc now list every withdrawal.
 - `worker/deno/lib/orchestration/issue_run_gate.ts`: calls the shared
   `protectiveStopOf`.
 - `worker/deno/lib/merge_conflict_drain.ts`: the stop log line and its comment
   now name every cut-short cause. The old line said "the run ended", which was
   already false for a provider refusal.
-- `docs/audits/lib-sweep-coverage/top-up-5626.json`: the sweep slice that
-  claims the new module (Issue #1609).
+- `docs/audits/lib-sweep-coverage/top-up-5626.json`: the sweep slice that claims
+  the new module (Issue #1609).
 - `docs/CONTAINER.md` (the guest memory floor section, and the host-disk park
-  section's "other steps that park" sentence) and `docs/MERGE.md` (new
-  paragraph "A protective stop is not a conflict either", which names both
-  agent runs).
+  section's "other steps that park" sentence) and `docs/MERGE.md` (new paragraph
+  "A protective stop is not a conflict either", which names both agent runs).
 - Issue numbers cited in the diff:
   - #5626: Hard kill: container wedged in merge-conflict (watchdog)
   - #5618: the issue-path fix whose inline check now calls `protectiveStopOf`
@@ -142,8 +142,8 @@ flowchart TD
   watchdog.
 - **status** — `partial` — the new processor tests failed against the unfixed
   code and pass after the fix. For the resolution run, the guest-memory test
-  failed with `attemptCharged` `true` (expected `false`), and the host-disk
-  test failed with `undefined`. The two repair-round tests failed the same way
+  failed with `attemptCharged` `true` (expected `false`), and the host-disk test
+  failed with `undefined`. The two repair-round tests failed the same way
   against the processor before the repair-round fix.
 - reason: the GRQ-23 wedge itself was not reproduced. Its evidence is only on
   GRQ-23, so nothing shows that this incident went through a floor stop.
@@ -160,10 +160,10 @@ flowchart TD
   cause of `vibe-coder-2582` going silent in the merge-conflict agent turn) —
   evidence:
   `worker/deno/tests/pr_merge_conflict_processor_test.ts::processMergeConflict - a guest-memory-floor stop in a repair round withdraws the attempt and stops the drain (Issue #5626)`
-  — reviewer: partial — reason: the diff fixes a real merge-conflict defect
-  (a protective stop was charged and the drain started the next PR's agent),
-  but no evidence ties it to this wedge. The worker log and transcript were
-  not mirrored, the facts file has no guest probe, the 07:40 disk park was on
+  — reviewer: partial — reason: the diff fixes a real merge-conflict defect (a
+  protective stop was charged and the drain started the next PR's agent), but no
+  evidence ties it to this wedge. The worker log and transcript were not
+  mirrored, the facts file has no guest probe, the 07:40 disk park was on
   another container, and the last logged step is the agent turn itself.
 
 ## Standards Review
@@ -174,13 +174,14 @@ flowchart TD
   repeated in `orchestration/issue_run_gate.ts` — evidence:
   `worker/deno/lib/protective_stop.ts` — reason: fixed in this diff (shared
   `protectiveStopOf`, called by both paths)
-- **violation** — every branch needs a test that reaches it: the unwrapped
-  stop branch of `protectiveStopOf` was unreached — evidence:
-  `worker/deno/tests/merge_conflict_agent_test.ts` — reason: fixed in this
-  diff (the issue path now reaches it, and a test covers it)
+- **violation** — every branch needs a test that reaches it: the unwrapped stop
+  branch of `protectiveStopOf` was unreached — evidence:
+  `worker/deno/tests/merge_conflict_agent_test.ts` — reason: fixed in this diff
+  (the issue path now reaches it, and a test covers it)
 - **violation** — an in-repo helper copied instead of called: a test repeated
-  `makeRunner`'s body — evidence: `worker/deno/tests/merge_conflict_agent_test.ts`
-  — reason: fixed in this diff (`makeRunner` takes an `Error` failure)
+  `makeRunner`'s body — evidence:
+  `worker/deno/tests/merge_conflict_agent_test.ts` — reason: fixed in this diff
+  (`makeRunner` takes an `Error` failure)
 - **violation** — DRY: the repair-round withdrawal copied the cut-short block —
   evidence: `worker/deno/lib/pr_merge_conflict_processor.ts` — reason: fixed in
   this diff (one withdrawal block for every cut-short verdict)
@@ -216,14 +217,15 @@ flowchart TD
     charged, `runEnded` is `true`, the marker is deleted, no conclusion is
     posted, nothing is pushed, and the local merge is reset.
   - `a host-disk park in a repair round withdraws the attempt (Issue #5626)`.
-  - The control, `a repair round that fails to spawn is still judged (Issue #5626)`:
-    the attempt is charged with one failed conclusion containing "repair agent
+  - The control,
+    `a repair round that fails to spawn is still judged (Issue #5626)`: the
+    attempt is charged with one failed conclusion containing "repair agent
     failed".
 - Added to `worker/deno/tests/merge_conflict_agent_test.ts`:
   - `a protective stop keeps its type under the failed run (Issue #5626)`: the
     message is unchanged, and `protectiveStopOf` returns the original instance.
-  - `protectiveStopOf finds only a protective stop (Issue #5626)`: it returns
-    an unwrapped stop as itself, and undefined for a plain error and for an
+  - `protectiveStopOf finds only a protective stop (Issue #5626)`: it returns an
+    unwrapped stop as itself, and undefined for a plain error and for an
     ordinary cause.
 - No existing test was edited. The harness options are additive (`claudeError`
   on the processor harness, and `makeRunner` in `merge_conflict_agent_test.ts`
@@ -246,9 +248,8 @@ flowchart TD
   skipped by the gate itself (no `.config.json`; no checkov on PATH). The
   completeness checks, deno tests, lint, type check, fmt, semgrep, gitleaks and
   markdownlint all passed. An earlier run of the gate on this fix failed twice,
-  and both are fixed: the new module had no sweep slice, and a rewrapped line
-  in `docs/CONTAINER.md` began with `#5626`, which markdownlint read as a
-  heading.
+  and both are fixed: the new module had no sweep slice, and a rewrapped line in
+  `docs/CONTAINER.md` began with `#5626`, which markdownlint read as a heading.
 
 ### Not done or not checked
 
