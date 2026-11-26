@@ -265,8 +265,16 @@ that step; it is the last step the log reported, so the wedge is in or after it,
 and it is not part of the dedup signature), then moves the file to
 `${LOG_DIR}/hard-kill-archive/`, where it is kept for up to 30 days or 2,000
 files. The archive, not the issue, holds the evidence (see
-[a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)). A
-setup phase still running after 30 minutes for the clone, git, stream compaction
+[a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)).
+
+The report's phase is the last phase named in the worker log, including a
+phase that already completed. A `follow-up-label-strip` signature therefore
+does not establish that the strip stalled. Read its archived start and
+completion lines and the subsequent worker activity before attributing the
+silence to it. Distinguish a watchdog kill from a later interrupted retry by
+container and run id; they can have different causes.
+
+A setup phase still running after 30 minutes for the clone, git, stream compaction
 and pre-setup command is abandoned (Issue #5128). A milestone issue adds two
 agent budgets (`claude_timeout`, for the milestone pre-sync agent and its repair
 run), because only a milestone setup runs a full agent turn; a non-milestone

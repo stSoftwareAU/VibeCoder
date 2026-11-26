@@ -1,14 +1,14 @@
 /**
  * Tests for the linear reference scan in escape_hatch.ts (Issue #5544).
  *
- * The old global regex was quadratic on long runs of name characters and
- * blocked the worker's event loop. These cases must return quickly and
- * keep the old matching semantics.
+ * Long failed name runs made the old global regex retry every suffix.
+ * These cases preserve matching semantics and count reference-scan work;
+ * they do not reproduce the archived watchdog incident.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { detectEscapeHatch } from "../lib/escape_hatch.ts";
 
 // ---------------------------------------------------------------------------
@@ -84,4 +84,67 @@ Deno.test("detectEscapeHatch - long run and full ref without follow-up wording i
   const message = "x".repeat(1_000_000) + " o/r#2";
   const result = detectEscapeHatch(message, "o/r");
   assertEquals(result.invoked, false);
+});
+
+Deno.test("detectEscapeHatch - failed name runs take linear character reads", () => {
+  for (
+    const build of [
+      (n: number) => "a".repeat(n) + "!",
+      (n: number) => "a/" + "b".repeat(n) + "!",
+      (n: number) => "-.".repeat(n) + "!",
+      (n: number) => "a/".repeat(n) + "!",
+      (n: number) => "a/b#" + "1".repeat(n) + "!",
+    ]
+  ) {
+    const counts: number[] = [];
+    for (const n of [1_000, 4_000]) {
+      const message = "follow-up issue " + build(n) + " o/r#12";
+      let reads = 0;
+      const result = detectEscapeHatch(message, "o/r", (text, index) => {
+        reads++;
+        return text.charCodeAt(index);
+      });
+      assertEquals(result, {
+        invoked: true,
+        issueRef: "o/r#12",
+        needsHuman: false,
+      });
+      assert(reads > 0, "the counter must observe the production scan");
+      assert(
+        reads <= 8 * message.length,
+        "reference reads must be bounded by input size",
+      );
+      counts.push(reads);
+    }
+    assert(counts[1]! <= 4 * counts[0]!, "4N input must take at most 4N reads");
+  }
+});
+
+Deno.test("detectEscapeHatch - reference boundaries and ordering stay compatible", () => {
+  const cases: [string, string | undefined][] = [
+    ["a/.-#1", "a/.-#1"],
+    ["a/.b/c#2", "b/c#2"],
+    ["a/!b/c#3", "b/c#3"],
+    ["a/b#1c/d#2", "a/b#1"],
+    ["a/b#1c/d#2 o/r#3", "o/r#3"],
+    ["#1 other/repo#2 third/repo#3", "other/repo#2"],
+    ["other/repo#2 O/R#3 o/r#4", "O/R#3"],
+    ["éowner/repo#4", "owner/repo#4"],
+    ["owner/repo#5suffix", "owner/repo#5"],
+    ["(#6) [#7]", "#6"],
+    ["foo#6 #7suffix", undefined],
+    ["a/b#x #8", "#8"],
+    ["o/r#", undefined],
+    ["o/!#3", undefined],
+  ];
+  for (const [text, issueRef] of cases) {
+    const result = detectEscapeHatch("follow-up issue " + text, "o/r");
+    assertEquals(
+      result,
+      issueRef
+        ? { invoked: true, issueRef, needsHuman: false }
+        : { invoked: false, needsHuman: false },
+      text,
+    );
+  }
 });
