@@ -49,7 +49,7 @@ archived watchdog incident remains undiagnosed. Part of #5544.
 
 ## Reproduction
 
-- **symptom** — the launcher's watchdog deadline expired after 51m 14s of
+- **symptom** — `The launcher's watchdog deadline expired.` after 51m 14s of
   silence, reported under `follow-up-label-strip`.
 - **status** — `partial` — reason: synthetic scan stalls reproduced against
   unfixed production code; the original container/watchdog failure was not
@@ -78,15 +78,24 @@ archived watchdog incident remains undiagnosed. Part of #5544.
 - Affected issue-worker, wiring, PR-feedback and CI-fix suites: 248 passed.
   The first command exceeded its 90s bound; the same suites passed under a
   600s bound. Formatting and lint passed for the three changed TypeScript
-  files. Type checks including the large caller graphs and limited to changed
-  files each exceeded 180s without diagnostics while shared guest memory was
-  below its floor. The summary checker passed with zero blocked or unchecked
-  gates.
+  files. Initial type checks exceeded 180s during shared-memory pressure;
+  type checking subsequently passed in the full gate.
+- `./quality.sh --sequential < /dev/null`: passed, including both Deno unit
+  passes, type checking, lint, formatting, Markdown, Semgrep and Gitleaks.
+  The first gate attempt stopped with `semgrep timed out after 10000ms`
+  during memory pressure; the rerun passed after resources recovered.
+  Config integration and Checkov were skipped; the latter had no pinned
+  scanner available.
+- `deno task pr-summary-check` with base `main`, issue body and labels
+  supplied: passed, zero blocked or unchecked gates.
 - Added tests are in
   `worker/deno/tests/escape_hatch_reference_scan_5544_test.ts` and
   `worker/deno/tests/escape_hatch_label_strip_test.ts`. Existing assertions were
   retained; the fake client now updates its stored labels on removal so the
   added tests assert state as well as the strip summary.
+- The boundary/ordering and wrapped-wording tests also passed against the
+  unfixed base detector (two tests). They pin existing semantics rather than
+  claim new behaviour; the long failed-name-run cases protect the cost fix.
 - Compatibility corpus: archived summaries, prompt Markdown and relevant test
   source at base (1,620 files, 3,240 comparisons) and head (1,622 files, 3,244
   comparisons), using two repository slugs. Zero result mismatches; zero added
@@ -100,6 +109,6 @@ archived watchdog incident remains undiagnosed. Part of #5544.
 
 ## Remaining risk
 
-The original watchdog cause is unverified. Private archive contents were not
-committed. The full quality gate has not run yet. No push or issue/PR lifecycle
-change was performed.
+The original watchdog cause is unverified. Config integration and Checkov were
+not checked. Private archive contents were not committed. No push or issue/PR
+lifecycle change was performed.
