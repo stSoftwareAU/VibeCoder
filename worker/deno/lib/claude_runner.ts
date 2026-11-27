@@ -40,10 +40,15 @@ import {
   GUEST_MEMORY_HANDLE_KILL,
   GUEST_MEMORY_KILL_FAILED,
   GUEST_MEMORY_POLL_MS,
+  GUEST_MEMORY_TAG_SWEEP,
   guestMemoryFloorArmed,
   GuestMemoryFloorError,
   GuestMemoryFloorWatch,
 } from "./guest_memory_floor.ts";
+import {
+  type GuestMemoryTagReaper,
+  startGuestMemoryTagReaper,
+} from "./guest_memory_tag_reaper.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
 import {
   appendFinishDeadlinePrompt,
@@ -1645,6 +1650,10 @@ async function runClaudeWithTimeoutBody(
   let hostDiskPoll: TimerHandle | undefined;
   let guestMemoryPark: string | undefined;
   let guestMemoryPoll: TimerHandle | undefined;
+  // The pre-started tag reaper, the floor's kill chain and its sweep (Issue #5638).
+  let guestMemoryTagReaper: GuestMemoryTagReaper | undefined;
+  let guestMemoryFloorKill: Promise<void> | undefined;
+  let tagSweep: Promise<void> | undefined;
   let ghGuard: GhGuardShim | undefined;
   let prePushHook: PrePushHook | undefined;
   // The provider's per-run settings file (Issue #5341), removed in `finally`.
@@ -1944,6 +1953,16 @@ async function runClaudeWithTimeoutBody(
       timeoutMs = sessionTimeoutSeconds * 1000;
       if (spawnClamp.belowFloor) return finishRefusal();
     }
+    // The spawn backstop, reused by the tag reaper so both end together (Issue #5638).
+    const agentBackstopMs = agentSpawnBackstopMs(
+      sessionTimeoutSeconds,
+      killAfterSeconds,
+      options.progressExtension === undefined ? undefined : {
+        enabled: options.progressExtension.policy.enabled === true,
+        ceilingMs: options.progressExtension.ceilingMs,
+      },
+      clock.now(),
+    );
     const child = spawnCommandWithTimeout(spawnBinary, {
       args: spawnArgs,
       cwd,
@@ -1955,15 +1974,7 @@ async function runClaudeWithTimeoutBody(
       // Backstop past the latest deadline the watchdog can reach. The
       // watchdog still kills the tree at its deadline; this signal fires only
       // if that child is still alive.
-      timeoutMs: agentSpawnBackstopMs(
-        sessionTimeoutSeconds,
-        killAfterSeconds,
-        options.progressExtension === undefined ? undefined : {
-          enabled: options.progressExtension.policy.enabled === true,
-          ceilingMs: options.progressExtension.ceilingMs,
-        },
-        clock.now(),
-      ),
+      timeoutMs: agentBackstopMs,
     });
     const childPid = child.pid;
     // Set the instant the agent is reaped (Issue #5638): the guest memory
@@ -2259,6 +2270,20 @@ async function runClaudeWithTimeoutBody(
     if (guestMemoryPollMs > 0) {
       const memoryWatch = new GuestMemoryFloorWatch();
       let memoryReadInFlight = false;
+      if (agentSpawnTag !== undefined) {
+        try {
+          guestMemoryTagReaper = startGuestMemoryTagReaper(agentSpawnTag, {
+            spawnTimeoutMs: agentBackstopMs,
+          });
+        } catch (err) {
+          // The tree kill and the handle kill still stop the agent without it.
+          logger?.warn(
+            `Guest-memory tag reaper did not start for PID ${childPid}: ${
+              err instanceof Error ? err.message : String(err)
+            } (Issue #5638)`,
+          );
+        }
+      }
       guestMemoryPoll = clock.setInterval(() => {
         if (
           runFinished || guestMemoryPark || hostDiskPark || memoryReadInFlight
@@ -2273,38 +2298,57 @@ async function runClaudeWithTimeoutBody(
             ) return;
             guestMemoryPark = reason;
             logger?.warn(reason);
-            void (options.killProcessTree ?? killClaudeProcessTree)(
-              childPid,
-              killAfterSeconds,
-              logger,
-              childIdentity,
-            ).catch((err) => {
-              logger?.error(
-                `${GUEST_MEMORY_KILL_FAILED} ${childPid}: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              );
-            }).finally(() => {
-              // The tree kill spawns cat/ps/kill, which time out on a full guest; the handle needs no spawn and cannot reach a reused pid.
-              if (childExited) return;
-              try {
-                child.kill("SIGKILL");
-                logger?.warn(
-                  `${GUEST_MEMORY_HANDLE_KILL} ${childPid}: the process-tree kill returned and the agent had not exited (Issue #5638)`,
-                );
-              } catch (err) {
-                // Deno throws a TypeError once the child has been reaped.
-                if (
-                  err instanceof TypeError &&
-                  /already terminated/.test(err.message)
-                ) return;
+            // Awaited on every exit path, so the sweep runs before the reaper closes (Issue #5638).
+            guestMemoryFloorKill = (options.killProcessTree ??
+              killClaudeProcessTree)(
+                childPid,
+                killAfterSeconds,
+                logger,
+                childIdentity,
+              ).catch((err) => {
                 logger?.error(
                   `${GUEST_MEMORY_KILL_FAILED} ${childPid}: ${
                     err instanceof Error ? err.message : String(err)
                   }`,
                 );
-              }
-            });
+              }).finally(() => {
+                // First: descendants can outlive the agent, so the sweep runs regardless.
+                if (guestMemoryTagReaper) {
+                  tagSweep = guestMemoryTagReaper.sweep().then(
+                    (signalled) => {
+                      logger?.warn(
+                        `${GUEST_MEMORY_TAG_SWEEP} ${signalled} signalled for PID ${childPid} (Issue #5638)`,
+                      );
+                    },
+                    (err) => {
+                      logger?.error(
+                        `${GUEST_MEMORY_KILL_FAILED} ${childPid}: ${
+                          err instanceof Error ? err.message : String(err)
+                        }`,
+                      );
+                    },
+                  );
+                }
+                // The tree kill spawns cat/ps/kill, which time out on a full guest; the handle needs no spawn and cannot reach a reused pid.
+                if (childExited) return;
+                try {
+                  child.kill("SIGKILL");
+                  logger?.warn(
+                    `${GUEST_MEMORY_HANDLE_KILL} ${childPid}: the process-tree kill returned and the agent had not exited (Issue #5638)`,
+                  );
+                } catch (err) {
+                  // Deno throws a TypeError once the child has been reaped.
+                  if (
+                    err instanceof TypeError &&
+                    /already terminated/.test(err.message)
+                  ) return;
+                  logger?.error(
+                    `${GUEST_MEMORY_KILL_FAILED} ${childPid}: ${
+                      err instanceof Error ? err.message : String(err)
+                    }`,
+                  );
+                }
+              });
           },
         );
       }, guestMemoryPollMs);
@@ -3324,9 +3368,14 @@ async function runClaudeWithTimeoutBody(
         await descendantTracker.settle();
       }
     }
+    // The floor's kill and tag sweep finish before its reaper is closed (Issue #5638).
+    await guestMemoryFloorKill;
+    await tagSweep;
+    await guestMemoryTagReaper?.close();
     // The agent has exited, by any path: terminate what it left running under
     // its spawn tag (Issue #4815). A detached job never reaches the descendant
-    // snapshot, so this is the only collection that sees it.
+    // snapshot, so this pass and the floor's tag sweep (Issue #5638) are the
+    // only collections that see it.
     await reapAgentLeftovers({
       tag: agentSpawnTag,
       maxWaitSeconds: killAfterSeconds,
@@ -3406,7 +3455,10 @@ async function runClaudeWithTimeoutBody(
     if (descendantTracker) await descendantTracker.settle();
     // On a throw the agent may still be alive, and it carries the tag too, so
     // it is terminated along with its leftovers rather than abandoned
-    // (Issue #4815).
+    // (Issue #4815). The floor's kill and sweep finish before the reaper closes.
+    await guestMemoryFloorKill;
+    await tagSweep;
+    await guestMemoryTagReaper?.close();
     if (agentSpawnTag !== undefined) {
       await reapAgentLeftovers({
         tag: agentSpawnTag,
