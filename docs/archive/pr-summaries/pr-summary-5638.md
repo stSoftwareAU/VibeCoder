@@ -2,15 +2,15 @@
 
 ## Summary
 
-When the guest memory floor fires, it now also kills the agent's
-descendants without starting a process. On an exhausted guest, the memory is
-held by those descendants (the `cargo`/`ld` processes the agent's Bash commands
-start), not by the agent. Until now only the leftover reaper reached them, and
-it has to spawn `sh`, `pgrep` and `grep`, each of which times out on a full
-guest. A bash helper (`lib/guest_memory_tag_reaper.ts`) now starts beside the
-agent while the floor is armed. When the floor fires and the tree kill returns,
-it walks `/proc` with shell builtins only and SIGKILLs every process carrying
-the run's `VIBE_AGENT_SPAWN_TAG`. It logs
+When the guest memory floor fires, it now also kills the agent's descendants
+without starting a process. On an exhausted guest, the memory is held by those
+descendants (the `cargo`/`ld` processes the agent's Bash commands start), not by
+the agent. Until now only the leftover reaper reached them, and it has to spawn
+`sh`, `pgrep` and `grep`, each of which times out on a full guest. A bash helper
+(`lib/guest_memory_tag_reaper.ts`) now starts beside the agent while the floor
+is armed. When the floor fires and the tree kill returns, it walks `/proc` with
+shell builtins only and SIGKILLs every process carrying the run's
+`VIBE_AGENT_SPAWN_TAG`. It logs
 `Guest-memory floor SIGKILLed the agent's tagged processes without spawning: <n> signalled for PID <pid>`.
 The handle kill that PR #5641 added still runs after the sweep. Closes #5638.
 
@@ -24,8 +24,8 @@ The handle kill that PR #5641 added still runs after the sweep. Closes #5638.
   below the 512 MiB floor, then 16 minutes of silence) fits the same pattern.
 - A process-group kill does not reach those processes. Claude Code runs each
   Bash command in its own session (observed from this run's own shell:
-  `pgid = sid` = the bash pid, while `claude` itself has pgid 1). So the
-  run's spawn tag is the only mark they share.
+  `pgid = sid` = the bash pid, while `claude` itself has pgid 1). So the run's
+  spawn tag is the only mark they share.
 - Deno refuses `/proc/<pid>/environ` without `--allow-all`
   (`NotCapable: Requires all access`), so the walk runs in bash, started while
   memory is still plentiful.
@@ -50,10 +50,10 @@ The handle kill that PR #5641 added still runs after the sweep. Closes #5638.
 ### Undiscoverable Facts
 
 - Deno 2.9.8's `Deno.Command` `detached: true` does give the child its own
-  session, but that does not help, for the reason above. `Deno.kill` also
-  needs unscoped `--allow-run`, which the worker has (`run.sh`).
-- GRQ-3's archive for this kill is still not in the logs mirror, so this
-  wedge's own transcript was not read.
+  session, but that does not help, for the reason above. `Deno.kill` also needs
+  unscoped `--allow-run`, which the worker has (`run.sh`).
+- GRQ-3's archive for this kill is still not in the logs mirror, so this wedge's
+  own transcript was not read.
 
 ## Evidence
 
@@ -73,9 +73,9 @@ flowchart LR
 - **symptom** — the floor stop was logged, but every spawned kill probe timed
   out (`ps timed out after 10000ms`), and the agent's descendants kept the guest
   starved until the watchdog reaped it
-- **status** — `partial` — reason: a guest that had really run out of memory
-  was not staged. The tests stand in for a full guest with a tree kill that
-  signals nothing and a leftover-reaper finder that fails with
+- **status** — `partial` — reason: a guest that had really run out of memory was
+  not staged. The tests stand in for a full guest with a tree kill that signals
+  nothing and a leftover-reaper finder that fails with
   `pgrep timed out after 10000ms`. With only `lib/claude_runner.ts` restored to
   `origin/main`, in a throwaway worktree, the handle-kill test file hung until
   `timeout 300` ended it: nothing killed the tagged descendant, and it held the
@@ -88,18 +88,18 @@ flowchart LR
 
 - New `worker/deno/tests/guest_memory_tag_reaper_test.ts`, which starts real
   `sleep` processes:
-  - "a sweep signals the tagged processes and nothing else": the tagged sleep,
-    a tagged `bash -c` and its grandchild die. The `<tag>0` near-miss and the
+  - "a sweep signals the tagged processes and nothing else": the tagged sleep, a
+    tagged `bash -c` and its grandchild die. The `<tag>0` near-miss and the
     untagged process survive. A second sweep returns 0.
   - "a malformed tag is refused before anything spawns".
   - "a sweep after close rejects and close twice is fine".
   - "a helper that dies makes the sweep reject with its cause" asserts
     `exited before answering`.
-  - "the sweep lists exactly the pids the leftover reaper's scan finds"
-    compares against `DEFAULT_LEFTOVER_REAPER_DEPS.findTagged`.
-- `worker/deno/tests/claude_runner_guest_memory_handle_kill_5638_test.ts`
-  drives `runClaudeWithTimeout` with a real agent stub and failing
-  leftover-reaper seams:
+  - "the sweep lists exactly the pids the leftover reaper's scan finds" compares
+    against `DEFAULT_LEFTOVER_REAPER_DEPS.findTagged`.
+- `worker/deno/tests/claude_runner_guest_memory_handle_kill_5638_test.ts` drives
+  `runClaudeWithTimeout` with a real agent stub and failing leftover-reaper
+  seams:
   - "a descendant still holding memory is killed without spawning" has a
     positive control that the descendant is alive before the floor fires. It
     asserts the descendant is gone and the sweep line names at least 2
@@ -124,8 +124,8 @@ flowchart LR
 Not checked:
 
 - a guest that had really run out of memory;
-- a trace proving the helper never forks (`strace` is not installed; the
-  claim rests on the script using builtins only);
+- a trace proving the helper never forks (`strace` is not installed; the claim
+  rests on the script using builtins only);
 - GRQ-3's archive for this kill.
 
 Remaining risks:
