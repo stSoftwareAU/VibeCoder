@@ -260,7 +260,27 @@ case "\${sub}" in
   exec)
     # The guest-answering probe of the early silent-guest check (Issue #5161):
     # a wedged guest does not answer, so a test sets STUB_EXEC_EXIT non-zero.
+    # The guest uptime probe (Issue #5544) reads /proc/uptime: a test sets
+    # STUB_GUEST_UPTIME to the uptime the guest reports, and the stub prints it.
+    case " \$* " in
+      *" /proc/uptime "*)
+        if [[ "\${STUB_UPTIME_IGNORE_TERM:-0}" == "1" ]]; then
+          # Simulate Apple exec forwarding TERM without exiting. Eventually
+          # return so a regression fails rather than hanging the test suite.
+          trap '' TERM
+          : > "\${record_dir}/uptime-probe-started"
+          printf '0.00 0.00\\n'
+          sleep 25
+          : > "\${record_dir}/uptime-probe-returned"
+        fi
+        ;;
+    esac
     sleep "\${STUB_EXEC_SLEEP:-0}"
+    if [[ -n "\${STUB_GUEST_UPTIME:-}" ]]; then
+      case " \$* " in
+        *" /proc/uptime "*) printf '%s 0.00\\n' "\${STUB_GUEST_UPTIME}" ;;
+      esac
+    fi
     exit "\${STUB_EXEC_EXIT:-0}"
     ;;
   kill)
