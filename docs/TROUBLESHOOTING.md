@@ -253,11 +253,11 @@ guest-probe state, guest memory, guest pressure and the last liveness tick
 from the newest `[liveness] run-pressure` or `[liveness] tick=` line in the
 worker log tail (`not in the log tail` if absent), the memory guards (from
 the worker log tail: a guest memory floor stop, Issue #4815, or the early-OOM
-guards' kill or failure to act, Issue #5529 and the worker-wide guard, Issue
-#5634; `none logged in the log tail` when neither logged, Issue #5638), plus the host's free disk
-and host memory pressure at capture, read on the host so present even when the
-guest does not answer, Issue #5250) and a last step logged, from
-a fixed list (`pre-PR verifier`, `quality gate`,
+guards' kill or failure to act, Issue #5529 and the worker-wide guard,
+Issue #5634; `none logged in the log tail` when neither logged, Issue #5638),
+plus the host's free disk and host memory pressure at capture, read on the
+host so present even when the guest does not answer, Issue #5250) and a
+last step logged, from a fixed list (`pre-PR verifier`, `quality gate`,
 `agent turn`, a setup step (`setup: issue claim`, `setup: claim churn check`,
 `setup: repository setup`, `setup: heartbeat start`,
 `setup: default branch sync`, `setup: milestone branch`,
