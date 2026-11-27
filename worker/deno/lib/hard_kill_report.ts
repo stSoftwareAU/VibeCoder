@@ -24,8 +24,9 @@
  * times), a last step logged drawn from a fixed label list, five guest
  * figures derived from the evidence (the silent time, the probe state, the
  * guest memory, the guest pressure and the last liveness tick in the log tail;
- * Issue #4815) and two host figures read on the host
- * at reap time (the host disk and the host memory; Issue #5250). All seven are
+ * Issue #4815), the memory guards figure from the log tail (Issue #5638) and
+ * two host figures read on the host
+ * at reap time (the host disk and the host memory; Issue #5250). All eight are
  * worded in `hard_kill_guest_facts.ts`. The derived figures are fixed words
  * and digits only, never guest or host command text. The log,
  * transcript, boot and guest text, the last log line, the last tool call and
@@ -52,6 +53,7 @@ import {
   hardKillHostDisk,
   hardKillHostMemory,
   hardKillLastLivenessTick,
+  hardKillMemoryGuards,
   hardKillSilentFor,
 } from "./hard_kill_guest_facts.ts";
 import {
@@ -580,6 +582,7 @@ export function hardKillFactLines(
     `**Guest memory:** ${hardKillGuestMemory(evidence)}`,
     `**Guest pressure:** ${hardKillGuestPressure(evidence)}`,
     `**Last liveness tick:** ${hardKillLastLivenessTick(evidence)}`,
+    `**Memory guards:** ${hardKillMemoryGuards(evidence)}`,
     `**Host disk:** ${hardKillHostDisk(evidence)}`,
     `**Host memory:** ${hardKillHostMemory(evidence)}`,
   ];
