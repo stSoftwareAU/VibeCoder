@@ -2,70 +2,71 @@
 
 ## Summary
 
-The worker now runs a memory guard that watches every process it starts, not
-just the process tree of one agent run. The guest wedged during an agent turn.
-Its last in-run reading was MemAvailable 208 MiB, two minutes before it went
-silent. That is well under both existing guards' floors (3% and 5% of the guest,
-with minimums of 256 MiB and 512 MiB). Both guards act only on one agent run's
-own process tree. The early-OOM guard (Issue #5529) kills the largest process in
-that tree, and the guest memory floor (Issue #4815) stops that agent. So memory
-held by anything else the worker starts was never acted on. That covers another
-lane's quality gate, the merge fast checks and the milestone gates.
+Two hard kills on GRQ-3 wedged the guest during an agent turn. The facts added
+to the issue for the second one (`vibe-coder-72248`) show the guest memory
+floor stopped the agent at 03:32:56Z, and that was also the last line the
+worker logged.
 
-The new `WorkerMemoryGuard` (`worker/deno/lib/worker_memory_guard.ts`) runs
-every 5 seconds for the life of the `run-core` loop. Below the #5529 floor it
-sends SIGKILL to the largest process of at least 256 MiB in the worker's own
-process tree, after the same identity proof the per-run guard uses. A live agent
-CLI is never chosen, and neither is the worker itself. Gate commands run as the
-separate `agent` account, which the worker cannot signal directly, so for those
-the kill goes through `sudo -n -u agent -- kill`. Closes #5634.
+This PR makes three changes:
+
+- **The floor stop no longer waits out a SIGTERM grace.** It used to pass the
+  run's `killAfterSeconds` (30 s by default) to the tree kill. The tree kill
+  then sent SIGTERM and polled once a second, spawning `ps` and `cat` each time,
+  before any SIGKILL. A guest already below its floor kept the tree's memory for
+  that whole wait. The floor now passes a grace of 0, so SIGKILL follows SIGTERM
+  straight away. The #5638 kill through the agent's process handle stays as the
+  backstop.
+- **A worker-wide memory guard is added** (`worker/deno/lib/worker_memory_guard.ts`).
+  Every 5 s, below the #5529 floor, it sends SIGKILL to the largest process of
+  at least 256 MiB in the worker's own process tree. It never chooses an agent
+  CLI or the worker itself. This covers memory held outside any agent run's
+  tree, such as a quality gate or merge check.
+- **The hard-kill body's `Memory guards:` figure (#5638) now reads the worker
+  guard's lines correctly.** Its "no process to kill" line used to open with
+  the kill prefix, so it was reported as a kill. It now has its own prefix, and
+  every line where the worker guard took no action reads as
+  `a memory guard could not act`.
+
+Closes #5634.
 
 ## Spec
 
 ### Intent and Rationale
 
-- This pass ran on GRQ-23. The evidence for `vibe-coder-98473` is archived only
-  on GRQ-3, so it was not read. What is known comes from the issue body: phase
-  `execute`, last step `agent turn`, MemAvailable 208 MiB at 22:04:21Z, last log
-  line at 22:06:41Z, and no answer to the guest probe.
-- At 208 MiB, both per-run guards should have acted on anything in the agent's
-  own tree within one tick (5 s for the floor, 20 s for #5529), yet the guest
-  kept running for another 2m20s and then wedged. Something the agent-run guards
-  cannot see is the gap that the base code confirms. `docs/CONTAINER.md` stated
-  that quality-gate and pre-flight commands "are not watched".
-- The fix extends the #5529 rule to a wider tree rather than adding a new rule.
-  It reuses `selectMemoryGuardVictim`, `killMemoryGuardVictim`,
-  `memoryGuardFloorBytes` and `formatMemoryGuardKill`, so the floor and the
-  identity proof have one owner.
+- The evidence on GRQ-3 was not read from here. The diagnosis rests on the
+  issue's facts and the base code:
+  - The floor fired at the last log line.
+  - On base, the floor stop passed `killAfterSeconds` to `terminateDescendants`
+    and `terminateProcessTree` (`worker/deno/lib/pid_guard.ts`). Both wait in a
+    loop that spawns `ps` and `cat` once a second.
+- A grace of 0 reuses the existing primitives unchanged. With 0, both
+  functions skip the wait loop and send SIGKILL right after SIGTERM.
+- The worker-wide guard reuses `selectMemoryGuardVictim`,
+  `killMemoryGuardVictim`, `memoryGuardFloorBytes` and `formatMemoryGuardKill`.
+  The floor and the identity proof therefore each have one owner.
 
 ### Essential Design Decisions
 
-- The tree root is the worker's pid (`Deno.pid`). Live agent CLI pids
-  (`listActiveAgentRuns`) are excluded through the new `excludePids` option, so
-  the guard never stops an agent CLI itself. A process inside an agent's tree
-  can still be chosen, exactly as the per-run guard would choose it. Both guards
-  pick the largest process in their own tree, so when the hog is inside an agent
-  tree they pick the same pid. The identity proof then keeps the second signal
-  from reaching a stranger.
-- On `Deno.errors.PermissionDenied`, the kill falls back to
-  `sudo -n -u agent -- kill -s KILL <pid>`, built with `asUntrustedUser`. This
-  was observed here: `Deno.kill` on an `agent`-owned process throws
-  `EPERM: Operation not permitted`, while the sudo kill succeeds and the target
-  exits 137.
-- A process re-parented away from the worker (a backgrounded job whose shell
-  exited) has no live chain to the worker, so it is still never chosen. When no
-  process qualifies, a single line is logged for each low spell.
-- The guard is started in `commands/run_core.ts`, beside
-  `armGuestMemoryFloor(true)`, and stopped in a `finally`. This means unit tests
-  never inherit the host's memory.
+- **Only the guest-memory floor path drops the grace.** The host-disk stop and
+  the other callers keep `killAfterSeconds`: this change targets only the stop
+  that fires while the guest is short of memory.
+- **The worker-wide guard's tree** is rooted at `Deno.pid`.
+  - It excludes live agent CLI pids through the new `excludePids` option.
+  - A kill refused with `PermissionDenied` (a process running as the `agent`
+    account) is retried as `sudo -n -u agent -- kill -s KILL <pid>`.
+- **The guard's log prefixes are exported constants**
+  (`WORKER_MEMORY_GUARD_COULD_NOT`, `_LEFT_ALONE`, `_FAILED`, `_NO_VICTIM`).
+  `hardKillMemoryGuards` reads them, so the writer and the reader share one
+  copy. Only a real kill opens with `MEMORY_GUARD_KILL_PREFIX`.
 
 ### Undiscoverable Facts
 
-- The hog in the GRQ-3 incident is not known. The diagnosis is that memory
-  outside the agent's tree went unwatched. It is inferred from the reading, the
-  silence and the guards' code, and not from the archive.
-- The cargo job cap that #5626's pass carries through sudo is on a separate,
-  unmerged branch. This change does not depend on it.
+- `vibe-coder-72248` facts: `Last liveness tick: MemAvailable 715 MiB (logged
+  2026-11-27 03:32:26Z)`. `Memory guards: guest memory floor stopped the agent
+  (logged 2026-11-27 03:32:56Z)`. `Last log time: 2026-11-27 03:32:56Z`.
+- The agent is not spawned with `setsid`, so it shares the worker's process
+  group. A group SIGKILL is therefore not available, and descendants are still
+  found and signalled one by one through spawned `ps`/`kill`.
 
 ## Evidence
 
@@ -73,105 +74,95 @@ Backend only. No UI file is touched.
 
 ```mermaid
 flowchart TD
-    T[every 5 s: probeHostMemoryPressure] --> F{below the #5529 floor?}
-    F -->|no| R[reset the no-victim latch]
-    F -->|yes| P[ps -eo pid,ppid,rss,etime,args]
-    P --> S["selectMemoryGuardVictim: root = worker pid, excludePids = live agent CLIs"]
-    S -->|none| N["log once per low spell: no process to kill"]
-    S -->|victim| K[killMemoryGuardVictim: identity proof]
-    K --> D{Deno.kill}
-    D -->|EPERM| U["sudo -n -u agent -- kill -s KILL pid"]
-    D -->|ok| L["log: Guest memory critically low … (Issue #5634)"]
-    U --> L
+    R[two readings below the guest memory floor] --> W[log GUEST_MEMORY_FLOOR reason]
+    W --> T["tree kill, grace 0: SIGTERM then SIGKILL at once (was: up to killAfterSeconds of ps/cat polling)"]
+    T --> H{agent exited?}
+    H -->|no| K["SIGKILL through the process handle (#5638)"]
+    H -->|yes| D[run returns GuestMemoryFloorError]
+    K --> D
+    G["worker-wide guard, every 5 s"] --> F{below the #5529 floor?}
+    F -->|yes| V["SIGKILL the largest process in the worker's tree, not an agent CLI"]
+    F -->|"yes, nothing qualifies"| N["log: Worker memory guard found no process to kill"]
 ```
 
 - Issue numbers cited in the diff:
   - #5634: Hard kill: container wedged in execute (watchdog)
+  - #5638: Hard kill: container wedged in completion (watchdog)
   - #5529: Hard kill: container wedged in setup (watchdog)
   - #4815: Hard kill: container wedged in completion (watchdog)
 
 ## Reproduction
 
-- **symptom** — the guest ran out of memory during an agent turn and stopped
-  answering, and the launcher's watchdog reaped the container.
-- **status** — `partial` — the new tests were written first. They failed against
-  the base code, because `worker/deno/lib/worker_memory_guard.ts` and the
-  `excludePids`/`scope` options did not exist. After the fix they pass.
-- reason: the guest wedge was not reproduced. The archive is on GRQ-3, and
-  reproducing it would need a real guest exhausted by a process outside every
-  agent tree.
+- **symptom** — the guest memory floor stopped the agent, the worker logged
+  nothing more, and the launcher's watchdog reaped the silent guest.
+- **status** — `partial` — the grace wait was reproduced and fixed. The new
+  test runs an agent that ignores SIGTERM, with a 3600 s grace. On the unfixed
+  `claude_runner.ts`, the floor stop never returned:
+  `timeout 90 deno task test:unit tests/claude_runner_guest_memory_floor_grace_5634_test.ts`
+  exited 124. With a grace of 0 it passes.
+- reason: the guest wedge itself was not reproduced. It needs a real guest
+  exhausted of memory, and the archive for this kill is on GRQ-3.
 - **regression test** —
-  `worker/deno/tests/worker_memory_guard_5634_test.ts`
-
-- Other changes in the diff:
-  - `worker/deno/lib/memory_guard.ts`: `selectMemoryGuardVictim` takes
-    `excludePids`. `formatMemoryGuardKill` takes `scope: "worker"`, and the
-    default `"agent-run"` text is unchanged. `MemoryGuardKillDeps.kill` may
-    return a promise, which is awaited. The three refusal reasons of
-    `killMemoryGuardVictim` now name "the root" or "the tree" rather than "the
-    agent", because the worker guard reaches them too. The per-run guard's
-    `Memory guard left pid=… alone` line therefore reads differently, and its
-    tests assert only `killed === false` and "changed hands", which is unchanged.
-  - `worker/deno/commands/run_core.ts` starts and stops the guard.
-  - The `worker/deno/lib/memory_pressure.ts` header names the new guard.
-  - `docs/TROUBLESHOOTING.md` has a new paragraph after the #5529 one.
-  - `docs/CONTAINER.md`: the #4815 floor still does not stop gate commands, and
-    the new guard does cover them.
-  - `docs/audits/lib-sweep-coverage/top-up-5634.json` claims the new module for
-    the sweep ledger.
+  `worker/deno/tests/claude_runner_guest_memory_floor_grace_5634_test.ts`
 
 ## Test Plan
 
-- New: `worker/deno/tests/worker_memory_guard_5634_test.ts` (14 tests), driving
-  `WorkerMemoryGuard.tick()` and `killWorkerTreeProcess` with injected deps:
-  - A gate `cargo test` of 3 GiB under `sudo`, outside any agent tree, is killed
-    rather than an agent's 400 MiB child. The log carries
-    `Guest memory critically low`, the pid and `Issue #5634`.
-  - The agent CLI itself is never chosen, and the next largest process is.
-  - Above the floor, nothing is read, killed or logged, though a large process
-    is present.
-  - A large process with ppid 1 (outside the worker's tree) is not killed. The
-    no-victim line is logged once per low spell and again after a recovery.
-  - A `ps` failure, a victim whose start time changes, a kill that throws, and a
-    probe that throws are each logged or refused without a kill.
-  - An async kill is awaited before the kill line is logged. A failed first
-    worker fingerprint is refused, then retried and killed on the next tick.
-  - `killWorkerTreeProcess`:
-    - A successful direct signal runs nothing.
-    - `PermissionDenied` runs exactly
-      `sudo -n -u agent -- kill -s KILL <pid>`.
-    - A failing sudo rejects with its stderr cause
-      (`sudo: a password is required`).
-    - Any other error is rethrown without sudo.
-- Added to `worker/deno/tests/memory_guard_5529_test.ts`:
-  - `excludePids` stops pid 105 being chosen, and the control without it does
-    choose 105.
-  - The `"worker"` scope text names #5634, and the default text still names
-    "this agent run's tree" and #5529.
-- No existing test was edited.
-- Red run: the new tests were written before the library changes. The run
-  failed at load with `Module not found .../lib/worker_memory_guard.ts`.
-- Green run on the head:
-  `deno task test:unit tests/worker_memory_guard_5634_test.ts tests/memory_guard_5529_test.ts tests/claude_runner_guest_memory_floor_4815_test.ts tests/guest_memory_floor_4815_test.ts`
-  gave `53 passed | 0 failed`. `deno task check:manifests` gave
-  `876 passed | 0 failed | 1 ignored`. `deno fmt --check`, `deno lint` and
-  `deno check` on the changed TypeScript are clean.
-- `./quality.sh < /dev/null` was run once, under `timeout 1500`, and did not
-  finish: exit 124. Before the cut-off, every stage it reached passed except
-  completeness checks. That failure was `lib_sweep_coverage_test.ts`, because
-  the new module was not claimed by any sweep slice. It is fixed by
-  `top-up-5634.json`, and `check:manifests` now passes as above. Config
-  integration and Checkov were skipped (no `.config.json`, no checkov). There
-  was not enough budget left to re-run the whole gate.
-
-<!-- vibe-quality-gate-skipped reason="the full ./quality.sh run timed out at 1500 s; its only failure (completeness checks) was fixed and re-run green, but the run budget could not cover a second full gate" -->
+- **New:** `worker/deno/tests/claude_runner_guest_memory_floor_grace_5634_test.ts`.
+  This uses the real tree kill, with no injected `killProcessTree`. The agent
+  stub ignores SIGTERM and stays gated, and `killAfterSeconds` is 3600. The run
+  must return `GuestMemoryFloorError` with the literal floor reason.
+  - Red on base: hung, killed by `timeout 90` (exit 124).
+  - Green on the head.
+- **New:** `worker/deno/tests/worker_memory_guard_5634_test.ts` (14 tests). They
+  drive `WorkerMemoryGuard.tick()` and `killWorkerTreeProcess` with injected
+  deps.
+  - A gate process outside any agent tree is killed in preference to an
+    agent's child. The agent CLI itself is never chosen.
+  - Above the floor, nothing is read or killed.
+  - A ppid-1 process is not killed.
+  - The no-victim line is logged once per low spell, as the literal
+    `Worker memory guard found no process to kill: …` line.
+  - A `ps` failure, a changed start time, a throwing kill or probe, and a
+    failed first fingerprint are each handled.
+  - The `sudo -n -u agent -- kill -s KILL <pid>` fallback is used, and a
+    failing sudo rejects with its stderr.
+- **Added to `worker/deno/tests/memory_guard_5529_test.ts`:** `excludePids`
+  stops a pid being chosen, and a control without it chooses that pid. The
+  `"worker"` scope names #5634, and the default text is unchanged.
+- **Added to `worker/deno/tests/hard_kill_guest_facts_test.ts`:**
+  - A no-victim line logged by the real `WorkerMemoryGuard` reads as
+    `a memory guard could not act`, not a kill.
+  - Each worker could-not prefix is read on its own.
+  - A `scope: "worker"` kill line still reads as a kill.
+  - The first two failed against the unchanged library: the first read as
+    `early-OOM guard killed a process`, the second as
+    `none logged in the log tail`. The third passed before and after, as
+    expected.
+- **Existing tests:** no existing test on the base branch was edited. No
+  `-` lines appear under `worker/deno/tests/` in `git diff origin/main...HEAD`.
+- **Targeted run on the head:**
+  `deno task test:unit tests/claude_runner_guest_memory_floor_grace_5634_test.ts tests/claude_runner_guest_memory_handle_kill_5638_test.ts tests/claude_runner_guest_memory_floor_4815_test.ts tests/memory_guard_5529_test.ts tests/worker_memory_guard_5634_test.ts tests/hard_kill_guest_facts_test.ts tests/hard_kill_report_test.ts`
+  gave 176 passed, 0 failed. A second run, with
+  `tests/hard_kill_facts_backfill_4815_test.ts` and without the three runner
+  tests, gave 182 passed, 0 failed.
+- **`./quality.sh < /dev/null` on `c3731bf11`:**
+  - Every stage passed except markdownlint, including deno tests (parallel and
+    serial), lint, type check, fmt, semgrep and gitleaks.
+  - Markdownlint failed with one MD018 violation: a wrapped
+    `docs/TROUBLESHOOTING.md` line began `#5634;`.
+  - Config integration was skipped (no `.config.json`). Checkov was skipped
+    (no checkov on PATH).
+- **Markdownlint after the fix:** `e9c7a93ad` rewraps that line.
+  `deno run -A worker/deno/mod.ts check-markdownlint` then gave
+  `markdownlint: PASSED (246 file(s) checked)`. The full gate was not re-run,
+  because only that Markdown line changed.
 
 ### Not done or not checked
 
 - The guest wedge was not reproduced, and the GRQ-3 archive was not read.
-- The production wiring in `commands/run_core.ts` (start and stop, and
-  `productionWorkerMemoryGuardDeps`) has no test of its own. Only the guard and
-  the kill helper are tested through injected deps.
-- The sudo fallback was observed by hand on this container, not in a test
-  against the real `agent` account.
-- A process re-parented away from the worker is still never killed.
+- The descendants are still found and signalled through spawned `ps`/`kill`,
+  which can time out on a starving guest. That is not removed, only the wait
+  between SIGTERM and SIGKILL.
+- The `run_core.ts` start and stop of the worker-wide guard has no test of its
+  own. The sudo fallback was observed by hand, not tested against the real
+  `agent` account.
