@@ -466,8 +466,9 @@ flowchart TD
   when it starts and every minute while it is in flight, and the figure reads
   `not in the log tail` when neither line is in the tail; Issue #4815), the
   memory guards (from the worker log tail: a guest memory floor stop, Issue
-  #4815, or the early-OOM guard's kill or failure to act, Issue #5529; reads
-  `none logged in the log tail` when neither logged; Issue #5638), and the
+  #4815, or the early-OOM guards' kill or failure to act, Issue #5529 and the
+  worker-wide guard, Issue #5634; reads `none logged in the log tail` when
+  neither logged; Issue #5638), and the
   host disk and host memory figures (Issue #5250). The host figures are read on
   the host at reap time, so they are present even when the guest did not answer.
   Each reads `not available` when it could not be read, and for an evidence file

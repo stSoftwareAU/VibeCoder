@@ -45,6 +45,16 @@ import {
 /** How often the worker-wide guard reads available memory, in milliseconds. */
 export const WORKER_MEMORY_GUARD_POLL_MS = 5_000;
 
+/** Opens the line for a failed process-table read or a failed kill. */
+export const WORKER_MEMORY_GUARD_COULD_NOT = "Worker memory guard could not";
+/** Opens the line for a victim the worker-wide guard declined to signal. */
+export const WORKER_MEMORY_GUARD_LEFT_ALONE = "Worker memory guard left pid=";
+/** Opens the line for a tick that threw. */
+export const WORKER_MEMORY_GUARD_FAILED = "Worker memory guard failed:";
+/** Opens the once-per-low-spell line when no process in the tree qualified. */
+export const WORKER_MEMORY_GUARD_NO_VICTIM =
+  "Worker memory guard found no process to kill:";
+
 /** Injectable seams for {@link WorkerMemoryGuard}. */
 export interface WorkerMemoryGuardDeps {
   /** Reads the guest's memory. A throw means "no reading": nothing is killed. */
@@ -89,7 +99,7 @@ export class WorkerMemoryGuard {
     } catch (err) {
       try {
         this.#deps.log(
-          `Worker memory guard failed: ${errorMessage(err)} (Issue #5634)`,
+          `${WORKER_MEMORY_GUARD_FAILED} ${errorMessage(err)} (Issue #5634)`,
         );
       } catch {
         // Logging must not break the guard either.
@@ -116,7 +126,7 @@ export class WorkerMemoryGuard {
       psText = await deps.runPs();
     } catch (err) {
       deps.log(
-        `Worker memory guard could not read the process table: ${
+        `${WORKER_MEMORY_GUARD_COULD_NOT} read the process table: ${
           errorMessage(err)
         } (Issue #5634)`,
       );
@@ -137,10 +147,11 @@ export class WorkerMemoryGuard {
       const available = formatBytesShort(reading.availableBytes ?? 0);
       const total = formatBytesShort(reading.totalBytes ?? 0);
       deps.log(
-        `Guest memory critically low (${available} of ${total} available, ` +
-          `floor ${formatBytesShort(floorBytes)}) — no process of at least ` +
+        `${WORKER_MEMORY_GUARD_NO_VICTIM} guest memory critically low ` +
+          `(${available} of ${total} available, floor ` +
+          `${formatBytesShort(floorBytes)}), and no process of at least ` +
           `${MEMORY_GUARD_MIN_VICTIM_RSS_KB / 1024} MiB in the worker's own ` +
-          `tree to kill (Issue #5634)`,
+          `tree (Issue #5634)`,
       );
       return;
     }
@@ -165,13 +176,13 @@ export class WorkerMemoryGuard {
         }));
       } else {
         deps.log(
-          `Worker memory guard left pid=${victim.pid} alone: ${outcome.reason} ` +
+          `${WORKER_MEMORY_GUARD_LEFT_ALONE}${victim.pid} alone: ${outcome.reason} ` +
             `(Issue #5634)`,
         );
       }
     } catch (err) {
       deps.log(
-        `Worker memory guard could not kill pid=${victim.pid}: ${
+        `${WORKER_MEMORY_GUARD_COULD_NOT} kill pid=${victim.pid}: ${
           errorMessage(err)
         } (Issue #5634)`,
       );

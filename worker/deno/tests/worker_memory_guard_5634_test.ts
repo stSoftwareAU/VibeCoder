@@ -140,7 +140,12 @@ Deno.test("worker_memory_guard #5634 - no victim in the worker's tree is logged 
   await h.guard.tick();
   assertEquals(h.killed, []);
   assertEquals(noVictim().length, 1, JSON.stringify(h.logs));
-  assert(noVictim()[0]!.includes("Guest memory critically low"));
+  assertEquals(
+    noVictim()[0]!,
+    "Worker memory guard found no process to kill: guest memory critically " +
+      "low (208 MiB of 16.0 GiB available, floor 492 MiB), and no process " +
+      "of at least 256 MiB in the worker's own tree (Issue #5634)",
+  );
   assert(noVictim()[0]!.includes("(Issue #5634)"));
   await h.guard.tick(); // above the floor: resets the latch
   await h.guard.tick();
