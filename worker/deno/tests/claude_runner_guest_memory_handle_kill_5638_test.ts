@@ -9,13 +9,21 @@
  */
 import { assert, assertEquals } from "@std/assert";
 import {
+  DEFAULT_LEFTOVER_REAPER_DEPS,
+  type LeftoverReaperDeps,
+} from "../lib/agent_leftover_reaper.ts";
+import {
   killClaudeProcessTree,
   runClaudeWithTimeout,
 } from "../lib/claude_runner.ts";
-import { GuestMemoryFloorError } from "../lib/guest_memory_floor.ts";
+import {
+  GUEST_MEMORY_TAG_SWEEP,
+  GuestMemoryFloorError,
+} from "../lib/guest_memory_floor.ts";
 import type { MemoryPressureReading } from "../lib/memory_pressure.ts";
 import type { Logger } from "../types.ts";
 import {
+  type AgentStub,
   agentStubGate,
   createAgentStub,
   releaseAgentStub,
@@ -24,6 +32,34 @@ import { fakeClock } from "./support/fake_clock.ts";
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
+
+/** Optional stub body, leftover seams and hook run once the agent has printed. */
+interface DriveExtras {
+  stubBody?: string;
+  leftoverReaperDeps?: LeftoverReaperDeps;
+  onReady?: (stub: AgentStub) => Promise<void>;
+}
+
+/** Whether `pid` is running and not a zombie, read from /proc. */
+async function isLive(pid: number): Promise<boolean> {
+  let stat: string;
+  try {
+    stat = await Deno.readTextFile(`/proc/${pid}/stat`);
+  } catch {
+    return false;
+  }
+  // The state is the first field after the parenthesised command name.
+  const state = stat.slice(stat.lastIndexOf(")") + 2).charAt(0);
+  return state !== "Z" && state !== "X";
+}
+
+/** Poll until `pid` is gone or a zombie, for up to 5 s. */
+async function waitUntilGone(pid: number): Promise<void> {
+  for (let i = 0; i < 250; i++) {
+    if (!(await isLive(pid))) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
 
 /** Captures the warn and error lines the run logs. */
 function capturingLogger(): {
@@ -56,14 +92,16 @@ async function drive(
   killProcessTree: typeof killClaudeProcessTree,
   logger: Logger,
   releaseBeforeAwait: boolean,
+  extras: DriveExtras = {},
 ): Promise<Awaited<ReturnType<typeof runClaudeWithTimeout>>> {
   const clock = fakeClock();
   const ready = Promise.withResolvers<void>();
   const probe = (): Promise<MemoryPressureReading> =>
     Promise.resolve({ level: "high", totalBytes: 8 * GIB, availableBytes });
   const stub = await createAgentStub(
-    `printf '%s\\n' '{"type":"result","result":"working"}'\n` +
-      agentStubGate() + "exit 0\n",
+    extras.stubBody ??
+      `printf '%s\\n' '{"type":"result","result":"working"}'\n` +
+        agentStubGate() + "exit 0\n",
   );
   let run: ReturnType<typeof runClaudeWithTimeout> | undefined;
   try {
@@ -81,8 +119,12 @@ async function drive(
       progressIntervalMs: 86_400_000,
       descendantSnapshotIntervalMs: 86_400_000,
       onActivity: () => ready.resolve(),
+      ...(extras.leftoverReaperDeps
+        ? { leftoverReaperDeps: extras.leftoverReaperDeps }
+        : {}),
     });
     await ready.promise;
+    await extras.onReady?.(stub);
     for (let i = 0; i < 3; i++) {
       await clock.advance(1_000);
       await new Promise((r) => setTimeout(r, 20));
@@ -194,5 +236,75 @@ Deno.test({
         message.startsWith("Guest-memory floor sent SIGKILL")
       ),
     );
+    assert(
+      !warns.some((message) => message.startsWith(GUEST_MEMORY_TAG_SWEEP)),
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "guest memory handle kill - a descendant still holding memory is killed without spawning (Issue #5638)",
+  ...opts,
+  permissions,
+  async fn() {
+    const killed: number[] = [];
+    // Signals nothing, as on a full guest: only the tag sweep can reach the child.
+    const killProcessTree = (pid: number): Promise<void> => {
+      killed.push(pid);
+      return Promise.resolve();
+    };
+    const leftoverReaperDeps: LeftoverReaperDeps = {
+      ...DEFAULT_LEFTOVER_REAPER_DEPS,
+      findTagged: () =>
+        Promise.resolve({
+          ok: false,
+          error: "pgrep timed out after 10000ms",
+        }),
+    };
+    let childPid = 0;
+    const { logger, warns } = capturingLogger();
+    try {
+      const result = await drive(100 * MIB, killProcessTree, logger, false, {
+        stubBody: "sleep 300 &\n" +
+          `echo $! > "$0.child"\n` +
+          `printf '%s\\n' '{"type":"result","result":"working"}'\n` +
+          agentStubGate() + "exit 0\n",
+        leftoverReaperDeps,
+        onReady: async (stub) => {
+          childPid = Number(
+            (await Deno.readTextFile(`${stub.path}.child`)).trim(),
+          );
+          // Positive control: the descendant is alive before the floor fires.
+          assert(await isLive(childPid), "descendant not running before floor");
+        },
+      });
+      assert(!result.ok);
+      assert(result.error instanceof GuestMemoryFloorError);
+      assertEquals(result.error.message, LOW_REASON);
+      assertEquals(killed.length, 1);
+      const pid = killed[0];
+      assert(pid !== undefined && pid > 0);
+      await waitUntilGone(childPid);
+      assert(!(await isLive(childPid)), "descendant still running");
+      // The agent and its sleep carry the tag; the gate's own sleeps may add one.
+      const prefix = `${GUEST_MEMORY_TAG_SWEEP} `;
+      const suffix = ` signalled for PID ${pid} (Issue #5638)`;
+      const line = warns.find((message) =>
+        message.startsWith(prefix) && message.endsWith(suffix)
+      );
+      assert(
+        line !== undefined,
+        `missing tag sweep warn line in ${JSON.stringify(warns)}`,
+      );
+      const signalled = Number(
+        line.slice(prefix.length, line.length - suffix.length),
+      );
+      assert(signalled >= 2, `expected at least 2 signalled, got ${line}`);
+    } finally {
+      if (childPid > 0 && await isLive(childPid)) {
+        Deno.kill(childPid, "SIGKILL");
+      }
+    }
   },
 });

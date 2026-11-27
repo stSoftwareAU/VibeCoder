@@ -28,6 +28,9 @@ export const GUEST_MEMORY_KILL_FAILED = "Guest-memory kill failed for PID";
 /** Opens the log line when the floor SIGKILLs the agent's handle (Issue #5638). */
 export const GUEST_MEMORY_HANDLE_KILL =
   "Guest-memory floor sent SIGKILL through the agent's process handle, PID";
+/** Opens the log line when the floor's tag sweep has run (Issue #5638). */
+export const GUEST_MEMORY_TAG_SWEEP =
+  "Guest-memory floor SIGKILLed the agent's tagged processes without spawning:";
 
 /** The available-memory floor for a guest with `totalBytes` of memory. */
 export function guestMemoryFloorBytes(totalBytes: number): number {

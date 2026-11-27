@@ -1453,9 +1453,13 @@ run's tagged leftovers are reaped. The tree kill reads `/proc` and runs `ps`,
 (observed on 2026-11-26: `ps timed out after 10000ms`), so once the tree kill
 returns with the agent still running, the worker sends SIGKILL through the
 agent's own process handle, which needs no new process; it logs `Guest-memory
-floor sent SIGKILL through the agent's process handle` (Issue #5638). Processes
-the agent started that survive it are left to the leftover reaper, which still
-runs `ps`. A reading without figures (unreadable, or macOS's level-only reading)
+floor sent SIGKILL through the agent's process handle` (Issue #5638). A helper
+started beside the agent walks `/proc` with bash builtins only, so it needs no
+new process. When the floor fires it SIGKILLs every process carrying the run's
+spawn tag, and nothing else, and logs `Guest-memory floor SIGKILLed the agent's
+tagged processes without spawning: <n> signalled` (Issue #5638). Processes that
+survive it are left to the leftover reaper, which still runs `ps`. A reading
+without figures (unreadable, or macOS's level-only reading)
 never stops a run. The check is armed only in the worker process (`run-core`),
 beside the in-flight host-disk gate, so unit tests do not inherit the host's
 memory. Quality-gate and pre-flight commands are not watched, because they are
