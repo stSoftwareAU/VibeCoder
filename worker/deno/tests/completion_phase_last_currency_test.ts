@@ -3,7 +3,8 @@
  * the branch is checked against its base once more and, when it is behind,
  * the base is merged in and pushed then, while no PR exists and the push
  * starts no CI. The PR's first CI run is then also its last
- * (owner rule 2026-11-03).
+ * (owner rule 2026-11-03). That catch-up merge is new, untested content, so
+ * it is gated before it is pushed (Issue #5646).
  *
  * Australian English used throughout (behaviour, organisation, etc.).
  */
@@ -12,11 +13,32 @@ import { assert, assertEquals } from "@std/assert";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import {
+  type gateUnpushedCommits,
+  PrePushGateBlockedError,
+} from "../lib/git_push.ts";
+import { PRE_PUSH_GATE_MARKER } from "../lib/failure_diagnosis.ts";
 import type { GitHubClient } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 const BRANCH = "issue-2459-last-currency-test";
 const BASE_BRANCH = "main";
+
+type GateOutcome = Awaited<ReturnType<typeof gateUnpushedCommits>>;
+
+const GATE_PASSED: GateOutcome = {
+  ok: true,
+  value: { kind: "passed", checksRun: [] },
+};
+
+function gateBlocked(): GateOutcome {
+  return {
+    ok: false,
+    error: new PrePushGateBlockedError(
+      "deno test failed in tests/example_test.ts",
+    ),
+  };
+}
 
 function stubClient(): GitHubClient {
   return {
@@ -63,10 +85,16 @@ function state(repoPath: string): PhaseState {
 
 /**
  * `behindOnCall` answers each drift check: the first is the PR-raise sync,
- * the last is the check just before `gh pr create`.
+ * the last is the check just before `gh pr create`. `gateOnCall` answers each
+ * pre-push gate run, numbered from 1, and defaults to a pass.
  */
-function deps(behindOnCall: (call: number) => number, events: string[]) {
+function deps(
+  behindOnCall: (call: number) => number,
+  events: string[],
+  gateOnCall: (call: number) => GateOutcome = () => GATE_PASSED,
+) {
   let driftChecks = 0;
+  let gateCalls = 0;
   return createMockDeps({
     logger: {
       info: () => undefined,
@@ -89,6 +117,11 @@ function deps(behindOnCall: (call: number) => number, events: string[]) {
           ok: true as const,
           value: { action: "already-on-branch" as const, fromRef: BRANCH },
         }),
+      gateUnpushedCommits: () => {
+        events.push("gate");
+        gateCalls++;
+        return Promise.resolve(gateOnCall(gateCalls));
+      },
       pushUnpushedCommits: () => {
         events.push("push");
         return Promise.resolve({ ok: true as const, value: 1 });
@@ -151,8 +184,11 @@ Deno.test("a base that moved during the gates is merged in and pushed before the
     const create = events.lastIndexOf("create");
     assert(create > 0, `the PR was raised: ${events.join(", ")}`);
     const before = events.slice(0, create);
-    assertEquals(before.at(-1), "push", `events: ${events.join(", ")}`);
-    assertEquals(before.at(-2), "merge", `events: ${events.join(", ")}`);
+    assertEquals(
+      before.slice(-3),
+      ["merge", "gate", "push"],
+      `events: ${events.join(", ")}`,
+    );
   });
 });
 
@@ -167,5 +203,38 @@ Deno.test("a branch still current when the PR is raised is not pushed again", as
     assertEquals(result.status, "continue");
     assertEquals(events.includes("merge"), false);
     assertEquals(events.filter((e) => e === "push").length, 1);
+    assertEquals(events.filter((e) => e === "gate").length, 1);
+  });
+});
+
+Deno.test("a catch-up merge the gate blocks is never pushed and the PR is not raised", async () => {
+  await withSummary(async (repoPath) => {
+    const events: string[] = [];
+    // Current at the PR-raise sync, one behind at the last check. The gate
+    // passes the branch before the merge and blocks the merged result.
+    const result = await workOnIssueCompletion(
+      context(),
+      state(repoPath),
+      deps(
+        (call) => (call === 1 ? 0 : 1),
+        events,
+        (call) => (call === 1 ? GATE_PASSED : gateBlocked()),
+      ),
+    );
+    assert(result.status === "failure", `status: ${result.status}`);
+    assertEquals(result.category, "pre_push_gate");
+    assert(
+      result.reason.startsWith(PRE_PUSH_GATE_MARKER),
+      `reason: ${result.reason}`,
+    );
+    assertEquals(events.includes("create"), false, events.join(", "));
+    // Positive control: the catch-up merge really ran before the block.
+    assert(events.includes("merge"), `events: ${events.join(", ")}`);
+    const lastMerge = events.lastIndexOf("merge");
+    assertEquals(
+      events.slice(lastMerge + 1).includes("push"),
+      false,
+      `events: ${events.join(", ")}`,
+    );
   });
 });

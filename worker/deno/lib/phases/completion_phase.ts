@@ -3412,7 +3412,9 @@ async function completionBody(
   // Owner rule 2026-11-03: the base may have moved while the gates above ran.
   // A PR opened behind its base runs CI once on the stale head and again when
   // the branch is updated. No PR exists yet, so this extra push starts no CI.
-  // Never fatal: a decline or an unreadable comparison raises the PR as before.
+  // A decline or an unreadable comparison raises the PR as before. A merge that
+  // brought the base in is new, untested content, so the same gate judges it
+  // before it is pushed (Issue #5646).
   const lastCurrency = await ensureBranchCurrent({
     branch: state.branchName,
     baseBranch,
@@ -3422,6 +3424,8 @@ async function completionBody(
     log: (m: string) => logger.info(m),
   });
   if (lastCurrency.kind === "updated") {
+    const blockedBeforeCatchUp = await gateBeforePush();
+    if (blockedBeforeCatchUp) return blockedBeforeCatchUp;
     const lastPush = await deps.git.pushUnpushedCommits(state.branchName, {
       cwd: state.repoPath,
     });

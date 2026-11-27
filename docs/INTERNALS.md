@@ -3471,19 +3471,25 @@ path can merge and push freely; once the PR exists, the base must go out in the
 same push as the fix (owner rule 2026-11-03).
 
 - **Repair passes** (CI fix, review feedback, spelling) pass the PR's base as
-  `syncBaseBranch` to `commitAndPushPending`. After its gates and just before
-  the push, `mergeBaseBeforePush` merges that base in through the PR-raise
-  sync's own `ensureBranchCurrent` and `mergeOntoBase`: a plain merge commit,
-  never a rebase or force-push. It acts only when there is a fix to push to a
-  branch already on origin, so a pass with no fix pushes nothing. A conflict
-  is aborted and the fix is pushed as before; the conflict lane takes over. A
-  gated head's milestone-fix branch is left alone, because its PR targets the
-  head, not the head's base. `prBaseForSync` supplies the base: the one the
+  `syncBaseBranch` to `commitAndPushPending`. Before the push,
+  `mergeBaseBeforePush` merges that base in through the PR-raise sync's own
+  `ensureBranchCurrent` and `mergeOntoBase`: a plain merge commit, never a
+  rebase or force-push. It acts only when there is a fix to push to a branch
+  already on origin, so a pass with no fix pushes nothing. When that merge
+  lands and the caller passed a `preFlight` spec, the same
+  `gateUnpushedCommits` gate runs on the merged result before the push; a
+  block refuses the push with the gate's error and the merge commit stays
+  local, unpushed. A conflict is aborted and the fix is pushed as before; the
+  conflict lane takes over. A gated head's milestone-fix branch is left alone,
+  because its PR targets the head, not the head's base. `prBaseForSync` supplies the base: the one the
   caller knows, else `gh pr view --json baseRefName`, else none.
 - **New PRs** are brought up to date by the PR-raise sync before the first
   push, and checked once more just before `gh pr create`: the base can move
   while the gates run. When it has, the base is merged in and pushed then,
-  while no PR exists and the push costs no CI.
+  while no PR exists and the push costs no CI. That catch-up merge is pushed
+  only after the completion phase's pre-push gate (`gateBeforePush()`) passes
+  on the merged result; a block fails the run as `pre_push_gate` (Issue
+  #5646).
 
 ### 🔁 One-pass merge for a declined branch (`branch_conflict_pass.ts`)
 
@@ -6435,9 +6441,10 @@ gets one in-run recovery turn (Issue #4128): the agent session resumes once with
 the gate output in the prompt (`worker/deno/lib/pre_push_gate_retry.ts`, timeout
 `pre_push_retry_timeout_seconds`), the formatters and the same gate re-run, and
 the push happens only if the gate passes. A second block in the same run,
-including one after push recovery, gets no further turn and fails with this
-category quoting the latest gate output; an invocation error or timeout of the
-turn fails the run with the original gate output. The gate is never bypassed.
+including one after push recovery or on the catch-up merge before
+`gh pr create`, gets no further turn and fails with this category quoting the
+latest gate output; an invocation error or timeout of the turn fails the run
+with the original gate output. The gate is never bypassed.
 The label-release sweeps skip that comment too (`isWorkerGateFailureRecord`).
 A message that merely quotes the marker later keeps its own category. The final
 mile of `commitAndPushPending` (Step 1b) returns the same unmarked

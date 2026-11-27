@@ -1,7 +1,8 @@
 /**
  * A fix pushed to an open PR carries its base in the same push, so CI runs
  * once per fix rather than once for the fix and again for the branch update
- * (owner rule 2026-11-03).
+ * (owner rule 2026-11-03). When the caller gates the push (a pre-flight spec),
+ * the merged result is gated before the push too (Issue #5646).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -10,6 +11,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   commitAndPushPending,
   mergeBaseBeforePush,
+  PrePushGateBlockedError,
   prBaseForSync,
 } from "../lib/git_push.ts";
 import {
@@ -121,6 +123,83 @@ Deno.test("a fix on a branch behind its base is pushed with the base merged in, 
       "origin/main",
       pushedHead,
     );
+    assertEquals(await git(clone, "show", `${pushedHead}:base.txt`), "base");
+    assertEquals(
+      await git(clone, "show", `${pushedHead}:feature.txt`),
+      "feature, fixed",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+/**
+ * Commits the fix before the call, so Step 1 commits nothing and the pre-flight
+ * commands run in both of Step 1b's gate calls (Issue #5646).
+ */
+async function gatedFixOnBehindBranch(
+  clone: string,
+  startedAt: string,
+  command: string,
+) {
+  await Deno.writeTextFile(`${clone}/feature.txt`, "feature, fixed\n");
+  await git(clone, "commit", "-q", "-am", "fix");
+  return await commitAndPushPending(
+    "feature",
+    "Fix CI failure",
+    {
+      cwd: clone,
+      env: NO_HOST_GIT_CONFIG,
+      expectedAncestor: startedAt,
+      syncBaseBranch: "main",
+    } as PushLineageOptions,
+    false,
+    { commands: [command] },
+  );
+}
+
+Deno.test("a fix whose merged result fails the pre-flight gate is not pushed, and the merge stays local (Issue #5646)", async () => {
+  const { root, clone } = await behindPrBranch();
+  try {
+    const startedAt = await git(clone, "rev-parse", "HEAD");
+    // Passes on the fix alone (no base.txt yet), fails once base.txt is merged in.
+    const result = await gatedFixOnBehindBranch(
+      clone,
+      startedAt,
+      "test ! -f base.txt",
+    );
+    assert(!result.ok, "the merged result must be refused");
+    assert(
+      result.error instanceof PrePushGateBlockedError,
+      `expected PrePushGateBlockedError, got ${result.error.message}`,
+    );
+    assert(
+      result.error.message.includes("test ! -f base.txt"),
+      result.error.message,
+    );
+    // Nothing reached origin: the feature head is still the pre-fix head.
+    const pushed = await git(clone, "ls-remote", "origin", "feature");
+    assertEquals(pushed.split(/\s+/)[0], startedAt);
+    // The merge did happen locally and is still unpushed.
+    await git(clone, "fetch", "-q", "origin", "main");
+    await git(clone, "merge-base", "--is-ancestor", "origin/main", "HEAD");
+    assertEquals(await git(clone, "show", "HEAD:base.txt"), "base");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("a fix whose merged result passes the pre-flight gate is pushed with the base merged in (Issue #5646)", async () => {
+  const { root, clone } = await behindPrBranch();
+  try {
+    const startedAt = await git(clone, "rev-parse", "HEAD");
+    const result = await gatedFixOnBehindBranch(clone, startedAt, "true");
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(result.value.finalUnpushedCount, 0);
+
+    const pushedHead = (await git(clone, "ls-remote", "origin", "feature"))
+      .split(/\s+/)[0]!;
+    assertEquals(pushedHead, await git(clone, "rev-parse", "HEAD"));
     assertEquals(await git(clone, "show", `${pushedHead}:base.txt`), "base");
     assertEquals(
       await git(clone, "show", `${pushedHead}:feature.txt`),
