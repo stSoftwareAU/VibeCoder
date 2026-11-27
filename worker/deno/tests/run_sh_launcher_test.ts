@@ -1203,6 +1203,49 @@ Deno.test("run.sh - a deadline shorter than the suspension minimum reaps without
   }
 });
 
+Deno.test("run.sh - a TERM-resistant uptime probe cannot strand the watchdog (Issue #5544)", async () => {
+  if (!await hasTimeoutCommand()) return;
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "900",
+    STUB_KILL_EXIT: "1",
+    STUB_UPTIME_IGNORE_TERM: "1",
+    VIBE_CONTAINER_WATCHDOG_SECONDS: "4",
+    VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+    VIBE_GUEST_SILENCE_CHECK_SECONDS: "0",
+    VIBE_WATCHDOG_SUSPEND_MIN_SECONDS: "1",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, CONTAINER_WEDGED_EXIT_STATUS, outcome.stderr);
+    assert(
+      await recorded(harness, "kill"),
+      "the watchdog must reach the reaper",
+    );
+    assertEquals(
+      outcome.stderr.includes("was suspended for"),
+      false,
+      "partial output from a timed-out probe must not earn credit",
+    );
+    const entries = [];
+    for await (const entry of Deno.readDir(harness.recordDir)) {
+      entries.push(entry.name);
+    }
+    assert(
+      entries.includes("uptime-probe-started"),
+      "the TERM-resistant probe must actually run",
+    );
+    assertEquals(
+      entries.includes("uptime-probe-returned"),
+      false,
+      "the probe must be killed before its fallback return",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 Deno.test("run.sh - a healthy run is never reaped", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",

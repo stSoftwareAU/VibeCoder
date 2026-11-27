@@ -2185,7 +2185,9 @@ refresh_host_disk_while_running() {
 guest_suspended_seconds() {
   local elapsed="$1"
   local output field uptime
-  output="$(bounded 10 "${RUNTIME}" exec "${CONTAINER_NAME}" cat /proc/uptime \
+  # Apple container exec can forward TERM to a wedged guest and keep waiting.
+  # Use a hard signal here so the watchdog itself cannot hang on the probe.
+  output="$("${TIMEOUT_CMD}" -s KILL 10 "${RUNTIME}" exec "${CONTAINER_NAME}" cat /proc/uptime \
     </dev/null 2>/dev/null)" || output=""
   field="${output%%[[:space:]]*}"
   uptime="${field%%.*}"
