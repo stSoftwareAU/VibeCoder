@@ -85,10 +85,6 @@ export function typeCheckTimeoutMs(kind: ProjectKind): number {
 /** Error name carried by the refusal, so callers can escalate on it. */
 export const MILESTONE_MERGE_GATE_ERROR = "MilestoneMergeGateFailure";
 
-/** Longest check output carried into a log line or an escalation comment. */
-const MAX_OUTPUT_LINES = 40;
-const MAX_OUTPUT_CHARS = 4000;
-
 /** The type check a repository defines for itself. */
 export interface TypeCheckProject {
   /** Directory the check runs in. */
@@ -399,9 +395,58 @@ export function collapseRepeatedLines(output: string): string {
   return collapsed.join("\n");
 }
 
-/** Keep the tail of the output — the errors sit at the end of a check run. */
-function tail(output: string): string {
-  const lines = collapseRepeatedLines(output.trim()).split("\n");
+/** A Deno module-download progress line, once its colour codes are stripped. */
+const DENO_DOWNLOAD_LINE = /^Download https?:\/\/\S+$/;
+
+/**
+ * Collapse each run of Deno module-download progress lines into one marker
+ * line (Issue #5637).
+ *
+ * A cold module cache writes a `Download https://…` line per module, hundreds
+ * of them, and they pushed the test report out of the kept tail. Each run is
+ * replaced by `[N Deno module download line(s) omitted]`, so a reader sees
+ * that lines were dropped. Only lines that are exactly that progress form
+ * count: `Downloaded`, `Failed downloading`, a bare `Download` and
+ * `Download failed: …` are kept as they were.
+ *
+ * @param output - The raw check output, before it is trimmed to a tail
+ * @returns The same lines, with each download run collapsed to one marker
+ */
+export function collapseDownloadProgress(output: string): string {
+  const isDownload = (line: string) =>
+    DENO_DOWNLOAD_LINE.test(stripAnsi(line).trimEnd());
+  const lines = output.split("\n");
+  const collapsed: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!isDownload(lines[i]!)) {
+      collapsed.push(lines[i]!);
+      i++;
+      continue;
+    }
+    let run = 0;
+    while (i + run < lines.length && isDownload(lines[i + run]!)) run++;
+    collapsed.push(`[${run} Deno module download line(s) omitted]`);
+    i += run;
+  }
+  return collapsed.join("\n");
+}
+
+/** Longest check output carried into a log line or an escalation comment. */
+const MAX_OUTPUT_LINES = 40;
+const MAX_OUTPUT_CHARS = 4000;
+
+/**
+ * Keep the tail of a check's output: the errors sit at the end of a run. Each
+ * run of Deno download progress is collapsed first (Issue #5637), then the
+ * repeated lines, then only the last 40 lines and at most 4000 characters.
+ *
+ * @param output - The raw check output
+ * @returns The tail that is recorded and handed to a repair round
+ */
+export function keepOutputTail(output: string): string {
+  const lines = collapseRepeatedLines(collapseDownloadProgress(output).trim())
+    .split("\n");
   const kept = lines.slice(-MAX_OUTPUT_LINES).join("\n");
   return kept.length > MAX_OUTPUT_CHARS ? kept.slice(-MAX_OUTPUT_CHARS) : kept;
 }
@@ -888,7 +933,7 @@ export async function checkMergedTree(
     return {
       status: "failed",
       detail: `merged tree '${repoDir}' could not be read — nothing checked it`,
-      output: tail(err instanceof Error ? err.message : String(err)),
+      output: keepOutputTail(err instanceof Error ? err.message : String(err)),
       cause: "tree-unreadable",
     };
   }
@@ -961,7 +1006,7 @@ export async function checkMergedTree(
       return {
         status: "failed",
         detail: `${where} could not be run`,
-        output: tail(message),
+        output: keepOutputTail(message),
         cause: "check-could-not-run",
       };
     }
@@ -975,7 +1020,7 @@ export async function checkMergedTree(
       return {
         status: "failed",
         detail: `${where} could not be run`,
-        output: tail(result.output),
+        output: keepOutputTail(result.output),
         cause: "check-could-not-run",
       };
     }
@@ -1024,7 +1069,7 @@ export async function checkMergedTree(
         return {
           status: "failed",
           detail: describeRustToolchainGap(where, result.code, gap),
-          output: tail(result.output),
+          output: keepOutputTail(result.output),
           toolchainGap: gap,
           cause: "rust-toolchain-too-old",
         };
@@ -1034,7 +1079,7 @@ export async function checkMergedTree(
       return {
         status: "failed",
         detail: `${where} failed (exit ${result.code})`,
-        output: tail(result.output),
+        output: keepOutputTail(result.output),
         cause: result.timedOut ? "check-timed-out" : "tree-check-failed",
       };
     }

@@ -46,13 +46,13 @@
 
 import {
   checkMergedTree,
-  collapseRepeatedLines,
   describeRustToolchainGap,
   detectCargoRegistryGap,
   detectRemoteModuleGap,
   detectRustToolchainGap,
   findProjectManifests,
   isCargoOfflineRegistryGap,
+  keepOutputTail,
   type MergeGateCause,
   type MergeGateFn,
   type MergeGateOutcome,
@@ -179,17 +179,6 @@ export type ResolutionTaskRunner = (
   }
 >;
 
-/** Longest task output carried into a log line or an escalation comment. */
-const MAX_OUTPUT_LINES = 40;
-const MAX_OUTPUT_CHARS = 4000;
-
-/** Keep the tail — a task's failure sits at the end of its output. */
-function tail(output: string): string {
-  const lines = collapseRepeatedLines(output.trim()).split("\n");
-  const kept = lines.slice(-MAX_OUTPUT_LINES).join("\n");
-  return kept.length > MAX_OUTPUT_CHARS ? kept.slice(-MAX_OUTPUT_CHARS) : kept;
-}
-
 /**
  * Which of a project's tasks verify a resolution.
  * `readManifestTasks` normalises string and command-bearing object tasks;
@@ -276,7 +265,9 @@ function unrunnableTask(where: string, error: unknown): MergeGateOutcome {
   return {
     status: "failed",
     detail: `${where} could not be run`,
-    output: tail(error instanceof Error ? error.message : String(error)),
+    output: keepOutputTail(
+      error instanceof Error ? error.message : String(error),
+    ),
     cause: "check-could-not-run",
   };
 }
@@ -337,7 +328,7 @@ export async function verifyResolvedTree(
       status: "failed",
       detail: `merged tree '${repoDir}' could not be read — nothing verified ` +
         `the resolution`,
-      output: tail(err instanceof Error ? err.message : String(err)),
+      output: keepOutputTail(err instanceof Error ? err.message : String(err)),
       cause: "tree-unreadable",
     };
   }
@@ -517,7 +508,7 @@ export async function verifyResolvedTree(
           return {
             status: "failed",
             detail: describeRustToolchainGap(where, result.code, gap),
-            output: tail(result.output),
+            output: keepOutputTail(result.output),
             toolchainGap: gap,
             cause: "rust-toolchain-too-old",
           };
@@ -525,7 +516,7 @@ export async function verifyResolvedTree(
         return {
           status: "failed",
           detail: `${where} failed (exit ${result.code})`,
-          output: tail(result.output),
+          output: keepOutputTail(result.output),
           cause: stepFailureCause(result.timedOut),
         };
       }
@@ -585,7 +576,7 @@ export async function verifyResolvedTree(
       return {
         status: "failed",
         detail: `${where} failed (exit ${result.code})`,
-        output: tail(result.output),
+        output: keepOutputTail(result.output),
         cause: stepFailureCause(result.timedOut),
       };
     }

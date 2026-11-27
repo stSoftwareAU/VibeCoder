@@ -490,7 +490,12 @@ leaves the tree refused. An initial infrastructure refusal keeps its cause and
 buys no repair; a fast-forward failure is also refused without amending the
 default branch's existing commit. Passing and initially skipped clean-merge
 checks keep their existing delivery behaviour. Repair-mode prompts describe
-the committed merge and an empty conflict list as a verification repair.
+the committed merge and an empty conflict list as a verification repair. The
+gate keeps the last 40 lines of a check's output. Each run of Deno's
+`Download https://…` progress lines is first collapsed into one
+`[N Deno module download line(s) omitted]` line, so a cold module cache cannot
+push the failing test's report out of the record or the repair prompt (Issue
+#5637).
 
 **Every automatic resolution is verified before it is pushed.** The merged tree
 must pass the repository's own Issue #974 type check, its `check:manifests`
