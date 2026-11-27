@@ -28,6 +28,7 @@ import {
   terminateActiveAgentRuns,
 } from "../lib/claude_runner.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 import type { MemoryPressureReading } from "../lib/memory_pressure.ts";
 
 const MIB = 1024 ** 2;
@@ -396,6 +397,7 @@ Deno.test({
             prompt: "P",
             model: "m",
             agentBinaryPath: stub.path,
+            clock: fakeClock(),
             timeoutSeconds: 30,
             killAfterSeconds: 2,
             cwd: await Deno.makeTempDir({ prefix: "wmg-cwd-" }),
