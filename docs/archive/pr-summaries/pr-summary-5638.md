@@ -1,84 +1,86 @@
+# PR Summary — Issue #5638
+
 ## Summary
 
-The hard-kill issue body gains a `**Memory guards:**` figure. It reports, from
-the worker log tail, whether the two in-run memory guards acted before the
-wedge. The guest memory floor (Issue #4815) may have stopped the agent. The
-early-OOM guard (Issue #5529) may have killed a process, or a guard may have
-logged that it could not act. Each figure carries the time of the newest such
-line. The #5638 body showed guest memory at 219 MiB five minutes before the log
-went silent, which is below both guards' floors, but nothing in it said whether
-either guard fired. The cause of this wedge is still unknown, so the wedge is
-not fixed. Part of #5638.
+Once the guest memory floor decides to stop the agent, the agent now stops even
+when the guest has no memory left to start a process. The floor's process-tree
+kill (`killClaudeProcessTree`) works through `cat`, `ps`, `pgrep` and `kill`,
+each a new process. On an exhausted guest every one of them times out, so the
+agent kept running until the container wedged. When that tree kill comes back
+with the agent still not exited, the runner now sends SIGKILL through the
+agent's own `Deno.ChildProcess` handle, which starts no new process, and logs
+`Guest-memory floor sent SIGKILL through the agent's process handle, PID <pid>`.
+The floor also stops an agent whose fingerprint capture failed through its
+own process handle, without risking a reused PID.
+Whether this was the cause of the GRQ-3 wedge filed here is still unconfirmed,
+because that host's archive is still missing. Part of #5638.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The killed run was `stSoftwareAU/GRQ-AutoTrader#6942` (completion phase) on
-  GRQ-3, container `vibe-coder-22185`, worker commit `fd1c82892`. Its archive is
-  on GRQ-3 only. GRQ-3's sessions for 26–27 November are not in the
-  `GRQ-VibeCoder-logs` mirror, so the transcript and worker log could not be
-  read here.
-- The public figures fit guest memory exhaustion during an agent turn: 219 MiB
-  available at the last liveness tick (23:49:32Z), then five more minutes of log
-  with no further minute tick, then silence. Both guards should act at that
-  level, so the next question is whether they did. The issue body could not
-  answer it. This figure answers it on every later hard kill.
-- No guard, timeout or kill path changed. Without the evidence, a behaviour
-  change would be a speculative fix for an unreproduced fault.
+- GRQ-3's archive for this kill is still not in the `GRQ-VibeCoder-logs` mirror
+  (re-fetched 27 November, head `1849a64e`; the newest GRQ-3 day is 21
+  November). The same failure is in GRQ-23's archived log for
+  `stSoftwareAU/VibeCoder#5544` (run `vibe-mwwt65ra-8a3ceb`, 26 November). There
+  the floor fired at 460 MiB, but the stop then logged
+  `Failed to kill claude process (PID 46242): ps timed out after 10000ms` and
+  `Failed to kill claude descendants (PID 46242): pgrep timed out after 10000ms`.
+  Memory then stayed near 200 MiB for more than 20 minutes.
+- In this issue, memory read 219 MiB, which is below the 512 MiB floor, yet the
+  log ran on for five more minutes with no sign of the agent stopping. That
+  matches the same pattern.
+- Killing through the handle needs no process table and no fingerprint read.
+  Deno refuses `kill` on a child it has already reaped, so the signal can only
+  reach the process the runner started.
 
 ### Essential Design Decisions
 
-- `hardKillMemoryGuards` (`worker/deno/lib/hard_kill_guest_facts.ts`) counts a
-  line only when the marker opens the message: straight after
-  `[<time>Z] WARNING:` or `ERROR:`, or after one slot tag such as
-  `[s1 owner/repo#N]`. A marker quoted mid-message or inside an
-  `[agent-progress]` tool detail does not count, so agent text cannot fake a
-  guard action.
-- The markers are owned by the guards: `GUEST_MEMORY_FLOOR_MARKER` and the new
-  `GUEST_MEMORY_KILL_FAILED` in `guest_memory_floor.ts`, and
-  `MEMORY_GUARD_KILL_PREFIX`, `MEMORY_GUARD_COULD_NOT` and
-  `MEMORY_GUARD_LEFT_ALONE` in `memory_guard.ts`. `formatMemoryGuardKill` and
-  the four log calls in `claude_runner.ts` now build their text from these
-  constants. The text they emit is unchanged.
-- The figure is fixed words plus a captured timestamp, never log text. Each line
-  is cut to 2,000 characters before matching, and both patterns are linear.
+- The handle kill runs only after the tree kill has settled, whether it resolved
+  or threw. This keeps the tree kill's order (descendants first, then the
+  parent) whenever its probes can run.
+- `childExited` is set from `child.status`. If the agent was reaped in the
+  meantime, the `TypeError` "Child process has already terminated" is ignored.
+  Any other error is logged as `Guest-memory kill failed for PID …`, the line
+  the memory-guards figure already counts.
+- Only the floor path changed. The watchdog, silence and host-disk kills keep
+  `killClaudeProcessTree` as before. `RunClaudeOptions.killProcessTree` is a
+  seam whose production default is `killClaudeProcessTree`.
+- Processes the agent started that outlive it are still left to the leftover
+  reaper, and that reaper also runs `ps` and `sh` (`agent_leftover_reaper.ts`).
 
 ### Undiscoverable Facts
 
-- The run id and issue come from GRQ-3's failure report
-  `docs/logs/Vibe-Coder-GRQ-3/20261127-001935.log` in the GRQ-health checkout.
-  That report names the run `vibe-mwy4pmhc-c036b9`, `GRQ-AutoTrader#6942` and
-  phase `completion`. Its archive paths under `runs/GRQ-3/2026-11-27/` are not
-  in the logs mirror.
-- The real floor-stop line used as a test fixture was copied from this host's
-  own worker log (`GRQ-AutoTrader#5644`, 26 November 00:34:34Z).
+- Deno 2.9.8 throws `TypeError: Child process has already terminated` from
+  `ChildProcess.kill` after exit, checked in a scratch run.
+- In the GRQ-23 log, the processes holding the memory were six `ld` linkers of
+  about 2.3 GiB each. Those are the agent's descendants, not the agent.
 
 ## Evidence
 
-Backend only. The change adds one fixed-shape line to the auto-filed issue body.
+Backend only. The new test is
+`worker/deno/tests/claude_runner_guest_memory_handle_kill_5638_test.ts`.
 
 ```mermaid
 flowchart LR
-    T[worker log tail, 200 lines] --> H{"[time] WARNING/ERROR: [slot] marker…?"}
-    H -->|GUEST_MEMORY_FLOOR| F[guest memory floor stopped the agent]
-    H -->|Guest memory critically low| K[early-OOM guard killed a process]
-    H -->|could not / left pid= / kill failed| C[a memory guard could not act]
-    H -->|none| N[none logged in the log tail]
+    F[floor: 2 low readings] --> T["tree kill (cat/ps/pgrep/kill)"]
+    T -->|settles| X{agent exited?}
+    X -->|yes| D[done]
+    X -->|no| H["child.kill(SIGKILL) via handle + WARNING line"]
 ```
 
 ## Reproduction
 
-- **symptom** —
-  `The launcher's watchdog found the guest silent and not
-  answering its exec probe.`,
-  phase `completion`, last step `agent turn`, after `MemAvailable 219 MiB` at
-  the last liveness tick.
-- **status** — `not-run` — reason: the evidence archive is only on GRQ-3, and
-  nothing here reproduces a guest exhausting its memory. This PR adds a
-  diagnostic figure, not a fix.
+- **symptom** — the floor stop was logged, but the agent kept running because
+  every spawned kill probe timed out (`ps timed out after 10000ms`), until the
+  watchdog reaped the guest
+- **status** — `partial` — reason: a guest out of memory was not staged. The
+  test injects a tree kill that signals nothing, or throws
+  `ps timed out after 10000ms`, mirroring the logged lines. Because the base
+  branch has no such seam, the red run used the seam without the handle kill. It
+  hung until `timeout 90` ended it (exit 124), and it passes after the fix.
 - **regression test** —
-  `worker/deno/tests/hard_kill_guest_facts_test.ts::the real floor-stop line is read (Issue #5638)`
+  `worker/deno/tests/claude_runner_guest_memory_handle_kill_5638_test.ts::guest memory handle kill - a tree kill that signals nothing still stops the agent (Issue #5638)`
 
 ## Acceptance Criteria
 
@@ -86,55 +88,43 @@ flowchart LR
 
 - **partial** — a container wedged and the launcher watchdog reaped it, so the
   run never released its claim — evidence:
-  `worker/deno/tests/hard_kill_guest_facts_test.ts::the real floor-stop line is read (Issue #5638)`
-  — reviewer: partial — reason: future hard-kill reports now say whether a
-  memory guard acted, but the wedge is not fixed and a reaped run still never
-  releases its claim. The cause cannot be found without GRQ-3's archive, which
-  is still missing from the logs mirror (checked 27 November, mirror head
-  `117ee15c`, newest GRQ-3 day 21 November).
+  `worker/deno/tests/claude_runner_guest_memory_handle_kill_5638_test.ts::guest memory handle kill - a tree kill that signals nothing still stops the agent (Issue #5638)`
+  — reviewer: partial — reason: the agent itself now stops when no process can
+  be started, but its descendants (the GRQ-23 `ld` linkers holding the memory)
+  are still reaped only through a spawned `ps`, and GRQ-3's archive is absent,
+  so the cause of this wedge is unconfirmed. An in-process `/proc` walk with
+  `Deno.kill` was tried on this branch and reverted. Deno 2.9.8 refuses every
+  `/proc` read without `--allow-all`
+  (`NotCapable: Requires all access to "/proc/<pid>/stat"`), and the worker runs
+  with scoped flags (`--allow-read --allow-run …`). The remaining route is to
+  spawn the agent as its own process group and send SIGKILL to the group.
 
 ## Test Plan
 
-- `worker/deno/tests/hard_kill_guest_facts_test.ts` adds `hardKillMemoryGuards`
-  tests, each asserting a literal result:
-  - "the real floor-stop line is read (Issue #5638)" uses a production log line.
-  - "producer-built floor and kill lines are read, newest of each (Issue #5638)"
-    builds its lines with `guestMemoryFloorReason` and `formatMemoryGuardKill`.
-    Two floor stops at different times show that the newest one is reported.
-  - "each could-not-act prefix is read on its own (Issue #5638)" checks the
-    kill-failed, left-alone and could-not prefixes, each in a one-line tail,
-    with and without a slot tag.
-  - "look-alikes do not count (Issue #5638)" covers an `[agent-progress]` line
-    quoting both markers, a marker in mid-message and a line with no timestamp.
-    Each reads `none logged in the log tail`.
-  - "an empty tail reads none logged" and "a hostile long line returns" (50,000
-    characters).
-- `worker/deno/tests/hard_kill_report_test.ts`: the test "the body carries the
-  guest and host figures under the last log time" now expects
-  `**Memory guards:** none logged in the log tail` after the liveness-tick line.
-  Its slice grows from seven figures to eight, because this PR adds the line.
-  Every other expected line is unchanged. The new test "a floor stop in the log
-  tail shows in the body (Issue #5638)" asserts the figure in the rendered body.
-- Before the change, these two files failed: 76 passed, 3 failed, because
-  `hardKillMemoryGuards` did not exist. After it they passed: 126 passed, 0
-  failed.
-- `timeout 1500 ./quality.sh < /dev/null` on the code commit returned
+- New `worker/deno/tests/claude_runner_guest_memory_handle_kill_5638_test.ts`.
+  The real agent stub stays gated, so only a kill can end it:
+  - "a tree kill that signals nothing still stops the agent" asserts a
+    `GuestMemoryFloorError` with the literal floor reason, one tree-kill call
+    and the literal handle-kill WARNING line.
+  - "a tree kill that throws still stops the agent" also asserts
+    `Guest-memory kill failed for PID <pid>: ps timed out after 10000ms`.
+  - The control "a healthy guest never calls the tree kill" asserts exit 0, no
+    tree-kill call and no handle-kill line.
+- Not staged: the agent being reaped between the tree kill settling and the
+  handle kill (the ignored `already terminated` branch). That window cannot be
+  timed without a wall-clock race.
+- No existing test was edited. `deno task test:unit` over the new file,
+  `worker/deno/tests/claude_runner_guest_memory_floor_4815_test.ts` and
+  `worker/deno/tests/execute_phase_guest_memory_floor_4815_test.ts`: 10 passed,
+  0 failed.
+- `timeout 1500 ./quality.sh < /dev/null` on the code commit:
   `Result: PASSED (with skipped checks)`. Config integration and Checkov were
-  skipped. The deno tests, lint, type check, fmt, markdownlint, mermaid, semgrep
-  and gitleaks passed.
-- No persisted shape, destructive operation, failure ledger or new external
-  input. The other hard-kill test files
-  (`hard_kill_facts_backfill_4815_test.ts`, `hard_kill_evidence_test.ts`) and
-  the guard tests (`memory_guard_5529_test.ts`,
-  `guest_memory_floor_4815_test.ts`,
-  `claude_runner_guest_memory_floor_4815_test.ts`) passed unchanged.
+  skipped. Deno tests, lint, type check, fmt, markdownlint, mermaid, semgrep and
+  gitleaks passed.
+- Docs: `docs/CONTAINER.md` (the guest memory floor section) and
+  `docs/TROUBLESHOOTING.md` (the `[GUEST_MEMORY_FLOOR]` entry) describe the
+  handle kill.
 
-## Merge verification
-
-Required CI and fleet review have not been observed for this branch.
-
-## Remaining risk
-
-The figure covers only the 200-line worker log tail, so a guard action logged
-earlier reads `none logged in the log tail`. Not checked: GRQ-3's archive for
-this kill, and whether the guards fired in this run.
+Not checked: a guest that has really run out of memory, and GRQ-3's archive for
+this kill. Remaining risk: descendants that outlive the agent still hold their
+memory until the leftover reaper's `ps` can run.
