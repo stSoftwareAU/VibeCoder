@@ -2273,9 +2273,10 @@ async function runClaudeWithTimeoutBody(
             ) return;
             guestMemoryPark = reason;
             logger?.warn(reason);
+            // No grace at the floor (Issue #5634): a TERM grace lets the tree keep its memory while each wait-loop probe spawns on a starving guest.
             void (options.killProcessTree ?? killClaudeProcessTree)(
               childPid,
-              killAfterSeconds,
+              0,
               logger,
               childIdentity,
             ).catch((err) => {
