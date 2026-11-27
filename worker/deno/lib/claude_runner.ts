@@ -1983,11 +1983,12 @@ async function runClaudeWithTimeoutBody(
         // EPIPE / early exit: the child's exit status tells the story.
       });
     }
-    // Fingerprint the child while it is provably ours (Issue #501). Every
-    // later signal is checked against this: a pid reaped and reused before
-    // the watchdog fires belongs to a stranger, and on CI that stranger was
-    // in the runner's own tree. A capture that fails is kept as `null` —
-    // an agent we cannot identify is one the kill path must never signal.
+    // Fingerprint the child while it is provably ours (Issue #501). All
+    // PID-based signals are checked against this: a reaped and reused PID
+    // belongs to a stranger. A failed capture stays null and refuses those
+    // signals. The guest memory floor's handle SIGKILL (Issue #5638) is the
+    // exception, even with a null fingerprint: Deno refuses to signal a
+    // reaped ChildProcess handle, so it cannot reach a reused PID.
     const childIdentity = await captureProcessIdentity(childPid);
     if (childIdentity === null) {
       logger?.warn(

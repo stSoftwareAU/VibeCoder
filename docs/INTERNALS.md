@@ -571,22 +571,31 @@ its kill the instant `child.status` resolves: once the child is reaped the
 kernel may reuse its pid, so a watchdog waking during the bounded stream drain
 logs and returns rather than signalling a stranger.
 
-Every signal is also **identity-gated** (Issue #501). A pid is only a handle:
+Every PID-based signal is also **identity-gated** (Issue #501). A pid is only a handle:
 the kernel re-issues it as soon as the process behind it is reaped, and a
 watchdog that fires in that window would signal — or sweep the children of — a
 stranger. `runClaudeWithTimeout` fingerprints the agent at spawn
 (`captureProcessIdentity`: kernel start ticks on Linux, `ps -o lstart=` on
 other platforms) and the terminate helpers re-read that token immediately
-before every signal: the
-parent before its descendants are swept, and each descendant before its TERM and
-again before its KILL. A pid that no longer matches its fingerprint is reported
+before every PID-based signal:
+the parent before its descendants are swept, and each descendant before its TERM
+and again before its KILL. A pid that no longer matches its fingerprint is reported
 as skipped and never signalled, so the kill path cannot reach a process it
 cannot prove it started.
 
 Linux reads field 22 of `/proc/<pid>/stat` through a bounded `cat` command.
 That token survives calendar-clock and timezone adjustments; comparing
 calendar start times could refuse to terminate the same live agent after
-such a shift. An unreadable or malformed token still refuses signalling.
+such a shift. An unreadable or malformed token still refuses PID-based
+signalling.
+
+The guest memory floor's fallback SIGKILL through the agent's own
+`Deno.ChildProcess` handle (Issue #5638) is the exception. It runs even when the
+fingerprint capture returned `null`, after the process-tree kill returns and
+the agent has not exited. It needs no new process or fingerprint read. Deno
+invalidates the handle when it reaps the child and `kill` then throws
+`Child process has already terminated`, so this signal cannot reach a reused
+PID.
 
 ```mermaid
 flowchart LR

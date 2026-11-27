@@ -10,6 +10,8 @@ agent kept running until the container wedged. When that tree kill comes back
 with the agent still not exited, the runner now sends SIGKILL through the
 agent's own `Deno.ChildProcess` handle, which starts no new process, and logs
 `Guest-memory floor sent SIGKILL through the agent's process handle, PID <pid>`.
+The floor also stops an agent whose fingerprint capture failed through its
+own process handle, without risking a reused PID.
 Whether this was the cause of the GRQ-3 wedge filed here is still unconfirmed,
 because that host's archive is still missing. Part of #5638.
 
