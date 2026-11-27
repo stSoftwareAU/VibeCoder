@@ -11,8 +11,8 @@ import { assert, assertEquals } from "@std/assert";
 import {
   commitAndPushPending,
   mergeBaseBeforePush,
-  PrePushGateBlockedError,
   prBaseForSync,
+  PrePushGateBlockedError,
 } from "../lib/git_push.ts";
 import {
   type CheckAnnotation,
