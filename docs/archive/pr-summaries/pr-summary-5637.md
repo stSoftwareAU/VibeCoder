@@ -21,9 +21,9 @@ checks. Closes #5637.
   stderr and keeps the last 40 lines, so the report was cut. The repair round
   got no diagnosis and "changed nothing in the tree", and three refused cycles
   became the fallback.
-- Collapsing the noise keeps the report and still shows that lines were
-  dropped. The alternative was to tail each stream on its own, but that changes
-  the order and size of every check's record, not just the noisy case.
+- Collapsing the noise keeps the report and still shows that lines were dropped.
+  The alternative was to tail each stream on its own, but that changes the order
+  and size of every check's record, not just the noisy case.
 
 ### Essential Design Decisions
 
@@ -41,16 +41,17 @@ checks. Closes #5637.
 ### Undiscoverable Facts
 
 - The private run's full refusal reason was found in this host's
-  `self-heal.jsonl` (`milestone_branch_sync` `sync_failed`, 2026-11-26T23:32:05Z).
-  It is 7,859 characters of `Download` lines around `deno task test:unit …
-  failed (exit 1)` and `error: Test failed`, with "repair round 1 changed
-  nothing in the tree".
-- Observed with the real Deno 2.9.8 (`deno task test:unit`,
-  `--reporter=dot`, cold `DENO_DIR`): the `Download` lines print as
+  `self-heal.jsonl` (`milestone_branch_sync` `sync_failed`,
+  2026-11-26T23:32:05Z). It is 7,859 characters of `Download` lines around
+  `deno task test:unit …
+  failed (exit 1)` and `error: Test failed`, with
+  "repair round 1 changed nothing in the tree".
+- Observed with the real Deno 2.9.8 (`deno task test:unit`, `--reporter=dot`,
+  cold `DENO_DIR`): the `Download` lines print as
   `\x1b[0m\x1b[32mDownload\x1b[0m https://…` on stderr, byte for byte the
   record's form, and the failure report prints on stdout.
-- Which GRQ unit test failed is still unknown, because the record never held
-  it. This change makes the next refusal, and its repair round, carry it.
+- Which GRQ unit test failed is still unknown, because the record never held it.
+  This change makes the next refusal, and its repair round, carry it.
 
 ## Evidence
 
@@ -66,9 +67,9 @@ flowchart LR
 ```
 
 - `worker/deno/tests/milestone_gate_output_tail_5637_test.ts` drives the three
-  production entry points with the observed stdout and stderr: `verifyResolvedTree`
-  through the real `spawnTask` join, `checkMergedTree` and `runMergeFastChecks`.
-  It also tests `collapseDownloadProgress` directly.
+  production entry points with the observed stdout and stderr:
+  `verifyResolvedTree` through the real `spawnTask` join, `checkMergedTree` and
+  `runMergeFastChecks`. It also tests `collapseDownloadProgress` directly.
 
 ## Reproduction
 
@@ -80,8 +81,9 @@ flowchart LR
   against the unfixed code (`FAILED | 0 passed | 3 failed`: the kept output held
   only download lines, the `Task` line and `error: Test failed`, with no
   `the ensemble error is common`), and they pass after the fix
-- **regression test** — `worker/deno/tests/milestone_gate_output_tail_5637_test.ts`
-  (the `verifyResolvedTree`, `checkMergedTree` and `runMergeFastChecks` cases)
+- **regression test** —
+  `worker/deno/tests/milestone_gate_output_tail_5637_test.ts` (the
+  `verifyResolvedTree`, `checkMergedTree` and `runMergeFastChecks` cases)
 
 ## Test Plan
 
@@ -101,14 +103,15 @@ flowchart LR
   `milestone_merge_gate_test.ts`, `milestone_merge_gate_cause_test.ts` and
   `merge_fast_checks_test.ts`: 94 passed, 0 failed.
 - `./quality.sh`: every check up to and including `deno tests` (849s) and
-  `deno lint` passed, except markdownlint (MD018 on a re-wrapped
-  `#5637).` line in `docs/workflows/milestones.md`, since fixed). The run hit
-  my 900s bound before its last steps. I then ran those directly: `deno fmt
-  --check` passed (3956 files), `deno check` on the changed modules and
-  `lib/git_pull.ts` passed, and markdownlint on the fixed doc passed.
+  `deno lint` passed, except markdownlint (MD018 on a re-wrapped `#5637).` line
+  in `docs/workflows/milestones.md`, since fixed). The run hit my 900s bound
+  before its last steps. I then ran those directly: `deno fmt
+  --check` passed
+  (3956 files), `deno check` on the changed modules and `lib/git_pull.ts`
+  passed, and markdownlint on the fixed doc passed.
   <!-- vibe-quality-gate-skipped reason="the full ./quality.sh run hit the 900s command bound after deno tests and deno lint passed; the remaining fmt, type-check and markdownlint steps were run directly and pass" -->
 
 Not checked: a full `./quality.sh` run from start to finish on the final head,
-and a fresh sync of the private milestone branch. Remaining risk: a Deno
-release that changes the `Download` line's wording would no longer be
-collapsed. The output would then be no worse than it was before this change.
+and a fresh sync of the private milestone branch. Remaining risk: a Deno release
+that changes the `Download` line's wording would no longer be collapsed. The
+output would then be no worse than it was before this change.
