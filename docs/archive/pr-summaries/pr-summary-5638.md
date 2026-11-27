@@ -82,10 +82,16 @@ flowchart LR
 
 ## Acceptance Criteria
 
-- **missing** — a container wedged and the launcher watchdog reaped it, so the
-  run never released its claim — reason: the cause of the wedge is not
-  established without GRQ-3's archive. No guard or recovery behaviour changed,
-  so a wedge like this one is still reaped without releasing its claim.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — a container wedged and the launcher watchdog reaped it, so the
+  run never released its claim — evidence:
+  `worker/deno/tests/hard_kill_guest_facts_test.ts::the real floor-stop line is read (Issue #5638)`
+  — reviewer: partial — reason: future hard-kill reports now say whether a
+  memory guard acted, but the wedge is not fixed and a reaped run still never
+  releases its claim. The cause cannot be found without GRQ-3's archive, which
+  is still missing from the logs mirror (checked 27 November, mirror head
+  `117ee15c`, newest GRQ-3 day 21 November).
 
 ## Test Plan
 
