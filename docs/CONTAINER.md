@@ -1448,13 +1448,24 @@ memory-pressure probe (`Deno.systemMemoryInfo()` on Linux). This covers any
 agent invocation through `runClaudeWithTimeout`, so the execute turn and the
 pre-PR verifier alike. The floor is the larger of 512 MiB and 5% of total
 memory. Two readings in a row below it stop the agent's process tree, then the
-run's tagged leftovers are reaped. A reading without figures (unreadable, or
-macOS's level-only reading) never stops a run. The check is armed only in the
-worker process (`run-core`), beside the in-flight host-disk gate, so unit tests
-do not inherit the host's memory. This floor stops agent runs only; it does not
-stop quality-gate and pre-flight commands, because they are not agent runs. The
-worker-wide memory guard (Issue #5634) does cover them: below its own floor it
-kills the largest process in the worker's tree (see TROUBLESHOOTING.md).
+run's tagged leftovers are reaped. The stop sends SIGKILL straight after
+SIGTERM, without the run's `killAfterSeconds` grace (30 s by default): the guest
+is already below its floor, and during the grace the tree keeps its memory while
+each check of the wait spawns a new process (Issue #5634). The tree kill reads
+`/proc` and runs `ps`, `pgrep` and `kill`, each a new process. On a guest out of
+memory those time out (observed on 2026-11-26: `ps timed out after 10000ms`),
+so once the tree kill returns with the agent still running, the worker sends
+SIGKILL through the agent's own process handle, which needs no new process; it
+logs `Guest-memory floor sent SIGKILL through the agent's process handle`
+(Issue #5638). Processes the agent started that survive it are left to the
+leftover reaper, which still runs `ps`. A reading without figures (unreadable,
+or macOS's level-only reading) never stops a run. The check is armed only in
+the worker process (`run-core`), beside the in-flight host-disk gate, so unit
+tests do not inherit the host's memory. This floor stops agent runs only; it
+does not stop quality-gate and pre-flight commands, because they are not agent
+runs. The worker-wide memory guard (Issue #5634) does cover them: below its own
+floor it kills the largest process in the worker's tree (see
+TROUBLESHOOTING.md).
 
 Every hard kill on Issue #4815 had a guest that stopped answering its exec
 probe. The last in-run reading before the 2026-11-25 kill was MemAvailable
@@ -1839,6 +1850,10 @@ build artefacts.
   sudo rule carries no `SETENV` tag, so `env_reset` strips a variable handed to
   `sudo` in the child environment; the quality gate's spawn therefore becomes
   `sudo -n -u agent -- env CARGO_TARGET_DIR=… bash -c './quality.sh'`.
+  The guest's cargo job cap `CARGO_BUILD_JOBS` (Issue #4225) travels the same
+  way (Issue #5626). Before that, `env_reset` stripped it, so every cargo a
+  gate dropped to `agent` (the quality gate, the milestone merge and
+  resolution gates, the merge fast checks) ran with one job per vCPU.
   A repository's declared `quality_credentials` are the exception: they do not
   travel in argv. They travel on the stdin of the same dropped command, where a
   fixed `sh -c` wrapper inside `sudo` reads them, exports them and `exec`s the

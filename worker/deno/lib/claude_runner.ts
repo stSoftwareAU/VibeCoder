@@ -37,6 +37,8 @@ import {
   parkRunningBuild,
 } from "./heavy_build_gate.ts";
 import {
+  GUEST_MEMORY_HANDLE_KILL,
+  GUEST_MEMORY_KILL_FAILED,
   GUEST_MEMORY_POLL_MS,
   guestMemoryFloorArmed,
   GuestMemoryFloorError,
@@ -129,6 +131,8 @@ import {
   formatMemoryGuardKill,
   isBelowMemoryGuardFloor,
   killMemoryGuardVictim,
+  MEMORY_GUARD_COULD_NOT,
+  MEMORY_GUARD_LEFT_ALONE,
   memoryGuardFloorBytes,
   selectMemoryGuardVictim,
 } from "./memory_guard.ts";
@@ -746,6 +750,11 @@ export interface RunClaudeOptions {
    * once the victim's identity and tree membership are proven.
    */
   memoryGuardKill?: (pid: number) => void;
+  /**
+   * The process-tree kill the guest memory floor runs (Issue #5638). Defaults
+   * to `killClaudeProcessTree`; tests inject one whose probes signal nothing.
+   */
+  killProcessTree?: typeof killClaudeProcessTree;
   /**
    * The start-time reader the memory guard proves identities with (Issue
    * #5529). Defaults to the start token from `pid_guard.ts`. Tests only.
@@ -1957,6 +1966,14 @@ async function runClaudeWithTimeoutBody(
       ),
     });
     const childPid = child.pid;
+    // Set the instant the agent is reaped (Issue #5638): the guest memory
+    // floor reads it after its tree kill returns.
+    let childExited = false;
+    void child.status.then(() => {
+      childExited = true;
+    }, () => {
+      childExited = true;
+    });
     if (promptViaStdin && promptFilePath) {
       // Stream the file into stdin and close it at EOF (pipeTo closes the
       // writable). A child that exits before reading — an auth failure —
@@ -1966,11 +1983,12 @@ async function runClaudeWithTimeoutBody(
         // EPIPE / early exit: the child's exit status tells the story.
       });
     }
-    // Fingerprint the child while it is provably ours (Issue #501). Every
-    // later signal is checked against this: a pid reaped and reused before
-    // the watchdog fires belongs to a stranger, and on CI that stranger was
-    // in the runner's own tree. A capture that fails is kept as `null` —
-    // an agent we cannot identify is one the kill path must never signal.
+    // Fingerprint the child while it is provably ours (Issue #501). All
+    // PID-based signals are checked against this: a reaped and reused PID
+    // belongs to a stranger. A failed capture stays null and refuses those
+    // signals. The guest memory floor's handle SIGKILL (Issue #5638) is the
+    // exception, even with a null fingerprint: Deno refuses to signal a
+    // reaped ChildProcess handle, so it cannot reach a reused PID.
     const childIdentity = await captureProcessIdentity(childPid);
     if (childIdentity === null) {
       logger?.warn(
@@ -2039,7 +2057,7 @@ async function runClaudeWithTimeoutBody(
           // could not tell "could not act" from "never reached".
           if (critical) {
             logger?.warn(
-              `Memory guard could not read the process table: ${
+              `${MEMORY_GUARD_COULD_NOT} read the process table: ${
                 err instanceof Error ? err.message : String(err)
               } (Issue #5529)`,
             );
@@ -2075,7 +2093,7 @@ async function runClaudeWithTimeoutBody(
               } else {
                 // Unproven means no signal (CODING-STANDARDS.md).
                 logger?.warn(
-                  `Memory guard left pid=${victim.pid} alone: ` +
+                  `${MEMORY_GUARD_LEFT_ALONE}${victim.pid} alone: ` +
                     `${outcome.reason}, so it is not provably this agent ` +
                     `run's process (Issue #5529)`,
                 );
@@ -2083,7 +2101,7 @@ async function runClaudeWithTimeoutBody(
             } catch (err) {
               // Fail loud: a guard that cannot kill must say so in the log.
               logger?.warn(
-                `Memory guard could not kill pid=${victim.pid}: ${
+                `${MEMORY_GUARD_COULD_NOT} kill pid=${victim.pid}: ${
                   err instanceof Error ? err.message : String(err)
                 } (Issue #5529)`,
               );
@@ -2255,17 +2273,37 @@ async function runClaudeWithTimeoutBody(
             ) return;
             guestMemoryPark = reason;
             logger?.warn(reason);
-            void killClaudeProcessTree(
+            void (options.killProcessTree ?? killClaudeProcessTree)(
               childPid,
               killAfterSeconds,
               logger,
               childIdentity,
             ).catch((err) => {
               logger?.error(
-                `Guest-memory kill failed for PID ${childPid}: ${
+                `${GUEST_MEMORY_KILL_FAILED} ${childPid}: ${
                   err instanceof Error ? err.message : String(err)
                 }`,
               );
+            }).finally(() => {
+              // The tree kill spawns cat/ps/kill, which time out on a full guest; the handle needs no spawn and cannot reach a reused pid.
+              if (childExited) return;
+              try {
+                child.kill("SIGKILL");
+                logger?.warn(
+                  `${GUEST_MEMORY_HANDLE_KILL} ${childPid}: the process-tree kill returned and the agent had not exited (Issue #5638)`,
+                );
+              } catch (err) {
+                // Deno throws a TypeError once the child has been reaped.
+                if (
+                  err instanceof TypeError &&
+                  /already terminated/.test(err.message)
+                ) return;
+                logger?.error(
+                  `${GUEST_MEMORY_KILL_FAILED} ${childPid}: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                );
+              }
             });
           },
         );

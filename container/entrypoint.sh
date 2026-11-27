@@ -667,7 +667,9 @@ export DISABLE_AUTOUPDATER=1
 # that exhausted memory without an OOM kill and the container stopped
 # scheduling until the launcher's watchdog reaped it. Exported here, after
 # the rest of the environment and before the driver, so the worker, the
-# coding agent and every cargo they start inherit it. A value already in
+# coding agent and every cargo they start inherit it. A command the worker
+# drops to the `agent` account gets it through sudo in argv (`sudoCarriedEnv`,
+# Issue #5626), because sudo's env_reset would strip it. A value already in
 # the environment is replaced: the cap belongs to the guest.
 export CARGO_BUILD_JOBS=2
 

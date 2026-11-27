@@ -24,13 +24,13 @@ import type { Logger, Result } from "../types.ts";
 import type { MergeConflictAgentOutcome } from "./merge_conflict_agent.ts";
 import type { MergeConflictRepairContext } from "./prompt_builder.ts";
 import {
-  collapseRepeatedLines,
   denoCheckLeavesDirUntouched,
   denoLockfileWriteRefused,
   describeRustToolchainGap,
   detectRemoteModuleGap,
   detectRustToolchainGap,
   findTypeCheckProjects,
+  keepOutputTail,
   readManifestTasks,
 } from "./milestone_merge_gate.ts";
 import {
@@ -59,10 +59,6 @@ export const MERGE_FAST_CHECKS_BUDGET_MS = 900_000;
 
 /** Repair rounds the agent gets before the push is refused (Issue #4616). */
 export const MERGE_FAST_CHECK_REPAIR_ROUNDS = 2;
-
-/** Longest check output carried into a log line or a repair prompt. */
-const MAX_OUTPUT_LINES = 40;
-const MAX_OUTPUT_CHARS = 4000;
 
 /** One command to run in one project. */
 export interface FastCheck {
@@ -131,13 +127,6 @@ export interface VerifyBeforePushOptions {
   maxRounds?: number;
   /** Logs each repair round. */
   logger: Logger;
-}
-
-/** Keep the tail of the output: a check's failure sits at the end of it. */
-function tail(output: string): string {
-  const lines = collapseRepeatedLines(output.trim()).split("\n");
-  const kept = lines.slice(-MAX_OUTPUT_LINES).join("\n");
-  return kept.length > MAX_OUTPUT_CHARS ? kept.slice(-MAX_OUTPUT_CHARS) : kept;
 }
 
 /** Append output to a one-line detail, when there is any. */
@@ -533,7 +522,9 @@ export async function runMergeFastChecks(
       return {
         status: "unverified",
         detail: `${check.label} could not be run`,
-        output: tail(err instanceof Error ? err.message : String(err)),
+        output: keepOutputTail(
+          err instanceof Error ? err.message : String(err),
+        ),
       };
     }
     if (result.code === 0) {
@@ -548,7 +539,7 @@ export async function runMergeFastChecks(
         detail:
           `${check.label} timed out — the merge is unverified, so it is ` +
           "not pushed",
-        output: tail(result.output),
+        output: keepOutputTail(result.output),
       };
     }
     // Environment faults a repair round cannot answer (Issues #4422, #3255).
@@ -560,7 +551,7 @@ export async function runMergeFastChecks(
         status: "unverified",
         detail:
           `${check.label} could not fetch its remote modules (${remote.cause})`,
-        output: tail(result.output),
+        output: keepOutputTail(result.output),
       };
     }
     const gap = check.kind === "cargo"
@@ -570,13 +561,13 @@ export async function runMergeFastChecks(
       return {
         status: "unverified",
         detail: describeRustToolchainGap(check.label, result.code, gap),
-        output: tail(result.output),
+        output: keepOutputTail(result.output),
       };
     }
     return {
       status: "failed",
       failingCommand: check.label,
-      output: tail(result.output),
+      output: keepOutputTail(result.output),
     };
   }
   if (ran.length === 0 && leftToCi.length > 0) {

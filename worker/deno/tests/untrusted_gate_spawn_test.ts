@@ -434,6 +434,35 @@ Deno.test("a usable untrusted account runs the command dropped, with the cargo t
   });
 });
 
+Deno.test("a command dropped to the untrusted account keeps the guest's cargo job cap (Issue #5626)", async () => {
+  // Model sudo's environment reset, then execute the probe and child for real.
+  const spawn: typeof runWithTimeout = (command, args, options) => {
+    assertEquals(command, "sudo");
+    assertEquals(args.slice(0, 4), ["-n", "-u", "agent", "--"]);
+    return runWithTimeout(
+      "env",
+      ["-i", "PATH=/usr/bin:/bin", ...args.slice(4)],
+      options,
+    );
+  };
+  await withCheckout(async (cwd) => {
+    for (const cap of ["2", undefined]) {
+      const source = cap === undefined
+        ? SOURCE
+        : { ...SOURCE, CARGO_BUILD_JOBS: cap };
+      const result = await runRepositoryCommand(
+        "printenv",
+        ["CARGO_BUILD_JOBS"],
+        { cwd, timeoutMs: 10_000 },
+        { spawn, drop: agentDrop, source, trimRefused: false },
+      );
+      assert(result.ok);
+      assertEquals(result.value.code, cap === undefined ? 1 : 0);
+      assertEquals(result.value.stdout.trim(), cap ?? "");
+    }
+  });
+});
+
 const PROBE_FAILURES: [string, Spawned][] = [
   [
     "exits non-zero",

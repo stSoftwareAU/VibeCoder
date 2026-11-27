@@ -1365,16 +1365,17 @@ Deno.test("the body carries the guest and host figures under the last log time (
   const lines = formatHardKillBody(ev, hardKillSignature(ev)).split("\n");
   const at = lines.indexOf("**Last log time:** 2026-11-11 16:53:16Z");
   assert(at >= 0, "the last log time line is present");
-  assertEquals(lines.slice(at + 1, at + 8), [
+  assertEquals(lines.slice(at + 1, at + 9), [
     "**Silent before capture:** 48m 51s",
     "**Guest probe:** `did not answer`",
     "**Guest memory:** not available",
     "**Guest pressure:** not available",
     "**Last liveness tick:** not in the log tail",
+    "**Memory guards:** none logged in the log tail",
     "**Host disk:** 3.2 GiB free of 460.0 GiB (0% free)",
     "**Host memory:** pressure high, 0.8 GiB available of 16.0 GiB",
   ]);
-  assertEquals(lines[at + 8], "", "a blank line follows the seven figures");
+  assertEquals(lines[at + 9], "", "a blank line follows the eight figures");
 });
 
 Deno.test("an answered guest shows its numbers in the body (Issue #5062)", () => {
@@ -1409,6 +1410,18 @@ Deno.test("a liveness tick in the log tail shows in the body (Issue #4815)", () 
   assertStringIncludes(
     body,
     "**Last liveness tick:** MemAvailable 120 MiB, cpu some avg10=2.00 (logged 2026-10-25 01:26:18Z)",
+  );
+});
+
+Deno.test("a floor stop in the log tail shows in the body (Issue #5638)", () => {
+  const ev = makeEvidence({}, {
+    workerLogTail:
+      "[2026-11-26 00:34:34Z] WARNING: [s1 stSoftwareAU/GRQ-AutoTrader#5644] [GUEST_MEMORY_FLOOR] guest memory stayed below its floor (1.7 GiB available, floor 2.7 GiB) for 2 readings in a row: the agent run was stopped so the guest keeps answering (Issue #4815) host=vibe-coder-62543:205",
+  });
+  const body = formatHardKillBody(ev, hardKillSignature(ev));
+  assertStringIncludes(
+    body,
+    "**Memory guards:** guest memory floor stopped the agent (logged 2026-11-26 00:34:34Z)",
   );
 });
 

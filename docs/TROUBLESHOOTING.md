@@ -219,7 +219,7 @@ launch.
 A container VM can wedge: `<runtime> exec` hangs, nothing new appears in
 `${LOG_DIR}/worker.log`, and the host-side `container run` client never exits.
 The launcher no longer waits on it for ever — at the latest past the plan's
-watchdog deadline (or earlier, see below) it kills the container, SIGKILLs the host-side client and runtime helper if the
+watchdog deadline, plus any suspension credit (see below), or earlier (see below), it kills the container, SIGKILLs the host-side client and runtime helper if the
 record survives that, and exits `87`:
 
 ```text
@@ -239,6 +239,8 @@ answers is never reaped early, however long the log is silent. If the early reap
 only: `run.ps1` keeps the deadline alone (it also captures no hard-kill
 evidence). Issue #5161.
 
+When the deadline passes and the client is still running, `run.sh` first reads the guest's uptime with `<runtime> exec <name> cat /proc/uptime` (bounded to 10 seconds). If that uptime is at least `VIBE_WATCHDOG_SUSPEND_MIN_SECONDS` (default 120) below the elapsed time, the host suspended the VM for that long while its clock ran on, so the watchdog extends its deadline by the suspended time and keeps waiting. It logs `[run.sh] watchdog: <name>'s guest was suspended for <n>s (its uptime is below the <m>s elapsed) - extending the deadline to <d>s (Issue #5544)`, and the early silent-guest check still runs meanwhile. The total extension is at most one more watchdog deadline, so a guest that stays suspended is still reaped, and the hard-kill reason then names the extended deadline. No probe runs without a host timeout command, when the setting is `0`, or when less than the minimum has elapsed, and an exec failure or unparsable output gives no credit. On Docker and Podman `/proc/uptime` is the host kernel's uptime, so the credit is zero there. `run.ps1` gives no credit.
+
 Nothing to do by hand: the next cycle launches a fresh container, and any
 leftover `vibe-coder-*` container is reaped before it. On `run.sh`, the reap
 first leaves a `hard-kill-<container>-<epoch>.json` record in `${LOG_DIR}` with
@@ -249,7 +251,10 @@ The next worker start files that record as a `bug` issue carrying only the run's
 facts, the figures derived from the record (silence before capture, the
 guest-probe state, guest memory, guest pressure and the last liveness tick
 from the newest `[liveness] run-pressure` or `[liveness] tick=` line in the
-worker log tail (`not in the log tail` if absent), plus the host's free disk
+worker log tail (`not in the log tail` if absent), the memory guards (from
+the worker log tail: a guest memory floor stop, Issue #4815, or the early-OOM
+guard's kill or failure to act, Issue #5529; `none logged in the log tail`
+when neither logged, Issue #5638), plus the host's free disk
 and host memory pressure at capture, read on the host so present even when the
 guest does not answer, Issue #5250) and a last step logged, from
 a fixed list (`pre-PR verifier`, `quality gate`,
@@ -318,7 +323,7 @@ label strips completed. Its last worker-log line is slot s2's `2 consecutive
 issue failures — backing off 300s before the next claim.` at 09:39:57 UTC,
 logged after s1's `stop reason=drain` at 09:31:12 and after the run's 09:20:59
 finish deadline; a slot no longer probes or backs off in that state. The
-historical cause remains unverified.
+wedge is now explained: at capture the guest's PID 1 had been up 36 minutes against the 11400s deadline, so the host suspended the VM while its clock ran on and the guest's timers stood still, which is why the 300s back-off never finished. The watchdog now credits that suspended time (see above).
 
 A setup phase still running after 30 minutes for the clone, git, stream
 compaction and pre-setup command is abandoned (Issue #5128). A milestone issue adds two
@@ -1188,7 +1193,10 @@ readings in a row, before the guest stopped answering (Issue #4815). The
 reading is guest-wide, so every agent run active in the worker at the time
 stops with the same reason, including another slot's verifier pass. Nothing is
 required: the work is kept on the issue branch in a `wip:` commit and the next
-claim resumes it. If the stops recur on one repository, its builds or tests
+claim resumes it. If the tree kill cannot stop the agent on a full guest,
+the worker logs `Guest-memory floor sent SIGKILL through the agent's process
+handle, PID <pid>` at WARNING and kills the agent through its own handle
+(Issue #5638). If the stops recur on one repository, its builds or tests
 need more memory than the guest has; give the guest more with
 `VIBE_CONTAINER_MEMORY`.
 

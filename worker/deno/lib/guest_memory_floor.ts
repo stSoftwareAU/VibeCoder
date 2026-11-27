@@ -23,6 +23,11 @@ export const GUEST_MEMORY_FLOOR_READINGS = 2;
 export const GUEST_MEMORY_POLL_MS = 5_000;
 /** Marker that opens the stop reason. */
 export const GUEST_MEMORY_FLOOR_MARKER = "[GUEST_MEMORY_FLOOR]";
+/** Opens the log line when killing the agent at the floor failed. */
+export const GUEST_MEMORY_KILL_FAILED = "Guest-memory kill failed for PID";
+/** Opens the log line when the floor SIGKILLs the agent's handle (Issue #5638). */
+export const GUEST_MEMORY_HANDLE_KILL =
+  "Guest-memory floor sent SIGKILL through the agent's process handle, PID";
 
 /** The available-memory floor for a guest with `totalBytes` of memory. */
 export function guestMemoryFloorBytes(totalBytes: number): number {
