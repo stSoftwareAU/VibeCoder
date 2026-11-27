@@ -118,17 +118,33 @@ flowchart TD
   return `GuestMemoryFloorError` with the literal floor reason.
   - Red on base: hung, killed by `timeout 90` (exit 124).
   - Green on the head.
-- **New:** `worker/deno/tests/worker_memory_guard_5634_test.ts` (14 tests). They
-  drive `WorkerMemoryGuard.tick()` and `killWorkerTreeProcess` with injected
-  deps.
+- **New:** `worker/deno/tests/worker_memory_guard_5634_test.ts` (21 tests). They
+  drive `WorkerMemoryGuard.tick()`, `startWorkerMemoryGuard`,
+  `productionWorkerMemoryGuardDeps` and `killWorkerTreeProcess`.
   - A gate process outside any agent tree is killed in preference to an agent's
     child. The agent CLI itself is never chosen.
   - Above the floor, nothing is read or killed.
   - A ppid-1 process is not killed.
   - The no-victim line is logged once per low spell, as the literal
     `Worker memory guard found no process to kill: …` line.
-  - A `ps` failure, a changed start time, a throwing kill or probe, and a failed
-    first fingerprint are each handled.
+  - A `ps` failure, a throwing kill or probe, and a failed first fingerprint are
+    each handled.
+  - A victim whose start token changes (the worker's token held stable) is left
+    alone with `the pid changed hands between selection and the kill`. A changed
+    worker-root token is its own test and is refused with
+    `the root pid no longer holds the process it held`.
+  - A seam that throws outside the inner try (`activeAgentPids`, or a rejected
+    worker fingerprint read) makes `tick()` resolve, kill nothing and log only
+    `Worker memory guard failed: <cause> (Issue #5634)`. A throwing log sink
+    does not make the tick reject either.
+  - A tick that overlaps one held on a gated probe does nothing, so the victim
+    is signalled once.
+  - `startWorkerMemoryGuard` with a 5 ms interval and injected deps reaches the
+    kill seam on the timer, and nothing more is signalled after the returned
+    stop function is called.
+  - `productionWorkerMemoryGuardDeps(log).activeAgentPids()` names the pid of a
+    real stub agent started through `runClaudeWithTimeout` while it runs, and is
+    empty after it ends.
   - The `sudo -n -u agent -- kill -s KILL <pid>` fallback is used, and a failing
     sudo rejects with its stderr.
   - A kill that returns a rejected promise is logged only as the literal
@@ -152,9 +168,9 @@ flowchart TD
   lines appear under `worker/deno/tests/` in `git diff origin/main...HEAD`.
 - **Targeted run on the head:**
   `deno task test:unit tests/claude_runner_guest_memory_floor_grace_5634_test.ts tests/claude_runner_guest_memory_handle_kill_5638_test.ts tests/claude_runner_guest_memory_floor_4815_test.ts tests/memory_guard_5529_test.ts tests/worker_memory_guard_5634_test.ts tests/hard_kill_guest_facts_test.ts tests/hard_kill_report_test.ts`
-  gave 179 passed, 0 failed. A second run, with
-  `tests/hard_kill_facts_backfill_4815_test.ts` and without the three runner
-  tests, gave 182 passed, 0 failed.
+  gave 188 passed, 0 failed on the head. An earlier run on a previous commit,
+  with `tests/hard_kill_facts_backfill_4815_test.ts` and without the three
+  runner tests, gave 182 passed, 0 failed.
 - **`./quality.sh < /dev/null` on `c3731bf11`:**
   - Every stage passed except markdownlint, including deno tests (parallel and
     serial), lint, type check, fmt, semgrep and gitleaks.
@@ -174,5 +190,10 @@ flowchart TD
   which can time out on a starving guest. That is not removed, only the wait
   between SIGTERM and SIGKILL.
 - The `run_core.ts` start and stop of the worker-wide guard has no test of its
-  own. The sudo fallback was observed by hand, not tested against the real
-  `agent` account.
+  own: `runCoreCommand.execute` loads the config, resolves the GitHub user and
+  builds the production deps before it reaches that call, and no existing test
+  in `worker/deno/tests` drives that command
+  (`grep -rl "commands/run_core"
+  worker/deno/tests` finds none). The timer and
+  the production deps it wires are each tested directly. The sudo fallback was
+  observed by hand, not tested against the real `agent` account.

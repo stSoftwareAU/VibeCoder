@@ -16,8 +16,18 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   killWorkerTreeProcess,
+  productionWorkerMemoryGuardDeps,
+  startWorkerMemoryGuard,
   WorkerMemoryGuard,
+  type WorkerMemoryGuardDeps,
 } from "../lib/worker_memory_guard.ts";
+import {
+  listActiveAgentRuns,
+  resetAgentRunsTerminating,
+  runClaudeWithTimeout,
+  terminateActiveAgentRuns,
+} from "../lib/claude_runner.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
 import type { MemoryPressureReading } from "../lib/memory_pressure.ts";
 
 const MIB = 1024 ** 2;
@@ -163,17 +173,34 @@ Deno.test("worker_memory_guard #5634 - a process-table failure is logged and kil
   );
 });
 
-Deno.test("worker_memory_guard #5634 - a victim whose start time changes is left alone", async () => {
+Deno.test("worker_memory_guard #5634 - a victim whose start time changes is left alone, for the victim's own reason", async () => {
+  // Only the victim's token moves on later reads; the worker root stays put,
+  // so the root check passes and the victim re-verification is what refuses.
   const h = harness({
     readings: [LOW],
-    startTime: (pid, call) => call === 0 ? `start-${pid}` : `other-${pid}`,
+    startTime: (pid, call) =>
+      pid === 511 && call > 0 ? `other-${pid}` : `start-${pid}`,
   });
   await h.guard.tick();
   assertEquals(h.killed, []);
-  assert(
-    h.logs.some((l) => l.includes("left pid=511 alone")),
-    JSON.stringify(h.logs),
-  );
+  assertEquals(h.logs, [
+    "Worker memory guard left pid=511 alone: the pid changed hands between " +
+    "selection and the kill (Issue #5634)",
+  ]);
+});
+
+Deno.test("worker_memory_guard #5634 - a worker root whose start time changes refuses the kill, for the root's own reason", async () => {
+  const h = harness({
+    readings: [LOW],
+    startTime: (pid, call) =>
+      pid === WORKER && call > 0 ? `other-${pid}` : `start-${pid}`,
+  });
+  await h.guard.tick();
+  assertEquals(h.killed, []);
+  assertEquals(h.logs, [
+    "Worker memory guard left pid=511 alone: the root pid no longer holds " +
+    "the process it held (Issue #5634)",
+  ]);
 });
 
 Deno.test("worker_memory_guard #5634 - a kill that throws is logged and the tick resolves", async () => {
@@ -245,6 +272,154 @@ Deno.test("worker_memory_guard #5634 - a failed first worker fingerprint is retr
   );
   await guard.tick();
   assertEquals(killed, [511]);
+});
+
+/** Deps for a guard below the floor with the gate process as the victim. */
+function lowDeps(overrides: Partial<WorkerMemoryGuardDeps>) {
+  const logs: string[] = [];
+  const killed: number[] = [];
+  const deps: WorkerMemoryGuardDeps = {
+    workerPid: WORKER,
+    probe: () => Promise.resolve(LOW),
+    runPs: () => Promise.resolve(GATE_PS),
+    kill: (pid) => {
+      killed.push(pid);
+    },
+    log: (m) => logs.push(m),
+    activeAgentPids: () => [AGENT],
+    readStartTime: (pid) => Promise.resolve(`start-${pid}`),
+    ...overrides,
+  };
+  return { deps, logs, killed };
+}
+
+Deno.test("worker_memory_guard #5634 - a seam that throws outside the kill step is logged once and tick still resolves", async () => {
+  const h = lowDeps({
+    activeAgentPids: () => {
+      throw new Error("agent table unreadable");
+    },
+  });
+  await new WorkerMemoryGuard(h.deps).tick();
+  assertEquals(h.killed, []);
+  assertEquals(h.logs, [
+    "Worker memory guard failed: agent table unreadable (Issue #5634)",
+  ]);
+});
+
+Deno.test("worker_memory_guard #5634 - a rejected worker fingerprint read is logged as a failed tick, nothing is killed", async () => {
+  const h = lowDeps({
+    readStartTime: () =>
+      Promise.reject(new Error("cat /proc/500/stat timed out")),
+  });
+  await new WorkerMemoryGuard(h.deps).tick();
+  assertEquals(h.killed, []);
+  assertEquals(h.logs, [
+    "Worker memory guard failed: cat /proc/500/stat timed out (Issue #5634)",
+  ]);
+});
+
+Deno.test("worker_memory_guard #5634 - a tick that throws and whose log throws too still resolves", async () => {
+  const h = lowDeps({
+    activeAgentPids: () => {
+      throw new Error("agent table unreadable");
+    },
+    log: () => {
+      throw new Error("log sink closed");
+    },
+  });
+  await new WorkerMemoryGuard(h.deps).tick();
+  assertEquals(h.killed, []);
+});
+
+Deno.test("worker_memory_guard #5634 - a tick that overlaps a running one does nothing, so the victim is signalled once", async () => {
+  let releaseProbe: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseProbe = resolve;
+  });
+  let probes = 0;
+  const h = lowDeps({
+    probe: async () => {
+      probes++;
+      await gate;
+      return LOW;
+    },
+  });
+  const guard = new WorkerMemoryGuard(h.deps);
+  const first = guard.tick();
+  await guard.tick(); // overlaps: returns at once, without probing
+  assertEquals(probes, 1);
+  assertEquals(h.killed, []);
+  releaseProbe();
+  await first;
+  assertEquals(h.killed, [511]);
+  // A tick after the first finishes runs again: the flag is released.
+  await guard.tick();
+  assertEquals(probes, 2);
+});
+
+Deno.test("startWorkerMemoryGuard #5634 - a low reading reaches the kill seam on the timer, and stopping ends it", async () => {
+  const h = lowDeps({});
+  const kills: number[] = [];
+  const stop = startWorkerMemoryGuard({
+    ...h.deps,
+    kill: (pid) => {
+      kills.push(pid);
+    },
+  }, 5);
+  try {
+    // The guard's timer is unref'd, so these ref'd waits keep the loop alive.
+    for (let i = 0; i < 200 && kills.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  } finally {
+    stop();
+  }
+  assertEquals(kills[0], 511);
+  await new Promise((r) => setTimeout(r, 20)); // lets an in-flight tick land
+  const afterStop = kills.length;
+  await new Promise((r) => setTimeout(r, 60));
+  assertEquals(kills.length, afterStop, "nothing is signalled after stop()");
+});
+
+Deno.test({
+  name:
+    "productionWorkerMemoryGuardDeps #5634 - activeAgentPids names a live agent run's pid, and not after it ends",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    resetAgentRunsTerminating();
+    try {
+      await withAgentStub(
+        // Stays alive until it is told to stop.
+        `while [ ! -e "$(dirname "$0")/stop" ]; do sleep 0.05; done\n`,
+        async (stub) => {
+          const run = runClaudeWithTimeout({
+            prompt: "P",
+            model: "m",
+            agentBinaryPath: stub.path,
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+            cwd: await Deno.makeTempDir({ prefix: "wmg-cwd-" }),
+            mcpConfig: false,
+          });
+          const deps = productionWorkerMemoryGuardDeps(() => {});
+          for (let i = 0; i < 200 && deps.activeAgentPids().length === 0; i++) {
+            await new Promise((r) => setTimeout(r, 25));
+          }
+          const live = listActiveAgentRuns();
+          assertEquals(live.length, 1, "one agent run is live");
+          assertEquals(deps.activeAgentPids(), [live[0]!.pid]);
+          await Deno.writeTextFile(`${stub.dir}/stop`, "");
+          const result = await run;
+          assert(result.ok, "the stub agent run resolves");
+          assertEquals(deps.activeAgentPids(), []);
+        },
+        { prefix: "wmg_active_agents_" },
+      );
+    } finally {
+      await terminateActiveAgentRuns("test cleanup");
+      resetAgentRunsTerminating();
+    }
+  },
 });
 
 Deno.test("killWorkerTreeProcess #5634 - a direct signal that succeeds runs nothing", async () => {
