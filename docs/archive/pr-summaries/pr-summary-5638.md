@@ -87,7 +87,12 @@ flowchart LR
   process can be started, but two things are still not done. GRQ-3's archive is
   absent, so it is unconfirmed that this run wedged this way. And the agent's
   surviving descendants (the GRQ-23 `ld` linkers) are still reaped only through
-  a spawned `ps`.
+  a spawned `ps`. An in-process `/proc` walk with `Deno.kill` was tried on this
+  branch and reverted. Deno 2.9.8 refuses every `/proc` read without
+  `--allow-all` (`NotCapable: Requires all access to "/proc/<pid>/stat"`), and
+  the worker runs with scoped flags (`--allow-read --allow-run …`). The
+  remaining route is to spawn the agent as its own process group and send
+  SIGKILL to the group.
 
 ## Test Plan
 
