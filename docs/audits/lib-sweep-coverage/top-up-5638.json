@@ -1,0 +1,12 @@
+{
+  "issue": 5638,
+  "chunk": "top-up-5638",
+  "title": "Guest memory floor no-spawn tag reaper",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5638",
+  "definition": "Review the builtins-only /proc walk, exact spawn-tag match and helper lifecycle in guest_memory_tag_reaper.ts (#5638).",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/guest_memory_tag_reaper.ts"
+  ],
+  "sweptAt": "de540cb5c068e05bd7b88e67eb32719162aaa74e"
+}

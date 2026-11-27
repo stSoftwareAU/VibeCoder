@@ -11,7 +11,8 @@
  * and once the agent has exited the runner terminates each process of the
  * same user that still carries that tag. Linux only: the scan reads
  * `/proc/<pid>/environ` through `grep`, because Deno refuses that file under
- * `--allow-read` alone.
+ * `--allow-read` alone. The guest memory floor's tag reaper
+ * (guest_memory_tag_reaper.ts) applies the same tag rule without spawning.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -32,7 +33,7 @@ export const AGENT_SPAWN_TAG_ENV = "VIBE_AGENT_SPAWN_TAG";
 const REAPER_PROBE_TIMEOUT_MS = 10_000;
 
 /** Only the shape {@link newAgentSpawnTag} produces is accepted. */
-const TAG_PATTERN = /^[0-9a-f-]{8,64}$/i;
+export const TAG_PATTERN = /^[0-9a-f-]{8,64}$/i;
 
 /** Pause after KILL before the survivors are re-checked. */
 const POST_KILL_SETTLE_MS = 500;
