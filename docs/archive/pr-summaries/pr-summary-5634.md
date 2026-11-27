@@ -103,6 +103,75 @@ flowchart TD
 - **regression test** —
   `worker/deno/tests/worker_memory_guard_5634_test.ts`
 
+- Other changes in the diff:
+  - `worker/deno/lib/memory_guard.ts`: `selectMemoryGuardVictim` takes
+    `excludePids`. `formatMemoryGuardKill` takes `scope: "worker"`, and the
+    default `"agent-run"` text is unchanged. `MemoryGuardKillDeps.kill` may
+    return a promise, which is awaited. The three refusal reasons of
+    `killMemoryGuardVictim` now name "the root" or "the tree" rather than "the
+    agent", because the worker guard reaches them too. The per-run guard's
+    `Memory guard left pid=… alone` line therefore reads differently, and its
+    tests assert only `killed === false` and "changed hands", which is unchanged.
+  - `worker/deno/commands/run_core.ts` starts and stops the guard.
+  - The `worker/deno/lib/memory_pressure.ts` header names the new guard.
+  - `docs/TROUBLESHOOTING.md` has a new paragraph after the #5529 one.
+  - `docs/CONTAINER.md`: the #4815 floor still does not stop gate commands, and
+    the new guard does cover them.
+  - `docs/audits/lib-sweep-coverage/top-up-5634.json` claims the new module for
+    the sweep ledger.
+
 ## Test Plan
 
-- Pending: filled in from the final head.
+- New: `worker/deno/tests/worker_memory_guard_5634_test.ts` (14 tests), driving
+  `WorkerMemoryGuard.tick()` and `killWorkerTreeProcess` with injected deps:
+  - A gate `cargo test` of 3 GiB under `sudo`, outside any agent tree, is killed
+    rather than an agent's 400 MiB child. The log carries
+    `Guest memory critically low`, the pid and `Issue #5634`.
+  - The agent CLI itself is never chosen, and the next largest process is.
+  - Above the floor, nothing is read, killed or logged, though a large process
+    is present.
+  - A large process with ppid 1 (outside the worker's tree) is not killed. The
+    no-victim line is logged once per low spell and again after a recovery.
+  - A `ps` failure, a victim whose start time changes, a kill that throws, and a
+    probe that throws are each logged or refused without a kill.
+  - An async kill is awaited before the kill line is logged. A failed first
+    worker fingerprint is refused, then retried and killed on the next tick.
+  - `killWorkerTreeProcess`:
+    - A successful direct signal runs nothing.
+    - `PermissionDenied` runs exactly
+      `sudo -n -u agent -- kill -s KILL <pid>`.
+    - A failing sudo rejects with its stderr cause
+      (`sudo: a password is required`).
+    - Any other error is rethrown without sudo.
+- Added to `worker/deno/tests/memory_guard_5529_test.ts`:
+  - `excludePids` stops pid 105 being chosen, and the control without it does
+    choose 105.
+  - The `"worker"` scope text names #5634, and the default text still names
+    "this agent run's tree" and #5529.
+- No existing test was edited.
+- Red run: the new tests were written before the library changes. The run
+  failed at load with `Module not found .../lib/worker_memory_guard.ts`.
+- Green run on the head:
+  `deno task test:unit tests/worker_memory_guard_5634_test.ts tests/memory_guard_5529_test.ts tests/claude_runner_guest_memory_floor_4815_test.ts tests/guest_memory_floor_4815_test.ts`
+  gave `53 passed | 0 failed`. `deno task check:manifests` gave
+  `876 passed | 0 failed | 1 ignored`. `deno fmt --check`, `deno lint` and
+  `deno check` on the changed TypeScript are clean.
+- `./quality.sh < /dev/null` was run once, under `timeout 1500`, and did not
+  finish: exit 124. Before the cut-off, every stage it reached passed except
+  completeness checks. That failure was `lib_sweep_coverage_test.ts`, because
+  the new module was not claimed by any sweep slice. It is fixed by
+  `top-up-5634.json`, and `check:manifests` now passes as above. Config
+  integration and Checkov were skipped (no `.config.json`, no checkov). There
+  was not enough budget left to re-run the whole gate.
+
+<!-- vibe-quality-gate-skipped reason="the full ./quality.sh run timed out at 1500 s; its only failure (completeness checks) was fixed and re-run green, but the run budget could not cover a second full gate" -->
+
+### Not done or not checked
+
+- The guest wedge was not reproduced, and the GRQ-3 archive was not read.
+- The production wiring in `commands/run_core.ts` (start and stop, and
+  `productionWorkerMemoryGuardDeps`) has no test of its own. Only the guard and
+  the kill helper are tested through injected deps.
+- The sudo fallback was observed by hand on this container, not in a test
+  against the real `agent` account.
+- A process re-parented away from the worker is still never killed.
