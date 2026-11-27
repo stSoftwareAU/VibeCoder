@@ -124,11 +124,15 @@ export function startGuestMemoryTagReaper(
     }
   };
 
+  // A failed write errors the stdin stream, after which it cannot be closed.
+  let stdinBroken = false;
+
   /** Send one sweep and read its answer. */
   const answer = async (): Promise<number> => {
     try {
       await writer.write(encoder.encode("sweep\n"));
     } catch (error) {
+      stdinBroken = true;
       throw new Error(
         `the tag reaper exited before answering: ${errorText(error)}`,
       );
@@ -146,24 +150,30 @@ export function startGuestMemoryTagReaper(
 
   let closing: Promise<void> | undefined;
 
+  /** SIGKILL the helper; only Deno's "already terminated" TypeError is ignored. */
+  const killHelper = (): void => {
+    try {
+      child.kill("SIGKILL");
+    } catch (error) {
+      // Deno throws a TypeError once the child has been reaped.
+      if (
+        !(error instanceof TypeError &&
+          /already terminated/.test(error.message))
+      ) throw error;
+    }
+  };
+
   const close = (): Promise<void> => {
     closing ??= (async () => {
       try {
-        await writer.close();
+        if (!stdinBroken) await writer.close();
       } catch (error) {
         // A broken pipe means the helper has already gone.
         if (!(error instanceof Deno.errors.BrokenPipe)) throw error;
       } finally {
-        try {
-          child.kill("SIGKILL");
-        } catch (error) {
-          // Deno throws a TypeError once the child has been reaped.
-          if (
-            !(error instanceof TypeError &&
-              /already terminated/.test(error.message))
-          ) throw error;
-        }
+        killHelper();
         await child.status;
+        // The helper has ended, so its stdout can only fail with the error the sweep already reported.
         await reader.cancel().catch(() => {});
       }
     })();
@@ -181,6 +191,7 @@ export function startGuestMemoryTagReaper(
           new Error(`the tag reaper did not answer within ${sweepTimeoutMs}ms`),
         );
         // The late answer would be read as the next sweep's, so the helper is closed.
+        // The timeout already rejects the sweep with its cause, so a close failure adds nothing.
         close().catch(() => {});
       }, sweepTimeoutMs);
     });

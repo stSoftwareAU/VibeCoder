@@ -17,6 +17,7 @@ import {
   runClaudeWithTimeout,
 } from "../lib/claude_runner.ts";
 import {
+  GUEST_MEMORY_KILL_FAILED,
   GUEST_MEMORY_TAG_SWEEP,
   GuestMemoryFloorError,
 } from "../lib/guest_memory_floor.ts";
@@ -40,17 +41,16 @@ interface DriveExtras {
   onReady?: (stub: AgentStub) => Promise<void>;
 }
 
-/** Whether `pid` is running and not a zombie, read from /proc. */
+/** Whether `pid` is running and not a zombie. Deno refuses /proc/<pid>/stat, so `ps` answers. */
 async function isLive(pid: number): Promise<boolean> {
-  let stat: string;
-  try {
-    stat = await Deno.readTextFile(`/proc/${pid}/stat`);
-  } catch {
-    return false;
-  }
-  // The state is the first field after the parenthesised command name.
-  const state = stat.slice(stat.lastIndexOf(")") + 2).charAt(0);
-  return state !== "Z" && state !== "X";
+  const out = await new Deno.Command("ps", {
+    args: ["-o", "stat=", "-p", String(pid)],
+    stdin: "null",
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  const state = new TextDecoder().decode(out.stdout).trim();
+  return state !== "" && !state.startsWith("Z");
 }
 
 /** Poll until `pid` is gone or a zombie, for up to 5 s. */
@@ -301,6 +301,75 @@ Deno.test({
         line.slice(prefix.length, line.length - suffix.length),
       );
       assert(signalled >= 2, `expected at least 2 signalled, got ${line}`);
+    } finally {
+      if (childPid > 0 && await isLive(childPid)) {
+        Deno.kill(childPid, "SIGKILL");
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "guest memory handle kill - a descendant is swept even when the agent exits before the tree kill returns (Issue #5638)",
+  ...opts,
+  permissions,
+  async fn() {
+    let agentPid = 0;
+    let childPid = 0;
+    let killDone: Promise<void> | undefined;
+    // Signals only the agent, then returns a little after it is gone, so the
+    // run can finish while the floor's kill is still in flight.
+    const killProcessTree = (pid: number): Promise<void> => {
+      agentPid = pid;
+      Deno.kill(pid, "SIGKILL");
+      killDone = (async () => {
+        for (let i = 0; i < 250 && await isLive(pid); i++) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      })();
+      return killDone;
+    };
+    const leftoverReaperDeps: LeftoverReaperDeps = {
+      ...DEFAULT_LEFTOVER_REAPER_DEPS,
+      findTagged: () =>
+        Promise.resolve({
+          ok: false,
+          error: "pgrep timed out after 10000ms",
+        }),
+    };
+    const { logger, warns, errors } = capturingLogger();
+    try {
+      const result = await drive(100 * MIB, killProcessTree, logger, false, {
+        // A detached job: the subshell exits at once, so the descendant snapshot
+        // never sees the sleep and only the tag sweep can reach it. Its stdio is
+        // redirected so it does not hold the stdout pipe open.
+        stubBody: `(sleep 300 >/dev/null 2>&1 & echo $! > "$0.child")\n` +
+          `printf '%s\\n' '{"type":"result","result":"working"}'\n` +
+          agentStubGate() + "exit 0\n",
+        leftoverReaperDeps,
+        onReady: async (stub) => {
+          childPid = Number(
+            (await Deno.readTextFile(`${stub.path}.child`)).trim(),
+          );
+          assert(await isLive(childPid), "descendant not running before floor");
+        },
+      });
+      await killDone;
+      assert(agentPid > 0, "the floor never called the tree kill");
+      assert(!result.ok);
+      assert(result.error instanceof GuestMemoryFloorError);
+      assertEquals(result.error.message, LOW_REASON);
+      assert(!(await isLive(childPid)), "descendant still running");
+      assert(
+        warns.some((message) => message.startsWith(GUEST_MEMORY_TAG_SWEEP)),
+        `missing tag sweep warn line in ${JSON.stringify(warns)}`,
+      );
+      assert(
+        !errors.some((message) => message.startsWith(GUEST_MEMORY_KILL_FAILED)),
+        `unexpected kill-failed error line in ${JSON.stringify(errors)}`,
+      );
     } finally {
       if (childPid > 0 && await isLive(childPid)) {
         Deno.kill(childPid, "SIGKILL");

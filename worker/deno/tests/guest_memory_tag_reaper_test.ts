@@ -56,17 +56,16 @@ async function spawnBashWithGrandchild(
   return { child, grandchild: Number(text.trim()) };
 }
 
-/** Whether `pid` is running and not a zombie, read from /proc. */
+/** Whether `pid` is running and not a zombie. Deno refuses /proc/<pid>/stat, so `ps` answers. */
 async function isLive(pid: number): Promise<boolean> {
-  let stat: string;
-  try {
-    stat = await Deno.readTextFile(`/proc/${pid}/stat`);
-  } catch {
-    return false;
-  }
-  // The state is the first field after the parenthesised command name.
-  const state = stat.slice(stat.lastIndexOf(")") + 2).charAt(0);
-  return state !== "Z" && state !== "X";
+  const out = await new Deno.Command("ps", {
+    args: ["-o", "stat=", "-p", String(pid)],
+    stdin: "null",
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  const state = new TextDecoder().decode(out.stdout).trim();
+  return state !== "" && !state.startsWith("Z");
 }
 
 /** Poll until `pid` is gone or a zombie, for up to 5 s. */
