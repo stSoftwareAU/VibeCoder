@@ -2313,23 +2313,6 @@ async function runClaudeWithTimeoutBody(
                   }`,
                 );
               }).finally(() => {
-                // First: descendants can outlive the agent, so the sweep runs regardless.
-                if (guestMemoryTagReaper) {
-                  tagSweep = guestMemoryTagReaper.sweep().then(
-                    (signalled) => {
-                      logger?.warn(
-                        `${GUEST_MEMORY_TAG_SWEEP} ${signalled} signalled for PID ${childPid} (Issue #5638)`,
-                      );
-                    },
-                    (err) => {
-                      logger?.error(
-                        `${GUEST_MEMORY_KILL_FAILED} ${childPid}: ${
-                          err instanceof Error ? err.message : String(err)
-                        }`,
-                      );
-                    },
-                  );
-                }
                 // The tree kill spawns cat/ps/kill, which time out on a full guest; the handle needs no spawn and cannot reach a reused pid.
                 if (childExited) return;
                 try {
@@ -2350,6 +2333,23 @@ async function runClaudeWithTimeoutBody(
                   );
                 }
               });
+            // The sweep forks nothing, so it starts beside the tree kill, not after it: each of the tree kill's spawns can wait 10 s on a full guest (Issue #5647).
+            if (guestMemoryTagReaper) {
+              tagSweep = guestMemoryTagReaper.sweep().then(
+                (signalled) => {
+                  logger?.warn(
+                    `${GUEST_MEMORY_TAG_SWEEP} ${signalled} signalled for PID ${childPid} (Issue #5638)`,
+                  );
+                },
+                (err) => {
+                  logger?.error(
+                    `${GUEST_MEMORY_KILL_FAILED} ${childPid}: ${
+                      err instanceof Error ? err.message : String(err)
+                    }`,
+                  );
+                },
+              );
+            }
           },
         );
       }, guestMemoryPollMs);
