@@ -35,8 +35,11 @@ import {
   hardKillHostDisk,
   hardKillHostMemory,
   hardKillLastLivenessTick,
+  hardKillMemoryGuards,
   hardKillSilentFor,
 } from "../lib/hard_kill_guest_facts.ts";
+import { guestMemoryFloorReason } from "../lib/guest_memory_floor.ts";
+import { formatMemoryGuardKill } from "../lib/memory_guard.ts";
 import {
   collapseProcPressureText,
   formatLivenessPressureFields,
@@ -859,4 +862,87 @@ Deno.test("a failed run pressure reading does not fail the run (Issue #4815)", a
   );
   assertEquals(result, 7);
   assertEquals(logged, []);
+});
+
+// ---------------------------------------------------------------------------
+// Memory guards in the worker log tail (Issue #5638)
+// ---------------------------------------------------------------------------
+
+const NONE_LOGGED = "none logged in the log tail";
+const MIB = 1024 * 1024;
+const REAL_FLOOR_LINE =
+  "[2026-11-26 00:34:34Z] WARNING: [s1 stSoftwareAU/GRQ-AutoTrader#5644] [GUEST_MEMORY_FLOOR] guest memory stayed below its floor (1.7 GiB available, floor 2.7 GiB) for 2 readings in a row: the agent run was stopped so the guest keeps answering (Issue #4815) host=vibe-coder-62543:205";
+
+Deno.test("the real floor-stop line is read (Issue #5638)", () => {
+  assertEquals(
+    hardKillMemoryGuards(tailRecord(REAL_FLOOR_LINE)),
+    "guest memory floor stopped the agent (logged 2026-11-26 00:34:34Z)",
+  );
+});
+
+Deno.test("producer-built floor and kill lines are read, newest of each (Issue #5638)", () => {
+  const floor = guestMemoryFloorReason(1800 * MIB, 2700 * MIB, 2);
+  const kill = formatMemoryGuardKill({
+    reading: {
+      level: "high",
+      totalBytes: 4096 * MIB,
+      availableBytes: 200 * MIB,
+    },
+    victim: { pid: 9, ppid: 1, rssKb: 204800, elapsed: "01:00", command: "x" },
+    floorBytes: 300 * MIB,
+  });
+  const ev = tailRecord([
+    `[2026-11-26 00:10:00Z] WARNING: [s1 o/r#1] ${floor} host=h:1`,
+    `[2026-11-26 00:20:00Z] WARNING: [s1 o/r#1] ${kill} host=h:1`,
+    `[2026-11-26 00:30:00Z] WARNING: [s1 o/r#1] ${floor} host=h:1`,
+  ]);
+  assertEquals(
+    hardKillMemoryGuards(ev),
+    "guest memory floor stopped the agent (logged 2026-11-26 00:30:00Z); " +
+      "early-OOM guard killed a process (logged 2026-11-26 00:20:00Z)",
+  );
+});
+
+Deno.test("each could-not-act prefix is read on its own (Issue #5638)", () => {
+  const cases: [string, string][] = [
+    [
+      "2026-11-26 01:00:00",
+      "[2026-11-26 01:00:00Z] ERROR: [s2 o/r#2] Guest-memory kill failed for PID 42: boom host=h:1",
+    ],
+    [
+      "2026-11-26 01:05:00",
+      "[2026-11-26 01:05:00Z] WARNING: Memory guard left pid=7 alone: x host=h:1",
+    ],
+    [
+      "2026-11-26 01:10:00",
+      "[2026-11-26 01:10:00Z] WARNING: [s1 o/r#1] Memory guard could not kill pid=7: EPERM (Issue #5529) host=h:1",
+    ],
+  ];
+  for (const [time, line] of cases) {
+    assertEquals(
+      hardKillMemoryGuards(tailRecord(line)),
+      `a memory guard could not act (logged ${time}Z)`,
+    );
+  }
+});
+
+Deno.test("look-alikes do not count (Issue #5638)", () => {
+  for (
+    const line of [
+      "[2026-11-26 02:00:00Z] INFO: [s1 o/r#1] [agent-progress] Bash: echo [GUEST_MEMORY_FLOOR] Guest memory critically low (",
+      "[2026-11-26 02:00:00Z] WARNING: [s1 o/r#1] quoted [GUEST_MEMORY_FLOOR] here",
+      "[GUEST_MEMORY_FLOOR] guest memory stayed below its floor",
+    ]
+  ) {
+    assertEquals(hardKillMemoryGuards(tailRecord(line)), NONE_LOGGED);
+  }
+});
+
+Deno.test("an empty tail reads none logged (Issue #5638)", () => {
+  assertEquals(hardKillMemoryGuards(tailRecord("")), NONE_LOGGED);
+});
+
+Deno.test("a hostile long line returns (Issue #5638)", () => {
+  const line = "[2026-11-26 23:50:01Z] WARNING: [s1 " + "a".repeat(50_000);
+  assertEquals(hardKillMemoryGuards(tailRecord(line)), NONE_LOGGED);
 });
