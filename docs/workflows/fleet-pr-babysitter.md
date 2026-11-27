@@ -160,7 +160,11 @@ uncompressed log remains available for diagnosis and the next pass retries
 compression after confirming that its owner has exited. Each pass also removes
 its temporary PR clones after use. A later pass removes clones left by an
 interrupted babysitter after confirming their owner exited; it leaves live and
-unrelated directories alone.
+unrelated directories alone. Before removing such a clone it restores owner
+access to every directory inside it (never following a symbolic link), so a
+directory a repair left with mode 000 does not block the removal. A clone that
+still cannot be removed is logged as a `WARNING` and retried by the next pass;
+it never stops the pass from reaching the PRs.
 
 Each repository also has one bare mirror, kept at
 `${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter/mirrors/<owner>--<repo>.git`.

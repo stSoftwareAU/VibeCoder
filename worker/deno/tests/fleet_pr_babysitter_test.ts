@@ -2986,6 +2986,67 @@ Deno.test("cleanup removes abandoned clones but preserves live and unrelated dir
   }
 });
 
+Deno.test("cleanup removes an abandoned clone holding an inaccessible directory", async () => {
+  const root = await Deno.makeTempDir();
+  const locked =
+    `${root}/fleet-pr-babysitter-99999999-abcdef/scratch/credentials`;
+  try {
+    await Deno.mkdir(`${locked}/inner`, { recursive: true });
+    await Deno.writeTextFile(`${locked}/inner/token`, "x");
+    await Deno.chmod(locked, 0o000);
+    await recoverTemporaryClones(root);
+    assertEquals(await Array.fromAsync(Deno.readDir(root)), []);
+  } finally {
+    await Deno.chmod(locked, 0o700).catch(() => {});
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("cleanup never changes the mode of a directory a clone links to", async () => {
+  const root = await Deno.makeTempDir();
+  const outside = await Deno.makeTempDir();
+  try {
+    await Deno.chmod(outside, 0o500);
+    const dead = `${root}/fleet-pr-babysitter-99999999-abcdef`;
+    await Deno.mkdir(dead);
+    await Deno.symlink(outside, `${dead}/link`);
+    await recoverTemporaryClones(root);
+    assertEquals(await Array.fromAsync(Deno.readDir(root)), []);
+    assertEquals((await Deno.stat(outside)).mode! & 0o777, 0o500);
+  } finally {
+    await Deno.chmod(outside, 0o700);
+    await Deno.remove(outside, { recursive: true });
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("cleanup that cannot remove an abandoned clone warns and does not throw", async () => {
+  const root = await Deno.makeTempDir();
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+  try {
+    await Deno.mkdir(`${root}/fleet-pr-babysitter-99999999-abcdef/child`, {
+      recursive: true,
+    });
+    // A read-only root stops the clone itself being unlinked, whatever the
+    // clone's own permissions are.
+    await Deno.chmod(root, 0o500);
+    await recoverTemporaryClones(root);
+    assert(
+      warnings.some((line) =>
+        line.startsWith("WARNING:") &&
+        line.includes("fleet-pr-babysitter-99999999-abcdef")
+      ),
+      warnings.join("\n"),
+    );
+  } finally {
+    console.warn = original;
+    await Deno.chmod(root, 0o700);
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("babysitter stages resolved merge files and refuses conflict markers", async () => {
   const dir = await Deno.makeTempDir();
   const git = async (...args: string[]) =>
