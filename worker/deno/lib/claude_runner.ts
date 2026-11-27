@@ -37,6 +37,7 @@ import {
   parkRunningBuild,
 } from "./heavy_build_gate.ts";
 import {
+  GUEST_MEMORY_HANDLE_KILL,
   GUEST_MEMORY_KILL_FAILED,
   GUEST_MEMORY_POLL_MS,
   guestMemoryFloorArmed,
@@ -749,6 +750,11 @@ export interface RunClaudeOptions {
    * once the victim's identity and tree membership are proven.
    */
   memoryGuardKill?: (pid: number) => void;
+  /**
+   * The process-tree kill the guest memory floor runs (Issue #5638). Defaults
+   * to `killClaudeProcessTree`; tests inject one whose probes signal nothing.
+   */
+  killProcessTree?: typeof killClaudeProcessTree;
   /**
    * The start-time reader the memory guard proves identities with (Issue
    * #5529). Defaults to the start token from `pid_guard.ts`. Tests only.
@@ -1960,6 +1966,14 @@ async function runClaudeWithTimeoutBody(
       ),
     });
     const childPid = child.pid;
+    // Set the instant the agent is reaped (Issue #5638): the guest memory
+    // floor reads it after its tree kill returns.
+    let childExited = false;
+    void child.status.then(() => {
+      childExited = true;
+    }, () => {
+      childExited = true;
+    });
     if (promptViaStdin && promptFilePath) {
       // Stream the file into stdin and close it at EOF (pipeTo closes the
       // writable). A child that exits before reading — an auth failure —
@@ -2258,7 +2272,7 @@ async function runClaudeWithTimeoutBody(
             ) return;
             guestMemoryPark = reason;
             logger?.warn(reason);
-            void killClaudeProcessTree(
+            void (options.killProcessTree ?? killClaudeProcessTree)(
               childPid,
               killAfterSeconds,
               logger,
@@ -2269,6 +2283,26 @@ async function runClaudeWithTimeoutBody(
                   err instanceof Error ? err.message : String(err)
                 }`,
               );
+            }).finally(() => {
+              // The tree kill spawns cat/ps/kill, which time out on a full guest; the handle needs no spawn and cannot reach a reused pid.
+              if (childExited) return;
+              try {
+                child.kill("SIGKILL");
+                logger?.warn(
+                  `${GUEST_MEMORY_HANDLE_KILL} ${childPid}: the process-tree kill returned and the agent had not exited (Issue #5638)`,
+                );
+              } catch (err) {
+                // Deno throws a TypeError once the child has been reaped.
+                if (
+                  err instanceof TypeError &&
+                  /already terminated/.test(err.message)
+                ) return;
+                logger?.error(
+                  `${GUEST_MEMORY_KILL_FAILED} ${childPid}: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                );
+              }
             });
           },
         );

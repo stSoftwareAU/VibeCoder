@@ -1448,11 +1448,18 @@ memory-pressure probe (`Deno.systemMemoryInfo()` on Linux). This covers any
 agent invocation through `runClaudeWithTimeout`, so the execute turn and the
 pre-PR verifier alike. The floor is the larger of 512 MiB and 5% of total
 memory. Two readings in a row below it stop the agent's process tree, then the
-run's tagged leftovers are reaped. A reading without figures (unreadable, or
-macOS's level-only reading) never stops a run. The check is armed only in the
-worker process (`run-core`), beside the in-flight host-disk gate, so unit tests
-do not inherit the host's memory. Quality-gate and pre-flight commands are not
-watched, because they are not agent runs.
+run's tagged leftovers are reaped. The tree kill reads `/proc` and runs `ps`,
+`pgrep` and `kill`, each a new process. On a guest out of memory those time out
+(observed on 2026-11-26: `ps timed out after 10000ms`), so once the tree kill
+returns with the agent still running, the worker sends SIGKILL through the
+agent's own process handle, which needs no new process; it logs `Guest-memory
+floor sent SIGKILL through the agent's process handle` (Issue #5638). Processes
+the agent started that survive it are left to the leftover reaper, which still
+runs `ps`. A reading without figures (unreadable, or macOS's level-only reading)
+never stops a run. The check is armed only in the worker process (`run-core`),
+beside the in-flight host-disk gate, so unit tests do not inherit the host's
+memory. Quality-gate and pre-flight commands are not watched, because they are
+not agent runs.
 
 Every hard kill on Issue #4815 had a guest that stopped answering its exec
 probe. The last in-run reading before the 2026-11-25 kill was MemAvailable
