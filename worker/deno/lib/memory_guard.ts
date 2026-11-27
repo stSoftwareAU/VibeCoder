@@ -116,6 +116,13 @@ export function selectMemoryGuardVictim(
   return victim;
 }
 
+/** Opens the line {@link formatMemoryGuardKill} builds. */
+export const MEMORY_GUARD_KILL_PREFIX = "Guest memory critically low (";
+/** Opens the log line for a guard that could not read or kill. */
+export const MEMORY_GUARD_COULD_NOT = "Memory guard could not";
+/** Opens the log line for a victim the guard declined to signal. */
+export const MEMORY_GUARD_LEFT_ALONE = "Memory guard left pid=";
+
 /** Inputs for {@link formatMemoryGuardKill}. */
 export interface MemoryGuardKillOptions {
   reading: MemoryPressureReading;
@@ -142,7 +149,7 @@ export function formatMemoryGuardKill(options: MemoryGuardKillOptions): string {
     ? `${victim.command.slice(0, KILL_LINE_COMMAND_CHARS - 1)}…`
     : victim.command;
   const rssMib = Math.round(victim.rssKb / 1024);
-  return `Guest memory critically low (${available} of ${total} available, ` +
+  return `${MEMORY_GUARD_KILL_PREFIX}${available} of ${total} available, ` +
     `floor ${formatBytesShort(floorBytes)}) — killed pid=${victim.pid} ` +
     `rss=${rssMib} MiB ${command}, the largest process in this agent run's ` +
     `tree, so the guest does not wedge (Issue #5529)`;

@@ -4,14 +4,16 @@
  *
  * The auto-filed hard-kill issue is public, and the killed run may have been
  * working a private repository. A later recurrence still has to tell a frozen
- * guest VM from an agent hung in a live VM, so the issue carries seven figures
+ * guest VM from an agent hung in a live VM, so the issue carries eight figures
  * read from the evidence record. Five are about the guest: how long the log
  * had been silent before the capture, whether the guest answered the exec
  * probe, its memory and its pressure stall figures, and its last-known memory
  * and pressure from the newest pressure line in the worker log tail (Issue
  * #4815), which an issue run logs every minute while it is in flight. That
  * last figure is there even when the guest probe did not answer, provided
- * such a line is inside the tail. Two come from the host
+ * such a line is inside the tail. One says whether the two in-run memory
+ * guards logged an action, read from the same worker log tail (Issue #5638).
+ * Two come from the host
  * itself, not the guest: its free disk and its memory pressure. They say
  * whether the host was short even when the guest never answered. Each figure
  * is either a fixed word or a number that a strict pattern captured. No ps,
@@ -30,8 +32,17 @@ import {
   NOT_COLLECTED_CAUSE,
   UNAVAILABLE_PREFIX,
 } from "./hard_kill_evidence.ts";
+import {
+  GUEST_MEMORY_FLOOR_MARKER,
+  GUEST_MEMORY_KILL_FAILED,
+} from "./guest_memory_floor.ts";
 import { GIB } from "./host_disk.ts";
 import { LIVENESS_TICK_MARKER, RUN_PRESSURE_MARKER } from "./liveness_guard.ts";
+import {
+  MEMORY_GUARD_COULD_NOT,
+  MEMORY_GUARD_KILL_PREFIX,
+  MEMORY_GUARD_LEFT_ALONE,
+} from "./memory_guard.ts";
 
 /** Cap on each evidence string scanned (cost and ReDoS guard). */
 const SCAN_CHARS = 4000;
@@ -266,6 +277,57 @@ export function hardKillLastLivenessTick(evidence: HardKillEvidence): string {
   const body = figures.length > 0 ? figures.join(", ") : "no readable figures";
   const logged = LOG_TIME_RE.exec(tick)?.[1];
   return logged === undefined ? body : `${body} (logged ${logged}Z)`;
+}
+
+/**
+ * A worker log line's head: timestamp and a warning or error level, as the
+ * logger writes them. The two in-run memory guards log at these levels only.
+ */
+const GUARD_LINE_RE =
+  /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z\] (?:WARNING|ERROR): /;
+/** The optional slot tag the logger puts before the message. */
+const SLOT_TAG_RE = /^\[[a-z]\d{1,3}(?: [^\]\n]{1,200})?\] /;
+
+/**
+ * Whether the two in-run memory guards logged an action, read from the worker
+ * log tail (Issue #5638). A marker counts only where the logger writes the
+ * message: straight after the level, or after one slot tag. A marker quoted
+ * mid-message or inside an agent-progress line does not count.
+ *
+ * @param evidence - The evidence record
+ * @returns Fixed words and the newest log time of each kind seen, for example
+ *   `guest memory floor stopped the agent (logged 2026-11-26 00:34:34Z)`, or
+ *   `none logged in the log tail`
+ */
+export function hardKillMemoryGuards(evidence: HardKillEvidence): string {
+  let floor: string | undefined;
+  let kill: string | undefined;
+  let couldNot: string | undefined;
+  for (const raw of evidence.evidence.workerLogTail.split("\n")) {
+    const line = raw.slice(0, TICK_LINE_CHARS);
+    const head = GUARD_LINE_RE.exec(line);
+    if (!head) continue;
+    let rest = line.slice(head[0].length);
+    const slot = SLOT_TAG_RE.exec(rest);
+    if (slot) rest = rest.slice(slot[0].length);
+    const logged = head[1]!;
+    if (rest.startsWith(GUEST_MEMORY_FLOOR_MARKER)) floor = logged;
+    else if (rest.startsWith(MEMORY_GUARD_KILL_PREFIX)) kill = logged;
+    else if (
+      rest.startsWith(MEMORY_GUARD_COULD_NOT) ||
+      rest.startsWith(MEMORY_GUARD_LEFT_ALONE) ||
+      rest.startsWith(GUEST_MEMORY_KILL_FAILED)
+    ) couldNot = logged;
+  }
+  const parts: string[] = [];
+  if (floor) {
+    parts.push(`guest memory floor stopped the agent (logged ${floor}Z)`);
+  }
+  if (kill) parts.push(`early-OOM guard killed a process (logged ${kill}Z)`);
+  if (couldNot) {
+    parts.push(`a memory guard could not act (logged ${couldNot}Z)`);
+  }
+  return parts.length > 0 ? parts.join("; ") : "none logged in the log tail";
 }
 
 /**

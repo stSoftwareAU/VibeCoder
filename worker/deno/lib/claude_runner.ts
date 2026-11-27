@@ -37,6 +37,7 @@ import {
   parkRunningBuild,
 } from "./heavy_build_gate.ts";
 import {
+  GUEST_MEMORY_KILL_FAILED,
   GUEST_MEMORY_POLL_MS,
   guestMemoryFloorArmed,
   GuestMemoryFloorError,
@@ -129,6 +130,8 @@ import {
   formatMemoryGuardKill,
   isBelowMemoryGuardFloor,
   killMemoryGuardVictim,
+  MEMORY_GUARD_COULD_NOT,
+  MEMORY_GUARD_LEFT_ALONE,
   memoryGuardFloorBytes,
   selectMemoryGuardVictim,
 } from "./memory_guard.ts";
@@ -2039,7 +2042,7 @@ async function runClaudeWithTimeoutBody(
           // could not tell "could not act" from "never reached".
           if (critical) {
             logger?.warn(
-              `Memory guard could not read the process table: ${
+              `${MEMORY_GUARD_COULD_NOT} read the process table: ${
                 err instanceof Error ? err.message : String(err)
               } (Issue #5529)`,
             );
@@ -2075,7 +2078,7 @@ async function runClaudeWithTimeoutBody(
               } else {
                 // Unproven means no signal (CODING-STANDARDS.md).
                 logger?.warn(
-                  `Memory guard left pid=${victim.pid} alone: ` +
+                  `${MEMORY_GUARD_LEFT_ALONE}${victim.pid} alone: ` +
                     `${outcome.reason}, so it is not provably this agent ` +
                     `run's process (Issue #5529)`,
                 );
@@ -2083,7 +2086,7 @@ async function runClaudeWithTimeoutBody(
             } catch (err) {
               // Fail loud: a guard that cannot kill must say so in the log.
               logger?.warn(
-                `Memory guard could not kill pid=${victim.pid}: ${
+                `${MEMORY_GUARD_COULD_NOT} kill pid=${victim.pid}: ${
                   err instanceof Error ? err.message : String(err)
                 } (Issue #5529)`,
               );
@@ -2262,7 +2265,7 @@ async function runClaudeWithTimeoutBody(
               childIdentity,
             ).catch((err) => {
               logger?.error(
-                `Guest-memory kill failed for PID ${childPid}: ${
+                `${GUEST_MEMORY_KILL_FAILED} ${childPid}: ${
                   err instanceof Error ? err.message : String(err)
                 }`,
               );
