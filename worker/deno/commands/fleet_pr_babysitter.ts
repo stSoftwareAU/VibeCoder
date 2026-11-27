@@ -918,7 +918,26 @@ export function temporaryCloneRoot(tmpdir: string | undefined): string {
   return tmpdir || "/tmp";
 }
 
-/** Remove only babysitter clones whose owner process has exited. */
+/**
+ * Give the owner full access to every real directory under `path`, so a
+ * recursive removal can list and empty a directory that a repair left with
+ * mode 000. Symbolic links are never followed, so nothing outside the clone
+ * changes mode.
+ */
+async function restoreOwnerAccess(path: string): Promise<void> {
+  const info = await Deno.lstat(path);
+  if (!info.isDirectory) return;
+  await Deno.chmod(path, 0o700);
+  for await (const entry of Deno.readDir(path)) {
+    if (entry.isDirectory) await restoreOwnerAccess(`${path}/${entry.name}`);
+  }
+}
+
+/**
+ * Remove only babysitter clones whose owner process has exited. A clone that
+ * cannot be removed is a WARNING, never an error: one stuck clone must not
+ * stop every later pass before it reaches a PR.
+ */
 export async function recoverTemporaryClones(root: string): Promise<void> {
   for await (const entry of Deno.readDir(root)) {
     if (!entry.isDirectory) continue;
@@ -932,11 +951,18 @@ export async function recoverTemporaryClones(root: string): Promise<void> {
       throw new Error("Process liveness probe timed out");
     }
     if (probe.value.success) continue;
+    const path = `${root}/${entry.name}`;
     try {
-      await Deno.remove(`${root}/${entry.name}`, { recursive: true });
+      await restoreOwnerAccess(path);
+      await Deno.remove(path, { recursive: true });
       console.log(`Removed interrupted babysitter clone ${entry.name}`);
     } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      if (error instanceof Deno.errors.NotFound) continue;
+      console.warn(
+        `WARNING: could not remove interrupted babysitter clone ${path}: ${
+          error instanceof Error ? error.message : String(error)
+        }; a later pass retries`,
+      );
     }
   }
 }
