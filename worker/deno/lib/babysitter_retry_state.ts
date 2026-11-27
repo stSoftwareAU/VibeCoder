@@ -80,6 +80,21 @@ export class BabysitterParked extends BabysitterFailure {
   }
 }
 
+/**
+ * A repair whose agent ran and judged the PR not ready to push: it needs a
+ * human (a label or approval only the owner can give), or its checks still
+ * fail. That is the PR's outcome, not a babysitter fault. It keeps the code
+ * blocker class, so the retry budget and escalation are unchanged, but it
+ * never joins the pass's AggregateError, whose exit code the health hook
+ * reports as a failed babysitter.
+ */
+export class BabysitterNeedsHuman extends BabysitterFailure {
+  constructor(message: string) {
+    super(message, "code");
+    this.name = "BabysitterNeedsHuman";
+  }
+}
+
 export interface LoadBabysitterRetryStateOptions {
   stateDir: string;
   repo: string;
