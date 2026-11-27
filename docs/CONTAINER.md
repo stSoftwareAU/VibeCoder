@@ -1468,8 +1468,8 @@ reading without figures (unreadable, or macOS's level-only reading) never stops
 a run. The check is armed only in the worker process (`run-core`), beside the
 in-flight host-disk gate, so unit tests do not inherit the host's memory. This
 floor stops agent runs only; it does not stop quality-gate and pre-flight
-commands, because they are not agent runs. The worker-wide memory guard (Issue
-#5634) does cover them: below its own floor it kills the largest process in the
+commands, because they are not agent runs. The worker-wide memory guard (Issue 5634)
+does cover them: below its own floor it kills the largest process in the
 worker's tree (see TROUBLESHOOTING.md).
 
 Every hard kill on Issue #4815 had a guest that stopped answering its exec
