@@ -15,8 +15,9 @@
  * `--allow-sys=systemMemoryInfo`; Deno refuses `/proc/meminfo` to anything
  * short of `--allow-all`, Issue #5319). A refused or failed read is warned
  * once per cause and reads "unknown"; other platforms read "unknown". The
- * agent-run memory guard (`memory_guard.ts`, Issue #5529) acts on a Linux
- * reading below its floor; "unknown", and a reading without byte counts, never
+ * agent-run memory guard (`memory_guard.ts`, Issue #5529) and the worker-wide
+ * guard (`worker_memory_guard.ts`, Issue #5634) act on a Linux
+ * reading below their floor; "unknown", and a reading without byte counts, never
  * trigger anything, and the pressure warning stays telemetry.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).

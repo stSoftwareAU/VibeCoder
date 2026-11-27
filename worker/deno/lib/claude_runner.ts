@@ -2299,10 +2299,11 @@ async function runClaudeWithTimeoutBody(
             guestMemoryPark = reason;
             logger?.warn(reason);
             // Awaited on every exit path, so the sweep runs before the reaper closes (Issue #5638).
+            // No grace at the floor (Issue #5634): a TERM grace lets the tree keep its memory while each wait-loop probe spawns on a starving guest.
             guestMemoryFloorKill = (options.killProcessTree ??
               killClaudeProcessTree)(
                 childPid,
-                killAfterSeconds,
+                0,
                 logger,
                 childIdentity,
               ).catch((err) => {

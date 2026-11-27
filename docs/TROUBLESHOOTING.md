@@ -253,11 +253,11 @@ guest-probe state, guest memory, guest pressure and the last liveness tick
 from the newest `[liveness] run-pressure` or `[liveness] tick=` line in the
 worker log tail (`not in the log tail` if absent), the memory guards (from
 the worker log tail: a guest memory floor stop, Issue #4815, or the early-OOM
-guard's kill or failure to act, Issue #5529; `none logged in the log tail`
-when neither logged, Issue #5638), plus the host's free disk
-and host memory pressure at capture, read on the host so present even when the
-guest does not answer, Issue #5250) and a last step logged, from
-a fixed list (`pre-PR verifier`, `quality gate`,
+guards' kill or failure to act, Issue #5529 and the worker-wide guard,
+Issue #5634; `none logged in the log tail` when neither logged, Issue #5638),
+plus the host's free disk and host memory pressure at capture, read on the
+host so present even when the guest does not answer, Issue #5250) and a
+last step logged, from a fixed list (`pre-PR verifier`, `quality gate`,
 `agent turn`, a setup step (`setup: issue claim`, `setup: claim churn check`,
 `setup: repository setup`, `setup: heartbeat start`,
 `setup: default branch sync`, `setup: milestone branch`,
@@ -380,6 +380,17 @@ from selection to the kill, and a fresh process table shows a live parent chain
 to the agent. Otherwise the worker logs `Memory guard left pid=… alone` and
 signals nothing, so a process re-parented away from the agent is never killed
 by the guard. Issue #5529.
+
+The worker also runs one worker-wide check every 5 seconds for its whole life
+(Issue #5634). Below the same floor it sends SIGKILL to the largest process (at
+least 256 MiB) in the worker's own process tree, never an agent CLI itself and
+never the worker, so a quality gate, merge check or other command run outside
+any agent run is covered too. It logs the same `Guest memory critically low`
+line, ending `(Issue #5634)`, or, once per low spell, a line starting
+`Worker memory guard found no process to kill:` when no process qualified. The identity proof is the same as above: a process re-parented away
+from the worker (for example a backgrounded job whose shell exited) is still
+never killed. A process running as the separate `agent` account, which the worker
+cannot signal directly, is signalled through `sudo -n -u agent -- kill`.
 
 ### What a runtime-detection failure looks like
 

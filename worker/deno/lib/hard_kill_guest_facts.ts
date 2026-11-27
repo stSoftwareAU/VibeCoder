@@ -43,6 +43,12 @@ import {
   MEMORY_GUARD_KILL_PREFIX,
   MEMORY_GUARD_LEFT_ALONE,
 } from "./memory_guard.ts";
+import {
+  WORKER_MEMORY_GUARD_COULD_NOT,
+  WORKER_MEMORY_GUARD_FAILED,
+  WORKER_MEMORY_GUARD_LEFT_ALONE,
+  WORKER_MEMORY_GUARD_NO_VICTIM,
+} from "./worker_memory_guard.ts";
 
 /** Cap on each evidence string scanned (cost and ReDoS guard). */
 const SCAN_CHARS = 4000;
@@ -281,7 +287,8 @@ export function hardKillLastLivenessTick(evidence: HardKillEvidence): string {
 
 /**
  * A worker log line's head: timestamp and a warning or error level, as the
- * logger writes them. The two in-run memory guards log at these levels only.
+ * logger writes them. The in-run memory guards (per-run, Issue #5529, and worker-wide,
+ * Issue #5634) log at these levels only.
  */
 const GUARD_LINE_RE =
   /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z\] (?:WARNING|ERROR): /;
@@ -289,8 +296,10 @@ const GUARD_LINE_RE =
 const SLOT_TAG_RE = /^\[[a-z]\d{1,3}(?: [^\]\n]{1,200})?\] /;
 
 /**
- * Whether the two in-run memory guards logged an action, read from the worker
- * log tail (Issue #5638). A marker counts only where the logger writes the
+ * Whether the in-run memory guards (the per-run guard, Issue #5529, and the
+ * worker-wide guard, Issue #5634) logged an action, read from the worker log
+ * tail (Issue #5638). The worker-wide guard's no-victim line counts as "could
+ * not act": it saw low memory and killed nothing. A marker counts only where the logger writes the
  * message: straight after the level, or after one slot tag. A marker quoted
  * mid-message or inside an agent-progress line does not count.
  *
@@ -316,7 +325,11 @@ export function hardKillMemoryGuards(evidence: HardKillEvidence): string {
     else if (
       rest.startsWith(MEMORY_GUARD_COULD_NOT) ||
       rest.startsWith(MEMORY_GUARD_LEFT_ALONE) ||
-      rest.startsWith(GUEST_MEMORY_KILL_FAILED)
+      rest.startsWith(GUEST_MEMORY_KILL_FAILED) ||
+      rest.startsWith(WORKER_MEMORY_GUARD_COULD_NOT) ||
+      rest.startsWith(WORKER_MEMORY_GUARD_LEFT_ALONE) ||
+      rest.startsWith(WORKER_MEMORY_GUARD_FAILED) ||
+      rest.startsWith(WORKER_MEMORY_GUARD_NO_VICTIM)
     ) couldNot = logged;
   }
   const parts: string[] = [];

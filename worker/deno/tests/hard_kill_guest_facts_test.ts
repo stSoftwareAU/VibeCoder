@@ -40,6 +40,7 @@ import {
 } from "../lib/hard_kill_guest_facts.ts";
 import { guestMemoryFloorReason } from "../lib/guest_memory_floor.ts";
 import { formatMemoryGuardKill } from "../lib/memory_guard.ts";
+import { WorkerMemoryGuard } from "../lib/worker_memory_guard.ts";
 import {
   collapseProcPressureText,
   formatLivenessPressureFields,
@@ -924,6 +925,78 @@ Deno.test("each could-not-act prefix is read on its own (Issue #5638)", () => {
       `a memory guard could not act (logged ${time}Z)`,
     );
   }
+});
+
+const WORKER_TIME = "2026-11-27 03:32:56";
+const WORKER_LOW = {
+  level: "high" as const,
+  totalBytes: 16 * 1024 * MIB,
+  availableBytes: 208 * MIB,
+};
+
+Deno.test("a worker guard no-victim line is could-not-act, not a kill (Issue #5634)", async () => {
+  const logs: string[] = [];
+  const guard = new WorkerMemoryGuard({
+    workerPid: 500,
+    probe: () => Promise.resolve(WORKER_LOW),
+    runPs: () =>
+      Promise.resolve(
+        "  PID  PPID       RSS     ELAPSED COMMAND\n" +
+          "  500     1    204800       10:00 deno run worker\n" +
+          "  900     1   3145728       04:59 stray outside the tree",
+      ),
+    kill: () => {},
+    log: (m) => logs.push(m),
+    activeAgentPids: () => [],
+    readStartTime: () => Promise.resolve("t"),
+  });
+  await guard.tick();
+  assertEquals(logs.length, 1, JSON.stringify(logs));
+  assertEquals(
+    hardKillMemoryGuards(
+      tailRecord(`[${WORKER_TIME}Z] WARNING: ${logs[0]} host=h:1`),
+    ),
+    "a memory guard could not act (logged 2026-11-27 03:32:56Z)",
+  );
+});
+
+Deno.test("each worker guard could-not prefix is read on its own (Issue #5634)", () => {
+  for (
+    const message of [
+      "Worker memory guard could not read the process table: boom (Issue #5634)",
+      "Worker memory guard could not kill pid=7: EPERM (Issue #5634)",
+      "Worker memory guard left pid=7 alone: identity changed (Issue #5634)",
+      "Worker memory guard failed: boom (Issue #5634)",
+    ]
+  ) {
+    assertEquals(
+      hardKillMemoryGuards(
+        tailRecord(`[${WORKER_TIME}Z] WARNING: ${message} host=h:1`),
+      ),
+      "a memory guard could not act (logged 2026-11-27 03:32:56Z)",
+    );
+  }
+});
+
+Deno.test("a worker-scope kill line is still a kill (Issue #5634)", () => {
+  const kill = formatMemoryGuardKill({
+    reading: WORKER_LOW,
+    victim: {
+      pid: 511,
+      ppid: 510,
+      rssKb: 3145728,
+      elapsed: "04:59",
+      command: "cargo test --release",
+    },
+    floorBytes: 300 * MIB,
+    scope: "worker",
+  });
+  assertEquals(
+    hardKillMemoryGuards(
+      tailRecord(`[${WORKER_TIME}Z] WARNING: ${kill} host=h:1`),
+    ),
+    "early-OOM guard killed a process (logged 2026-11-27 03:32:56Z)",
+  );
 });
 
 Deno.test("look-alikes do not count (Issue #5638)", () => {

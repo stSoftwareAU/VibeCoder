@@ -1,0 +1,12 @@
+{
+  "issue": 5634,
+  "chunk": "top-up-5634",
+  "title": "top-up: the worker-wide memory guard",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5634",
+  "definition": "module added so a guest-memory floor breach kills the largest process in the worker's own tree, not only in one agent run's tree: worker_memory_guard.ts (#5634)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/worker_memory_guard.ts"
+  ],
+  "sweptAt": "fd1c828921aae2659b49334f0dd985baf210ae1f"
+}
