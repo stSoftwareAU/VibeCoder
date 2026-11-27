@@ -131,6 +131,11 @@ flowchart TD
     first fingerprint are each handled.
   - The `sudo -n -u agent -- kill -s KILL <pid>` fallback is used, and a failing
     sudo rejects with its stderr.
+  - A kill that returns a rejected promise is logged only as the literal
+    `Worker memory guard could not kill pid=511: sudo -n -u agent -- kill exited 1: denied (Issue #5634)`
+    line. No `Guest memory critically low` kill line is logged. Red-checked:
+    with `lib/memory_guard.ts` changed to not await `deps.kill`, this test
+    fails. It passes at the head.
 - **Added to `worker/deno/tests/memory_guard_5529_test.ts`:** `excludePids`
   stops a pid being chosen, and a control without it chooses that pid. The
   `"worker"` scope names #5634, and the default text is unchanged.
@@ -147,7 +152,7 @@ flowchart TD
   lines appear under `worker/deno/tests/` in `git diff origin/main...HEAD`.
 - **Targeted run on the head:**
   `deno task test:unit tests/claude_runner_guest_memory_floor_grace_5634_test.ts tests/claude_runner_guest_memory_handle_kill_5638_test.ts tests/claude_runner_guest_memory_floor_4815_test.ts tests/memory_guard_5529_test.ts tests/worker_memory_guard_5634_test.ts tests/hard_kill_guest_facts_test.ts tests/hard_kill_report_test.ts`
-  gave 176 passed, 0 failed. A second run, with
+  gave 179 passed, 0 failed. A second run, with
   `tests/hard_kill_facts_backfill_4815_test.ts` and without the three runner
   tests, gave 182 passed, 0 failed.
 - **`./quality.sh < /dev/null` on `c3731bf11`:**

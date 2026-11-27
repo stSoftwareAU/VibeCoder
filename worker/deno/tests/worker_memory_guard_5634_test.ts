@@ -194,27 +194,27 @@ Deno.test("worker_memory_guard #5634 - a throwing probe kills nothing and logs n
   assertEquals(h.logs, []);
 });
 
-Deno.test("worker_memory_guard #5634 - an async kill is awaited before the kill line is logged", async () => {
-  const order: string[] = [];
+Deno.test("worker_memory_guard #5634 - a rejected async kill is logged as a failure, not as a kill", async () => {
   const logs: string[] = [];
   const guard = new WorkerMemoryGuard({
     workerPid: WORKER,
     probe: () => Promise.resolve(LOW),
     runPs: () => Promise.resolve(GATE_PS),
-    kill: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      order.push("killed");
-    },
-    log: (m) => {
-      order.push("logged");
-      logs.push(m);
-    },
+    kill: () =>
+      Promise.reject(new Error("sudo -n -u agent -- kill exited 1: denied")),
+    log: (m) => logs.push(m),
     activeAgentPids: () => [AGENT],
     readStartTime: (pid) => Promise.resolve(`start-${pid}`),
   });
   await guard.tick();
-  assertEquals(order, ["killed", "logged"]);
-  assert(logs[0]!.includes("pid=511"), logs[0]);
+  assertEquals(logs, [
+    "Worker memory guard could not kill pid=511: sudo -n -u agent -- kill " +
+    "exited 1: denied (Issue #5634)",
+  ]);
+  assert(
+    !logs.some((l) => l.startsWith("Guest memory critically low")),
+    JSON.stringify(logs),
+  );
 });
 
 Deno.test("worker_memory_guard #5634 - a failed first worker fingerprint is retried on the next tick", async () => {
