@@ -105,7 +105,7 @@ function assertFailingReport(output: string): void {
     text,
     "[150 Deno module download line(s) omitted]",
   );
-  assertFalse(text.includes("registry.npmjs.org"));
+  assertFalse(/^Download /m.test(text));
 }
 
 Deno.test("verifyResolvedTree - a test report survives a cold module cache's download lines (Issue #5637)", async () => {
