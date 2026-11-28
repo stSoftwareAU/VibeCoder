@@ -205,17 +205,41 @@ async function pass(args: string[], dir: string): Promise<number> {
   return code;
 }
 
+/**
+ * Run one pass, or with `watch` one pass every five minutes for ever. A pass
+ * that throws (a full disk refusing the log file, say) counts as a failed pass
+ * and the watch loop carries on: on a host without a launch agent nothing would
+ * restart an exited loop, and the babysitter silently stopped for five days.
+ */
+export async function runPasses(
+  runPass: () => Promise<number>,
+  watch: boolean,
+  sleep: (ms: number) => Promise<void>,
+  report: (code: number) => void,
+): Promise<number> {
+  while (true) {
+    let code = 1;
+    try {
+      code = await runPass();
+    } catch (error) {
+      console.error(`Babysitter pass error; the next pass retries: ${error}`);
+    }
+    report(code);
+    if (!watch) return code;
+    await sleep(300_000);
+  }
+}
+
 if (import.meta.main) {
   installConsoleRedaction();
   const home = Deno.env.get("HOME");
   if (!home) throw new Error("HOME is not set");
   const watch = Deno.args.includes("--watch");
   const args = Deno.args.filter((arg) => arg !== "--watch");
-  do {
-    Deno.exitCode = await pass(
-      args,
-      `${home}/.vibe-coder/fleet-pr-babysitter/logs`,
-    );
-    if (watch) await new Promise((resolve) => setTimeout(resolve, 300_000));
-  } while (watch);
+  await runPasses(
+    () => pass(args, `${home}/.vibe-coder/fleet-pr-babysitter/logs`),
+    watch,
+    (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    (code) => Deno.exitCode = code,
+  );
 }
