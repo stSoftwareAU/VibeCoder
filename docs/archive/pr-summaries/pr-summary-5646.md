@@ -39,9 +39,11 @@ Closes #5646.
 - A block on the merged result fails closed. It does not fall back to pushing
   the pre-merge head. A head that fails once merged with its base would only
   come back as GitHub's `update-branch` merge and fail CI there.
-- The repair re-gate reuses Step 1b's arguments, including its
-  `preFlightAlreadyRan` flag. So the repo's pre-flight commands re-run on the
-  merged tree only when Step 1b ran them; the changed-file checks always re-run.
+- The repair re-gate reuses Step 1b's other arguments but always runs the repo's
+  pre-flight commands: `preFlightAlreadyRan` is `false`, even when Step 1b
+  skipped them because Step 1 had just created a commit. Step 1b's skip stands
+  for the pre-merge tree only; a pre-merge result cannot certify the merged
+  tree.
 - The completion re-gate is the existing `gateBeforePush()` closure, so it
   formats first, uses the same comparable base and shares the run's single
   recovery turn.
@@ -117,6 +119,10 @@ flowchart LR
     which passes before the merge and fails after it. It asserts a
     `PrePushGateBlockedError` naming the command, that `origin/feature` is
     unchanged, and that the merge is present locally.
+  - Added "a worker-created fix commit still runs pre-flight after merging its
+    base (Issue #5646)": the fix is an uncommitted file that Step 1 commits, so
+    Step 1b skips pre-flight, and the same `test ! -f base.txt` must still
+    block the merged tree. This was the review's gate-bypass case.
   - Added a control with an always-passing pre-flight command. The push carries
     both the fix and `base.txt`.
   - The existing tests are unchanged.
