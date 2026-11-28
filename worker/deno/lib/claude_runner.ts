@@ -760,6 +760,8 @@ export interface RunClaudeOptions {
    * to `killClaudeProcessTree`; tests inject one whose probes signal nothing.
    */
   killProcessTree?: typeof killClaudeProcessTree;
+  /** Injectable tag-reaper startup, to exercise the handle fallback in tests. */
+  startGuestMemoryTagReaper?: typeof startGuestMemoryTagReaper;
   /**
    * The start-time reader the memory guard proves identities with (Issue
    * #5529). Defaults to the start token from `pid_guard.ts`. Tests only.
@@ -2272,9 +2274,10 @@ async function runClaudeWithTimeoutBody(
       let memoryReadInFlight = false;
       if (agentSpawnTag !== undefined) {
         try {
-          guestMemoryTagReaper = startGuestMemoryTagReaper(agentSpawnTag, {
-            spawnTimeoutMs: agentBackstopMs,
-          });
+          guestMemoryTagReaper = (options.startGuestMemoryTagReaper ??
+            startGuestMemoryTagReaper)(agentSpawnTag, {
+              spawnTimeoutMs: agentBackstopMs,
+            });
         } catch (err) {
           // The tree kill and the handle kill still stop the agent without it.
           logger?.warn(
