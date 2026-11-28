@@ -41,6 +41,7 @@ interface DriveExtras {
   stubBody?: string;
   leftoverReaperDeps?: LeftoverReaperDeps;
   onReady?: (stub: AgentStub) => Promise<void>;
+  tagReaperUnavailable?: boolean;
 }
 
 /** Whether `pid` is running and not a zombie. Deno refuses /proc/<pid>/stat, so `ps` answers. */
@@ -118,6 +119,13 @@ async function drive(
       guestMemoryPollMs: 1_000,
       probeMemoryPressure: probe,
       killProcessTree,
+      ...(extras.tagReaperUnavailable
+        ? {
+          startGuestMemoryTagReaper: () => {
+            throw new Error("tag reaper unavailable in fallback test");
+          },
+        }
+        : {}),
       progressIntervalMs: 86_400_000,
       descendantSnapshotIntervalMs: 86_400_000,
       onActivity: () => ready.resolve(),
@@ -166,7 +174,9 @@ Deno.test({
       return Promise.resolve();
     };
     const { logger, warns } = capturingLogger();
-    const result = await drive(100 * MIB, killProcessTree, logger, false);
+    const result = await drive(100 * MIB, killProcessTree, logger, false, {
+      tagReaperUnavailable: true,
+    });
     assert(!result.ok);
     assert(result.error instanceof GuestMemoryFloorError);
     assertEquals(result.error.message, LOW_REASON);
@@ -194,7 +204,9 @@ Deno.test({
       return Promise.reject(new Error("ps timed out after 10000ms"));
     };
     const { logger, warns, errors } = capturingLogger();
-    const result = await drive(100 * MIB, killProcessTree, logger, false);
+    const result = await drive(100 * MIB, killProcessTree, logger, false, {
+      tagReaperUnavailable: true,
+    });
     assert(!result.ok);
     assert(result.error instanceof GuestMemoryFloorError);
     assertEquals(result.error.message, LOW_REASON);
@@ -289,7 +301,9 @@ Deno.test({
       assert(pid !== undefined && pid > 0);
       await waitUntilGone(childPid);
       assert(!(await isLive(childPid)), "descendant still running");
-      // The agent and its sleep carry the tag; the gate's own sleeps may add one.
+      // The handle kill and sweep race for the agent itself; only the sweep
+      // can signal the long-lived tagged descendant. Its death is asserted
+      // independently above, so the sweep need not count the agent as well.
       const prefix = `${GUEST_MEMORY_TAG_SWEEP} `;
       const suffix = ` signalled for PID ${pid} (Issue #5638)`;
       const line = warns.find((message) =>
@@ -302,7 +316,7 @@ Deno.test({
       const signalled = Number(
         line.slice(prefix.length, line.length - suffix.length),
       );
-      assert(signalled >= 2, `expected at least 2 signalled, got ${line}`);
+      assert(signalled >= 1, `expected a tagged signal, got ${line}`);
     } finally {
       if (childPid > 0 && await isLive(childPid)) {
         Deno.kill(childPid, "SIGKILL");
