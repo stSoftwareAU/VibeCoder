@@ -134,16 +134,17 @@ Deno.test("a fix on a branch behind its base is pushed with the base merged in, 
 });
 
 /**
- * Commits the fix before the call, so Step 1 commits nothing and the pre-flight
- * commands run in both of Step 1b's gate calls (Issue #5646).
+ * By default commits the fix before the call; otherwise Step 1 commits it.
+ * Both paths must run pre-flight commands on the merged tree (Issue #5646).
  */
 async function gatedFixOnBehindBranch(
   clone: string,
   startedAt: string,
   command: string,
+  precommit = true,
 ) {
   await Deno.writeTextFile(`${clone}/feature.txt`, "feature, fixed\n");
-  await git(clone, "commit", "-q", "-am", "fix");
+  if (precommit) await git(clone, "commit", "-q", "-am", "fix");
   return await commitAndPushPending(
     "feature",
     "Fix CI failure",
@@ -184,6 +185,31 @@ Deno.test("a fix whose merged result fails the pre-flight gate is not pushed, an
     await git(clone, "fetch", "-q", "origin", "main");
     await git(clone, "merge-base", "--is-ancestor", "origin/main", "HEAD");
     assertEquals(await git(clone, "show", "HEAD:base.txt"), "base");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("a worker-created fix commit still runs pre-flight after merging its base (Issue #5646)", async () => {
+  const { root, clone } = await behindPrBranch();
+  try {
+    const startedAt = await git(clone, "rev-parse", "HEAD");
+    const result = await gatedFixOnBehindBranch(
+      clone,
+      startedAt,
+      "test ! -f base.txt",
+      false,
+    );
+    assert(!result.ok, "the merged result must be refused");
+    assert(result.error instanceof PrePushGateBlockedError);
+    assert(result.error.message.includes("test ! -f base.txt"));
+    const pushed = await git(clone, "ls-remote", "origin", "feature");
+    assertEquals(pushed.split(/\s+/)[0], startedAt);
+    assertEquals(await git(clone, "show", "HEAD:base.txt"), "base");
+    assertEquals(
+      await git(clone, "show", "HEAD:feature.txt"),
+      "feature, fixed",
+    );
   } finally {
     await Deno.remove(root, { recursive: true });
   }
