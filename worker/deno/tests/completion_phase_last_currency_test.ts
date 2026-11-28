@@ -254,8 +254,7 @@ Deno.test("a catch-up merge the gate blocks is never pushed and the PR is not ra
       deps(
         (call) => (call === 1 ? 0 : 1),
         events,
-        (merged, repaired) =>
-          merged && !repaired ? gateBlocked() : GATE_PASSED,
+        (merged, repaired) => merged && !repaired ? gateBlocked() : GATE_PASSED,
       ),
     );
     assert(result.status === "failure", `status: ${result.status}`);
