@@ -33,6 +33,11 @@ Closes #5647.
 - This reuses the existing `GuestMemoryTagReaper.sweep()`
   (`worker/deno/lib/guest_memory_tag_reaper.ts`) without changing it. Only when
   it is called has moved, in `worker/deno/lib/claude_runner.ts`.
+- `RunClaudeOptions` gains an optional `startGuestMemoryTagReaper`, defaulting
+  to the real `startGuestMemoryTagReaper`. It is a test seam: production passes
+  nothing, so the sweep ordering is the same with or without it. Tests inject a
+  starter that throws, so the run behaves as it does when the tag reaper did not
+  start and only the tree kill and the handle kill can stop the agent.
 
 ### Essential Design Decisions
 
@@ -43,8 +48,16 @@ Closes #5647.
 - **Accepted trade-off:** the sweep kills the agent too, because the agent
   carries the tag. A descendant that dropped the tag from its environment can
   therefore be reparented before the tree walk reaches it. The leftover reaper
-  still runs for it at the end of the run. A sweep that acts at once beats a
-  complete kill that arrives after the spawn timeouts.
+  (`reapAgentLeftovers`) cannot recover it: it only finds processes whose
+  environment carries the spawn tag. The only backstop for such an untagged
+  descendant is the descendant snapshot collector (`collectOrphans` in
+  `claude_runner.ts`), and it only knows processes seen in a snapshot, taken
+  every 20 s by default. An untagged descendant started after the last snapshot,
+  and reparented before the tree walk lists it, is left running; this change
+  does not guarantee it is collected. Before this change, on a guest where the
+  tree kill's spawns still worked, the tree walk listed it while the agent was
+  alive. A sweep that acts at once beats a complete kill that arrives after the
+  spawn timeouts.
 - **No log line or prefix changed.** The sweep line is still
   `Guest-memory floor SIGKILLed the agent's tagged processes without spawning:
   <n> signalled for PID <pid> (Issue #5638)`,
@@ -110,11 +123,30 @@ sequenceDiagram
     floor reason, and the tree kill is called once. The descendant is gone
     before the tree kill returns, and the tag-sweep warn line is logged.
   - **Results:** red on the unfixed code, green on the head.
-- **Existing tests:** no existing test was edited, apart from the file's header
-  comment. The other #5638 tests still pass with the sweep moved:
-  - the sweep reaching a descendant the tree kill never signals;
-  - the sweep still running when the agent exits before the tree kill returns;
-  - the handle kill after a tree kill that signals nothing or fails.
+- **Existing tests edited**, both in
+  `worker/deno/tests/claude_runner_guest_memory_handle_kill_5638_test.ts`, plus
+  the file's header comment:
+  - `a tree kill that signals nothing still stops the agent (Issue #5638)` and
+    `a tree kill that throws still stops the agent (Issue #5638)` now run with
+    `tagReaperUnavailable: true`, which injects a `startGuestMemoryTagReaper`
+    that throws, so no sweep runs in them. Their assertions are unchanged.
+  - **Obsolete base behaviour:** at the base, the sweep started only after the
+    tree kill returned, so the handle kill was always the first kill to act
+    after a tree kill that signalled nothing or failed. With the sweep beside
+    the tree kill, it can legitimately stop the tagged agent first, and the
+    handle-kill warn line these tests require is then not logged.
+  - **Remaining behaviour:** the handle kill is the only path that can end the
+    run when the tag reaper did not start, and these two tests still require it
+    to (and the kill-failed error line when the tree kill rejects). They no
+    longer exercise the handle kill with a live tag reaper.
+  - **Covering tests for runs with a live reaper:**
+    `the tag sweep runs while the tree kill is still in flight (Issue #5647)`
+    and
+    `a descendant still holding memory is killed without spawning (Issue #5638)`,
+    both in the same file.
+- **Existing tests unchanged** and still passing with the sweep moved:
+  `a descendant is swept even when the agent exits before the tree kill returns (Issue #5638)`
+  and `a healthy guest never calls the tree kill (Issue #5638)`.
 - **Targeted run** on the head:
   `deno task test:unit tests/claude_runner_guest_memory_handle_kill_5638_test.ts tests/claude_runner_guest_memory_floor_grace_5634_test.ts tests/claude_runner_guest_memory_floor_4815_test.ts tests/guest_memory_tag_reaper_test.ts`
   gave 18 passed, 0 failed.
