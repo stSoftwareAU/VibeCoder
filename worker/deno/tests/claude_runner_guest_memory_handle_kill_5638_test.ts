@@ -301,9 +301,10 @@ Deno.test({
       assert(pid !== undefined && pid > 0);
       await waitUntilGone(childPid);
       assert(!(await isLive(childPid)), "descendant still running");
-      // The handle kill and sweep race for the agent itself; only the sweep
-      // can signal the long-lived tagged descendant. Its death is asserted
-      // independently above, so the sweep need not count the agent as well.
+      // The process-handle kill races the tag sweep for the agent itself.
+      // The sweep must signal a tagged process, but its count need not include
+      // the agent or the gate's transient sleeps. The live-before/dead-after
+      // assertions above independently verify the long-lived descendant.
       const prefix = `${GUEST_MEMORY_TAG_SWEEP} `;
       const suffix = ` signalled for PID ${pid} (Issue #5638)`;
       const line = warns.find((message) =>
