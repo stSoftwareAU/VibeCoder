@@ -1170,12 +1170,15 @@ export async function commitAndPushPending(
   // changed-file checks. Final-mile callers (those passing `preFlight`) only.
   // The one gate call, shared by Step 1b and the re-gate after Step 1c's merge
   // (Issue #5646), so its arguments cannot drift.
-  const gateUnpushed = async (spec: PreFlightGateSpec) =>
+  const gateUnpushed = async (
+    spec: PreFlightGateSpec,
+    preFlightAlreadyRan: boolean,
+  ) =>
     await gateUnpushedCommits(
       branchName,
       options,
       spec,
-      committedNewChanges,
+      preFlightAlreadyRan,
       undefined,
       // A CI cargo failure the PR base already has is no verdict on this push.
       (options.compareBaseBranch ?? options.syncBaseBranch)
@@ -1189,7 +1192,7 @@ export async function commitAndPushPending(
         (await resolveLocalDefaultBranch(options)) ?? undefined,
     );
   if (preFlight) {
-    const gate = await gateUnpushed(preFlight);
+    const gate = await gateUnpushed(preFlight, committedNewChanges);
     if (!gate.ok) {
       return { ok: false, error: gate.error };
     }
@@ -1215,7 +1218,8 @@ export async function commitAndPushPending(
       options,
     );
     if (preFlight && merged?.kind === "updated") {
-      const regate = await gateUnpushed(preFlight);
+      // Pre-merge pre-flight results cannot certify the merged tree.
+      const regate = await gateUnpushed(preFlight, false);
       if (!regate.ok) {
         return { ok: false, error: regate.error };
       }
