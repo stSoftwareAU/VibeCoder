@@ -480,7 +480,8 @@ export async function pushUnpushedCommits(
  * PR-raise sync's own (`ensureBranchCurrent` with `mergeOntoBase`): a plain
  * merge commit, never a rebase or force-push, refused on a dirty tree, and
  * aborted on a conflict so the fix is pushed as before and the conflict lane
- * takes over. Never fails the push.
+ * takes over. The merge itself never fails the push; a merge that brought the
+ * base in is gated again by the caller before the push (Issue #5646).
  *
  * @returns What the sync did, or `undefined` when it had nothing to do.
  */
@@ -949,7 +950,10 @@ export async function gateUnpushedCommits(
  *      checkout's default branch (`origin/HEAD`).
  *   1c. Step 1c — when `options.syncBaseBranch` is set and there is a fix to
  *      push to an existing branch, {@link mergeBaseBeforePush} merges that
- *      base in, so the fix and the branch update go out in one push.
+ *      base in, so the fix and the branch update go out in one push. When
+ *      that merge brings commits in and `preFlight` was supplied, Step 1b's
+ *      gate runs again over the merged result and a block refuses the push
+ *      (Issue #5646).
  *   2. `pushUnpushedCommits` — push every commit ahead of origin (handles
  *      first-time push and non-fast-forward recovery internally).
  *   3. Re-count unpushed commits against the branch's own remote head —
@@ -1164,12 +1168,17 @@ export async function commitAndPushPending(
   // #3689). The agent's per-run pre-push hook only covers the agent's own
   // `git push`; these commits would otherwise leave ungated by the
   // changed-file checks. Final-mile callers (those passing `preFlight`) only.
-  if (preFlight) {
-    const gate = await gateUnpushedCommits(
+  // The one gate call, shared by Step 1b and the re-gate after Step 1c's merge
+  // (Issue #5646), so its arguments cannot drift.
+  const gateUnpushed = async (
+    spec: PreFlightGateSpec,
+    preFlightAlreadyRan: boolean,
+  ) =>
+    await gateUnpushedCommits(
       branchName,
       options,
-      preFlight,
-      committedNewChanges,
+      spec,
+      preFlightAlreadyRan,
       undefined,
       // A CI cargo failure the PR base already has is no verdict on this push.
       (options.compareBaseBranch ?? options.syncBaseBranch)
@@ -1182,6 +1191,8 @@ export async function commitAndPushPending(
       options.compareBaseBranch ?? options.syncBaseBranch ??
         (await resolveLocalDefaultBranch(options)) ?? undefined,
     );
+  if (preFlight) {
+    const gate = await gateUnpushed(preFlight, committedNewChanges);
     if (!gate.ok) {
       return { ok: false, error: gate.error };
     }
@@ -1197,10 +1208,22 @@ export async function commitAndPushPending(
   // Step 1c — bring an open PR's branch up to date with its base in this
   // same push (owner rule 2026-11-03). Every push to an open PR runs the full
   // CI; a fix pushed onto a branch that is behind leaves the PR BEHIND, and
-  // the later branch update runs CI a second time for the same fix. Placed
-  // after the gates, so they judge only this pass's own commits.
+  // the later branch update runs CI a second time for the same fix. The gates
+  // above judge only this pass's own commits, so a merge that brought the base
+  // in is gated again here before the push (Issue #5646).
   if (options.syncBaseBranch) {
-    await mergeBaseBeforePush(branchName, options.syncBaseBranch, options);
+    const merged = await mergeBaseBeforePush(
+      branchName,
+      options.syncBaseBranch,
+      options,
+    );
+    if (preFlight && merged?.kind === "updated") {
+      // Pre-merge pre-flight results cannot certify the merged tree.
+      const regate = await gateUnpushed(preFlight, false);
+      if (!regate.ok) {
+        return { ok: false, error: regate.error };
+      }
+    }
   }
 
   // Step 2 — push any unpushed commits. pushUnpushedCommits handles
