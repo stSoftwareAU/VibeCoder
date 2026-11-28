@@ -303,7 +303,7 @@ Deno.test({
       const signalled = Number(
         line.slice(prefix.length, line.length - suffix.length),
       );
-      assert(signalled >= 1, `expected a tagged process signalled, got ${line}`);
+      assert(signalled >= 1, `expected a tagged signal, got ${line}`);
     } finally {
       if (childPid > 0 && await isLive(childPid)) {
         Deno.kill(childPid, "SIGKILL");
