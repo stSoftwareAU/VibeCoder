@@ -2,6 +2,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   pruneLogs,
   recoverLogs,
+  runPasses,
 } from "../commands/fleet_pr_babysitter_supervisor.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 
@@ -95,4 +96,42 @@ Deno.test("failed pass is archived and calls the configured health hook", async 
   } finally {
     await Deno.remove(home, { recursive: true });
   }
+});
+
+Deno.test("watch mode keeps running after a pass throws", async () => {
+  // A disk-full host made one pass throw ENOSPC; the --watch process exited and
+  // nothing restarted it for five days.
+  const results: (number | Error)[] = [new Error("No space left on device"), 0];
+  const codes: number[] = [];
+  let sleeps = 0;
+  const stop = new Error("stop");
+  const error = await runPasses(
+    () => {
+      const next = results.shift()!;
+      return next instanceof Error
+        ? Promise.reject(next)
+        : Promise.resolve(next);
+    },
+    true,
+    () => {
+      sleeps++;
+      return results.length ? Promise.resolve() : Promise.reject(stop);
+    },
+    (code: number) => codes.push(code),
+  ).catch((e: unknown) => e);
+  assertEquals(error, stop);
+  assertEquals(sleeps, 2);
+  assertEquals(codes, [1, 0]);
+});
+
+Deno.test("a single pass that throws exits non-zero instead of crashing", async () => {
+  const codes: number[] = [];
+  const code = await runPasses(
+    () => Promise.reject(new Error("boom")),
+    false,
+    () => Promise.reject(new Error("must not sleep")),
+    (c: number) => codes.push(c),
+  );
+  assertEquals(code, 1);
+  assertEquals(codes, [1]);
 });

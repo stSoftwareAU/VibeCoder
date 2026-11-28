@@ -149,7 +149,10 @@ that the App bot is a configured fleet identity, creates a new launchd job and
 starts it; it refuses to overwrite an existing job. Every fleet host must trust
 the App's branch locks. To stop the agent, use the `launchctl bootout` command
 printed by setup. Launchd starts one pass every five minutes and starts another
-after a process failure.
+after a process failure. A host without the launch agent relies on `--watch`
+alone, so a pass that throws (a full disk refusing the pass log, for example)
+is recorded as a failed pass and the loop carries on; it never ends the watch
+process.
 
 Manual and launchd runs keep their output under
 `~/.vibe-coder/fleet-pr-babysitter/logs`. Each completed pass is compressed; the
