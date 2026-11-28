@@ -5,7 +5,9 @@
  * The tree kill spawns `cat`, `ps`, `pgrep` and `kill`; on a guest out of
  * memory each spawn times out, so the kill returns with the agent still
  * running. These tests inject a tree kill that signals nothing, or fails, and
- * keep the agent stub gated so only the handle kill can end the run.
+ * keep the agent stub gated so only the handle kill can end the run. One more
+ * test holds the tree kill open and checks the tag sweep does not wait for it
+ * (Issue #5647).
  */
 import { assert, assertEquals } from "@std/assert";
 import {
@@ -39,6 +41,7 @@ interface DriveExtras {
   stubBody?: string;
   leftoverReaperDeps?: LeftoverReaperDeps;
   onReady?: (stub: AgentStub) => Promise<void>;
+  tagReaperUnavailable?: boolean;
 }
 
 /** Whether `pid` is running and not a zombie. Deno refuses /proc/<pid>/stat, so `ps` answers. */
@@ -116,6 +119,13 @@ async function drive(
       guestMemoryPollMs: 1_000,
       probeMemoryPressure: probe,
       killProcessTree,
+      ...(extras.tagReaperUnavailable
+        ? {
+          startGuestMemoryTagReaper: () => {
+            throw new Error("tag reaper unavailable in fallback test");
+          },
+        }
+        : {}),
       progressIntervalMs: 86_400_000,
       descendantSnapshotIntervalMs: 86_400_000,
       onActivity: () => ready.resolve(),
@@ -164,7 +174,9 @@ Deno.test({
       return Promise.resolve();
     };
     const { logger, warns } = capturingLogger();
-    const result = await drive(100 * MIB, killProcessTree, logger, false);
+    const result = await drive(100 * MIB, killProcessTree, logger, false, {
+      tagReaperUnavailable: true,
+    });
     assert(!result.ok);
     assert(result.error instanceof GuestMemoryFloorError);
     assertEquals(result.error.message, LOW_REASON);
@@ -192,7 +204,9 @@ Deno.test({
       return Promise.reject(new Error("ps timed out after 10000ms"));
     };
     const { logger, warns, errors } = capturingLogger();
-    const result = await drive(100 * MIB, killProcessTree, logger, false);
+    const result = await drive(100 * MIB, killProcessTree, logger, false, {
+      tagReaperUnavailable: true,
+    });
     assert(!result.ok);
     assert(result.error instanceof GuestMemoryFloorError);
     assertEquals(result.error.message, LOW_REASON);
@@ -372,6 +386,67 @@ Deno.test({
       assert(
         !errors.some((message) => message.startsWith(GUEST_MEMORY_KILL_FAILED)),
         `unexpected kill-failed error line in ${JSON.stringify(errors)}`,
+      );
+    } finally {
+      if (childPid > 0 && await isLive(childPid)) {
+        Deno.kill(childPid, "SIGKILL");
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "guest memory handle kill - the tag sweep runs while the tree kill is still in flight (Issue #5647)",
+  ...opts,
+  permissions,
+  async fn() {
+    const killed: number[] = [];
+    let childPid = 0;
+    let aliveWhenTreeKillReturned: boolean | undefined;
+    // Signals nothing and stays open, as a tree kill stuck in spawn timeouts does.
+    const killProcessTree = async (pid: number): Promise<void> => {
+      killed.push(pid);
+      for (let i = 0; i < 250 && await isLive(childPid); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      aliveWhenTreeKillReturned = await isLive(childPid);
+    };
+    const leftoverReaperDeps: LeftoverReaperDeps = {
+      ...DEFAULT_LEFTOVER_REAPER_DEPS,
+      findTagged: () =>
+        Promise.resolve({
+          ok: false,
+          error: "pgrep timed out after 10000ms",
+        }),
+    };
+    const { logger, warns } = capturingLogger();
+    try {
+      const result = await drive(100 * MIB, killProcessTree, logger, false, {
+        stubBody: "sleep 300 &\n" +
+          `echo $! > "$0.child"\n` +
+          `printf '%s\\n' '{"type":"result","result":"working"}'\n` +
+          agentStubGate() + "exit 0\n",
+        leftoverReaperDeps,
+        onReady: async (stub) => {
+          childPid = Number(
+            (await Deno.readTextFile(`${stub.path}.child`)).trim(),
+          );
+          assert(await isLive(childPid), "descendant not running before floor");
+        },
+      });
+      assert(!result.ok);
+      assert(result.error instanceof GuestMemoryFloorError);
+      assertEquals(result.error.message, LOW_REASON);
+      assertEquals(killed.length, 1);
+      assertEquals(
+        aliveWhenTreeKillReturned,
+        false,
+        "the descendant outlived the tree kill: the sweep waited for it",
+      );
+      assert(
+        warns.some((message) => message.startsWith(GUEST_MEMORY_TAG_SWEEP)),
+        `missing tag sweep warn line in ${JSON.stringify(warns)}`,
       );
     } finally {
       if (childPid > 0 && await isLive(childPid)) {

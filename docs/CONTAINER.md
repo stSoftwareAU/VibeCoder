@@ -1453,10 +1453,12 @@ SIGTERM, without the run's `killAfterSeconds` grace (30 s by default): the guest
 is already below its floor, and during the grace the tree keeps its memory while
 each check of the wait spawns a new process (Issue #5634). While the floor is
 armed, a helper started beside the agent walks `/proc` with bash builtins only,
-so it needs no new process. Once the tree kill returns, resolved or failed, the
-helper SIGKILLs every process carrying the run's spawn tag, and nothing else,
-and the worker logs `Guest-memory floor SIGKILLed the agent's tagged processes
-without spawning: <n> signalled` (Issue #5638). That sweep runs before the
+so it needs no new process. As soon as the floor fires, beside the tree kill
+rather than after it, the helper SIGKILLs every process carrying the run's spawn
+tag, and nothing else, because each of the tree kill's spawns can wait 10 s on a
+full guest (Issue #5647). Once the sweep finishes, the worker logs
+`Guest-memory floor SIGKILLed the agent's tagged processes without spawning: <n>
+signalled` (Issue #5638). The sweep starts before the
 handle kill below. The tree kill reads `/proc` and runs `ps`, `pgrep` and
 `kill`, each a new process. On a guest out of memory those time out (observed
 on 2026-11-26: `ps timed out after 10000ms`), so once the tree kill returns with
