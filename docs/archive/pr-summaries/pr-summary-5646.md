@@ -10,9 +10,9 @@ merge actually brought commits in, and a block refuses the push:
 - **Completion phase, just before `gh pr create`.** The last-minute catch-up in
   `completionBody` (`worker/deno/lib/phases/completion_phase.ts`) merges a base
   that moved while the gates ran. It then pushed with `pushUnpushedCommits`
-  directly. Now it runs `gateBeforePush()` first. A block fails the run as
-  `pre_push_gate`, with the same once-per-run recovery turn as the first gate,
-  and no PR is raised.
+  directly. Now it runs the pre-push gate first, without formatting or an
+  agent recovery turn. A verdict block fails the run as `pre_push_gate`, and
+  no PR is raised. The claim-freshness check follows the catch-up push.
 - **Repair passes (CI fix, review feedback, spelling).** Step 1c of
   `commitAndPushPending` (`worker/deno/lib/git_push.ts`) runs
   `mergeBaseBeforePush` after Step 1b's gate. A merge with outcome `updated` now
@@ -44,9 +44,11 @@ Closes #5646.
   skipped them because Step 1 had just created a commit. Step 1b's skip stands
   for the pre-merge tree only; a pre-merge result cannot certify the merged
   tree.
-- The completion re-gate is the existing `gateBeforePush()` closure, so it
-  formats first, uses the same comparable base and shares the run's single
-  recovery turn.
+- The completion re-gate uses the same comparable base and gate verdict but
+  cannot create formatter or recovery commits after the pre-PR verifier and
+  summary gates. A later run must take any repairs through those checks. The
+  normal gate retains its once-per-run recovery turn. The claim-freshness
+  check runs after the late gate and push to prevent a PR for a closed issue.
 
 ### Undiscoverable Facts
 
@@ -82,15 +84,14 @@ flowchart LR
     R -- block --> X[push refused:<br/>completion fails as pre_push_gate,<br/>repair returns the gate error]
 ```
 
-- Red before the fix, with the production code unchanged:
-  - In `worker/deno/tests/completion_phase_last_currency_test.ts`, two tests
-    failed. The merge-order test saw `push, merge, push` with no gate after the
-    merge. The blocked-catch-up test got `status: continue`.
-  - In `worker/deno/tests/pr_push_base_sync_test.ts`, the new blocked-merge test
-    failed with "the merged result must be refused".
-- Green after the fix: 33 passed across `completion_phase_last_currency_test.ts`
-  and `completion_phase_pre_push_gate_3689_test.ts`. All 7 passed in
-  `pr_push_base_sync_test.ts`.
+- Earlier worker evidence: the blocked-catch-up test returned
+  `status: continue` before the original fix; the repair blocked-merge test
+  failed with "the merged result must be refused". The worker reported green
+  targeted runs before the final review changes.
+- The repair test file now contains eight test cases. The updated completion
+  tests cover a repairable late block and issue closure during the gate.
+  The final review changes require a fresh CI run; no new local test result
+  is claimed.
 - Issue numbers cited as provenance:
   - #5646: Shift left: fleet PRs keep failing CI on `deno test` that a local
     gate could catch (this issue).
@@ -98,20 +99,21 @@ flowchart LR
 ## Test Plan
 
 - `worker/deno/tests/completion_phase_last_currency_test.ts`:
-  - `deps()` stubs `gateUnpushedCommits` with a per-call answer and records a
-    `gate` event.
+  - The gate fixture bases its verdict on whether the base was merged and
+    whether an agent repair was made, not on gate call counts or order.
   - "a base that moved during the gates is merged in and pushed before the PR is
-    created": the two old assertions (last event before create is `push`, the
-    one before it is `merge`) become one assertion that the last three events
-    are `merge, gate, push`. Both old facts still hold, and the gate between
-    them is new.
-  - "a branch still current when the PR is raised is not pushed again": it also
-    asserts the gate ran exactly once. This pins unchanged behaviour, so it was
-    green on base as expected.
+    created": asserts the merged head was pushed before creation.
+  - "a branch still current when the PR is raised is not pushed again": keeps
+    the original no-merge and one-push assertions.
   - Added "a catch-up merge the gate blocks is never pushed and the PR is not
     raised". It asserts category `pre_push_gate`, a reason starting with
     `PRE_PUSH_GATE_MARKER`, no PR create and no push after the merge. Its
     positive control: the `merge` event shows the catch-up path was reached.
+    The simulated agent could repair the block, so accepting a late recovery
+    and pushing would fail this test.
+  - "an issue closed during the catch-up gate never gets a PR": the issue
+    closes when the gate sees the merged tree; expects `early_exit`, the
+    stale-claim reason and no PR creation.
 - `worker/deno/tests/pr_push_base_sync_test.ts`, with real git and a moved
   `origin/main`:
   - Added "a fix whose merged result fails the pre-flight gate is not pushed,
@@ -126,20 +128,19 @@ flowchart LR
   - Added a control with an always-passing pre-flight command. The push carries
     both the fix and `base.txt`.
   - The existing tests are unchanged.
-- Regression runs on the final head (all passed): `git_push_preflight_test.ts`,
+- Earlier worker regression runs passed: `git_push_preflight_test.ts`,
   `commit_and_push_pending_test.ts`, `pr_round_repo_formatters_test.ts`, and
-  `completion_phase_pre_push_gate_3689_test.ts`.
-- `./quality.sh < /dev/null`: PASSED. The gate itself skipped config integration
-  and checkov.
-- Guards on the new paths: both reuse the existing gate calls unchanged. The
-  completion path keeps the recovery-turn cap, the host-disk park and the
-  `pre_push_gate` category. The repair path keeps Step 1b's compare and baseline
-  refs. None is excluded.
-- Docs: `docs/INTERNALS.md` now says that both merges are gated before the push
-  (the "One push per fix" section), and lists the catch-up merge among the
-  second blocks that get no further recovery turn (the `pre_push_gate` section).
-  The doc comments of `mergeBaseBeforePush` and `commitAndPushPending` were
-  changed the same way.
+  `completion_phase_pre_push_gate_3689_test.ts`. The earlier quality run passed
+  with config integration and checkov skipped; CI must verify the new head.
+- Guards: normal completion retains formatting, the recovery cap and host-disk
+  park. The catch-up gate deliberately excludes formatting and agent recovery
+  (and therefore recovery-specific host-disk parking) after the verifier and
+  summary gates. It keeps verdict and infrastructure failure classification,
+  and the freshness check runs afterwards. Repair re-gating retains Step 1b's
+  compare and baseline refs but always runs pre-flight on the merged tree.
+- Docs: `docs/INTERNALS.md` describes both merged-tree gates, the late gate's
+  no-recovery rule and the final freshness check. The repair helper doc
+  comments describe the merged-tree pre-flight gate.
 
 ## Not checked
 

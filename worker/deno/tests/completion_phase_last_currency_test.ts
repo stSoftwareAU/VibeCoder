@@ -85,16 +85,18 @@ function state(repoPath: string): PhaseState {
 
 /**
  * `behindOnCall` answers each drift check: the first is the PR-raise sync,
- * the last is the check just before `gh pr create`. `gateOnCall` answers each
- * pre-push gate run, numbered from 1, and defaults to a pass.
+ * the last is the check just before `gh pr create`. The gate verdict depends
+ * on whether the base has been merged and any simulated repair has run.
  */
 function deps(
   behindOnCall: (call: number) => number,
   events: string[],
-  gateOnCall: (call: number) => GateOutcome = () => GATE_PASSED,
+  gateOnTree: (merged: boolean, repaired: boolean) => GateOutcome = () =>
+    GATE_PASSED,
+  issueState: () => "OPEN" | "CLOSED" = () => "OPEN",
 ) {
   let driftChecks = 0;
-  let gateCalls = 0;
+  let repaired = false;
   return createMockDeps({
     logger: {
       info: () => undefined,
@@ -102,9 +104,23 @@ function deps(
       error: () => undefined,
       debug: () => undefined,
     } as never,
+    claude: {
+      runClaudeWithRetry: () => {
+        repaired = true;
+        return Promise.resolve({
+          ok: true as const,
+          value: { exitCode: 0, output: "mock repair", timedOut: false },
+        });
+      },
+    },
     github: {
       createClient: () => stubClient(),
       runGhCommand: (args: string[]) => {
+        if (
+          args[0] === "issue" && args[1] === "view" && args.at(-1) === "state"
+        ) {
+          return Promise.resolve(JSON.stringify({ state: issueState() }));
+        }
         if (args[0] === "pr" && args[1] === "create") events.push("create");
         return Promise.resolve(
           "https://github.com/stSoftwareAU/VibeCoder/pull/2459",
@@ -117,10 +133,32 @@ function deps(
           ok: true as const,
           value: { action: "already-on-branch" as const, fromRef: BRANCH },
         }),
-      gateUnpushedCommits: () => {
-        events.push("gate");
-        gateCalls++;
-        return Promise.resolve(gateOnCall(gateCalls));
+      gateUnpushedCommits: () =>
+        Promise.resolve(gateOnTree(events.includes("merge"), repaired)),
+      commitAndPushPending: async (
+        _branchName,
+        _message,
+        _opts,
+        _allowDefault,
+        _preFlight,
+        _runId,
+        _formatBeforeGate,
+        beforePush,
+      ) => {
+        if (beforePush) {
+          const verdict = await beforePush();
+          if (!verdict.ok) return { ok: false as const, error: verdict.error };
+        }
+        events.push("push");
+        return {
+          ok: true as const,
+          value: {
+            committedNewChanges: true,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+            finalUnpushedSource: "remote-head" as const,
+          },
+        };
       },
       pushUnpushedCommits: () => {
         events.push("push");
@@ -184,11 +222,9 @@ Deno.test("a base that moved during the gates is merged in and pushed before the
     const create = events.lastIndexOf("create");
     assert(create > 0, `the PR was raised: ${events.join(", ")}`);
     const before = events.slice(0, create);
-    assertEquals(
-      before.slice(-3),
-      ["merge", "gate", "push"],
-      `events: ${events.join(", ")}`,
-    );
+    const merge = before.lastIndexOf("merge");
+    assert(merge >= 0, `events: ${events.join(", ")}`);
+    assert(before.lastIndexOf("push") > merge, events.join(", "));
   });
 });
 
@@ -203,7 +239,6 @@ Deno.test("a branch still current when the PR is raised is not pushed again", as
     assertEquals(result.status, "continue");
     assertEquals(events.includes("merge"), false);
     assertEquals(events.filter((e) => e === "push").length, 1);
-    assertEquals(events.filter((e) => e === "gate").length, 1);
   });
 });
 
@@ -212,13 +247,15 @@ Deno.test("a catch-up merge the gate blocks is never pushed and the PR is not ra
     const events: string[] = [];
     // Current at the PR-raise sync, one behind at the last check. The gate
     // passes the branch before the merge and blocks the merged result.
+    // A simulated repair could make it pass, but late repairs must not ship.
     const result = await workOnIssueCompletion(
       context(),
       state(repoPath),
       deps(
         (call) => (call === 1 ? 0 : 1),
         events,
-        (call) => (call === 1 ? GATE_PASSED : gateBlocked()),
+        (merged, repaired) =>
+          merged && !repaired ? gateBlocked() : GATE_PASSED,
       ),
     );
     assert(result.status === "failure", `status: ${result.status}`);
@@ -236,5 +273,29 @@ Deno.test("a catch-up merge the gate blocks is never pushed and the PR is not ra
       false,
       `events: ${events.join(", ")}`,
     );
+  });
+});
+
+Deno.test("an issue closed during the catch-up gate never gets a PR", async () => {
+  await withSummary(async (repoPath) => {
+    const events: string[] = [];
+    let closed = false;
+    const result = await workOnIssueCompletion(
+      context(),
+      state(repoPath),
+      deps(
+        (call) => (call === 1 ? 0 : 1),
+        events,
+        (merged) => {
+          if (merged) closed = true;
+          return GATE_PASSED;
+        },
+        () => closed ? "CLOSED" : "OPEN",
+      ),
+    );
+    assert(closed, "the catch-up gate observed the merged tree");
+    assert(result.status === "early_exit", `status: ${result.status}`);
+    assert(result.reason.startsWith("claim_stale:issue_closed"));
+    assertEquals(events.includes("create"), false, events.join(", "));
   });
 });

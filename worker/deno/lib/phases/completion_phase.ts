@@ -2007,24 +2007,30 @@ async function completionBody(
   );
   const prePushSpec = resolvePreFlightSpec(config.repoConfig, repo) ??
     { commands: [] };
-  const gateBeforePush = async (): Promise<PhaseResult | undefined> => {
+  const gateBeforePush = async (
+    mode: "normal" | "catch-up" = "normal",
+  ): Promise<PhaseResult | undefined> => {
     const runGateOnce = async () => {
-      // The repo's own formatters first (part of #2932): a formatting-only
-      // miss is fixed and committed here rather than failing the gate, or
-      // shipping to review and CI. Same files as the gate. Agent-authored
-      // Markdown stays unformatted; the worker's archive notes are formatted
-      // afterwards. A formatter that fails or throws is logged and the gate
-      // below still reports it.
-      await formatBeforeGate(
-        { ...deps, formatterDeps: deps.git.formatterDeps },
-        state.repoPath,
-        comparableBase.ok ? comparableBase.value : undefined,
-        // The gate judges the working tree but the push carries commits only,
-        // and the PR body is read from HEAD: an uncommitted archive edit is
-        // set aside so it neither blocks the gate nor reaches a recovery
-        // commit (Issue #5328).
-        { setAsideUncommittedArchive: true },
-      );
+      // The catch-up gate runs after the verifier and summary gates. Do not
+      // create formatter commits there: a later run must verify any fixes.
+      if (mode === "normal") {
+        // The repo's own formatters first (part of #2932): a formatting-only
+        // miss is fixed and committed here rather than failing the gate, or
+        // shipping to review and CI. Same files as the gate. Agent-authored
+        // Markdown stays unformatted; the worker's archive notes are formatted
+        // afterwards. A formatter that fails or throws is logged and the gate
+        // below still reports it.
+        await formatBeforeGate(
+          { ...deps, formatterDeps: deps.git.formatterDeps },
+          state.repoPath,
+          comparableBase.ok ? comparableBase.value : undefined,
+          // The gate judges the working tree but the push carries commits only,
+          // and the PR body is read from HEAD: an uncommitted archive edit is
+          // set aside so it neither blocks the gate nor reaches a recovery
+          // commit (Issue #5328).
+          { setAsideUncommittedArchive: true },
+        );
+      }
       return await deps.git.gateUnpushedCommits(
         state.branchName,
         { cwd: state.repoPath },
@@ -2040,7 +2046,7 @@ async function completionBody(
     // reason below quotes the latest output and the re-run is the decision.
     if (
       !gate.ok && gate.error.kind === "verdict" &&
-      !state.prePushRetryAttempted
+      mode === "normal" && !state.prePushRetryAttempted
     ) {
       const turn = await runPrePushGateRecoveryTurn(
         ctx,
@@ -3385,6 +3391,37 @@ async function completionBody(
     );
   }
 
+  // Owner rule 2026-11-03: the base may have moved while the gates above ran.
+  // A PR opened behind its base runs CI once on the stale head and again when
+  // the branch is updated. No PR exists yet, so this extra push starts no CI.
+  // A decline or an unreadable comparison raises the PR as before. A merge that
+  // brought the base in is new, untested content, so the same gate judges it
+  // before it is pushed (Issue #5646).
+  const lastCurrency = await ensureBranchCurrent({
+    branch: state.branchName,
+    baseBranch,
+    runGit: deps.git.runGitCommand,
+    cwd: state.repoPath,
+    rebase: mergeOntoBase,
+    log: (m: string) => logger.info(m),
+  });
+  if (lastCurrency.kind === "updated") {
+    // A late repair would bypass the verifier and summary gates. Fail closed
+    // instead, even if the normal gate's recovery turn is still available.
+    const blockedBeforeCatchUp = await gateBeforePush("catch-up");
+    if (blockedBeforeCatchUp) return blockedBeforeCatchUp;
+    const lastPush = await deps.git.pushUnpushedCommits(state.branchName, {
+      cwd: state.repoPath,
+    });
+    if (!lastPush.ok) {
+      logger.warn(
+        `'${state.branchName}' caught up with '${baseBranch}' locally but the ` +
+          `push failed, so the PR is raised on the earlier head: ` +
+          lastPush.error.message,
+      );
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Claim-freshness re-check (Issue #344) — the last thing before creation.
   //
@@ -3407,35 +3444,6 @@ async function completionBody(
   });
   if (freshness.kind === "stale") {
     return await abortStaleClaim(freshness, ctx, state, deps);
-  }
-
-  // Owner rule 2026-11-03: the base may have moved while the gates above ran.
-  // A PR opened behind its base runs CI once on the stale head and again when
-  // the branch is updated. No PR exists yet, so this extra push starts no CI.
-  // A decline or an unreadable comparison raises the PR as before. A merge that
-  // brought the base in is new, untested content, so the same gate judges it
-  // before it is pushed (Issue #5646).
-  const lastCurrency = await ensureBranchCurrent({
-    branch: state.branchName,
-    baseBranch,
-    runGit: deps.git.runGitCommand,
-    cwd: state.repoPath,
-    rebase: mergeOntoBase,
-    log: (m: string) => logger.info(m),
-  });
-  if (lastCurrency.kind === "updated") {
-    const blockedBeforeCatchUp = await gateBeforePush();
-    if (blockedBeforeCatchUp) return blockedBeforeCatchUp;
-    const lastPush = await deps.git.pushUnpushedCommits(state.branchName, {
-      cwd: state.repoPath,
-    });
-    if (!lastPush.ok) {
-      logger.warn(
-        `'${state.branchName}' caught up with '${baseBranch}' locally but the ` +
-          `push failed, so the PR is raised on the earlier head: ` +
-          lastPush.error.message,
-      );
-    }
   }
 
   // Opening a PR for this branch even though something else references the
