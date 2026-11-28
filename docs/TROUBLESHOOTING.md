@@ -1196,9 +1196,10 @@ required: the work is kept on the issue branch in a `wip:` commit and the next
 claim resumes it. If the tree kill cannot stop the agent on a full guest, the
 worker logs `Guest-memory floor sent SIGKILL through the agent's process
 handle, PID <pid>` at WARNING and kills the agent through its own handle
-(Issue #5638). Once the tree kill returns, the worker also logs `Guest-memory
-floor SIGKILLed the agent's tagged processes without spawning: <n> signalled
-for PID <pid>` (Issue #5638), naming how many of the run's tagged processes it
+(Issue #5638). The worker starts the tag sweep as the floor fires, beside the
+tree kill, and logs `Guest-memory floor SIGKILLed the agent's tagged processes
+without spawning: <n> signalled for PID <pid>` once the sweep finishes
+(Issues #5638 and #5647), naming how many of the run's tagged processes it
 killed.
 If the stops recur on one repository, its builds or tests need more memory than
 the guest has; give the guest more with `VIBE_CONTAINER_MEMORY`.
