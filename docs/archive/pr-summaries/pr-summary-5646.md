@@ -121,8 +121,8 @@ flowchart LR
     unchanged, and that the merge is present locally.
   - Added "a worker-created fix commit still runs pre-flight after merging its
     base (Issue #5646)": the fix is an uncommitted file that Step 1 commits, so
-    Step 1b skips pre-flight, and the same `test ! -f base.txt` must still
-    block the merged tree. This was the review's gate-bypass case.
+    Step 1b skips pre-flight, and the same `test ! -f base.txt` must still block
+    the merged tree. This was the review's gate-bypass case.
   - Added a control with an always-passing pre-flight command. The push carries
     both the fix and `base.txt`.
   - The existing tests are unchanged.
