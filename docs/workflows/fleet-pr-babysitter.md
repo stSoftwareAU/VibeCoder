@@ -199,7 +199,13 @@ An optional executable `~/.vibe-coder/fleet-pr-babysitter/health-hook` receives
 the pass exit code as its sole argument. It is bounded to ten minutes; hook
 failure is logged and the next pass retries. Organisation-specific extensions
 can use this to publish a separate babysitter heartbeat and failure record. Dry
-runs and runs limited to a repository or PR do not report service health.
+runs and runs limited to a repository or PR do not report service health. A
+repair whose agent ran and judged the PR not ready (it needs a label or
+approval only the owner can give, such as a `contract-change` PR, or its checks
+still fail) does not fail the pass: it is logged as
+`Babysitter repair needs a human:`, keeps its code blocker class, retry budget
+and escalation, and the pass exits 0. The failure record is kept for faults in
+the babysitter itself.
 
 The host needs `gh`, `git` and `deno`, the Claude CLI with a working Claude
 credential for the review verifier (Issue #4657), and the container runtime that
