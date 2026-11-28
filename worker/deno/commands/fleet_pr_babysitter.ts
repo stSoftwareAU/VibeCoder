@@ -121,6 +121,7 @@ import {
 import {
   BabysitterFailure,
   babysitterFailureSignature,
+  BabysitterNeedsHuman,
   BabysitterParked,
   babysitterRetryDelayMs,
   babysitterRetryEligible,
@@ -868,6 +869,13 @@ export async function runRepairs(
         // holds its cooldown, so it is one quiet line, not a pass failure.
         if (error instanceof BabysitterParked) {
           console.log(`Babysitter repair parked: ${error.message}`);
+          return;
+        }
+        // The agent judged the PR not ready (it needs a human, or its checks
+        // still fail): the PR's outcome, recorded and escalated per PR, not a
+        // babysitter fault for the health hook.
+        if (error instanceof BabysitterNeedsHuman) {
+          console.log(`Babysitter repair needs a human: ${error.message}`);
           return;
         }
         failures.push(error);
@@ -3429,11 +3437,10 @@ export async function fix(
           "infrastructure",
         );
       }
-      throw new BabysitterFailure(
+      throw new BabysitterNeedsHuman(
         "agent did not report that its fix was ready; refusing to push. " +
           "Untrusted agent explanation: " +
           redactSecrets(response).slice(0, 2000),
-        "code",
       );
     }
     await (deps.resetGitConfig ?? resetRepairCloneGitConfig)(dir, repo);
